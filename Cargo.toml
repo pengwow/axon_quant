@@ -50,6 +50,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 # 数值类型
 rust_decimal = { version = "1.35", features = ["serde"] }
+rust_decimal_macros = "1.35"
 
 # 随机数（用于延迟/冲击模型采样）
 rand = "0.8"
