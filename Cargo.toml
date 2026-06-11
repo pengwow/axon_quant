@@ -5,6 +5,8 @@ members = [
     "crates/axon-core",
     "crates/axon-backtest",
     "crates/axon-rl",
+    "crates/axon-hpo",
+    "crates/axon-walk-forward",
     "crates/axon-cli",
 ]
 
@@ -27,6 +29,8 @@ authors = ["AXON Team <team@axon.dev>"]
 axon-core = { path = "crates/axon-core" }
 axon-backtest = { path = "crates/axon-backtest" }
 axon-rl = { path = "crates/axon-rl" }
+axon-hpo = { path = "crates/axon-hpo" }
+axon-walk-forward = { path = "crates/axon-walk-forward" }
 
 # 错误处理
 thiserror = "1.0"

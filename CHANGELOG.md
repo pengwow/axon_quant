@@ -237,6 +237,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Gymnasium 5 元组 API**：`step` 返回 `(observation, reward, terminated, truncated, info)`
   - **`axon-rl` 集成**：所有公开类型在 `lib.rs` 顶层 re-export；`Cargo.toml` 新增 `axon-core` / `axon-backtest` / `serde` / `serde_json` / `thiserror` / `tracing` 依赖 + `pyo3 = "0.22"` 可选依赖 + `python` feature
   - **合计**：157 个 axon-rl 单元测试（其中 18 个需要 `--features python`）+ 1 文档测试，全部通过
+- **Phase 1B P1**：向量化环境（`vec_env` 模块，22 单元测试）
+  - **`error` 模块**：`VecEnvError` 枚举（`ChannelSend` / `ChannelRecv` / `WorkerPanic` / `Env(usize, String)` / `DimensionMismatch { expected, got }` / `AllFailed` / `ZeroEnvs`），含 `From<EnvError>` 自动转换 + `env_index()` 辅助方法
+  - **`stats` 模块**：`VecEnvStatistics` 结构（`num_envs` / `total_rewards` / `step_counts` / `done_count` / `all_done`），含 `mean_reward()` / `mean_steps()` 聚合方法，序列化支持
+  - **`factory` 模块**：`EnvFactory` trait（`Send + Sync`，`build_env(env_id)` 方法）+ `BasicEnvFactory` 内置实现（`Clone + Debug`，自动 seed 偏移 `seed + env_id`，支持自定义 features / reward_kind）
+  - **`sync` 模块**：`SyncVecEnv` 同步向量化环境
+    - `reset_all()` / `reset_one(i)` / `step_batch(actions)` / `step_one(i, &action)`
+    - 自动重置：done 环境 zero-start，`episode_counts[i] += 1`
+    - 统计：累计奖励、step 计数、episode 计数、done 状态
+    - `env(i)` / `env_mut(i)` 直接访问内部 env
+    - `statistics()` 收集 `VecEnvStatistics`
+  - **`async_env` 模块**：`AsyncVecEnv` 异步（std::thread + mpsc）向量化环境
+    - 每个 worker 拥有独立 `TradingEnv` 实例
+    - `WorkerCommand`（`Reset` / `Step` / `Shutdown`）+ `WorkerResponse`（`Reset` / `Step` / `Error`）消息
+    - `WorkerHandle` 通信句柄（`Drop` 自动 shutdown + join）
+    - `F: EnvFactory + Clone + 'static` 约束（每个 worker 持有独立 factory 副本）
+    - 串行派发 + 串行回收（N 个 worker 在独立线程里跑 env.step）
+  - **21 单元测试**覆盖：批量 reset / step、维度校验、零 envs 错误、自动重置（含 episode 计数）、统计、env 访问器、工厂 build_env 调用次数验证、AsyncVecEnv reset/step/auto_reset、close join workers、VecEnvError `env_index` / Display / From 转换、VecEnvStatistics 空值边界
+  - **架构改进**：把"如何创建 env"抽成 `EnvFactory` trait，避免 Box<dyn ObservationSpace>/Box<dyn RewardFn> 不可 Clone 的限制；AsyncVecEnv 通过 `F: Clone` 约束让每个 worker 拥有独立工厂副本
+- **Phase 1B P2**：示例脚本与 PyO3 兼容性收尾
+  - **`examples/_common.py`**：共享工具层
+    - `find_axon_rl_lib()`：自动探测 `target/{debug,release}/libaxon_rl.{dylib,so,dll}`，在同目录创建 `axon_rl.cpython-XYZ-platform.so` 符号链接，加入 `sys.path`；跨平台回退（macOS/Linux/Windows）
+    - `make_synthetic_market_data(n, start_price, vol, seed)`：生成几何布朗运动 K 线（开/高/低/收/量），零外部数据依赖
+    - `make_env_config(initial_capital, transaction_cost, slippage, max_steps, seed, symbol, return_window)`：构造环境配置字典
+    - `make_env(config, market_data, reward, action_space)`：工厂函数，统一注入共享库并构造 `TradingEnv`
+    - `set_seed(seed)`：统一设置 `random` / `numpy` / `torch` 种子
+    - `run_random_episode(env, max_steps, seed)` / `summarize(records)`：随机基线 + 聚合统计
+  - **`examples/_vec_env.py`**：Gymnasium 包装层
+    - `AxonTradingEnv(gym.Env)`：将 `axon_rl.TradingEnv` 适配为 Gymnasium 5 元组 API（reset 返回 `(obs, info)`，step 返回 `(obs, reward, terminated, truncated, info)`）
+    - 动态继承：`gymnasium` 不可用时回退到 `gym.Env`，`render_mode` 显式传入避免 `metadata` 警告
+    - `make_vec_env(env_fn, n_envs, use_stable_baselines3)`：智能选择 `gymnasium.vector.SyncVectorEnv`（真实多 env） / `sb3 DummyVecEnv`（与 sb3 完全兼容）
+  - **`examples/random_agent.py`**：零依赖基线，5 个 episode × 500 步
+  - **`examples/custom_reward.py`**：PnL / Sharpe / Sortino 三种奖励函数对比，输出均值/标准差/夏普比率/最终组合价值
+  - **`examples/train_ppo.py`**：stable-baselines3 PPO 训练，命令行参数（`--timesteps` / `--n-envs` / `--reward` / `--learning-rate` / `--seed`），与随机基线对比
+  - **`examples/train_sac.py`**：stable-baselines3 SAC 训练，连续动作空间，配置 buffer / batch_size / tau
+  - **`examples/vec_env_train.py`**：向量化环境训练，对比 `n_envs=1` 与 `n_envs=4` 的 steps/s 与累计 reward
+  - **`examples/README.md`**：示例目录说明（结构、Python 环境要求、构建命令、运行步骤、常见问题、设计原则、后续工作）
+  - **关键决策**
+    - 强制使用 macOS Framework Python 3.12（PyO3 与 Anaconda 3.13 的 GIL 兼容性已知问题，参考 `axon-design/01-tdd/02-phase1-rl/06-pyo3-bindings.md`）
+    - `examples/_common.py:make_env` 仅在 `find_axon_rl_lib()` 之后才 import `axon_rl`，避免子进程在没有 dylib 时崩溃
+    - `gym.Env` 动态继承解决 `gymnasium` 与 `gym` 二选一：导入时探测，运行时绑定
+  - **代码质量**：5 个示例脚本全部可运行，stdout 含 PASS/FAIL 标记与退出码；`cargo test --workspace --features axon-rl/python` 179 个测试通过；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo fmt --all --check` 通过
+  - **后续工作（待办）**：`backtest.py`（样本外回测） / `hpo_optuna.py`（超参数优化） / `visualize.py`（净值曲线 + 回撤 + 交易信号）/ `gymnasium.vector.AsyncVectorEnv` 多进程包装
+- **Phase 2 P0**：`axon-hpo` crate（超参数优化：Optuna 集成 + 搜索空间 + 剪枝 + 多目标 + Pareto 前沿）
+  - **`config` 模块**：`StudyConfig`（study_name / direction / sampler / pruner / storage / load_if_exists）+ `StudyDirection`（Minimize / Maximize，Optuna 字符串转换）+ `SamplerType`（TPE / Random / CmaEs / Grid）+ `PrunerType`（MedianPruner / HyperbandPruner / SuccessiveHalvingPruner / NopPruner）+ `ObjectiveConfig` / `ObjectiveDef`（Single / Multi）+ `HPOConfig`（study / search_space / objective / hpo 四大子表）+ `HPOConfig::from_toml_file` TOML 加载 + 默认 `config/default_hpo.toml`（11 个 PPO 超参数）
+  - **`search_space` 模块**：`SearchSpaceDef` 6 种参数类型（`Uniform` / `LogUniform` / `IntUniform` / `Discrete` / `Choice` / `Categorical`），含 `validate()` 合法性校验（low < high、log 低界 > 0、step > 0、choices 非空）
+  - **`trial` 模块**：`TrialResult`（trial_id / params / values / state / duration_ms / intermediate_values）+ `TrialState`（Running / Complete / Pruned / Fail，含 `is_finished` / `is_complete`）
+  - **`result` 模块**：`HPOResult`（study_config / best_trial / all_trials / param_importances / pareto_front / elapsed_ms）+ `n_complete` / `n_by_state` 辅助方法
+  - **`pareto` 模块**：`ParetoPoint` / `ParetoFront` + `dominates`（Pareto 支配判定）+ `compute_pareto_front`（O(n²) 找出不被支配的 trial 子集，自动过滤 Pruned/Fail 状态）+ `compute_hypervolume`（2D 精确 / N-D 近似）+ `compute_hypervolume_from_points` 便捷函数
+  - **`error` 模块**：`HPOError` 统一错误类型（Config / SearchSpace / TrialFailed / Optuna / DirectionsMismatch / MissingValues / Io / Serialization）+ `HPOResult<T>` 类型别名
+  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
+    - `HPORunner`（`#[pyclass(name = "HPORunner")]`） + `#[pymethods]`（`new` / `run` / `__repr__`）
+    - 通信流程：Rust 配置校验 → Python 端 `axon_hpo.optuna_runner.OptunaHPO` 调度 Optuna study → Rust 端 `compute_pareto_front` 后处理 → Python dict 返回
+    - `py_compute_pareto_front` / `py_compute_hypervolume` / `py_validate_search_space` 便捷函数（`#[pyfunction]`）
+    - `register_module`：暴露 `HPORunner` + 3 个函数 + `__version__` 常量
+    - 类型转换：`serde_json::Value` ↔ Python object 的完整映射（Null/Bool/Int/UInt/Float/String/Array/Object）
+  - **Python 端 `axon_hpo` 包**：
+    - `types.py`：`SearchSpaceDef`（含 `suggest` 方法直接对接 Optuna API）+ `StudyDirection` / `SamplerType` / `PrunerType` 枚举 + `SamplerConfig` / `PrunerConfig` / `TrialResult` 数据类
+    - `optuna_runner.py`：`OptunaHPO` 主类（`run` / `collect_results` / `get_best_trial` / `get_pareto_front` / `compute_hypervolume` / `report` 中间值）；`_build_sampler` 支持 4 种 sampler
+    - `search_space.py`：`default_ppo_search_space`（11 个 PPO 超参）/ `default_sac_search_space`（8 个 SAC 超参）/ `small_search_space`（2 个小型）
+    - `pruning.py`：自定义剪枝器（`AdaptivePruner` / `HyperbandPruner` / `SuccessiveHalvingPruner` 封装）
+    - `multi_objective.py`：`ParetoPoint` + `dominates` + `compute_pareto_front` + `compute_hypervolume`（2D 精确 / N-D 近似）+ `select_by_constraint`（约束选择）
+  - **示例脚本**：
+    - `examples/hpo_single_objective.py`：二维抛物面目标函数（最大值在 (0.5, 0.3)），30 trials 找到 x=0.514, y=0.202, value=-0.0097（PASS）
+    - `examples/hpo_smoke_test.py`：模块导入 + 6 种搜索空间校验 + Pareto/HV 计算 + OptunaHPO 完整流程 smoke test
+  - **代码质量**：
+    - **35 单元测试**全部通过（`config` 13 + `pareto` 12 + `search_space` 6 + `trial` 3 + 集成 1）
+    - `cargo clippy -p axon-hpo --all-targets -- -D warnings` 零警告
+    - `cargo fmt -p axon-hpo --check` 通过
+    - **Clippy 修复**：`SamplerConfig` / `PrunerConfig` 的手写 `Default` impl 替换为 `#[derive(Default)]`
+  - **架构决策**：
+    - **Rust-Python 边界清晰**：Rust 端负责配置校验、Pareto 前沿与超体积的权威计算；Python 端负责 Optuna study 调度、trial 执行
+    - **TOML 配置优先**：`config/default_hpo.toml` 单一事实源，避免代码硬编码
+    - **混合类型 Choice**：`Choice { choices: Vec<serde_json::Value> }` 支持整数/浮点/字符串/布尔混合选择（适配 RL 超参如 `batch_size=32` / `activation="relu"` / `use_layernorm=true`）
+    - **方向无关的超体积**：2D 精确算法走 maximize+maximize 快路径，其他方向自动回退到 N-D 近似（坐标变换为后续优化点）
+- **Phase 2 P1**：`axon-walk-forward` crate（滚动前向验证：时间序列分割 + 防泄漏 + 指标聚合 + 稳定性分析）
+  - **`config` 模块**：`WalkForwardConfig`（train_size / validation_size / test_size / step_size / window_type / purge_gap / embargo_pct） + `WindowType`（Rolling / Expanding） + `validate()` 合法性校验 + `expanding` / `rolling` 便捷构造
+  - **`split` 模块**：`FoldSplit`（fold_id / train_start / train_end / validation_start / validation_end / test_start / test_end） + `TimeSeriesSplitter`（Rolling / Expanding 两种窗口） + `expand_window` / `rolling_window` 便捷函数
+  - **`purge` 模块**：`purge_overlapping_labels`（移除与测试集标签重叠的训练样本） + `embargo_indices`（测试集后添加隔离期） + `detect_leakage`（索引重叠 + 时间邻近性泄漏检测） + `leakage_check`（结构化报告）
+  - **`metrics` 模块**：`ISMetrics`（in-sample 5 指标）+ `OOSMetrics`（out-of-sample 6 指标，含 calmar_ratio） + `FoldResult`（fold_id / split / is_metrics / oos_metrics / overfit_ratio） + `WalkForwardResult`（config / folds / aggregated / stability） + `AggregatedMetrics`（8 字段汇总） + `StabilityMetrics`（4 字段稳定性） + `LeakageCheck`（has_leakage / leaked_indices / details）
+  - **`evaluation` 模块**：`aggregate_folds`（汇总 + 稳定性指标聚合） + `compute_deflated_sharpe`（Bailey & López de Prado 2014 修正） + 辅助统计（mean / stddev / median / pearson_correlation / normal_cdf / erf_approx）
+  - **`error` 模块**：`WalkForwardError` 统一错误类型（Config / InsufficientData / IndexOutOfBounds / LeakageDetected / Serialization / Io）+ `WalkForwardResult<T>` 类型别名
+  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
+    - `WalkForwardRunner`（`#[pyclass(name = "WalkForwardRunner")]`） + `#[pymethods]`（`new` / `split` / `__repr__`）
+    - `py_aggregate_folds` / `py_deflated_sharpe` / `py_detect_leakage` / `py_purge_overlapping_labels` / `py_embargo_indices` 便捷函数
+    - `register_module`：暴露 `WalkForwardRunner` + 5 个函数 + `__version__` 常量
+  - **Python 端 `axon_walk_forward` 包**：
+    - `types.py`：`WalkForwardConfig` / `WindowType` / `FoldSplit` / `ISMetrics` / `OOSMetrics` / `FoldResult` / `AggregatedMetrics` / `StabilityMetrics` / `WalkForwardResult`（与 Rust 端 1:1 对应，含 `to_dict` / 便捷构造方法）
+    - `splitter.py`：`TimeSeriesSplitter` 类（`split` 返回 FoldSplit 列表 / `split_indices` 返回 numpy 数组） + `expand_window` / `rolling_window` 便捷函数
+    - `purging.py`：`purge_overlapping_labels` / `embargo_indices` / `detect_leakage`（接受 numpy 数组）
+    - `evaluation.py`：`aggregate_folds` + `_deflated_sharpe` + `_norm_cdf` / `_erf` 辅助函数（A&S 7.1.26 近似）
+  - **TOML 配置文件**：`config/default_wf.toml`（5 年 train + 1 季度 test + Expanding + 5 天 purge gap + 1% embargo）
+  - **示例脚本**：
+    - `examples/walk_forward_basic.py`：合成 1000 个交易日收益率，Expanding / Rolling / Purge gap 三种模式演示 + 完整指标聚合
+    - `examples/walk_forward_purging.py`：purge / embargo / leakage 三种防泄漏机制 smoke test
+  - **代码质量**：
+    - **48 单元测试**全部通过（config 8 + split 11 + purge 10 + metrics 8 + evaluation 11）
+    - `cargo clippy -p axon-walk-forward --all-targets -- -D warnings` 零警告
+    - `cargo fmt -p axon-walk-forward --check` 通过
+  - **架构决策**：
+    - **索引单位而非时间单位**：Rust 端基于数据点索引分割，避免 `Duration` 的时间精度问题；Python 端可自行按时间戳转换
+    - **Rolling vs Expanding 二选一**：通过 `WindowType` 枚举区分，Rolling 训练窗口固定大小，Expanding 训练窗口从 0 累积
+    - **purge_gap vs embargo 分工**：purge_gap 处理 train→test 的标签泄漏，embargo_pct 处理 test→后续 train 的自相关泄漏
+    - **Deflated Sharpe 在 Rust 端实现**：避免 Python scipy 依赖，使用 A&S erf 近似（误差 ~1.5e-7）
 
 ### Changed
 

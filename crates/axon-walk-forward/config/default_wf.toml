@@ -1,0 +1,13 @@
+# AXON Walk-Forward 验证默认配置
+#
+# 适用于日级 / 分钟级时间序列验证。
+# 通过 `toml` 加载到 `axon_walk_forward.config.WalkForwardConfig`。
+
+[walk_forward]
+train_size = 1260            # 5 年交易日
+validation_size = 0          # 无独立验证集
+test_size = 63               # 1 季度（约 63 个交易日）
+step_size = 63               # 季度滚动
+window_type = "expanding"
+purge_gap = 5                # 5 天 purge gap
+embargo_pct = 0.01           # 1% embargo

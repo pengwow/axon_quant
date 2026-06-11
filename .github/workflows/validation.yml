@@ -9,7 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  MSRV: "1.96.0"
 
 # 同一分支重复触发时取消前次运行
 concurrency:
@@ -82,13 +81,13 @@ jobs:
 
   # ==================== MSRV 检查 ====================
   msrv:
-    name: MSRV Check (${{ env.MSRV }})
+    name: MSRV Check (1.96.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.MSRV }}
+          toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV compatibility
         run: cargo check --workspace --all-features

@@ -21,6 +21,7 @@ pub mod action;
 pub mod env;
 pub mod observation;
 pub mod reward;
+pub mod vec_env;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -60,4 +61,7 @@ pub use reward::scaled::ScaledReward;
 pub use reward::sharpe::{RiskAdjustedType, SharpeReward};
 pub use reward::{
     RewardFn, compute_cumulative_return, compute_returns, create_reward_fn, default_multi_objective,
+};
+pub use vec_env::{
+    AsyncVecEnv, BasicEnvFactory, EnvFactory, SyncVecEnv, VecEnvError, VecEnvStatistics,
 };

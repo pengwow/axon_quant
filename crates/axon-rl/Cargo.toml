@@ -24,8 +24,17 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Python 绑定
-pyo3 = { version = "0.22", optional = true, features = ["auto-initialize"] }
+# pyo3 0.22 在 macOS + Python 3.13（无 freethreaded build）下导入 pymodule
+# 时，会进入无 GIL 状态后调用 PyInterpreterState_Get，触发
+# "Fatal Python error: PyInterpreterState_Get: GIL is released"。
+# pyo3 0.23+ 改进了 Python 3.13 的 GIL 处理并改用 `prepare_freethreaded_python`，
+# 这里使用 0.23 系列以保证示例能正常运行。
+pyo3 = { version = "0.23", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
+
+# 同时生成 cdylib（供 Python `import axon_rl` 使用）和 rlib（供 Rust crate 引用）
+[lib]
+crate-type = ["rlib", "cdylib"]
