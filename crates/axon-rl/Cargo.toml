@@ -29,7 +29,7 @@ tracing = { workspace = true }
 # "Fatal Python error: PyInterpreterState_Get: GIL is released"。
 # pyo3 0.23+ 改进了 Python 3.13 的 GIL 处理并改用 `prepare_freethreaded_python`，
 # 这里使用 0.23 系列以保证示例能正常运行。
-pyo3 = { version = "0.23", optional = true }
+pyo3 = { version = "0.28", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

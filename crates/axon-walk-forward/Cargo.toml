@@ -23,7 +23,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Python 绑定
-pyo3 = { version = "0.23", optional = true }
+pyo3 = { version = "0.28", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

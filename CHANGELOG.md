@@ -340,6 +340,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Rolling vs Expanding 二选一**：通过 `WindowType` 枚举区分，Rolling 训练窗口固定大小，Expanding 训练窗口从 0 累积
     - **purge_gap vs embargo 分工**：purge_gap 处理 train→test 的标签泄漏，embargo_pct 处理 test→后续 train 的自相关泄漏
     - **Deflated Sharpe 在 Rust 端实现**：避免 Python scipy 依赖，使用 A&S erf 近似（误差 ~1.5e-7）
+- **Phase 2 P2**：`axon-distributed` crate（Ray + RLLib 分布式训练：集群管理 + 算法封装 + Parameter Server + Checkpoint 容错 + PyO3 桥接）
+  - **`config` 模块**：5 个配置类型
+    - `DistributedConfig`：顶层配置（cluster / algorithm / resources / fault_tolerance 4 大段）
+    - `ClusterConfig`：`local()` 工厂 + `validate()`（num_workers / num_cpus_per_worker / num_gpus_per_worker / cluster_address / object_store_memory_gb）
+    - `AlgorithmConfig`：算法白名单（PPO / SAC / DQN / IMPALA / APE_X）+ 框架（torch / tensorflow）+ 动态 hparams
+    - `ResourceConfig`：num_envs_per_worker / rollout_fragment_length / train_batch_size / sgd_minibatch_size / num_sgd_iter / lr_schedule
+    - `FaultToleranceConfig`：max_retries / checkpoint_interval_s / checkpoint_dir / checkpoint_at_end / keep_checkpoints_num / restore
+    - TOML 加载：`from_toml_file` / `from_toml` + 嵌套 `validate()` 级联校验
+  - **`actor` 模块**：`ActorConfig`（actor_id / env_name / env_config / num_envs / observation_space_shape / action_space_shape）+ `validate()`
+  - **`param_server` 模块**：`ParamServerConfig` + `default_config()` + `validate()`（server_address / port / sync_interval_s / push_pull_timeout_ms）
+  - **`checkpoint` 模块**：`TrainingCheckpoint`（iteration / policy_state / optimizer_state / rng_state / metrics_history / timestamp_ms）+ `StepMetrics`（7 字段单步指标）+ `CheckpointMetadata`（迭代 + 时间戳 + 历史）+ `TrainingCheckpoint::new()` + `to_json()` / `from_json()` + `add_metrics()` + `size_bytes()` 自动时间戳
+  - **`error` 模块**：`DistributedError`（9 种变体：Config / Validation / Toml / Io / Serialization / Cluster / Algorithm / Checkpoint / ParamServer）+ `DistributedResult<T>` 类型别名
+  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
+    - `DistributedRunner`（`#[pyclass(name = "DistributedRunner")]`） + `#[pymethods]`（`new(dict)` / `from_toml_file` / `__repr__`）— 自动 Python dict → JSON → serde 解析 + validate
+    - `py_save_checkpoint` / `py_load_checkpoint` / `py_serialize_metrics` 便捷函数
+    - `register_module`：暴露 `DistributedRunner` + 3 个函数 + `__version__` 常量
+  - **Python 端 `axon_distributed` 包**：5 个子模块
+    - `types.py`：`Algorithm`（Enum）+ `RayConfig`（num_workers / num_cpus_per_worker / num_gpus_per_worker / object_store_memory_gb / ray_address）+ `RLLibTrainConfig`（14 字段 + `validate()` + `to_rllib_config()` + `_load_default_toml()`）+ `CheckpointConfig`
+    - `ray_trainer.py`：`DistributedTrainer`（封装 RLLib 2.x builder 模式，支持 PPO / SAC；`init_ray=False` 走 mock 模式，生成合成 metrics）
+    - `actor.py`：`EnvironmentWorker` Ray Actor（条件 `@ray.remote` 装饰器）+ `ActorPool`（reset_all / step_all / get_all_metrics 并行批处理）+ `WorkerMetrics`（worker_id / num_envs / avg_reward / total_steps）
+    - `param_server.py`：`ParameterServer` Ray Actor（version / push_count / pull_count / pickle 化的 gradient 缓冲）+ `DistributedPolicy`（sync_parameters / push_update）+ `ParamServerStats`
+    - `fault_tolerance.py`：`CheckpointManager`（save / find_latest / restore + 自动清理超出 keep_checkpoints_num 的旧 checkpoint）+ `FaultTolerantTrainer`（train_with_recovery 自动恢复 + 重试 max_retries 次）
+  - **TOML 配置文件**：`config/default_distributed.toml`（4 workers / PPO / torch / 4000 batch / lr=3e-4 / checkpoint 5min / keep 5）
+  - **示例脚本**：
+    - `examples/distributed_basic.py`：mock 模式 + FaultTolerantTrainer + CheckpointManager 完整流程（加载 TOML → 训练 → 容错循环 → checkpoint 文件验证）
+    - `examples/distributed_actor_pool.py`：ActorPool 的 reset / step / metrics 演示（2 workers × 2 envs）
+    - 两个脚本均输出 `=== ALL PASS ===`
+  - **代码质量**：
+    - **22 单元测试**全部通过（config 11 + actor 4 + param_server 4 + checkpoint 4）
+    - `cargo test -p axon-distributed` 全绿
+    - `cargo clippy -p axon-distributed --all-targets -- -D warnings` 零警告
+    - `cargo fmt -p axon-distributed --check` 通过
+    - `cargo test --workspace` 全量通过（axon_distributed 22 个 + 其他 crate 共 967 个）
+  - **架构决策**：
+    - **Python 优先**：Ray/RLLib 主要是 Python 生态，Python 端承担核心逻辑（Actor 管理、算法执行、环境交互）
+    - **Rust 端职责**：配置类型校验（serde）+ Checkpoint 序列化 + PyO3 桥接层
+    - **RLLib 2.x builder API**：使用新版 `PPOConfig().environment().framework().resources().env_runners().training().model()` 链式构造
+    - **TOML + dataclass 镜像**：Rust `DistributedConfig` 与 Python `RLLibTrainConfig` 字段名一致，便于 Rust↔Python 互操作
+    - **mock 模式（CI 友好）**：`RAY_AVAILABLE=False` 时所有 Actor 退化为本地类，`init_ray=False` 时跳过 `ray.init()`，无 ray 依赖即可运行所有示例 + 测试
 
 ### Changed
 

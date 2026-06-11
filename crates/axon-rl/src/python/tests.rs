@@ -10,8 +10,9 @@ use crate::observation::types::{FeatureSource, NormalizerType, ObservationSpace}
 use crate::python::{
     env_error_to_py, parse_action, parse_action_space, parse_config, parse_market_data,
 };
+use pyo3::conversion::IntoPyObject;
 use pyo3::types::{PyDict, PyDictMethods, PyList};
-use pyo3::{Bound, Python, ToPyObject};
+use pyo3::{Bound, Python};
 
 // ──────────────────────────────────────────────
 // parse_config
@@ -19,9 +20,9 @@ use pyo3::{Bound, Python, ToPyObject};
 
 #[test]
 fn test_parse_config_default_when_empty() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         let config = parse_config(&dict).expect("empty dict should yield default config");
         // 默认值（与 EnvConfig::default() 对齐）
         assert!((config.initial_capital - 100_000.0).abs() < 1e-9);
@@ -33,9 +34,9 @@ fn test_parse_config_default_when_empty() {
 
 #[test]
 fn test_parse_config_overrides_individual_keys() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("initial_capital", 250_000.0).unwrap();
         dict.set_item("transaction_cost", 0.0025).unwrap();
         dict.set_item("slippage", 0.001).unwrap();
@@ -58,9 +59,9 @@ fn test_parse_config_overrides_individual_keys() {
 #[test]
 fn test_parse_config_ignores_unknown_keys() {
     // 未知键应被忽略，配置仍能成功解析
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("initial_capital", 50_000.0).unwrap();
         dict.set_item("unknown_key", 123).unwrap();
         let config = parse_config(&dict).unwrap();
@@ -70,9 +71,9 @@ fn test_parse_config_ignores_unknown_keys() {
 
 #[test]
 fn test_parse_config_wrong_type_returns_error() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         // initial_capital 应该是 float
         dict.set_item("initial_capital", "not a number").unwrap();
         let result = parse_config(&dict);
@@ -86,11 +87,11 @@ fn test_parse_config_wrong_type_returns_error() {
 
 #[test]
 fn test_parse_action_discrete_int() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         // 离散动作 0..=5
         for idx in 0..=5_usize {
-            let py_int = idx.to_object(py);
+            let py_int = idx.into_pyobject(py).unwrap().unbind();
             let action =
                 parse_action(py_int.bind(py)).expect("int should parse as discrete action");
             let expected = Action::discrete(idx);
@@ -104,10 +105,10 @@ fn test_parse_action_discrete_int() {
 
 #[test]
 fn test_parse_action_continuous_list() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         let values: Vec<f64> = vec![0.5, -0.3];
-        let py_list = values.clone().to_object(py);
+        let py_list = values.clone().into_pyobject(py).unwrap().unbind();
         let action =
             parse_action(py_list.bind(py)).expect("list should parse as continuous action");
         let expected = Action::continuous(values);
@@ -117,9 +118,9 @@ fn test_parse_action_continuous_list() {
 
 #[test]
 fn test_parse_action_invalid_type_returns_error() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let py_str = "buy".to_object(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let py_str = "buy".into_pyobject(py).unwrap().unbind();
         let result = parse_action(py_str.bind(py));
         assert!(result.is_err());
     });
@@ -131,10 +132,10 @@ fn test_parse_action_invalid_type_returns_error() {
 
 #[test]
 fn test_parse_action_space_continuous_default() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         // 空 dict → 默认连续 [-1, 1]
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         let space = parse_action_space(&dict).unwrap();
         match space {
             ActionSpace::Continuous(c) => {
@@ -148,9 +149,9 @@ fn test_parse_action_space_continuous_default() {
 
 #[test]
 fn test_parse_action_space_continuous_custom_range() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("type", "continuous").unwrap();
         dict.set_item("min", -2.0).unwrap();
         dict.set_item("max", 0.5).unwrap();
@@ -167,9 +168,9 @@ fn test_parse_action_space_continuous_custom_range() {
 
 #[test]
 fn test_parse_action_space_discrete_long_only() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("type", "discrete").unwrap();
         dict.set_item("n_quantity_bins", 3_usize).unwrap();
         dict.set_item("direction", "long_only").unwrap();
@@ -187,9 +188,9 @@ fn test_parse_action_space_discrete_long_only() {
 
 #[test]
 fn test_parse_action_space_discrete_both() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("type", "discrete").unwrap();
         dict.set_item("n_quantity_bins", 2_usize).unwrap();
         let space = parse_action_space(&dict).unwrap();
@@ -204,9 +205,9 @@ fn test_parse_action_space_discrete_both() {
 
 #[test]
 fn test_parse_action_space_discrete_missing_bins() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let dict = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
         dict.set_item("type", "discrete").unwrap();
         // 缺少 n_quantity_bins
         let result = parse_action_space(&dict);
@@ -220,11 +221,11 @@ fn test_parse_action_space_discrete_missing_bins() {
 
 #[test]
 fn test_parse_market_data_basic() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         let bars: Vec<Bound<'_, PyDict>> = (0..3)
             .map(|i| {
-                let d = PyDict::new_bound(py);
+                let d = PyDict::new(py);
                 d.set_item("timestamp", i as u64).unwrap();
                 d.set_item("open", 100.0 + i as f64).unwrap();
                 d.set_item("high", 101.0 + i as f64).unwrap();
@@ -234,7 +235,7 @@ fn test_parse_market_data_basic() {
                 d
             })
             .collect();
-        let list = PyList::new_bound(py, &bars);
+        let list = PyList::new(py, &bars).unwrap();
         let parsed = parse_market_data(&list).expect("should parse market data");
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[0].timestamp, 0);
@@ -245,12 +246,12 @@ fn test_parse_market_data_basic() {
 
 #[test]
 fn test_parse_market_data_missing_key_errors() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
-        let d = PyDict::new_bound(py);
+    pyo3::Python::initialize();
+    Python::attach(|py| {
+        let d = PyDict::new(py);
         d.set_item("timestamp", 0_u64).unwrap();
         // 缺少 open / high / low / close / volume
-        let list = PyList::new_bound(py, &[d]);
+        let list = PyList::new(py, &[d]).unwrap();
         let result = parse_market_data(&list);
         assert!(result.is_err());
     });
@@ -262,34 +263,34 @@ fn test_parse_market_data_missing_key_errors() {
 
 #[test]
 fn test_env_error_to_py_episode_done() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         let err = crate::env::error::EnvError::EpisodeAlreadyDone(5);
         let py_err = env_error_to_py(err);
         // EpisodeAlreadyDone → PyStopIteration
-        let exc_type = py_err.get_type_bound(py);
+        let exc_type = py_err.get_type(py);
         assert_eq!(exc_type.to_string(), "<class 'StopIteration'>");
     });
 }
 
 #[test]
 fn test_env_error_to_py_invalid_action() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         let err = crate::env::error::EnvError::InvalidAction("bad".to_string());
         let py_err = env_error_to_py(err);
-        let exc_type = py_err.get_type_bound(py);
+        let exc_type = py_err.get_type(py);
         assert_eq!(exc_type.to_string(), "<class 'ValueError'>");
     });
 }
 
 #[test]
 fn test_env_error_to_py_empty_data() {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| {
+    pyo3::Python::initialize();
+    Python::attach(|py| {
         let err = crate::env::error::EnvError::EmptyMarketData;
         let py_err = env_error_to_py(err);
-        let exc_type = py_err.get_type_bound(py);
+        let exc_type = py_err.get_type(py);
         assert_eq!(exc_type.to_string(), "<class 'ValueError'>");
     });
 }

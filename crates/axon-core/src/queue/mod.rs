@@ -6,17 +6,17 @@
 //!
 //! # 模块
 //!
-//! - [`queueed_event`]：队列条目（`QueuedEvent`） + 排序实现
+//! - [`queued_event`]：队列条目（`QueuedEvent`） + 排序实现
 //! - [`mode`]：运行模式（`QueueMode`）
 //! - [`stats`]：统计信息（`QueueStats`）
 //! - [`error`]：错误类型（`EventQueueError`）
 //! - [`event_queue`]：主结构（`EventQueue`）
 
-mod error;
-mod event_queue;
-mod mode;
-mod queued_event;
-mod stats;
+pub mod error;
+pub mod event_queue;
+pub mod mode;
+pub mod queued_event;
+pub mod stats;
 
 pub use error::{EventQueueError, EventQueueResult};
 pub use event_queue::EventQueue;

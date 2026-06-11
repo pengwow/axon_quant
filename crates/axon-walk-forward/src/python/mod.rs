@@ -27,7 +27,7 @@ impl WalkForwardRunner {
     /// 从 Python dict 创建 runner
     #[new]
     fn new(config: &Bound<'_, PyDict>) -> PyResult<Self> {
-        let json_str: String = Python::with_gil(|py| {
+        let json_str: String = Python::attach(|py| {
             let json_module = py.import("json")?;
             let dumped = json_module.call_method1("dumps", (config,))?;
             dumped.extract::<String>()
@@ -42,9 +42,9 @@ impl WalkForwardRunner {
     /// 分割 n_samples 个数据点
     fn split<'py>(&self, py: Python<'py>, n_samples: usize) -> PyResult<Bound<'py, PyList>> {
         let folds = TimeSeriesSplitter::new(self.config.clone()).split(n_samples);
-        let list = PyList::empty_bound(py);
+        let list = PyList::empty(py);
         for f in folds {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             dict.set_item("fold_id", f.fold_id)?;
             dict.set_item("train_start", f.train_start)?;
             dict.set_item("train_end", f.train_end)?;
@@ -99,7 +99,7 @@ fn py_aggregate_folds<'py>(
         fold_results.push(FoldResult::new(i, split, is_m, oos_m));
     }
     let (agg, stab) = aggregate_folds(&fold_results);
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("mean_oos_return", agg.mean_oos_return)?;
     dict.set_item("std_oos_return", agg.std_oos_return)?;
     dict.set_item("mean_oos_sharpe", agg.mean_oos_sharpe)?;

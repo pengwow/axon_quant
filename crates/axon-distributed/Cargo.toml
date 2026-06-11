@@ -1,5 +1,5 @@
 [package]
-name = "axon-hpo"
+name = "axon-distributed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 authors.workspace = true
-description = "AXON 超参数优化：Optuna 集成 + 搜索空间 + 剪枝 + 多目标 + Pareto 前沿（Phase 2 P0 阶段填充）"
+description = "AXON 分布式训练：Ray 集成 + RLLib 训练封装 + Parameter Server + Checkpoint 容错（Phase 2 P2 阶段填充）"
 
 [features]
 default = []
@@ -28,7 +28,8 @@ pyo3 = { version = "0.28", optional = true }
 [dev-dependencies]
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
+toml = "0.8"
 
-# 同时生成 cdylib（供 Python `import axon_hpo` 使用）和 rlib（供 Rust crate 引用）
+# 同时生成 cdylib（供 Python `import axon_distributed` 使用）和 rlib（供 Rust crate 引用）
 [lib]
 crate-type = ["rlib", "cdylib"]

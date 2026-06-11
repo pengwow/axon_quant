@@ -13,7 +13,7 @@
 //! | [`result`] | HPO 运行结果与 Pareto 前沿 |
 //! | [`pareto`] | Pareto 前沿计算与超体积指标 |
 //! | [`error`] | 统一错误类型 |
-//! | [`python`] | PyO3 绑定（feature = `python`） |
+//! | `python` | PyO3 绑定（feature = `python`） |
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

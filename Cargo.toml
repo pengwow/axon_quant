@@ -8,6 +8,7 @@ members = [
     "crates/axon-hpo",
     "crates/axon-walk-forward",
     "crates/axon-cli",
+    "crates/axon-distributed",
 ]
 
 # 统一的目标目录，加速增量编译
@@ -31,6 +32,7 @@ axon-backtest = { path = "crates/axon-backtest" }
 axon-rl = { path = "crates/axon-rl" }
 axon-hpo = { path = "crates/axon-hpo" }
 axon-walk-forward = { path = "crates/axon-walk-forward" }
+axon-distributed = { path = "crates/axon-distributed" }
 
 # 错误处理
 thiserror = "1.0"

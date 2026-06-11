@@ -58,7 +58,9 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.rust }}
       - name: Run unit tests
-        run: cargo test --workspace --all-features
+        # 注：不使用 --all-features，避免触发 axon-rl/hpo/walk-forward/distributed
+        # 的 python feature 编译，导致 GitHub runner 上 PyO3 0.23 与 Python 3.14 不兼容。
+        run: cargo test --workspace
 
   # ==================== 编译验证 ====================
   build:
@@ -90,7 +92,9 @@ jobs:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV compatibility
-        run: cargo check --workspace --all-features
+        # 注：不使用 --all-features，避免触发 axon-rl/hpo/walk-forward/distributed
+        # 的 python feature 编译，导致 GitHub runner 上 PyO3 0.23 与 Python 3.14 不兼容。
+        run: cargo check --workspace
 
   # ==================== 文档构建 ====================
   docs:
@@ -102,7 +106,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+        # 注：不使用 --all-features，避免触发 axon-rl/hpo/walk-forward/distributed
+        # 的 python feature，进而避免 GitHub runner 上 PyO3 0.23 与 Python 3.14 不兼容的编译错误。
+        # 默认 features 已能覆盖 6 个 crate 的 lib 文档。
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
   # ==================== 安全审计 ====================
   security-audit:

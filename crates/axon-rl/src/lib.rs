@@ -9,9 +9,9 @@
 //! | [`observation`] | Phase 1B P0 | 观测空间：特征工程 + 归一化 + 窗口 |
 //! | [`action`] | Phase 1B P0 | 动作空间：Discrete / Box / MultiDiscrete |
 //! | [`reward`] | Phase 1B P0 | 奖励函数：PnL / Sharpe / Sortino / 自定义 |
-//! | [`env`] | Phase 1B P0 | 交易环境：整合观测 / 动作 / 奖励 / 回测 |
+//! | `env` 模块 | Phase 1B P0 | 交易环境：整合观测 / 动作 / 奖励 / 回测 |
 //! | [`vec_env`] | Phase 1B P1 | 向量化环境：并行 rollout |
-//! | [`python`] | Phase 1B P0 | PyO3 绑定（feature = `python`） |
+//! | `python` | Phase 1B P0 | PyO3 绑定（feature = `python`） |
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

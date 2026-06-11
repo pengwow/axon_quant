@@ -14,11 +14,11 @@
 //! - [`core`]：调度器主结构（[`Scheduler`]）
 
 pub mod callback;
-mod clock;
-mod context;
-mod core;
-mod error;
-mod task;
+pub mod clock;
+pub mod context;
+pub mod core;
+pub mod error;
+pub mod task;
 
 pub use callback::{ClosureCallback, TaskCallback};
 pub use clock::SimulatedClock;

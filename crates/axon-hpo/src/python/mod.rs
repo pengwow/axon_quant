@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 use serde_json::Value as JsonValue;
 
 use crate::config::HPOConfig;
@@ -34,7 +34,7 @@ use crate::trial::{TrialResult, TrialState};
 
 /// 把 Rust `SearchSpaceDef` 序列化为 Python dict（供 Optuna 使用）
 fn space_def_to_py<'py>(py: Python<'py>, def: &SearchSpaceDef) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     match def {
         SearchSpaceDef::Uniform { low, high } => {
             dict.set_item("type", "uniform")?;
@@ -54,25 +54,25 @@ fn space_def_to_py<'py>(py: Python<'py>, def: &SearchSpaceDef) -> PyResult<Bound
         }
         SearchSpaceDef::Discrete { choices } => {
             dict.set_item("type", "discrete")?;
-            let list = PyList::new_bound(py, choices.iter().map(|v| *v as f64));
+            let list = PyList::new(py, choices.iter().map(|v| *v as f64))?;
             dict.set_item("choices", list)?;
         }
         SearchSpaceDef::Choice { choices } => {
             dict.set_item("type", "choice")?;
-            let mut py_choices: Vec<PyObject> = Vec::with_capacity(choices.len());
+            let mut py_choices: Vec<Py<PyAny>> = Vec::with_capacity(choices.len());
             for v in choices {
                 py_choices.push(json_to_py(py, v)?);
             }
-            let list = PyList::new_bound(py, py_choices.iter());
+            let list = PyList::new(py, py_choices.iter())?;
             dict.set_item("choices", list)?;
         }
         SearchSpaceDef::Categorical { choices } => {
             dict.set_item("type", "categorical")?;
-            let mut py_choices: Vec<PyObject> = Vec::with_capacity(choices.len());
+            let mut py_choices: Vec<Py<PyAny>> = Vec::with_capacity(choices.len());
             for v in choices {
                 py_choices.push(json_to_py(py, v)?);
             }
-            let list = PyList::new_bound(py, py_choices.iter());
+            let list = PyList::new(py, py_choices.iter())?;
             dict.set_item("choices", list)?;
         }
     }
@@ -80,7 +80,7 @@ fn space_def_to_py<'py>(py: Python<'py>, def: &SearchSpaceDef) -> PyResult<Bound
 }
 
 /// JSON value → Python object
-fn json_to_py(py: Python<'_>, v: &JsonValue) -> PyResult<PyObject> {
+fn json_to_py(py: Python<'_>, v: &JsonValue) -> PyResult<Py<PyAny>> {
     match v {
         JsonValue::Null => Ok(py.None()),
         JsonValue::Bool(b) => {
@@ -106,7 +106,7 @@ fn json_to_py(py: Python<'_>, v: &JsonValue) -> PyResult<PyObject> {
             Ok(obj.to_owned().into_any().unbind())
         }
         JsonValue::Array(arr) => {
-            let list = PyList::empty_bound(py);
+            let list = PyList::empty(py);
             for item in arr {
                 let obj = json_to_py(py, item)?;
                 list.append(obj)?;
@@ -114,7 +114,7 @@ fn json_to_py(py: Python<'_>, v: &JsonValue) -> PyResult<PyObject> {
             Ok(list.into_any().unbind())
         }
         JsonValue::Object(map) => {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             for (k, v) in map {
                 let obj = json_to_py(py, v)?;
                 dict.set_item(k, obj)?;
@@ -161,7 +161,7 @@ impl HPORunner {
         }
 
         // 2. 构建 search_space dict（Python 侧）
-        let search_space = PyDict::new_bound(py);
+        let search_space = PyDict::new(py);
         for (name, def) in &self.config.search_space {
             let py_def = space_def_to_py(py, def)?;
             search_space.set_item(name, py_def)?;
@@ -191,7 +191,7 @@ impl HPORunner {
             search_space,
             objective_fn,
             self.config.study.study_name.clone(),
-            PyTuple::new_bound(py, directions_py),
+            PyTuple::new(py, directions_py)?,
             pruner_cfg,
             sampler_cfg,
             self.config
@@ -216,7 +216,7 @@ impl HPORunner {
 
         // 5. 收集结果
         let trials_py_bound = runner_obj.call_method0("collect_results")?;
-        let trials_py: Vec<PyObject> = trials_py_bound.extract()?;
+        let trials_py: Vec<Py<PyAny>> = trials_py_bound.extract()?;
         let trials: Vec<TrialResult> = trials_py
             .iter()
             .map(|t| py_to_trial_result(py, t))
@@ -282,7 +282,7 @@ impl HPORunner {
 /// Python dict → JSON string（用于 `HPORunner::new`）
 fn python_dict_to_json(dict: &Bound<'_, PyDict>) -> PyResult<String> {
     // 使用 Python 的 json 模块做转换
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let json_module = py.import("json")?;
         let dumped = json_module.call_method1("dumps", (dict,))?;
         dumped.extract::<String>()
@@ -291,7 +291,7 @@ fn python_dict_to_json(dict: &Bound<'_, PyDict>) -> PyResult<String> {
 
 /// 把 HPOResult 转为 Python dict
 fn result_to_py_dict<'py>(py: Python<'py>, result: &HPOResult) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
 
     // best_trial
     if let Some(best) = &result.best_trial {
@@ -301,18 +301,18 @@ fn result_to_py_dict<'py>(py: Python<'py>, result: &HPOResult) -> PyResult<Bound
     }
 
     // all_trials
-    let trials_list = PyList::empty_bound(py);
+    let trials_list = PyList::empty(py);
     for t in &result.all_trials {
         trials_list.append(trial_result_to_py_dict(py, t)?)?;
     }
     dict.set_item("all_trials", trials_list)?;
 
     // param_importances（暂未实现）
-    dict.set_item("param_importances", PyDict::new_bound(py))?;
+    dict.set_item("param_importances", PyDict::new(py))?;
 
     // pareto_front
     if let Some(front) = &result.pareto_front {
-        let front_list = PyList::empty_bound(py);
+        let front_list = PyList::empty(py);
         for p in front {
             front_list.append(pareto_point_to_py_dict(py, p)?)?;
         }
@@ -332,7 +332,7 @@ fn result_to_py_dict<'py>(py: Python<'py>, result: &HPOResult) -> PyResult<Bound
 
 /// TrialResult → Python dict
 fn trial_result_to_py_dict<'py>(py: Python<'py>, t: &TrialResult) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("trial_id", t.trial_id)?;
     dict.set_item(
         "params",
@@ -346,19 +346,19 @@ fn trial_result_to_py_dict<'py>(py: Python<'py>, t: &TrialResult) -> PyResult<Bo
             ),
         )?,
     )?;
-    let values_list = PyList::new_bound(py, t.values.iter());
+    let values_list = PyList::new(py, t.values.iter())?;
     dict.set_item("values", values_list)?;
     dict.set_item("state", t.state.as_str())?;
     dict.set_item("duration_ms", t.duration_ms)?;
-    let intermediate = PyList::empty_bound(py);
+    let intermediate = PyList::empty(py);
     for (step, val) in &t.intermediate_values {
-        let pair = PyTuple::new_bound(
+        let pair = PyTuple::new(
             py,
             &[
                 (step_value_py(py, *step)?),
                 val.into_pyobject(py)?.into_any().unbind(),
             ],
-        );
+        )?;
         intermediate.append(pair)?;
     }
     dict.set_item("intermediate_values", intermediate)?;
@@ -366,14 +366,14 @@ fn trial_result_to_py_dict<'py>(py: Python<'py>, t: &TrialResult) -> PyResult<Bo
 }
 
 /// 把 usize step 转为 Python 整数
-fn step_value_py(py: Python<'_>, step: usize) -> PyResult<PyObject> {
+fn step_value_py(py: Python<'_>, step: usize) -> PyResult<Py<PyAny>> {
     let obj = step.into_pyobject(py)?;
     Ok(obj.to_owned().into_any().unbind())
 }
 
 /// ParetoPoint → Python dict
 fn pareto_point_to_py_dict<'py>(py: Python<'py>, p: &ParetoPoint) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("trial_id", p.trial_id)?;
     dict.set_item(
         "params",
@@ -387,7 +387,7 @@ fn pareto_point_to_py_dict<'py>(py: Python<'py>, p: &ParetoPoint) -> PyResult<Bo
             ),
         )?,
     )?;
-    let obj_list = PyList::new_bound(py, p.objectives.iter());
+    let obj_list = PyList::new(py, p.objectives.iter())?;
     dict.set_item("objectives", obj_list)?;
     Ok(dict)
 }
@@ -396,7 +396,7 @@ fn pareto_point_to_py_dict<'py>(py: Python<'py>, p: &ParetoPoint) -> PyResult<Bo
 fn json_value_to_py_dict<'py>(py: Python<'py>, v: &JsonValue) -> PyResult<Bound<'py, PyAny>> {
     match v {
         JsonValue::Object(map) => {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             for (k, v) in map {
                 let obj = json_to_py(py, v)?;
                 dict.set_item(k, obj)?;
@@ -411,7 +411,7 @@ fn json_value_to_py_dict<'py>(py: Python<'py>, v: &JsonValue) -> PyResult<Bound<
 }
 
 /// 把 Python object 转为 Rust TrialResult（用于 `HPORunner::run` 收集结果）
-fn py_to_trial_result(py: Python<'_>, obj: &PyObject) -> PyResult<TrialResult> {
+fn py_to_trial_result(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<TrialResult> {
     let bound = obj.bind(py);
     let trial_id: i32 = bound.get_item("trial_id")?.extract()?;
     let state_str: String = bound.get_item("state")?.extract()?;
@@ -419,7 +419,7 @@ fn py_to_trial_result(py: Python<'_>, obj: &PyObject) -> PyResult<TrialResult> {
     let duration_ms: u64 = bound.get_item("duration_ms")?.extract().unwrap_or(0);
 
     let params_value = bound.get_item("params")?;
-    let params_py: &Bound<'_, PyDict> = params_value.downcast()?;
+    let params_py: &Bound<'_, PyDict> = params_value.cast()?;
     let mut params: HashMap<String, JsonValue> = HashMap::new();
     for (k, v) in params_py.iter() {
         let key: String = k.extract()?;
@@ -464,14 +464,14 @@ fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<JsonValue> {
     if let Ok(s) = obj.extract::<String>() {
         return Ok(JsonValue::String(s));
     }
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         let mut arr = Vec::with_capacity(list.len());
         for item in list {
             arr.push(py_to_json(&item)?);
         }
         return Ok(JsonValue::Array(arr));
     }
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = serde_json::Map::new();
         for (k, v) in dict.iter() {
             let key: String = k.extract()?;
@@ -489,9 +489,9 @@ fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<JsonValue> {
 #[pyfunction]
 fn py_compute_pareto_front(
     py: Python<'_>,
-    trials: Vec<HashMap<String, PyObject>>,
+    trials: Vec<HashMap<String, Py<PyAny>>>,
     directions: Vec<String>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let dirs: Vec<crate::config::StudyDirection> = directions
         .iter()
         .map(|d| match d.as_str() {
@@ -534,7 +534,7 @@ fn py_compute_pareto_front(
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     let result_json = serde_json::to_string(&front.points)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    let result: PyObject = py
+    let result: Py<PyAny> = py
         .eval(
             &std::ffi::CString::new(result_json).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid JSON: {e}"))
@@ -550,7 +550,7 @@ fn py_compute_pareto_front(
 #[pyfunction]
 fn py_compute_hypervolume(
     py: Python<'_>,
-    points: Vec<HashMap<String, PyObject>>,
+    points: Vec<HashMap<String, Py<PyAny>>>,
     directions: Vec<String>,
     reference_point: Vec<f64>,
 ) -> PyResult<f64> {

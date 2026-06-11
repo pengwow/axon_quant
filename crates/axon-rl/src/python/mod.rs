@@ -52,7 +52,7 @@ use crate::reward::sharpe::{RiskAdjustedType, SharpeReward};
 
 /// `EnvInfo` → Python dict
 pub fn env_info_to_dict<'py>(info: &EnvInfo, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("portfolio_value", info.portfolio_value)?;
     dict.set_item("trades_executed", info.trades_executed)?;
     dict.set_item("transaction_costs", info.transaction_costs)?;
@@ -108,7 +108,7 @@ pub fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<EnvConfig> {
 pub fn parse_market_data(list: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<MarketBar>> {
     let mut bars = Vec::with_capacity(list.len());
     for item in list.iter() {
-        let dict = item.downcast::<PyDict>()?;
+        let dict = item.cast::<PyDict>()?;
         let get_f64 = |key: &str| -> PyResult<f64> {
             dict.get_item(key)?
                 .ok_or_else(|| PyValueError::new_err(format!("missing key: {key}")))?
@@ -286,7 +286,7 @@ impl PyTradingEnv {
     /// 重置环境，返回初始观测 dict
     fn reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let obs = self.inner.reset().map_err(env_error_to_py)?;
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("features", obs.features.clone())?;
         dict.set_item("feature_names", obs.feature_names.clone())?;
         dict.set_item("timestamp", obs.timestamp)?;
@@ -302,25 +302,23 @@ impl PyTradingEnv {
         let parsed = parse_action(action)?;
         let (obs, reward, done, info) = self.inner.step(&parsed).map_err(env_error_to_py)?;
 
-        let obs_dict = PyDict::new_bound(py);
+        let obs_dict = PyDict::new(py);
         obs_dict.set_item("features", obs.features.clone())?;
         obs_dict.set_item("feature_names", obs.feature_names.clone())?;
         obs_dict.set_item("timestamp", obs.timestamp)?;
 
         let info_dict = env_info_to_dict(&info, py)?;
-        let py_none = py.None();
 
-        let result = pyo3::types::PyTuple::new_bound(
+        pyo3::types::PyTuple::new(
             py,
             [
-                obs_dict.into_any().unbind(),
-                reward.into_py(py),
-                done.into_py(py),
-                py_none,
-                info_dict.into_any().unbind(),
+                obs_dict.into_any(),
+                reward.into_pyobject(py)?.into_any(),
+                done.into_pyobject(py)?.to_owned().into_any(),
+                py.None().into_bound(py),
+                info_dict.into_any(),
             ],
-        );
-        Ok(result)
+        )
     }
 
     /// 渲染环境状态

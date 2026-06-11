@@ -14,11 +14,11 @@
 //! - [`core`]：[`Portfolio`] 主结构
 
 pub mod core;
-mod currency;
-mod error;
-mod position;
-mod snapshot;
-mod trade_record;
+pub mod currency;
+pub mod error;
+pub mod position;
+pub mod snapshot;
+pub mod trade_record;
 
 pub use core::Portfolio;
 pub use currency::Currency;

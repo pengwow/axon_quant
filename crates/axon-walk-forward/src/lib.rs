@@ -13,7 +13,7 @@
 //! | [`metrics`] | FoldResult / ISMetrics / OOSMetrics / WalkForwardResult |
 //! | [`evaluation`] | aggregate_folds / deflated_sharpe |
 //! | [`error`] | 统一错误类型 |
-//! | [`python`] | PyO3 绑定（feature = `python`） |
+//! | `python` | PyO3 绑定（feature = `python`） |
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

@@ -24,7 +24,7 @@ use crate::vec_env::stats::VecEnvStatistics;
 
 /// 主线程 → worker 的命令
 #[derive(Debug)]
-pub(super) enum WorkerCommand {
+pub enum WorkerCommand {
     /// 重置环境（可选 seed）
     Reset {
         /// 可选 seed
@@ -41,7 +41,7 @@ pub(super) enum WorkerCommand {
 
 /// worker → 主线程的响应
 #[derive(Debug)]
-pub(super) enum WorkerResponse {
+pub enum WorkerResponse {
     /// 重置结果
     Reset {
         /// 初始观测

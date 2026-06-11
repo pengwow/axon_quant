@@ -1,0 +1,38 @@
+# AXON 分布式训练默认配置
+#
+# 适用于 PPO + Ray RLLib 训练
+# 通过 toml 加载到 axon_distributed.types.RLLibTrainConfig
+
+[cluster]
+num_workers = 4
+num_cpus_per_worker = 2
+num_gpus_per_worker = 0.0
+cluster_address = "auto"          # auto=自动检测，None=本地
+object_store_memory_gb = 4.0
+
+[algorithm]
+algorithm = "PPO"
+framework = "torch"
+
+[algorithm.hparams]
+lr = 0.0003
+gamma = 0.99
+gae_lambda = 0.95
+clip_param = 0.2
+vf_loss_coeff = 0.5
+entropy_coeff = 0.01
+
+[resources]
+num_envs_per_worker = 4
+rollout_fragment_length = 200
+train_batch_size = 4000
+sgd_minibatch_size = 128
+num_sgd_iter = 10
+
+[fault_tolerance]
+max_retries = 3
+checkpoint_interval_s = 300
+checkpoint_dir = "checkpoints/"
+checkpoint_at_end = true
+keep_checkpoints_num = 5
+restore = true
