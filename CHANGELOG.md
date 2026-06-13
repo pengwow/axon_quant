@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 4 P1**：`axon-monitor` 监控告警 crate
+  - `MetricsRegistry`：指标注册中心（Counter/Gauge/Histogram）
+  - `AtomicCounter`/`AtomicGauge`：原子操作无锁指标
+  - `LatencyHistogram`：延迟直方图（P50/P99/P999）
+  - `AlertRule`/`AlertEvent`：阈值告警规则与事件
+  - `HealthService`：健康检查服务
+  - 10 单元测试
+- **Phase 4 P1**：`axon-oms` 订单管理系统 crate
+  - `OrderManager`：订单生命周期管理（submit/cancel/update_status/add_fill）
+  - `Order`：订单主体结构，支持幂等键
+  - `OrderStatus`：状态机（New → Submitted → Acknowledged → PartiallyFilled → Filled/Cancelled/Rejected）
+  - `OmsSnapshot`：快照与恢复
+  - 6 单元测试
+- **Phase 4 P0**：`axon-exchange` 交易所对接 crate
+  - `ExchangeAdapter` trait：connect/subscribe/send_order/cancel_order/get_balance
+  - `BinanceAdapter`：Binance 交易所适配器（stub）
+  - `OkxAdapter`：OKX 交易所适配器（stub）
+  - `WebSocketManager`：指数退避重连 + 熔断器
+  - `OrderLifecycleManager`：订单生命周期管理
+  - `TokenBucketRateLimiter`：令牌桶限流器
+  - 类型系统：Order/OrderStatus/Ticker/DepthSnapshot/WsMessage
+  - 8 单元测试
+- **Phase 4 P0**：`axon-inference` 推理引擎 crate
+  - `InferenceEngine` trait：模型加载、单次推理、批量推理、session 替换
+  - `OnnxBackend`：基于 ort crate 的 ONNX Runtime 后端
+  - `TchBackend`：基于 tch-rs 的 PyTorch 后端
+  - `CandleBackend`：基于 candle-core 的纯 Rust 后端（stub）
+  - `BatchInferencePipeline`：tokio + rayon 异步批推理管线
+  - `ModelHotReloader`：notify crate 文件监控 + 原子替换热更新
+  - CPU/CUDA/Metal 设备支持
+  - 4 集成测试
+- **Phase 4 P0**：`axon-risk` 风控引擎 crate
+  - `RiskEngine` trait：预交易检查、组合级风险监控、每日 PnL 更新、风险指标查询
+  - `DefaultRiskEngine`：完整风控实现，短路优化检查顺序（熔断器→订单大小→仓位→杠杆→回撤）
+  - `CircuitBreaker`：原子操作无锁熔断器，支持自动冷却恢复
+  - checks 模块：`order_size`、`position`、`leverage`、`drawdown`、`concentration`、`var`
+  - `RiskEventHandler`：EventHandler 适配器，监听 Fill 事件自动更新 PnL
+  - `RiskConfig`：代码配置，含默认值
+  - 历史模拟法 VaR 计算
+  - 34 单元测试 + 集成测试（含并发测试），全部通过
 - Phase 0 项目骨架：Cargo workspace 初始化
 - 三个基础 crate：`axon-core`、`axon-backtest`、`axon-cli`
 - CI 验证工作流（GitHub Actions）
@@ -837,6 +877,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 验收：`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` ✅ exit 0，`cargo clippy --workspace --all-targets -- -D warnings` ✅ exit 0
 
 ### Security
+
+### Fixed
+
+- **CI 修复**：`PyDict::new_bound` → `PyDict::new`（axon-tracker，PyO3 0.28 兼容性）
+- **CI 修复**：`make test` 改用 `cargo test --workspace`（不带 `--all-features`），避免 tch-backend 需要 libtorch
+- **Clippy 修复**：axon-exchange 未使用字段前缀 `_`，OrderId 添加 Default impl
 
 ## [0.0.1] - 2026-06-10
 

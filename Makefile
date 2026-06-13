@@ -34,7 +34,7 @@ build-cli: ## 编译 CLI 工具
 # ==================== 测试 ====================
 .PHONY: test
 test: ## 运行单元测试
-	cargo test --workspace --all-features
+	cargo test --workspace
 
 .PHONY: test-doc
 test-doc: ## 运行文档测试

@@ -16,6 +16,11 @@ members = [
     "crates/axon-ensemble",
     "crates/axon-data",
     "crates/axon-compliance",
+    "crates/axon-risk",
+    "crates/axon-inference",
+    "crates/axon-exchange",
+    "crates/axon-oms",
+    "crates/axon-monitor",
     "crates/axon-integration-tests",
 ]
 

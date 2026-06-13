@@ -1,0 +1,16 @@
+[package]
+name = "axon-monitor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "监控告警：指标采集、延迟直方图、告警规则、健康检查"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+pretty_assertions = "1"

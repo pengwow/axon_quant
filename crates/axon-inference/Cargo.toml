@@ -1,0 +1,33 @@
+[package]
+name = "axon-inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "推理引擎：ONNX/tch/Candle 后端，批推理管线，模型热更新"
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+tokio = { version = "1", features = ["sync", "time", "fs", "macros", "rt"] }
+rayon = "1.10"
+parking_lot = "0.12"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+sha2 = "0.10"
+
+# 可选后端依赖
+ort = { version = "2.0.0-rc.12", optional = true }
+tch = { version = "0.24", optional = true }
+candle-core = { version = "0.10", optional = true }
+candle-nn = { version = "0.10", optional = true }
+notify = { version = "7", optional = true }
+
+[features]
+default = ["onnx", "hot-reload"]
+onnx = ["dep:ort"]
+tch-backend = ["dep:tch"]
+candle-backend = ["dep:candle-core", "dep:candle-nn"]
+hot-reload = ["dep:notify"]
+
+[dev-dependencies]
+pretty_assertions = "1"

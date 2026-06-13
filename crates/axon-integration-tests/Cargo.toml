@@ -24,6 +24,13 @@ axon-tracker = { workspace = true }
 axon-registry = { workspace = true }
 axon-distributed = { workspace = true }
 
+# 内部 Phase 4 crates
+axon-risk = { path = "../axon-risk" }
+axon-inference = { path = "../axon-inference" }
+axon-exchange = { path = "../axon-exchange" }
+axon-oms = { path = "../axon-oms" }
+axon-monitor = { path = "../axon-monitor" }
+
 # 错误处理 / 序列化
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -37,6 +44,7 @@ async-trait = { workspace = true }
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
+rust_decimal = { version = "1", features = ["serde-with-str", "macros"] }
 
 # 数值与时间
 rand = { workspace = true }

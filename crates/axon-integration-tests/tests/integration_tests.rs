@@ -182,3 +182,34 @@ fn fuzz_module_compiles() {
     // 这里通过引用模块名来确保它被链接进测试二进制。
     let _ = std::any::type_name::<axon_integration_tests::fuzz::FuzzMarker>();
 }
+
+// ── Phase 4 契约测试 ──
+
+#[test]
+fn contract_phase4_risk_config() {
+    contract::contract_risk_config_defaults();
+    contract::contract_risk_result_serde();
+}
+
+#[test]
+fn contract_phase4_oms_order_status() {
+    contract::contract_oms_order_status_transitions();
+    contract::contract_oms_order_snapshot_roundtrip();
+}
+
+#[test]
+fn contract_phase4_inference_config() {
+    contract::contract_inference_config_serde();
+    contract::contract_inference_action_types();
+}
+
+#[test]
+fn contract_phase4_monitor_metrics() {
+    contract::contract_monitor_counter_inc_get();
+    contract::contract_monitor_histogram_quantiles();
+}
+
+#[test]
+fn contract_phase4_exchange_status() {
+    contract::contract_exchange_order_status_terminal();
+}

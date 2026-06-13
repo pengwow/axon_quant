@@ -1,0 +1,27 @@
+[package]
+name = "axon-exchange"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "交易所对接：REST + WebSocket，Binance/OKX 适配器"
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+hmac = "0.12"
+sha2 = "0.10"
+async-trait = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+proptest = "1"

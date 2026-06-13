@@ -532,3 +532,158 @@ pub fn contract_f64_precision_preserved_is_metrics() {
     assert_f64_roundtrip(&ism, "/sharpe_ratio");
     assert_f64_roundtrip(&ism, "/win_rate");
 }
+
+// ───────────────────────────────────────────────────────────────────
+// Phase 4 契约测试
+// ───────────────────────────────────────────────────────────────────
+
+// 15. axon-risk RiskConfig 契约
+
+pub fn contract_risk_config_defaults() {
+    let cfg = axon_risk::RiskConfig::default();
+    assert!(cfg.max_position_per_instrument > 0.0);
+    assert!(cfg.max_leverage > 1.0);
+    assert!(cfg.max_drawdown > 0.0 && cfg.max_drawdown <= 1.0);
+    assert!(cfg.max_daily_loss > 0.0);
+    assert!(cfg.max_concentration > 0.0 && cfg.max_concentration <= 1.0);
+}
+
+pub fn contract_risk_result_serde() {
+    let result = axon_risk::RiskResult::Reject(axon_risk::RiskReason::OrderTooLarge {
+        max: 50000.0,
+        actual: 60000.0,
+    });
+    let json = serde_json::to_string(&result).unwrap();
+    let de: axon_risk::RiskResult = serde_json::from_str(&json).unwrap();
+    assert!(matches!(de, axon_risk::RiskResult::Reject(_)));
+}
+
+// 16. axon-oms OrderStatus 契约
+
+pub fn contract_oms_order_status_transitions() {
+    use axon_oms::{Order, OrderStatus, OrderType, Side};
+    use rust_decimal::Decimal;
+
+    let mut order = Order::new(
+        "BTC-USDT".into(),
+        Side::Buy,
+        OrderType::Limit,
+        Decimal::new(1, 3),
+        Decimal::from(65000),
+    );
+    assert_eq!(order.status, OrderStatus::New);
+
+    // New -> Submitted
+    order.transition(OrderStatus::Submitted).unwrap();
+    assert_eq!(order.status, OrderStatus::Submitted);
+
+    // Submitted -> Acknowledged
+    order.transition(OrderStatus::Acknowledged).unwrap();
+    assert_eq!(order.status, OrderStatus::Acknowledged);
+
+    // Acknowledged -> Filled
+    order
+        .transition(OrderStatus::Filled {
+            filled_qty: Decimal::new(1, 3),
+            avg_price: Decimal::from(65000),
+        })
+        .unwrap();
+    assert!(order.status.is_terminal());
+}
+
+pub fn contract_oms_order_snapshot_roundtrip() {
+    use axon_oms::OrderManager;
+    use rust_decimal::dec;
+
+    let oms = OrderManager::new();
+    let order = axon_oms::Order::new(
+        "BTC-USDT".into(),
+        axon_oms::Side::Buy,
+        axon_oms::OrderType::Limit,
+        dec!(0.1),
+        dec!(65000),
+    );
+    oms.submit(order).unwrap();
+
+    let snapshot = oms.snapshot();
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let de: axon_oms::OmsSnapshot = serde_json::from_str(&json).unwrap();
+    assert_eq!(de.version, 1);
+    assert_eq!(de.active_orders.len(), 1);
+}
+
+// 17. axon-inference InferenceConfig 契约
+
+pub fn contract_inference_config_serde() {
+    let config = axon_inference::ModelConfig {
+        path: "model.onnx".into(),
+        backend: axon_inference::InferenceBackend::Onnx,
+        device: axon_inference::Device::Cpu,
+        input_shape: [1, 64, 128],
+        output_dim: 3,
+        fp16: false,
+        num_threads: 4,
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    let de: axon_inference::ModelConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(de.input_shape, [1, 64, 128]);
+    assert_eq!(de.output_dim, 3);
+}
+
+pub fn contract_inference_action_types() {
+    use axon_inference::ActionType;
+    assert_ne!(ActionType::Buy, ActionType::Sell);
+    assert_ne!(ActionType::Hold, ActionType::Buy);
+    assert_ne!(ActionType::ReduceLong, ActionType::ReduceShort);
+}
+
+// 18. axon-monitor MetricsRegistry 契约
+
+pub fn contract_monitor_counter_inc_get() {
+    let mut registry = axon_monitor::MetricsRegistry::new();
+    let counter = registry.register_counter("orders");
+    counter.inc();
+    counter.inc_by(5);
+    assert_eq!(counter.get(), 6);
+}
+
+pub fn contract_monitor_histogram_quantiles() {
+    let hist = axon_monitor::LatencyHistogram::default_latency();
+    for i in 0..100 {
+        hist.observe(i as f64 * 100_000.0); // 0 to 10ms
+    }
+    let p = hist.latency_percentiles();
+    assert!(p.p50 > 0.0);
+    assert!(p.p99 >= p.p50);
+    assert!(p.p999 >= p.p99);
+}
+
+// 19. axon-exchange OrderStatus 契约
+
+pub fn contract_exchange_order_status_terminal() {
+    use axon_exchange::OrderStatus;
+    use rust_decimal::Decimal;
+
+    assert!(!OrderStatus::Pending.is_terminal());
+    assert!(!OrderStatus::Sent.is_terminal());
+    assert!(!OrderStatus::Acknowledged.is_terminal());
+    assert!(
+        OrderStatus::Filled {
+            filled_qty: Decimal::new(1, 3),
+            avg_price: Decimal::from(50000)
+        }
+        .is_terminal()
+    );
+    assert!(
+        OrderStatus::Cancelled {
+            filled_qty: Decimal::ZERO
+        }
+        .is_terminal()
+    );
+    assert!(
+        OrderStatus::Rejected {
+            reason: "test".into()
+        }
+        .is_terminal()
+    );
+}

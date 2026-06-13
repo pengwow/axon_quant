@@ -59,7 +59,7 @@ impl PyMemoryTracker {
     }
 
     fn get_metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for entry in self.inner.get_metrics() {
             let key = format!("{}/{}", entry.key, entry.step);
             if let crate::types::MetricValue::Scalar(v) = entry.value {

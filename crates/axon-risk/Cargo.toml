@@ -1,0 +1,17 @@
+[package]
+name = "axon-risk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "风控引擎：预交易检查、熔断器、仓位限制、VaR"
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+parking_lot = "0.12"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+proptest = "1"
