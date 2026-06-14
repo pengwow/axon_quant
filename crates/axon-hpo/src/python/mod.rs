@@ -570,6 +570,7 @@ fn py_compute_hypervolume(
             .unwrap_or(0);
         let objectives: Vec<f64> = p
             .get("objectives")
+            .or_else(|| p.get("values"))
             .and_then(|v| v.bind(py).extract::<Vec<f64>>().ok())
             .unwrap_or_default();
         pareto_points.push(ParetoPoint {

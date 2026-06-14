@@ -181,7 +181,16 @@ pub fn compute_hypervolume_from_points(
     }
 
     let n_obj = directions.len();
-    let objectives: Vec<Vec<f64>> = pareto_points.iter().map(|p| p.objectives.clone()).collect();
+    // 过滤掉 objectives 为空或维度不匹配的点
+    let objectives: Vec<Vec<f64>> = pareto_points
+        .iter()
+        .map(|p| p.objectives.clone())
+        .filter(|o| o.len() == n_obj)
+        .collect();
+
+    if objectives.is_empty() {
+        return Ok(0.0);
+    }
 
     // 2D 精确
     if n_obj == 2 {

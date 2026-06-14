@@ -168,8 +168,13 @@ def t_pareto_single_obj():
     assert len(front) == 1
 test('3.3 pareto_single_obj', t_pareto_single_obj)
 
-# hypervolume 有 bug（panic），暂时跳过
-skip('3.4 hypervolume', 'Rust panic: index out of bounds')
+def t_hypervolume():
+    # 注意：此项目的 hypervolume 约定是 reference = 右上角（最差值）
+    trials = [{'trial_id': i, 'values': v} for i, v in enumerate([[1.0, 1.0], [2.0, 0.5], [0.5, 2.0]])]
+    hv = axon_quant.hpo.py_compute_hypervolume(trials, ['maximize', 'maximize'], [3.0, 3.0])
+    assert isinstance(hv, (int, float))
+    assert hv > 0
+test('3.4 hypervolume', t_hypervolume)
 
 
 # ===== 场景 4: WalkForward =====
