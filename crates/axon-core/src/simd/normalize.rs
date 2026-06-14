@@ -85,9 +85,10 @@ unsafe fn normalize_min_max_avx2(data: &mut [f32], min: f32, inv_range: f32) {
 
     for i in 0..chunks {
         let offset = i * 8;
-        let values = _mm256_loadu_ps(ptr.add(offset));
+        // SAFETY: offset 在 data 范围内（chunks = len / 8）
+        let values = unsafe { _mm256_loadu_ps(ptr.add(offset)) };
         let result = _mm256_mul_ps(_mm256_sub_ps(values, min_vec), inv_range_vec);
-        _mm256_storeu_ps(ptr.add(offset), result);
+        unsafe { _mm256_storeu_ps(ptr.add(offset), result) };
     }
 
     // 处理剩余元素
@@ -109,9 +110,10 @@ unsafe fn normalize_zscore_avx2(data: &mut [f32], mean: f32, inv_std: f32) {
 
     for i in 0..chunks {
         let offset = i * 8;
-        let values = _mm256_loadu_ps(ptr.add(offset));
+        // SAFETY: offset 在 data 范围内（chunks = len / 8）
+        let values = unsafe { _mm256_loadu_ps(ptr.add(offset)) };
         let result = _mm256_mul_ps(_mm256_sub_ps(values, mean_vec), inv_std_vec);
-        _mm256_storeu_ps(ptr.add(offset), result);
+        unsafe { _mm256_storeu_ps(ptr.add(offset), result) };
     }
 
     for i in (chunks * 8)..data.len() {

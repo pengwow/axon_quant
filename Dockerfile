@@ -34,12 +34,23 @@ RUN for crate in crates/*/; do \
 
 # 复制真实源码
 COPY crates/ ./crates/
+COPY python/ ./python/
+COPY pyproject.toml ./
 
-# Release 编译
+# Release 编译（Rust 二进制 + Python wheel）
 RUN cargo build --release --workspace \
     && strip target/release/axon 2>/dev/null || true
 
-# ===== 阶段 2：runtime =====
+# 安装 maturin 并构建 Python wheel
+RUN pip install maturin --no-cache-dir \
+    && maturin build --release --out target/wheels
+
+# ===== 阶段 2：wheel =====
+# 仅导出 Python wheel（用于 CI 产物或 pip install）
+FROM scratch AS wheel
+COPY --from=builder /tmp/axon-target/wheels/*.whl /
+
+# ===== 阶段 3：runtime =====
 FROM debian:bookworm-slim AS runtime
 
 # 安装运行时依赖

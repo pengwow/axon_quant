@@ -4,9 +4,9 @@
 
 use pyo3::prelude::*;
 
-/// AXON Quant Python 模块
+/// AXON Quant Python 模块（原生扩展，由 __init__.py 导入并重新导出）
 #[pymodule]
-fn axon_quant(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", "0.1.0a1")?;
 
     // axon-rl 子模块（使用 #[pymodule] 函数）

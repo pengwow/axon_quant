@@ -11,7 +11,7 @@ authors.workspace = true
 description = "AXON Python 统一入口：封装 axon-rl、axon-backtest 等 crate 的 Python 绑定"
 
 [lib]
-name = "axon_quant"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]

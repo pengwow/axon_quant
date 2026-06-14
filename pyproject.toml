@@ -47,7 +47,7 @@ build-backend = "maturin"
 [tool.maturin]
 manifest-path = "crates/axon-python/Cargo.toml"
 python-source = "python"
-module-name = "axon_quant"
+module-name = "axon_quant._native"
 
 [tool.ruff]
 target-version = "py312"
