@@ -54,7 +54,7 @@ fn space_def_to_py<'py>(py: Python<'py>, def: &SearchSpaceDef) -> PyResult<Bound
         }
         SearchSpaceDef::Discrete { choices } => {
             dict.set_item("type", "discrete")?;
-            let list = PyList::new(py, choices.iter().map(|v| *v as f64))?;
+            let list = PyList::new(py, choices.iter().copied())?;
             dict.set_item("choices", list)?;
         }
         SearchSpaceDef::Choice { choices } => {
@@ -590,7 +590,7 @@ fn py_validate_search_space(def_json: String) -> PyResult<bool> {
     let def: SearchSpaceDef = serde_json::from_str(&def_json)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid: {e}")))?;
     def.validate()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
     Ok(true)
 }
 

@@ -92,8 +92,8 @@ unsafe fn normalize_min_max_avx2(data: &mut [f32], min: f32, inv_range: f32) {
     }
 
     // 处理剩余元素
-    for i in (chunks * 8)..data.len() {
-        data[i] = (data[i] - min) * inv_range;
+    for x in data.iter_mut().skip(chunks * 8) {
+        *x = (*x - min) * inv_range;
     }
 }
 
@@ -116,8 +116,8 @@ unsafe fn normalize_zscore_avx2(data: &mut [f32], mean: f32, inv_std: f32) {
         unsafe { _mm256_storeu_ps(ptr.add(offset), result) };
     }
 
-    for i in (chunks * 8)..data.len() {
-        data[i] = (data[i] - mean) * inv_std;
+    for x in data.iter_mut().skip(chunks * 8) {
+        *x = (*x - mean) * inv_std;
     }
 }
 
