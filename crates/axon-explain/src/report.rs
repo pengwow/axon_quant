@@ -239,10 +239,77 @@ impl ReportGenerator {
     }
 
     /// 聚合风险归因指标
-    fn aggregate_risk(_explanations: &[Explanation]) -> crate::types::RiskAttributionMetrics {
-        // 简化实现：从 explanation 的 confidence 推断风险
-        crate::types::RiskAttributionMetrics::default()
+    ///
+    /// 从一组 Explanation 中聚合：
+    /// - `var_contribution`：特征 SHAP 绝对值按 `(1 - confidence)` 加权（不确信的方向放大风险）
+    /// - `sharpe_contribution`：特征 SHAP 按 `confidence` 加权（确信的方向贡献 Sharpe）
+    /// - `max_drawdown_factors`：累计负向 SHAP 的 top 3 特征名
+    ///
+    /// 公式：
+    /// - `var_contribution[f] = Σ_i |shap_i_f| * (1 - confidence_i)`
+    /// - `sharpe_contribution[f] = Σ_i shap_i_f * confidence_i`
+    /// - `max_drawdown_factors`：按 `Σ_i min(shap_i_f, 0)` 升序取前 3
+    pub fn aggregate_risk(explanations: &[Explanation]) -> crate::types::RiskAttributionMetrics {
+        use std::collections::HashMap;
+
+        // 空输入直接返回默认值（保留 PartialEq 测试便利性）
+        if explanations.is_empty() {
+            return crate::types::RiskAttributionMetrics::default();
+        }
+
+        // 原始 SHAP（带符号）按特征聚合：用于 Sharpe / max_drawdown
+        let mut signed_sums: HashMap<String, f64> = HashMap::new();
+        // VaR 加权（|shap| * (1 - confidence)）
+        let mut var_contribution: HashMap<String, f64> = HashMap::new();
+        // Sharpe 加权（shap * confidence）
+        let mut sharpe_contribution: HashMap<String, f64> = HashMap::new();
+
+        for exp in explanations {
+            // 置信度裁剪到 [0, 1]，避免异常值破坏聚合
+            let conf = exp.confidence.clamp(0.0, 1.0);
+            let inv_conf = 1.0 - conf;
+
+            for (name, &abs_shap) in &exp.feature_importance {
+                // 通过符号位反推 SHAP 真实值：Explanation 存的是 |SHAP|，
+                // 而 attribution 中才保留符号。这里用 action_attributions 的符号作为权威源。
+                let signed = signed_shap_for(exp, name).unwrap_or(abs_shap);
+                let actual_signed = if signed.is_nan() { abs_shap } else { signed };
+
+                *signed_sums.entry(name.clone()).or_insert(0.0) += actual_signed;
+                *var_contribution.entry(name.clone()).or_insert(0.0) += abs_shap * inv_conf;
+                *sharpe_contribution.entry(name.clone()).or_insert(0.0) += actual_signed * conf;
+            }
+        }
+
+        // max_drawdown_factors：累计负向（取累计和最小的前 3 个特征名）
+        let mut negative_factors: Vec<(String, f64)> =
+            signed_sums.into_iter().filter(|(_, v)| *v < 0.0).collect();
+        // 按累计负向值升序（越负越靠前）
+        negative_factors.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let max_drawdown_factors: Vec<String> = negative_factors
+            .into_iter()
+            .take(3)
+            .map(|(name, _)| name)
+            .collect();
+
+        crate::types::RiskAttributionMetrics {
+            var_contribution,
+            sharpe_contribution,
+            max_drawdown_factors,
+        }
     }
+}
+
+/// 从 Explanation 的 action_attributions 中按特征名查找 SHAP 带符号值
+///
+/// 优先取第一个 ActionAttribution 的 feature_contributions 中匹配 name 的 shap_value；
+/// 找不到时返回 `None`，调用方应回退到 |SHAP|（取正）。
+fn signed_shap_for(exp: &Explanation, name: &str) -> Option<f64> {
+    exp.action_attributions
+        .iter()
+        .flat_map(|attr| attr.feature_contributions.iter())
+        .find(|c| c.feature_name == name)
+        .map(|c| c.shap_value)
 }
 
 /// HTML 字符转义

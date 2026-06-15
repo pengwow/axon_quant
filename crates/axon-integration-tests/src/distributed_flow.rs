@@ -25,12 +25,7 @@ pub fn run_metrics_serialization() {
 
 /// 场景 6.3: 保存/加载 checkpoint
 pub fn run_checkpoint_save_load() {
-    let mut ckpt = TrainingCheckpoint::new(
-        10,
-        vec![0u8; 1024],
-        vec![0u8; 512],
-        vec![0u8; 256],
-    );
+    let mut ckpt = TrainingCheckpoint::new(10, vec![0u8; 1024], vec![0u8; 512], vec![0u8; 256]);
     ckpt.add_metrics(StepMetrics {
         step: 10,
         episode_reward_mean: 2.0,

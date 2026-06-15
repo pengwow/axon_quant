@@ -39,6 +39,7 @@
 //!         circuit_breaker_reset: Duration::from_secs(60),
 //!     },
 //!     proxy: None,
+//!     position_endpoint: "/fapi/v2/positionRisk".into(),
 //! };
 //! ```
 //!
@@ -82,10 +83,10 @@ use reqwest::Client;
 /// 统一供各交易所适配器复用，避免重复实现。
 pub fn build_http_client(config: &ExchangeConfig) -> Client {
     let mut builder = Client::builder().timeout(Duration::from_secs(10));
-    if let Some(proxy_url) = &config.proxy {
-        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-            builder = builder.proxy(proxy);
-        }
+    if let Some(proxy_url) = &config.proxy
+        && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
+    {
+        builder = builder.proxy(proxy);
     }
     builder.build().expect("failed to create HTTP client")
 }
@@ -117,6 +118,7 @@ mod tests {
                 circuit_breaker_reset: Duration::from_secs(1),
             },
             proxy: None,
+            position_endpoint: "/fapi/v2/positionRisk".into(),
         }
     }
 

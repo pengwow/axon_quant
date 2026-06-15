@@ -128,7 +128,11 @@ impl BinanceAdapter {
     }
 
     /// REST DELETE 请求（撤单）
-    async fn rest_delete(&self, path: &str, params: &str) -> Result<serde_json::Value, ExchangeError> {
+    async fn rest_delete(
+        &self,
+        path: &str,
+        params: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
         let query = self.signed_query(params)?;
         let url = format!("{}{path}?{query}", self.config.rest_base_url);
         let resp = self.client.delete(&url).send().await?;
@@ -241,7 +245,10 @@ impl BinanceAdapter {
     }
 
     /// Ping 保活任务：定时向 ws 写入 ping 帧，断线时退出
-    fn spawn_ping_task(writer: Arc<Mutex<WsSink>>, shutdown: Arc<Notify>) -> tokio::task::JoinHandle<()> {
+    fn spawn_ping_task(
+        writer: Arc<Mutex<WsSink>>,
+        shutdown: Arc<Notify>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(30));
             loop {
@@ -312,14 +319,17 @@ impl BinanceAdapter {
     }
 
     /// 通过共享 writer 发送订阅消息
-    async fn send_subscribe_msg(writer: &Arc<Mutex<WsSink>>, streams: Vec<String>) -> Result<(), ExchangeError> {
+    async fn send_subscribe_msg(
+        writer: &Arc<Mutex<WsSink>>,
+        streams: Vec<String>,
+    ) -> Result<(), ExchangeError> {
         let msg = serde_json::json!({
             "method": "SUBSCRIBE",
             "params": streams,
             "id": chrono::Utc::now().timestamp_millis(),
         });
-        let payload = serde_json::to_string(&msg)
-            .map_err(|e| ExchangeError::ParseError(e.to_string()))?;
+        let payload =
+            serde_json::to_string(&msg).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
         let mut w = writer.lock().await;
         w.send(Message::Text(payload))
             .await
@@ -370,10 +380,30 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             let symbol = v.get("s").and_then(|s| s.as_str()).unwrap_or("");
             let ticker = Ticker {
                 symbol: Symbol::new(symbol),
-                bid: v.get("b").and_then(|b| b.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                ask: v.get("a").and_then(|a| a.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                last: v.get("c").and_then(|c| c.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                volume_24h: v.get("v").and_then(|vol| vol.as_str()).unwrap_or("0").parse().unwrap_or_default(),
+                bid: v
+                    .get("b")
+                    .and_then(|b| b.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                ask: v
+                    .get("a")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                last: v
+                    .get("c")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                volume_24h: v
+                    .get("v")
+                    .and_then(|vol| vol.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
                 timestamp: chrono::Utc::now(),
             };
             Ok(WsMessage::Ticker(ticker))
@@ -391,8 +421,18 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
         }
         "trade" | "aggTrade" => {
             let symbol = v.get("s").and_then(|s| s.as_str()).unwrap_or("");
-            let price = v.get("p").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default();
-            let quantity = v.get("q").and_then(|q| q.as_str()).unwrap_or("0").parse().unwrap_or_default();
+            let price = v
+                .get("p")
+                .and_then(|p| p.as_str())
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or_default();
+            let quantity = v
+                .get("q")
+                .and_then(|q| q.as_str())
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or_default();
             let side = if v.get("m").and_then(|m| m.as_bool()).unwrap_or(false) {
                 crate::types::Side::Sell
             } else {
@@ -414,11 +454,36 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             Ok(WsMessage::Kline(crate::types::Kline {
                 symbol: Symbol::new(symbol),
                 interval: interval.to_string(),
-                open: k.get("o").and_then(|o| o.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                high: k.get("h").and_then(|h| h.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                low: k.get("l").and_then(|l| l.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                close: k.get("c").and_then(|c| c.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                volume: k.get("v").and_then(|v| v.as_str()).unwrap_or("0").parse().unwrap_or_default(),
+                open: k
+                    .get("o")
+                    .and_then(|o| o.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                high: k
+                    .get("h")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                low: k
+                    .get("l")
+                    .and_then(|l| l.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                close: k
+                    .get("c")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
+                volume: k
+                    .get("v")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default(),
                 timestamp: chrono::Utc::now(),
                 is_closed,
             }))
@@ -426,21 +491,47 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
         "executionReport" | "executionReportAlgo" => {
             let client_order_id = v.get("c").and_then(|c| c.as_str()).unwrap_or("");
             let status_str = v.get("X").and_then(|x| x.as_str()).unwrap_or("");
-            let filled_qty = v.get("z").and_then(|z| z.as_str()).unwrap_or("0").parse().unwrap_or_default();
-            let avg_price = v.get("Z").and_then(|z| z.as_str()).unwrap_or("0").parse().unwrap_or_default();
+            let filled_qty = v
+                .get("z")
+                .and_then(|z| z.as_str())
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or_default();
+            let avg_price = v
+                .get("Z")
+                .and_then(|z| z.as_str())
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or_default();
             let status = match status_str {
                 "NEW" => OrderStatus::Acknowledged,
-                "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled { filled_qty, avg_price },
-                "FILLED" => OrderStatus::Filled { filled_qty, avg_price },
+                "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled {
+                    filled_qty,
+                    avg_price,
+                },
+                "FILLED" => OrderStatus::Filled {
+                    filled_qty,
+                    avg_price,
+                },
                 "CANCELED" | "CANCELLED" => OrderStatus::Cancelled { filled_qty },
                 "REJECTED" => OrderStatus::Rejected {
-                    reason: v.get("r").and_then(|r| r.as_str()).unwrap_or("rejected").to_string(),
+                    reason: v
+                        .get("r")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("rejected")
+                        .to_string(),
                 },
                 _ => OrderStatus::Pending,
             };
             Ok(WsMessage::OrderUpdate(crate::types::OrderUpdate {
-                order_id: v.get("i").and_then(|i| i.as_str()).unwrap_or("").to_string(),
-                client_order_id: OrderId(uuid::Uuid::parse_str(client_order_id).unwrap_or_default()),
+                order_id: v
+                    .get("i")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                client_order_id: OrderId(
+                    uuid::Uuid::parse_str(client_order_id).unwrap_or_default(),
+                ),
                 status,
                 filled_qty,
                 avg_price: Some(avg_price),
@@ -452,7 +543,9 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
 }
 
 /// 解析 Binance 价格层数组 `[["price","qty"], ...]`
-fn parse_price_level_array(val: Option<&serde_json::Value>) -> Vec<(rust_decimal::Decimal, rust_decimal::Decimal)> {
+fn parse_price_level_array(
+    val: Option<&serde_json::Value>,
+) -> Vec<(rust_decimal::Decimal, rust_decimal::Decimal)> {
     val.and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -619,7 +712,10 @@ impl ExchangeAdapter for BinanceAdapter {
         self.rest_delete("/api/v3/order", &params).await?;
 
         // 清理映射
-        self.order_symbols.lock().await.remove(&order_id.to_string());
+        self.order_symbols
+            .lock()
+            .await
+            .remove(&order_id.to_string());
 
         tracing::info!("Order cancelled: {}", order_id);
         Ok(())
@@ -651,9 +747,32 @@ impl ExchangeAdapter for BinanceAdapter {
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
-        // Binance 期货有 positions 端点，现货无直接 positions
-        // 这里返回空，或可通过 account info 推导
-        Ok(Vec::new())
+        // 现货账户无 position 端点：未配置端点时直接返回空
+        if self.config.position_endpoint.is_empty() {
+            tracing::debug!("Binance position_endpoint empty, returning empty positions");
+            return Ok(Vec::new());
+        }
+        // 查询合约 / 账户持仓端点；解析失败时记录 warn 并返回空 Vec（不 panic）
+        let resp = match self.rest_get(&self.config.position_endpoint, "").await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "Binance get_positions: {} query failed: {}",
+                    self.config.position_endpoint,
+                    e
+                );
+                return Ok(Vec::new());
+            }
+        };
+        // Binance 合约返回数组，OKX 包装在 `data` 中；尝试两种格式
+        let arr: Vec<serde_json::Value> = if let Some(arr) = resp.as_array() {
+            arr.clone()
+        } else if let Some(arr) = resp.get("data").and_then(|d| d.as_array()) {
+            arr.clone()
+        } else {
+            Vec::new()
+        };
+        Ok(crate::adapters::parse_positions_from_json(&arr))
     }
 
     fn get_depth(&self, symbol: &Symbol) -> Option<DepthSnapshot> {
@@ -706,6 +825,7 @@ mod tests {
                 circuit_breaker_reset: Duration::from_secs(60),
             },
             proxy: None,
+            position_endpoint: "/fapi/v2/positionRisk".into(),
         }
     }
 
@@ -797,10 +917,13 @@ mod tests {
         let parsed = parse_ws_message(msg).unwrap();
         match parsed {
             WsMessage::OrderUpdate(u) => {
-                assert_eq!(u.status, OrderStatus::Filled {
-                    filled_qty: "0.001".parse().unwrap(),
-                    avg_price: "50000.00".parse().unwrap(),
-                });
+                assert_eq!(
+                    u.status,
+                    OrderStatus::Filled {
+                        filled_qty: "0.001".parse().unwrap(),
+                        avg_price: "50000.00".parse().unwrap(),
+                    }
+                );
             }
             _ => panic!("expected OrderUpdate"),
         }

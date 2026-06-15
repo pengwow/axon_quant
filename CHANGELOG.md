@@ -5,6 +5,21 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **axon-monitor** `AlertRule::Missing` 现在基于指标最后一次上报时间与当前时间差判断是否触发告警。新增 `MetricsRegistry::check_missing_alerts()` 与 `AlertRule::check_missing()`，并补齐 3 个测试覆盖。
+- **axon-explain** `ReportGenerator::aggregate_risk` 改为 `pub fn`，从 `Explanation` 列表按 `feature_importance` × `confidence` 加权聚合，产出 `var_contribution` / `sharpe_contribution` / `max_drawdown_factors`，并补齐 3 个测试覆盖。
+- **axon-exchange/binance** `get_positions()` 改为查询持仓端点（默认 `/fapi/v2/positionRisk`）并解析为 `Vec<Position>`；查询失败时返回空 Vec + warn 日志。`ExchangeConfig` 新增 `position_endpoint` 字段（默认 `/fapi/v2/positionRisk`）。补齐 2 个测试覆盖。
+- **axon-exchange/okx** `subscribe()` 在 WebSocket writer 可用时实际调用 `send_subscribe_to_writer` 发送订阅消息；writer 不可用时仍记录到 `subscribed_symbols` 等待重连后补发。补齐 1 个测试覆盖。
+- **axon-risk** `RiskEngine::compute_metrics` 中 `var_95` 改为基于 `pnl_history`（滚动 252 样本窗口）调用 `checks::var::calculate_var(history, 0.95)` 计算，历史不足 5 样本时降级为 0.0 且 confidence=0.0。补齐 4 个测试覆盖。
+- **axon-inference** `pipeline/collector.rs` 实现 `ObservationSource` trait 与 `ObservationCollector`（多源聚合 + 后台轮询 + 错误隔离 + sink 关闭优雅退出），新增 3 个测试覆盖。`lib.rs` 已 re-export。
+- **axon-inference** `CandleBackend` 错误信息更新为指向 TDD 规范路径的明确 "未实现" 文案，模块顶部加注契约桩说明，新增 1 个测试验证错误信息。
+- **axon-backtest** `engine.rs` 替换为空壳占位：实现事件驱动的 `BacktestEngine` 主循环（`BacktestEngineConfig` + `BacktestEngine::run/step` + `RunResult` 完整字段），处理 `OrderAction` 与 `FillEvent`，累计 events/orders/fills/PnL/drawdown/Nav/duration 指标；新增 8 个测试覆盖空队列、提交/拒绝、撮合、时钟推进、FillEvent、取消/修改/拒绝、step 单步、最大回撤。
+
+### Tests
+- 全工作区验证（除 `axon-rl` cdylib 在 macOS 上需要 PYTHON 库链接的环境问题外）：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p <crate>` 全部通过。新增覆盖各修复点的 ≥ 25 个测试。
+
 ## [0.1.0] - 2026-06-13
 
 ### Added

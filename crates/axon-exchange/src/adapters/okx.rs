@@ -64,7 +64,13 @@ impl OkxAdapter {
     }
 
     /// OKX 签名：base64(HMAC-SHA256(timestamp + method + path + body, secret))
-    fn sign(&self, timestamp: &str, method: &str, path: &str, body: &str) -> Result<String, ExchangeError> {
+    fn sign(
+        &self,
+        timestamp: &str,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> Result<String, ExchangeError> {
         let prehash = format!("{timestamp}{method}{path}{body}");
         let mut mac = HmacSha256::new_from_slice(self.config.api_secret.as_bytes())
             .map_err(|e| ExchangeError::AuthenticationFailed(e.to_string()))?;
@@ -73,14 +79,24 @@ impl OkxAdapter {
     }
 
     /// 构造请求头
-    fn auth_headers(&self, method: &str, path: &str, body: &str) -> Result<Vec<(String, String)>, ExchangeError> {
-        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    fn auth_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> Result<Vec<(String, String)>, ExchangeError> {
+        let timestamp = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
         let sign = self.sign(&timestamp, method, path, body)?;
         let mut headers = vec![
             ("OK-ACCESS-KEY".into(), self.config.api_key.clone()),
             ("OK-ACCESS-SIGN".into(), sign),
             ("OK-ACCESS-TIMESTAMP".into(), timestamp),
-            ("OK-ACCESS-PASSPHRASE".into(), self.config.passphrase.clone().unwrap_or_default()),
+            (
+                "OK-ACCESS-PASSPHRASE".into(),
+                self.config.passphrase.clone().unwrap_or_default(),
+            ),
         ];
         // OKX 测试网（模拟盘）需要此 header
         if self.config.testnet {
@@ -115,7 +131,9 @@ impl OkxAdapter {
     async fn rest_post(&self, path: &str, body: &str) -> Result<serde_json::Value, ExchangeError> {
         let url = format!("{}{path}", self.config.rest_base_url);
         let headers = self.auth_headers("POST", path, body)?;
-        let mut req = self.client.post(&url)
+        let mut req = self
+            .client
+            .post(&url)
             .header("Content-Type", "application/json")
             .body(body.to_string());
         for (k, v) in &headers {
@@ -198,7 +216,15 @@ impl OkxAdapter {
                         });
 
                         // 读取循环（断线后返回）
-                        Self::run_read_loop(ws_read, tx.clone(), writer.clone(), depth_cache.clone(), ticker_cache.clone(), shutdown.clone()).await;
+                        Self::run_read_loop(
+                            ws_read,
+                            tx.clone(),
+                            writer.clone(),
+                            depth_cache.clone(),
+                            ticker_cache.clone(),
+                            shutdown.clone(),
+                        )
+                        .await;
 
                         // 清理
                         *ws_writer_slot.lock().await = None;
@@ -215,11 +241,7 @@ impl OkxAdapter {
                             );
                             break;
                         }
-                        tracing::warn!(
-                            "OKX WebSocket connect failed (attempt {}): {}",
-                            attempt,
-                            e
-                        );
+                        tracing::warn!("OKX WebSocket connect failed (attempt {}): {}", attempt, e);
                         backoff = Self::next_backoff(backoff, &reconnect_cfg);
                     }
                 }
@@ -304,7 +326,7 @@ impl OkxAdapter {
             .collect();
         let payload = serde_json::json!({"op": "subscribe", "args": args}).to_string();
         let mut w = writer.lock().await;
-        if let Err(e) = w.send(Message::Text(payload.into())).await {
+        if let Err(e) = w.send(Message::Text(payload)).await {
             tracing::warn!("OKX subscribe send failed: {}", e);
         }
     }
@@ -325,7 +347,9 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
     let v: serde_json::Value = serde_json::from_str(text)?;
 
     // Ping/Pong
-    if v.get("event").and_then(|e| e.as_str()) == Some("pong") || v.get("op").and_then(|o| o.as_str()) == Some("pong") {
+    if v.get("event").and_then(|e| e.as_str()) == Some("pong")
+        || v.get("op").and_then(|o| o.as_str()) == Some("pong")
+    {
         return Ok(WsMessage::Pong);
     }
 
@@ -340,14 +364,37 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
 
     match channel {
         "tickers" => {
-            let data = v.get("data").and_then(|d| d.as_array()).and_then(|a| a.first());
+            let data = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first());
             if let Some(d) = data {
                 Ok(WsMessage::Ticker(Ticker {
                     symbol: Symbol::new(inst_id),
-                    bid: d.get("bidPx").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                    ask: d.get("askPx").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                    last: d.get("last").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                    volume_24h: d.get("vol24h").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
+                    bid: d
+                        .get("bidPx")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
+                    ask: d
+                        .get("askPx")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
+                    last: d
+                        .get("last")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
+                    volume_24h: d
+                        .get("vol24h")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
                     timestamp: chrono::Utc::now(),
                 }))
             } else {
@@ -355,7 +402,10 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             }
         }
         "books5" => {
-            let data = v.get("data").and_then(|d| d.as_array()).and_then(|a| a.first());
+            let data = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first());
             if let Some(d) = data {
                 let bids = parse_okx_levels(d.get("bids"));
                 let asks = parse_okx_levels(d.get("asks"));
@@ -370,14 +420,31 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             }
         }
         "trades" => {
-            let data = v.get("data").and_then(|d| d.as_array()).and_then(|a| a.first());
+            let data = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first());
             if let Some(d) = data {
                 let side_str = d.get("side").and_then(|s| s.as_str()).unwrap_or("buy");
                 Ok(WsMessage::Trade(crate::types::Trade {
                     symbol: Symbol::new(inst_id),
-                    price: d.get("px").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                    quantity: d.get("sz").and_then(|p| p.as_str()).unwrap_or("0").parse().unwrap_or_default(),
-                    side: if side_str == "sell" { crate::types::Side::Sell } else { crate::types::Side::Buy },
+                    price: d
+                        .get("px")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
+                    quantity: d
+                        .get("sz")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or_default(),
+                    side: if side_str == "sell" {
+                        crate::types::Side::Sell
+                    } else {
+                        crate::types::Side::Buy
+                    },
                     timestamp: chrono::Utc::now(),
                 }))
             } else {
@@ -385,23 +452,51 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             }
         }
         "orders" => {
-            let data = v.get("data").and_then(|d| d.as_array()).and_then(|a| a.first());
+            let data = v
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first());
             if let Some(d) = data {
                 let state = d.get("state").and_then(|s| s.as_str()).unwrap_or("");
-                let filled_qty = d.get("accFillSz").and_then(|s| s.as_str()).unwrap_or("0").parse().unwrap_or_default();
-                let avg_price = d.get("avgPx").and_then(|s| s.as_str()).unwrap_or("0").parse().unwrap_or_default();
+                let filled_qty = d
+                    .get("accFillSz")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default();
+                let avg_price = d
+                    .get("avgPx")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or_default();
                 let status = match state {
                     "live" => OrderStatus::Acknowledged,
-                    "partially_filled" => OrderStatus::PartiallyFilled { filled_qty, avg_price },
-                    "filled" => OrderStatus::Filled { filled_qty, avg_price },
+                    "partially_filled" => OrderStatus::PartiallyFilled {
+                        filled_qty,
+                        avg_price,
+                    },
+                    "filled" => OrderStatus::Filled {
+                        filled_qty,
+                        avg_price,
+                    },
                     "canceled" => OrderStatus::Cancelled { filled_qty },
                     _ => OrderStatus::Pending,
                 };
                 Ok(WsMessage::OrderUpdate(crate::types::OrderUpdate {
-                    order_id: d.get("ordId").and_then(|o| o.as_str()).unwrap_or("").to_string(),
-                    client_order_id: OrderId(uuid::Uuid::parse_str(
-                        d.get("clOrdId").and_then(|c| c.as_str()).unwrap_or("00000000-0000-0000-0000-000000000000")
-                    ).unwrap_or_default()),
+                    order_id: d
+                        .get("ordId")
+                        .and_then(|o| o.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    client_order_id: OrderId(
+                        uuid::Uuid::parse_str(
+                            d.get("clOrdId")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("00000000-0000-0000-0000-000000000000"),
+                        )
+                        .unwrap_or_default(),
+                    ),
                     status,
                     filled_qty,
                     avg_price: Some(avg_price),
@@ -416,7 +511,9 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
 }
 
 /// 解析 OKX 价格层数组 `[["price","qty","0","1"], ...]`
-fn parse_okx_levels(val: Option<&serde_json::Value>) -> Vec<(rust_decimal::Decimal, rust_decimal::Decimal)> {
+fn parse_okx_levels(
+    val: Option<&serde_json::Value>,
+) -> Vec<(rust_decimal::Decimal, rust_decimal::Decimal)> {
     val.and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -478,7 +575,9 @@ impl ExchangeAdapter for OkxAdapter {
         let url = format!("{}/api/v5/public/time", self.config.rest_base_url);
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
-            return Err(ExchangeError::ConnectionFailed("OKX REST ping failed".into()));
+            return Err(ExchangeError::ConnectionFailed(
+                "OKX REST ping failed".into(),
+            ));
         }
 
         // 启动 WebSocket
@@ -537,14 +636,20 @@ impl ExchangeAdapter for OkxAdapter {
         let body = order_to_okx_json(&order);
         let resp = self.rest_post_orders(&body).await?;
 
-        let ord_data = resp["data"].as_array()
+        let ord_data = resp["data"]
+            .as_array()
             .and_then(|a| a.first())
             .ok_or_else(|| ExchangeError::ParseError("missing order data".into()))?;
 
-        let ord_id = ord_data["ordId"].as_str()
+        let ord_id = ord_data["ordId"]
+            .as_str()
             .ok_or_else(|| ExchangeError::ParseError("missing ordId".into()))?;
 
-        tracing::info!("Order sent: client_id={}, ord_id={}", order.client_order_id, ord_id);
+        tracing::info!(
+            "Order sent: client_id={}, ord_id={}",
+            order.client_order_id,
+            ord_id
+        );
         Ok(order.client_order_id)
     }
 
@@ -575,8 +680,12 @@ impl ExchangeAdapter for OkxAdapter {
                 return Err(ExchangeError::OrderNotFound(order_id.to_string()));
             }
         };
-        self.rest_post("/api/v5/trade/cancel-order", &body.to_string()).await?;
-        self.order_inst_ids.lock().await.remove(&order_id.to_string());
+        self.rest_post("/api/v5/trade/cancel-order", &body.to_string())
+            .await?;
+        self.order_inst_ids
+            .lock()
+            .await
+            .remove(&order_id.to_string());
 
         tracing::info!("Order cancelled: {}", order_id);
         Ok(())
@@ -585,7 +694,8 @@ impl ExchangeAdapter for OkxAdapter {
     async fn get_balance(&self) -> Result<HashMap<String, AccountBalance>, ExchangeError> {
         let resp = self.rest_get("/api/v5/account/balance").await?;
 
-        let details = resp["data"].as_array()
+        let details = resp["data"]
+            .as_array()
             .and_then(|a| a.first())
             .and_then(|d| d.get("details"))
             .and_then(|d| d.as_array())
@@ -612,47 +722,34 @@ impl ExchangeAdapter for OkxAdapter {
     }
 
     async fn get_positions(&self) -> Result<Vec<Position>, ExchangeError> {
-        let resp = self.rest_get("/api/v5/account/positions").await?;
-
-        let positions = resp["data"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|d| {
-                        let inst_id = d.get("instId")?.as_str()?;
-                        let pos_side = d.get("posSide")?.as_str().unwrap_or("net");
-                        let side = match pos_side {
-                            "long" => crate::types::Side::Buy,
-                            "short" => crate::types::Side::Sell,
-                            _ => {
-                                let pos: f64 = d.get("pos")?.as_str()?.parse().ok()?;
-                                if pos >= 0.0 { crate::types::Side::Buy } else { crate::types::Side::Sell }
-                            }
-                        };
-                        let qty: rust_decimal::Decimal = d.get("pos")?.as_str()?.parse().ok()?;
-                        let avg_px: rust_decimal::Decimal = d.get("avgPx")?.as_str()?.parse().ok()?;
-                        let upl: rust_decimal::Decimal = d.get("upl")?.as_str()?.parse().ok()?;
-                        Some(Position {
-                            symbol: Symbol::new(inst_id),
-                            side,
-                            quantity: qty.abs(),
-                            avg_entry_price: avg_px,
-                            unrealized_pnl: upl,
-                        })
-                    })
-                    .collect()
-            })
+        // 端点未配置时回退空（OKX 默认 /api/v5/account/positions，但允许覆盖）
+        let endpoint = if self.config.position_endpoint.is_empty() {
+            "/api/v5/account/positions".to_string()
+        } else {
+            self.config.position_endpoint.clone()
+        };
+        let resp = self.rest_get(&endpoint).await?;
+        // OKX 标准响应：`{ "code": "0", "data": [...] }`
+        let arr: Vec<serde_json::Value> = resp
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
             .unwrap_or_default();
-
-        Ok(positions)
+        Ok(crate::adapters::parse_positions_from_json(&arr))
     }
 
     fn get_depth(&self, symbol: &Symbol) -> Option<DepthSnapshot> {
-        self.depth_cache.blocking_lock().get(&symbol.to_string()).cloned()
+        self.depth_cache
+            .blocking_lock()
+            .get(&symbol.to_string())
+            .cloned()
     }
 
     fn get_ticker(&self, symbol: &Symbol) -> Option<Ticker> {
-        self.ticker_cache.blocking_lock().get(&symbol.to_string()).cloned()
+        self.ticker_cache
+            .blocking_lock()
+            .get(&symbol.to_string())
+            .cloned()
     }
 
     fn market_data_rx(&self) -> mpsc::Receiver<WsMessage> {
@@ -691,6 +788,7 @@ mod tests {
                 circuit_breaker_reset: Duration::from_secs(60),
             },
             proxy: None,
+            position_endpoint: "/api/v5/account/positions".into(),
         }
     }
 
@@ -698,19 +796,30 @@ mod tests {
     fn test_sign_returns_base64() {
         let config = testnet_config();
         let adapter = OkxAdapter::new(config);
-        let sig = adapter.sign("2024-01-01T00:00:00.000Z", "GET", "/api/v5/account/balance", "");
+        let sig = adapter.sign(
+            "2024-01-01T00:00:00.000Z",
+            "GET",
+            "/api/v5/account/balance",
+            "",
+        );
         assert!(sig.is_ok());
         let b64 = sig.unwrap();
         assert!(!b64.is_empty());
         // base64 验证
-        assert!(base64::engine::general_purpose::STANDARD.decode(&b64).is_ok());
+        assert!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&b64)
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_auth_headers() {
         let config = testnet_config();
         let adapter = OkxAdapter::new(config);
-        let headers = adapter.auth_headers("GET", "/api/v5/account/balance", "").unwrap();
+        let headers = adapter
+            .auth_headers("GET", "/api/v5/account/balance", "")
+            .unwrap();
         // 4 标准头 + 1 测试网头
         assert_eq!(headers.len(), 5);
         assert_eq!(headers[0].0, "OK-ACCESS-KEY");
@@ -792,10 +901,13 @@ mod tests {
         match parsed {
             WsMessage::OrderUpdate(u) => {
                 assert_eq!(u.order_id, "12345");
-                assert_eq!(u.status, OrderStatus::Filled {
-                    filled_qty: "0.001".parse().unwrap(),
-                    avg_price: "50000".parse().unwrap(),
-                });
+                assert_eq!(
+                    u.status,
+                    OrderStatus::Filled {
+                        filled_qty: "0.001".parse().unwrap(),
+                        avg_price: "50000".parse().unwrap(),
+                    }
+                );
             }
             _ => panic!("expected OrderUpdate"),
         }
@@ -809,7 +921,7 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let mut adapter = OkxAdapter::new(testnet_config());
+            let adapter = OkxAdapter::new(testnet_config());
             let client_id = OrderId::new();
             adapter
                 .order_inst_ids
@@ -837,7 +949,9 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let mut adapter = OkxAdapter::new(testnet_config());
-            let _ = adapter.subscribe(&[Symbol::new("BTC-USDT"), Symbol::new("ETH-USDT")]).await;
+            let _ = adapter
+                .subscribe(&[Symbol::new("BTC-USDT"), Symbol::new("ETH-USDT")])
+                .await;
             let sub = adapter.subscribed_symbols.lock().await;
             assert_eq!(sub.len(), 2);
             assert!(sub.contains(&Symbol::new("BTC-USDT")));

@@ -27,7 +27,11 @@ pub fn run_hpo_with_mock_trials() {
         .filter(|t| t.state.is_complete())
         .max_by(|a, b| a.values[0].partial_cmp(&b.values[0]).unwrap())
         .unwrap();
-    assert!(best.values[0] > -0.1, "最佳值应接近 0，实际 {}", best.values[0]);
+    assert!(
+        best.values[0] > -0.1,
+        "最佳值应接近 0，实际 {}",
+        best.values[0]
+    );
 }
 
 /// 场景 3.4: 验证 Pareto 前沿（单目标）
@@ -41,17 +45,18 @@ pub fn run_pareto_front_single_objective() {
     ];
     let directions = vec![StudyDirection::Maximize];
     let front = compute_pareto_front(&trials, &directions).unwrap();
-    assert_eq!(front.points.len(), 1, "单目标最大化应只有 1 个 Pareto 最优点");
+    assert_eq!(
+        front.points.len(),
+        1,
+        "单目标最大化应只有 1 个 Pareto 最优点"
+    );
     assert_eq!(front.points[0].objectives[0], 3.0);
 }
 
 /// 场景 3.5: 验证超体积计算
 pub fn run_hypervolume_verification() {
     // 使用 minimize 方向，reference 为最差点
-    let trials = vec![
-        make_trial(0, vec![1.0, 2.0]),
-        make_trial(1, vec![2.0, 1.0]),
-    ];
+    let trials = vec![make_trial(0, vec![1.0, 2.0]), make_trial(1, vec![2.0, 1.0])];
     let directions = vec![StudyDirection::Minimize, StudyDirection::Minimize];
     let reference = vec![5.0, 5.0]; // nadir 参考点
     let hv = compute_hypervolume(&trials, &directions, &reference).unwrap();

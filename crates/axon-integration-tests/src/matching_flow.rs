@@ -87,7 +87,9 @@ pub fn run_market_impact_verification() {
     let model = LinearImpactModel::new(0.001);
     let mut engine = ImpactedMatchingEngine::new(Box::new(model));
     // 先在引擎内部挂薄卖单
-    engine.inner_mut().submit(make_order(1, Side::Sell, 100.0, 1.0));
+    engine
+        .inner_mut()
+        .submit(make_order(1, Side::Sell, 100.0, 1.0));
     // 大单买入 → 应有冲击偏移
     let big_buy = Order::new(
         2,

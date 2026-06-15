@@ -8,6 +8,10 @@ pub enum AlertSeverity {
     Emergency,
 }
 
+/// 告警规则：阈值告警与缺失告警
+///
+/// - `Threshold`：指标值触发阈值时产生事件
+/// - `Missing`：指标在指定超时窗口内未出现时产生事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AlertRule {
     Threshold {
@@ -16,6 +20,7 @@ pub enum AlertRule {
         severity: AlertSeverity,
         message: String,
     },
+    /// 缺失检测：metric 在 `timeout_secs` 秒内未被 `MetricsRegistry::check_alerts` 报告时触发
     Missing {
         metric_name: String,
         timeout_secs: u64,
@@ -39,6 +44,7 @@ pub struct AlertEvent {
 }
 
 impl AlertRule {
+    /// 阈值告警检测：每次指标上报时调用
     pub fn check(&self, metric_name: &str, value: f64) -> Option<AlertEvent> {
         match self {
             AlertRule::Threshold {
@@ -66,7 +72,56 @@ impl AlertRule {
                     None
                 }
             }
+            // Missing 规则不基于单次 value 评估，由 `check_missing` 处理
             AlertRule::Missing { .. } => None,
+        }
+    }
+
+    /// 缺失告警检测：传入指标最后出现时间与当前时间，超出 `timeout_secs` 则触发
+    ///
+    /// - `metric_name`：被检测指标名（不匹配规则时返回 None）
+    /// - `last_seen`：指标最近一次 `check_alerts` 时间；`None` 表示从未上报
+    /// - `now`：当前时间（由调用方注入，便于测试）
+    pub fn check_missing(
+        &self,
+        metric_name: &str,
+        last_seen: Option<std::time::Instant>,
+        now: std::time::Instant,
+    ) -> Option<AlertEvent> {
+        match self {
+            AlertRule::Missing {
+                metric_name: name,
+                timeout_secs,
+                severity,
+            } => {
+                if name != metric_name {
+                    return None;
+                }
+                let stale = match last_seen {
+                    // 从未上报过：使用 now 作为基准（必然 stale）
+                    None => true,
+                    Some(t) => now.duration_since(t).as_secs() >= *timeout_secs,
+                };
+                if stale {
+                    let age_secs = last_seen
+                        .map(|t| now.duration_since(t).as_secs())
+                        .unwrap_or(u64::MAX);
+                    Some(AlertEvent {
+                        rule_name: name.clone(),
+                        severity: *severity,
+                        message: format!(
+                            "metric {} missing for >{}s (actual: {}s)",
+                            name, timeout_secs, age_secs
+                        ),
+                        value: age_secs as f64,
+                        timestamp: now_unix_secs(),
+                    })
+                } else {
+                    None
+                }
+            }
+            // 阈值规则不在缺失路径评估
+            AlertRule::Threshold { .. } => None,
         }
     }
 }
@@ -81,6 +136,7 @@ fn now_unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn test_threshold_alert_fires() {
@@ -116,6 +172,82 @@ mod tests {
             message: "latency exceeds 10ms".into(),
         };
         let event = rule.check("throughput", 50_000_000.0);
+        assert!(event.is_none());
+    }
+
+    // ===== Missing 规则测试 =====
+
+    #[test]
+    fn test_missing_alert_fires_when_stale() {
+        // 指标 60s 前已上报，超时 10s 必然触发
+        let rule = AlertRule::Missing {
+            metric_name: "heartbeat".into(),
+            timeout_secs: 10,
+            severity: AlertSeverity::Critical,
+        };
+        let now = Instant::now();
+        let last_seen = Some(now - Duration::from_secs(60));
+        let event = rule.check_missing("heartbeat", last_seen, now);
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.severity, AlertSeverity::Critical);
+        assert!(event.message.contains("heartbeat"));
+        assert!(event.value >= 60.0);
+    }
+
+    #[test]
+    fn test_missing_alert_fires_when_never_seen() {
+        // 从未上报（last_seen = None）必然触发
+        let rule = AlertRule::Missing {
+            metric_name: "queue_depth".into(),
+            timeout_secs: 30,
+            severity: AlertSeverity::Warning,
+        };
+        let now = Instant::now();
+        let event = rule.check_missing("queue_depth", None, now);
+        assert!(event.is_some());
+        assert_eq!(event.unwrap().severity, AlertSeverity::Warning);
+    }
+
+    #[test]
+    fn test_missing_alert_does_not_fire_when_fresh() {
+        // 指标刚上报，2s 远小于超时 10s
+        let rule = AlertRule::Missing {
+            metric_name: "heartbeat".into(),
+            timeout_secs: 10,
+            severity: AlertSeverity::Critical,
+        };
+        let now = Instant::now();
+        let last_seen = Some(now - Duration::from_secs(2));
+        let event = rule.check_missing("heartbeat", last_seen, now);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn test_missing_alert_ignores_unknown_metric() {
+        // 规则 metric_name 与传入的 metric_name 不一致 -> 不触发
+        let rule = AlertRule::Missing {
+            metric_name: "heartbeat".into(),
+            timeout_secs: 10,
+            severity: AlertSeverity::Critical,
+        };
+        let now = Instant::now();
+        let last_seen = Some(now - Duration::from_secs(60));
+        let event = rule.check_missing("other_metric", last_seen, now);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn test_threshold_rule_ignores_missing_path() {
+        // 阈值规则走 check_missing 时必须返回 None
+        let rule = AlertRule::Threshold {
+            metric_name: "latency".into(),
+            condition: ThresholdCondition::GreaterThan(100.0),
+            severity: AlertSeverity::Warning,
+            message: "msg".into(),
+        };
+        let now = Instant::now();
+        let event = rule.check_missing("latency", None, now);
         assert!(event.is_none());
     }
 }

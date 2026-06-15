@@ -205,6 +205,16 @@ pub struct ExchangeConfig {
     /// 代理地址，None 时使用系统环境变量（https_proxy / http_proxy）
     #[serde(default)]
     pub proxy: Option<String>,
+    /// 持仓查询 REST 端点。
+    /// - Binance 合约：`/fapi/v2/positionRisk`（默认）
+    /// - OKX：`/api/v5/account/positions`
+    /// - Binance 现货（不支持期货时）：留空则回退为空 Vec
+    #[serde(default = "default_position_endpoint")]
+    pub position_endpoint: String,
+}
+
+fn default_position_endpoint() -> String {
+    "/fapi/v2/positionRisk".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

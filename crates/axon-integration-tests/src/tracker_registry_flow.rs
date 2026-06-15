@@ -50,9 +50,7 @@ pub fn run_metrics_query() {
 /// 多参数记录
 pub fn run_multi_param_logging() {
     let tracker = MemoryTracker::new();
-    tracker
-        .log_param("n_layers", &ParamValue::Int(3))
-        .unwrap();
+    tracker.log_param("n_layers", &ParamValue::Int(3)).unwrap();
     tracker
         .log_param("activation", &ParamValue::String("relu".to_string()))
         .unwrap();

@@ -71,7 +71,12 @@ pub fn run_purge_overlapping_labels() {
 pub fn run_deflated_sharpe() {
     let observed = 2.0f64;
     let dsr = compute_deflated_sharpe(observed, 50, 0.5);
-    assert!(dsr < observed, "deflated Sharpe 应 < 原始: {} vs {}", dsr, observed);
+    assert!(
+        dsr < observed,
+        "deflated Sharpe 应 < 原始: {} vs {}",
+        dsr,
+        observed
+    );
     // 更多 trial → 更大惩罚
     let dsr_more = compute_deflated_sharpe(observed, 200, 0.5);
     assert!(dsr_more < dsr, "更多 trial 应产生更低的 deflated Sharpe");
