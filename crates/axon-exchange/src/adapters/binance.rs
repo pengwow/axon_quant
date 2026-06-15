@@ -21,18 +21,6 @@ use crate::types::{
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// 构造 HTTP 客户端，支持代理配置
-///
-/// 优先使用 config.proxy，否则 reqwest 自动读取系统环境变量
-fn build_http_client(config: &ExchangeConfig) -> Client {
-    let mut builder = Client::builder().timeout(Duration::from_secs(10));
-    if let Some(proxy_url) = &config.proxy {
-        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-            builder = builder.proxy(proxy);
-        }
-    }
-    builder.build().expect("failed to create HTTP client")
-}
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
 type WsRead = SplitStream<WsStream>;
@@ -60,7 +48,7 @@ pub struct BinanceAdapter {
 impl BinanceAdapter {
     pub fn new(config: ExchangeConfig) -> Self {
         let (market_tx, market_rx) = mpsc::channel(4096);
-        let client = build_http_client(&config);
+        let client = crate::build_http_client(&config);
         Self {
             config,
             client,
