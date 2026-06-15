@@ -202,6 +202,9 @@ pub struct ExchangeConfig {
     pub ws_url: String,
     pub rate_limit: RateLimitConfig,
     pub reconnect: ReconnectConfig,
+    /// 代理地址，None 时使用系统环境变量（https_proxy / http_proxy）
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

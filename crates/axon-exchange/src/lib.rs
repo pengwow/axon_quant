@@ -38,6 +38,7 @@
 //!         circuit_breaker_threshold: 5,
 //!         circuit_breaker_reset: Duration::from_secs(60),
 //!     },
+//!     proxy: None,
 //! };
 //! ```
 //!
