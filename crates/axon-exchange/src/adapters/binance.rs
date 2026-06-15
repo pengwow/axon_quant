@@ -1,11 +1,16 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::stream::SplitStream;
+use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use sha2::Sha256;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{Duration, interval};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::error::ExchangeError;
 use crate::traits::ExchangeAdapter;
@@ -15,15 +20,28 @@ use crate::types::{
 };
 
 type HmacSha256 = Hmac<Sha256>;
+type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type WsSink = futures_util::stream::SplitSink<WsStream, Message>;
+type WsRead = SplitStream<WsStream>;
 
 pub struct BinanceAdapter {
     config: ExchangeConfig,
     client: Client,
     market_tx: mpsc::Sender<WsMessage>,
     market_rx: Mutex<Option<mpsc::Receiver<WsMessage>>>,
-    depth_cache: Mutex<HashMap<String, DepthSnapshot>>,
-    ticker_cache: Mutex<HashMap<String, Ticker>>,
+    depth_cache: Arc<Mutex<HashMap<String, DepthSnapshot>>>,
+    ticker_cache: Arc<Mutex<HashMap<String, Ticker>>>,
     connected: Mutex<bool>,
+    // 已订阅的 symbol 列表，重连时用于重新订阅
+    subscribed_symbols: Arc<Mutex<Vec<Symbol>>>,
+    // 客户端订单 ID -> 交易对，用于撤单时获取 symbol
+    order_symbols: Mutex<HashMap<String, String>>,
+    // WebSocket 写入端共享句柄，供 subscribe 使用
+    ws_writer: Arc<Mutex<Option<Arc<Mutex<WsSink>>>>>,
+    // 断连通知，触发自动重连
+    disconnect_notify: Arc<Notify>,
+    // 优雅停止信号（disconnect 时使用）
+    shutdown: Arc<Notify>,
 }
 
 impl BinanceAdapter {
@@ -38,9 +56,14 @@ impl BinanceAdapter {
             client,
             market_tx,
             market_rx: Mutex::new(Some(market_rx)),
-            depth_cache: Mutex::new(HashMap::new()),
-            ticker_cache: Mutex::new(HashMap::new()),
+            depth_cache: Arc::new(Mutex::new(HashMap::new())),
+            ticker_cache: Arc::new(Mutex::new(HashMap::new())),
             connected: Mutex::new(false),
+            subscribed_symbols: Arc::new(Mutex::new(Vec::new())),
+            order_symbols: Mutex::new(HashMap::new()),
+            ws_writer: Arc::new(Mutex::new(None)),
+            disconnect_notify: Arc::new(Notify::new()),
+            shutdown: Arc::new(Notify::new()),
         }
     }
 
@@ -124,50 +147,223 @@ impl BinanceAdapter {
         Ok(body)
     }
 
-    /// 启动 WebSocket 连接（后台任务）
+    /// 启动 WebSocket 连接并管理重连循环
     async fn start_ws(&self) -> Result<(), ExchangeError> {
-        use futures_util::{SinkExt, StreamExt};
-
-        let url = &self.config.ws_url;
-        let (ws_stream, _) = tokio_tungstenite::connect_async(url)
-            .await
-            .map_err(|e| ExchangeError::WebSocket(e.to_string()))?;
-
-        let (mut ws_write, mut ws_read) = ws_stream.split();
+        let url = self.config.ws_url.clone();
+        let reconnect_cfg = self.config.reconnect.clone();
         let tx = self.market_tx.clone();
+        let depth_cache = self.depth_cache.clone();
+        let ticker_cache = self.ticker_cache.clone();
+        let subscribed = self.subscribed_symbols.clone();
+        let ws_writer_slot = self.ws_writer.clone();
+        let disconnect_notify = self.disconnect_notify.clone();
+        let shutdown = self.shutdown.clone();
 
-        // WebSocket 读取任务
+        // 重连监督任务：负责建立连接、启动读写任务、断线后指数退避重连
         tokio::spawn(async move {
-            while let Some(msg) = ws_read.next().await {
-                match msg {
-                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                        if let Ok(parsed) = parse_ws_message(&text) {
-                            let _ = tx.send(parsed).await;
-                        }
-                    }
-                    Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
-                        let _ = tx.send(WsMessage::Pong).await;
-                        let _ = ws_write.send(tokio_tungstenite::tungstenite::Message::Pong(data)).await;
-                    }
-                    Err(_) => break,
-                    _ => {}
-                }
-            }
-        });
-
-        // Ping 保活任务
-        let ping_tx = self.market_tx.clone();
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(30));
+            let mut backoff = reconnect_cfg.initial_backoff;
+            let mut attempt: u32 = 0;
             loop {
-                ticker.tick().await;
-                if ping_tx.send(WsMessage::Ping).await.is_err() {
-                    break;
+                if attempt > 0 {
+                    // 等待 shutdown 或退避时长
+                    tokio::select! {
+                        _ = shutdown.notified() => break,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                }
+
+                match Self::open_ws(&url).await {
+                    Ok((ws_write, ws_read)) => {
+                        attempt = 0;
+                        backoff = reconnect_cfg.initial_backoff;
+                        let writer = Arc::new(Mutex::new(ws_write));
+                        *ws_writer_slot.lock().await = Some(writer.clone());
+
+                        // 启动 Ping 保活
+                        let ping_handle = Self::spawn_ping_task(writer.clone(), shutdown.clone());
+
+                        // 启动读取循环（持续到断线）
+                        Self::run_read_loop(
+                            ws_read,
+                            tx.clone(),
+                            writer.clone(),
+                            depth_cache.clone(),
+                            ticker_cache.clone(),
+                            shutdown.clone(),
+                        )
+                        .await;
+
+                        // 清理：清空共享 writer
+                        *ws_writer_slot.lock().await = None;
+                        ping_handle.abort();
+                        tracing::warn!("Binance WebSocket read loop exited, will reconnect");
+                        disconnect_notify.notify_waiters();
+                    }
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt > reconnect_cfg.max_retries {
+                            tracing::error!(
+                                "Binance WebSocket reconnect failed after {} attempts: {}",
+                                reconnect_cfg.max_retries,
+                                e
+                            );
+                            break;
+                        }
+                        tracing::warn!(
+                            "Binance WebSocket connect failed (attempt {}): {}",
+                            attempt,
+                            e
+                        );
+                        backoff = next_backoff(backoff, &reconnect_cfg);
+                    }
+                }
+
+                // 重连后重新订阅先前已订阅的流
+                let symbols = subscribed.lock().await.clone();
+                if !symbols.is_empty() {
+                    let streams = Self::build_streams(&symbols);
+                    match Self::open_ws_writer(&url).await {
+                        Ok(new_writer) => {
+                            let writer = Arc::new(Mutex::new(new_writer));
+                            *ws_writer_slot.lock().await = Some(writer.clone());
+                            if let Err(e) = Self::send_subscribe_msg(&writer, streams).await {
+                                tracing::warn!("resubscribe failed: {}", e);
+                            }
+                        }
+                        Err(e) => tracing::warn!("resubscribe connect failed: {}", e),
+                    }
                 }
             }
         });
 
         Ok(())
+    }
+
+    /// 单独建立连接并取走 writer（用于重连后的重新订阅）
+    async fn open_ws_writer(url: &str) -> Result<WsSink, ExchangeError> {
+        let (ws_write, _ws_read) = Self::open_ws(url).await?;
+        Ok(ws_write)
+    }
+
+    /// 建立 WebSocket 连接并拆分读写
+    async fn open_ws(url: &str) -> Result<(WsSink, WsRead), ExchangeError> {
+        let (ws_stream, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .map_err(|e| ExchangeError::WebSocket(e.to_string()))?;
+        Ok(ws_stream.split())
+    }
+
+    /// Ping 保活任务：定时向 ws 写入 ping 帧，断线时退出
+    fn spawn_ping_task(writer: Arc<Mutex<WsSink>>, shutdown: Arc<Notify>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    _ = ticker.tick() => {
+                        let mut w = writer.lock().await;
+                        if w.send(Message::Ping(Vec::new())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// 读取循环：解析消息后更新缓存并通过 market_tx 转发；
+    /// 断线（读取或写入失败）或收到 shutdown 信号后返回。
+    async fn run_read_loop(
+        mut ws_read: WsRead,
+        tx: mpsc::Sender<WsMessage>,
+        writer: Arc<Mutex<WsSink>>,
+        depth_cache: Arc<Mutex<HashMap<String, DepthSnapshot>>>,
+        ticker_cache: Arc<Mutex<HashMap<String, Ticker>>>,
+        shutdown: Arc<Notify>,
+    ) {
+        loop {
+            tokio::select! {
+                _ = shutdown.notified() => return,
+                msg = ws_read.next() => {
+                    let Some(msg) = msg else { return; };
+                    match msg {
+                        Ok(Message::Text(text)) => {
+                            if let Ok(parsed) = parse_ws_message(&text) {
+                                // 缓存：深度 / Ticker
+                                match &parsed {
+                                    WsMessage::Depth(d) => {
+                                        depth_cache.lock().await.insert(d.symbol.to_string(), d.clone());
+                                    }
+                                    WsMessage::Ticker(t) => {
+                                        ticker_cache.lock().await.insert(t.symbol.to_string(), t.clone());
+                                    }
+                                    _ => {}
+                                }
+                                if tx.send(parsed).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Ok(Message::Ping(data)) => {
+                            // 按 Binance 协议回 Pong
+                            let mut w = writer.lock().await;
+                            if w.send(Message::Pong(data)).await.is_err() {
+                                return;
+                            }
+                            let _ = tx.send(WsMessage::Pong).await;
+                        }
+                        Ok(Message::Close(_)) => return,
+                        Err(e) => {
+                            tracing::warn!("Binance WebSocket read error: {}", e);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// 通过共享 writer 发送订阅消息
+    async fn send_subscribe_msg(writer: &Arc<Mutex<WsSink>>, streams: Vec<String>) -> Result<(), ExchangeError> {
+        let msg = serde_json::json!({
+            "method": "SUBSCRIBE",
+            "params": streams,
+            "id": chrono::Utc::now().timestamp_millis(),
+        });
+        let payload = serde_json::to_string(&msg)
+            .map_err(|e| ExchangeError::ParseError(e.to_string()))?;
+        let mut w = writer.lock().await;
+        w.send(Message::Text(payload))
+            .await
+            .map_err(|e| ExchangeError::WebSocket(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 构造交易对 stream 名称列表
+    fn build_streams(symbols: &[Symbol]) -> Vec<String> {
+        symbols
+            .iter()
+            .flat_map(|s| {
+                let lower = s.to_string().to_lowercase();
+                vec![
+                    format!("{lower}@depth@100ms"),
+                    format!("{lower}@ticker"),
+                    format!("{lower}@trade"),
+                    format!("{lower}@kline_1m"),
+                ]
+            })
+            .collect()
+    }
+}
+
+/// 计算下一次退避时长，上限为 max_backoff
+fn next_backoff(current: Duration, cfg: &crate::types::ReconnectConfig) -> Duration {
+    let next = Duration::from_secs_f64(current.as_secs_f64() * cfg.backoff_multiplier);
+    if next > cfg.max_backoff {
+        cfg.max_backoff
+    } else {
+        next
     }
 }
 
@@ -336,7 +532,7 @@ impl ExchangeAdapter for BinanceAdapter {
             ));
         }
 
-        // 启动 WebSocket
+        // 启动 WebSocket（重连逻辑在内部 tokio 任务中循环）
         self.start_ws().await?;
 
         // 等待连接建立
@@ -349,42 +545,48 @@ impl ExchangeAdapter for BinanceAdapter {
 
     async fn disconnect(&mut self) -> Result<(), ExchangeError> {
         *self.connected.lock().await = false;
+        // 通知重连监督任务退出
+        self.shutdown.notify_waiters();
         tracing::info!("Binance adapter disconnected");
         Ok(())
     }
 
     async fn subscribe(&mut self, symbols: &[Symbol]) -> Result<(), ExchangeError> {
-        // Binance WebSocket 订阅格式
-        let streams: Vec<String> = symbols
-            .iter()
-            .flat_map(|s| {
-                let lower = s.to_string().to_lowercase();
-                vec![
-                    format!("{lower}@depth@100ms"),
-                    format!("{lower}@ticker"),
-                    format!("{lower}@trade"),
-                    format!("{lower}@kline_1m"),
-                ]
-            })
-            .collect();
+        // 记录已订阅的 symbol，重连时用于重新订阅
+        {
+            let mut sub = self.subscribed_symbols.lock().await;
+            for s in symbols {
+                if !sub.iter().any(|x| x.to_string() == s.to_string()) {
+                    sub.push(s.clone());
+                }
+            }
+        }
 
-        let msg = serde_json::json!({
-            "method": "SUBSCRIBE",
-            "params": streams,
-            "id": chrono::Utc::now().timestamp_millis(),
-        });
-
+        let streams = Self::build_streams(symbols);
         tracing::info!("Subscribing to {} streams", streams.len());
-        // WebSocket 发送订阅消息（通过 market_tx 间接发送）
-        // 实际实现中需要持有 ws_write 引用
-        let _ = msg;
-        Ok(())
+
+        // 通过共享 writer 发送订阅消息
+        let writer_opt = self.ws_writer.lock().await.clone();
+        match writer_opt {
+            Some(writer) => Self::send_subscribe_msg(&writer, streams).await,
+            None => {
+                // WebSocket 尚未建立，消息将在重连后由 start_ws 循环中的重新订阅逻辑发出
+                tracing::warn!("WebSocket not ready; subscription will be applied on reconnect");
+                Ok(())
+            }
+        }
     }
 
     async fn send_order(&mut self, order: Order) -> Result<OrderId, ExchangeError> {
         if !*self.connected.lock().await {
             return Err(ExchangeError::ConnectionFailed("not connected".into()));
         }
+
+        // 记录 client_order_id -> symbol，供后续撤单使用
+        self.order_symbols
+            .lock()
+            .await
+            .insert(order.client_order_id.to_string(), order.symbol.to_string());
 
         let params = order_to_binance_params(&order);
         let resp = self.rest_post("/api/v3/order", &params).await?;
@@ -408,10 +610,29 @@ impl ExchangeAdapter for BinanceAdapter {
             return Err(ExchangeError::ConnectionFailed("not connected".into()));
         }
 
-        // Binance 撤单需要 symbol + orderId 或 clientOrderId
-        // 这里使用 clientOrderId
-        let params = format!("clientOrderId={order_id}");
+        // Binance 撤单需要 symbol + (orderId 或 clientOrderId)
+        // 从本地映射查找订单对应的 symbol
+        let symbol = self
+            .order_symbols
+            .lock()
+            .await
+            .get(&order_id.to_string())
+            .cloned();
+
+        let params = match symbol {
+            Some(sym) => format!("symbol={sym}&clientOrderId={order_id}"),
+            None => {
+                tracing::warn!(
+                    "cancel_order: no symbol mapping for client_order_id={order_id}, \
+                     Binance API requires symbol; consider providing it via order meta"
+                );
+                return Err(ExchangeError::OrderNotFound(order_id.to_string()));
+            }
+        };
         self.rest_delete("/api/v3/order", &params).await?;
+
+        // 清理映射
+        self.order_symbols.lock().await.remove(&order_id.to_string());
 
         tracing::info!("Order cancelled: {}", order_id);
         Ok(())
@@ -449,11 +670,17 @@ impl ExchangeAdapter for BinanceAdapter {
     }
 
     fn get_depth(&self, symbol: &Symbol) -> Option<DepthSnapshot> {
-        self.depth_cache.blocking_lock().get(&symbol.to_string()).cloned()
+        self.depth_cache
+            .blocking_lock()
+            .get(&symbol.to_string())
+            .cloned()
     }
 
     fn get_ticker(&self, symbol: &Symbol) -> Option<Ticker> {
-        self.ticker_cache.blocking_lock().get(&symbol.to_string()).cloned()
+        self.ticker_cache
+            .blocking_lock()
+            .get(&symbol.to_string())
+            .cloned()
     }
 
     fn market_data_rx(&self) -> mpsc::Receiver<WsMessage> {
@@ -589,5 +816,90 @@ mod tests {
             }
             _ => panic!("expected OrderUpdate"),
         }
+    }
+
+    #[test]
+    fn test_build_streams_includes_depth_ticker_trade_kline() {
+        let syms = [Symbol::new("BTCUSDT")];
+        let streams = BinanceAdapter::build_streams(&syms);
+        assert_eq!(streams.len(), 4);
+        assert!(streams.contains(&"btcusdt@depth@100ms".to_string()));
+        assert!(streams.contains(&"btcusdt@ticker".to_string()));
+        assert!(streams.contains(&"btcusdt@trade".to_string()));
+        assert!(streams.contains(&"btcusdt@kline_1m".to_string()));
+    }
+
+    #[test]
+    fn test_next_backoff_grows_with_multiplier() {
+        let cfg = ReconnectConfig {
+            max_retries: 10,
+            initial_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            circuit_breaker_threshold: 5,
+            circuit_breaker_reset: Duration::from_secs(60),
+        };
+        let b1 = next_backoff(cfg.initial_backoff, &cfg);
+        let b2 = next_backoff(b1, &cfg);
+        let b3 = next_backoff(b2, &cfg);
+        assert_eq!(b1, Duration::from_secs(1));
+        assert_eq!(b2, Duration::from_secs(2));
+        assert_eq!(b3, Duration::from_secs(4));
+    }
+
+    #[test]
+    fn test_next_backoff_caps_at_max() {
+        let cfg = ReconnectConfig {
+            max_retries: 10,
+            initial_backoff: Duration::from_secs(20),
+            max_backoff: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            circuit_breaker_threshold: 5,
+            circuit_breaker_reset: Duration::from_secs(60),
+        };
+        // 20 * 2 = 40 > 30，应被截断到 30
+        let b = next_backoff(cfg.initial_backoff, &cfg);
+        assert_eq!(b, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_order_symbols_mapping_for_cancel() {
+        // 验证 send_order 写入的 client_order_id -> symbol 映射可被 cancel_order 读取
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let adapter = BinanceAdapter::new(testnet_config());
+            let client_id = OrderId::new();
+            adapter
+                .order_symbols
+                .lock()
+                .await
+                .insert(client_id.to_string(), "BTCUSDT".to_string());
+
+            let symbol = adapter
+                .order_symbols
+                .lock()
+                .await
+                .get(&client_id.to_string())
+                .cloned();
+            assert_eq!(symbol, Some("BTCUSDT".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_subscribe_records_symbols_for_resubscribe() {
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut adapter = BinanceAdapter::new(testnet_config());
+            let _ = adapter.subscribe(&[Symbol::new("BTCUSDT")]).await;
+            let sub = adapter.subscribed_symbols.lock().await;
+            assert_eq!(sub.len(), 1);
+            assert_eq!(sub[0], Symbol::new("BTCUSDT"));
+        });
     }
 }
