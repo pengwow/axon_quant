@@ -179,6 +179,17 @@ impl BinanceAdapter {
                         let writer = Arc::new(Mutex::new(ws_write));
                         *ws_writer_slot.lock().await = Some(writer.clone());
 
+                        // 连接建立后立即按已订阅列表重新发送 SUBSCRIBE（首次连接与重连均走此路径）
+                        {
+                            let symbols = subscribed.lock().await.clone();
+                            if !symbols.is_empty() {
+                                let streams = Self::build_streams(&symbols);
+                                if let Err(e) = Self::send_subscribe_msg(&writer, streams).await {
+                                    tracing::warn!("subscribe on (re)connect failed: {}", e);
+                                }
+                            }
+                        }
+
                         // 启动 Ping 保活
                         let ping_handle = Self::spawn_ping_task(writer.clone(), shutdown.clone());
 
@@ -217,32 +228,10 @@ impl BinanceAdapter {
                         backoff = next_backoff(backoff, &reconnect_cfg);
                     }
                 }
-
-                // 重连后重新订阅先前已订阅的流
-                let symbols = subscribed.lock().await.clone();
-                if !symbols.is_empty() {
-                    let streams = Self::build_streams(&symbols);
-                    match Self::open_ws_writer(&url).await {
-                        Ok(new_writer) => {
-                            let writer = Arc::new(Mutex::new(new_writer));
-                            *ws_writer_slot.lock().await = Some(writer.clone());
-                            if let Err(e) = Self::send_subscribe_msg(&writer, streams).await {
-                                tracing::warn!("resubscribe failed: {}", e);
-                            }
-                        }
-                        Err(e) => tracing::warn!("resubscribe connect failed: {}", e),
-                    }
-                }
             }
         });
 
         Ok(())
-    }
-
-    /// 单独建立连接并取走 writer（用于重连后的重新订阅）
-    async fn open_ws_writer(url: &str) -> Result<WsSink, ExchangeError> {
-        let (ws_write, _ws_read) = Self::open_ws(url).await?;
-        Ok(ws_write)
     }
 
     /// 建立 WebSocket 连接并拆分读写
