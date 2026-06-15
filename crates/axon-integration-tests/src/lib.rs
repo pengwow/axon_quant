@@ -44,3 +44,14 @@ pub mod multi_objective;
 pub mod phase4_e2e;
 pub mod tracker_registry;
 pub mod walkforward_registry;
+
+/// 场景 1：回测引擎撮合全流程
+pub mod matching_flow;
+/// 场景 3：HPO 超参数优化全流程
+pub mod hpo_flow;
+/// 场景 4：Walk-Forward 验证全流程
+pub mod walkforward_flow;
+/// 场景 5：实验追踪全流程
+pub mod tracker_registry_flow;
+/// 场景 6：分布式训练全流程
+pub mod distributed_flow;

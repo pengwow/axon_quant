@@ -214,6 +214,9 @@ fn compute_hypervolume_2d(
     reference: &[f64],
     directions: &[StudyDirection],
 ) -> f64 {
+    if directions.len() < 2 || objectives.is_empty() {
+        return 0.0;
+    }
     // 仅处理 maximize + maximize 场景的精确梯形面积
     // 其他方向可通过坐标变换归约（暂简化）
     if !matches!(directions[0], StudyDirection::Maximize)

@@ -1,30 +1,26 @@
 """distributed_basic.py — 分布式训练 mock 模式示例。
 
-不连接真实 Ray 集群，演示：
-1. DistributedTrainer mock 训练
+使用 `axon_quant.distributed` 模块演示：
+1. 指标序列化
 2. Checkpoint 保存/恢复
-3. 容错训练循环
+3. DistributedRunner 配置
+
+运行方式：
+    cd axon
+    .venv/bin/python examples/04_distributed/distributed_basic.py
 """
 
 from __future__ import annotations
 
-import sys
+import json
 import tempfile
 from pathlib import Path
 
-CARGO_MANIFEST = Path(__file__).parent.parent / "crates" / "axon-distributed"
-sys.path.insert(0, str(CARGO_MANIFEST / "python"))
-
-from axon_distributed.types import (  # noqa: E402
-    CheckpointConfig,
-    RayConfig,
-    RLLibTrainConfig,
-)
-from axon_distributed.ray_trainer import DistributedTrainer  # noqa: E402
-from axon_distributed.fault_tolerance import (  # noqa: E402
-    CheckpointManager,
-    FaultTolerantTrainer,
-)
+import axon_quant  # noqa: E402
+DistributedRunner = axon_quant.distributed.DistributedRunner
+py_serialize_metrics = axon_quant.distributed.py_serialize_metrics
+py_save_checkpoint = axon_quant.distributed.py_save_checkpoint
+py_load_checkpoint = axon_quant.distributed.py_load_checkpoint
 
 
 def main() -> int:
@@ -32,49 +28,44 @@ def main() -> int:
     print("分布式训练 mock 模式示例")
     print("=" * 60)
 
-    # 1. 加载默认 TOML 配置
-    train_cfg = RLLibTrainConfig()
-    train_cfg._load_default_toml()
-    print(f"\n[1] 训练配置（来自 default_distributed.toml）")
-    print(f"  algorithm: {train_cfg.algorithm}")
-    print(f"  num_workers: {train_cfg.num_workers}")
-    print(f"  train_batch_size: {train_cfg.train_batch_size}")
-    print(f"  lr: {train_cfg.lr}")
-
-    ray_cfg = RayConfig(
-        num_workers=train_cfg.num_workers,
-        num_cpus_per_worker=2,
-        num_gpus_per_worker=0.0,
+    # 1. 指标序列化
+    print("\n[1] 指标序列化")
+    metrics_json = py_serialize_metrics(
+        step=100,
+        reward=0.5,
+        policy_loss=0.01,
+        value_loss=0.02,
+        entropy=0.1,
+        fps=1000.0,
     )
-    ray_cfg.validate()
-    print(f"  ray_init_kwargs: {ray_cfg.to_ray_init_kwargs()}")
+    metrics = json.loads(metrics_json)
+    print(f"  step: {metrics['step']}")
+    print(f"  episode_reward_mean: {metrics['episode_reward_mean']}")
+    print(f"  policy_loss: {metrics['policy_loss']}")
 
-    # 2. mock 训练
-    print("\n[2] DistributedTrainer mock 训练")
-    trainer = DistributedTrainer(ray_cfg, train_cfg, init_ray=False)
-    result = trainer.train(num_iterations=5, checkpoint_interval=3)
-    print(f"  iterations: {result['iterations']}")
-    print(f"  final_reward: {result['final_reward']:.4f}")
-
-    # 3. 容错训练 + Checkpoint
-    print("\n[3] FaultTolerantTrainer + Checkpoint")
+    # 2. Checkpoint 保存/恢复
+    print("\n[2] Checkpoint 保存/恢复")
     with tempfile.TemporaryDirectory() as tmp:
-        ckpt_cfg = CheckpointConfig(
-            checkpoint_dir=tmp,
-            keep_checkpoints_num=2,
-            checkpoint_at_end=True,
+        # 保存 checkpoint
+        ckpt_json = py_save_checkpoint(
+            iteration=10,
+            policy_state=list(b"policy weights"),
+            optimizer_state=list(b"optimizer state"),
+            rng_state=list(b"rng state"),
         )
-        ft_trainer = FaultTolerantTrainer(trainer, ckpt_cfg)
-        result = ft_trainer.train_with_recovery(num_iterations=5, checkpoint_interval=2)
-        print(f"  start_iteration: {result['start_iteration']}")
-        print(f"  iterations: {result['iterations']}")
-        print(f"  final_reward: {result['final_reward']:.4f}")
+        ckpt_path = Path(tmp) / "checkpoint.json"
+        ckpt_path.write_text(ckpt_json)
+        print(f"  保存 checkpoint: {ckpt_path.name} ({len(ckpt_json)} bytes)")
 
-        # 验证 checkpoint 文件
-        ckpt_files = sorted(Path(tmp).glob("*.meta.json"))
-        print(f"  checkpoint meta files: {len(ckpt_files)}")
-        for f in ckpt_files:
-            print(f"    {f.name}")
+        # 加载 checkpoint
+        loaded_json = ckpt_path.read_text()
+        iteration, policy_state = py_load_checkpoint(loaded_json)
+        print(f"  加载 checkpoint: iteration={iteration}, "
+              f"policy_state={len(policy_state)} bytes")
+
+    # 3. 模块功能验证
+    print("\n[3] 模块功能验证")
+    print(f"  DistributedRunner 类: {DistributedRunner}")
 
     print("\n=== ALL PASS ===")
     return 0

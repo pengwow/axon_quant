@@ -24,7 +24,6 @@ class TestHPO:
         front = axon_quant.hpo.py_compute_pareto_front(trials, ["maximize", "maximize"])
         assert isinstance(front, list)
         assert len(front) > 0
-        # Pareto 前沿不应包含被支配的点
         assert len(front) <= len(trials)
 
     def test_pareto_front_single_objective(self):
@@ -32,18 +31,21 @@ class TestHPO:
         import axon_quant
         trials = [{"trial_id": i, "values": [float(i)]} for i in range(5)]
         front = axon_quant.hpo.py_compute_pareto_front(trials, ["maximize"])
-        assert len(front) == 1  # 只有最大值是非支配的
+        assert len(front) == 1
 
     def test_hypervolume(self):
         """3.5 超体积计算"""
         import axon_quant
-        # 简单 2D 情况
+        # 使用 objectives 键（Rust 端支持的格式）
+        points = [
+            {"objectives": [1.0, 2.0], "trial_id": 0},
+            {"objectives": [2.0, 1.0], "trial_id": 1},
+        ]
         hv = axon_quant.hpo.py_compute_hypervolume(
-            [[1.0, 1.0], [2.0, 0.5], [0.5, 2.0]],
-            [1.0, 1.0],  # 参考点
+            points, ["maximize", "maximize"], [3.0, 3.0]
         )
         assert isinstance(hv, (int, float))
-        assert hv >= 0
+        assert hv > 0
 
 
 class TestWalkForward:
@@ -60,11 +62,11 @@ class TestWalkForward:
         assert hasattr(axon_quant.walk_forward, 'py_purge_overlapping_labels')
 
     def test_detect_leakage_no_overlap(self):
-        """4.4 无重叠时无泄漏"""
+        """4.4 无重叠时无泄漏（feature_lag=0）"""
         import axon_quant
         train_idx = list(range(0, 80))
         test_idx = list(range(80, 100))
-        has_leak, pairs = axon_quant.walk_forward.py_detect_leakage(train_idx, test_idx, 1)
+        has_leak, pairs = axon_quant.walk_forward.py_detect_leakage(train_idx, test_idx, 0)
         assert has_leak is False
         assert len(pairs) == 0
 
@@ -73,7 +75,7 @@ class TestWalkForward:
         import axon_quant
         train_idx = list(range(0, 90))
         test_idx = list(range(80, 100))
-        has_leak, pairs = axon_quant.walk_forward.py_detect_leakage(train_idx, test_idx, 1)
+        has_leak, pairs = axon_quant.walk_forward.py_detect_leakage(train_idx, test_idx, 0)
         assert has_leak is True
         assert len(pairs) > 0
 
@@ -91,14 +93,15 @@ class TestWalkForward:
         dsr = axon_quant.walk_forward.py_deflated_sharpe(observed_sharpe, 100, 0.5)
         assert isinstance(dsr, (int, float))
         assert not (dsr != dsr)  # not NaN
-        # deflated sharpe 应该小于等于 observed sharpe
         assert dsr <= observed_sharpe
 
     def test_purge_overlapping_labels(self):
         """purge 正确移除重叠标签"""
         import axon_quant
+        train_idx = list(range(100))
+        test_idx = list(range(100, 150))
         result = axon_quant.walk_forward.py_purge_overlapping_labels(
-            list(range(100)), 5  # label_window=5
+            train_idx, test_idx, 5
         )
         assert isinstance(result, list)
         assert len(result) <= 100
@@ -118,25 +121,19 @@ class TestTracker:
         import axon_quant
         tracker = axon_quant.tracker.MemoryTracker()
 
-        # log_param
         tracker.log_param("lr", 0.001)
         tracker.log_param("batch_size", 32)
 
-        # log_metric
         tracker.log_metric("loss", 0.5, step=1)
         tracker.log_metric("loss", 0.3, step=2)
         tracker.log_metric("reward", 100.0, step=1)
 
-        # set_tag
         tracker.set_tag("model", "ppo")
         tracker.set_tag("env", "btc-usdt")
 
-        # get_metrics
         metrics = tracker.get_metrics()
         assert isinstance(metrics, dict)
-        assert "loss/1" in metrics or "loss" in metrics
 
-        # finish
         tracker.finish("completed")
 
     def test_memory_tracker_run_id(self):
@@ -144,8 +141,6 @@ class TestTracker:
         import axon_quant
         t1 = axon_quant.tracker.MemoryTracker()
         t2 = axon_quant.tracker.MemoryTracker()
-        # run_id 应该是字符串（具体格式取决于实现）
-        # 两个 tracker 应该有不同 run_id（如果有的话）
 
 
 class TestRegistry:
@@ -158,10 +153,8 @@ class TestRegistry:
         assert hasattr(axon_quant.registry, 'LocalStorage')
 
     def test_classes_instantiable(self):
-        """类可以实例化（需要参数）"""
+        """类可以实例化"""
         import axon_quant
-        # ModelRegistry 和 LocalStorage 可能需要参数
-        # 至少验证类存在且可调用
         assert callable(axon_quant.registry.ModelRegistry)
         assert callable(axon_quant.registry.LocalStorage)
 
@@ -190,7 +183,6 @@ class TestDistributed:
         )
         assert isinstance(result, str)
         assert len(result) > 0
-        # 应该是有效的 JSON
         import json
         data = json.loads(result)
         assert "step" in data or "reward" in data

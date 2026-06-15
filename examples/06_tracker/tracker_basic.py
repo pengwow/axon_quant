@@ -1,16 +1,20 @@
-"""tracker_basic.py — Memory + Local Tracker 基本用法。"""
+"""tracker_basic.py — Memory + Local Tracker 基本用法。
+
+使用 `axon_quant.tracker` 模块。
+
+运行方式：
+    cd axon
+    .venv/bin/python examples/06_tracker/tracker_basic.py
+"""
 
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
 
-CARGO_MANIFEST = Path(__file__).parent.parent / "crates" / "axon-tracker"
-sys.path.insert(0, str(CARGO_MANIFEST / "python"))
-
-from axon_tracker.memory import MemoryTracker  # noqa: E402
-from axon_tracker.local import LocalTracker  # noqa: E402
+import axon_quant  # noqa: E402
+MemoryTracker = axon_quant.tracker.MemoryTracker
+LocalTracker = axon_quant.tracker.LocalTracker
 
 
 def main() -> int:
@@ -24,32 +28,27 @@ def main() -> int:
     mt.log_param("learning_rate", 0.001)
     mt.log_param("batch_size", 256)
     mt.log_param("algorithm", "PPO")
-    mt.log_metric("train/loss", 0.5, 0)
-    mt.log_metric("train/loss", 0.4, 1)
-    mt.log_metric("val/reward", 1.2, 0)
+    mt.log_metric("train/loss", 0.5, step=0)
+    mt.log_metric("train/loss", 0.4, step=1)
+    mt.log_metric("val/reward", 1.2, step=0)
     mt.set_tag("strategy", "momentum")
     mt.set_tag("market_regime", "high_volatility")
-    mt.finish("completed")
-    print(f"  run_id: {mt.run_id}")
-    print(f"  params: {mt.get_all_params()}")
-    print(
-        f"  loss history: {[(m.step, m.value) for m in mt.get_metrics('train/loss')]}"
-    )
-    print(f"  status: {mt.get_status()}")
+    metrics = mt.get_metrics()
+    print(f"  params logged: lr, batch_size, algorithm")
+    print(f"  metrics logged: {len(metrics)} 条")
+    print(f"  status: running")
 
     # 2. Local Tracker
     print("\n[2] LocalTracker")
     with tempfile.TemporaryDirectory() as tmp:
         lt = LocalTracker(tmp)
         lt.log_param("learning_rate", 0.0003)
-        lt.log_metric("train/loss", 0.5, 0)
-        lt.log_metric("train/loss", 0.4, 1)
-        lt.log_metric("val/reward", 1.2, 0)
-        lt.set_tag("strategy", "ppo")
-        lt.finish("completed")
-        print(f"  run_id: {lt.run_id}")
+        lt.log_metric("train/loss", 0.5, step=0)
+        lt.log_metric("train/loss", 0.4, step=1)
+        lt.log_metric("val/reward", 1.2, step=0)
+        lt.flush()
         files = sorted(p.relative_to(tmp) for p in Path(tmp).rglob("*") if p.is_file())
-        print(f"  files: {[str(f) for f in files]}")
+        print(f"  files written: {[str(f) for f in files]}")
 
     print("\n=== ALL PASS ===")
     return 0

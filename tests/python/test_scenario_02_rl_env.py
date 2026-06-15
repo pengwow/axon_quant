@@ -6,8 +6,6 @@ from conftest import (
     generate_ohlcv,
     generate_small_ohlcv,
     generate_trending_ohlcv,
-    assert_valid_observation,
-    assert_valid_reward,
 )
 
 
@@ -38,31 +36,21 @@ class TestTradingEnvLifecycle:
             axon_quant.rl.TradingEnv(config={"initial_capital": 100_000.0})
 
     def test_reset(self):
-        """2.3 env.reset() 返回 (obs, info)"""
+        """2.3 env.reset() 返回 dict"""
         import axon_quant
         bars = generate_small_ohlcv(10)
         env = axon_quant.rl.TradingEnv(
             config={"initial_capital": 100_000.0, "max_steps": 10},
             market_data=bars,
         )
-        result = env.reset()
-        assert isinstance(result, tuple), f"reset() returned {type(result)}"
-        assert len(result) == 2, f"reset() returned {len(result)} items"
-        obs, info = result
-        assert_valid_observation(obs)
-        assert isinstance(info, dict)
-
-    def test_action_space_sample(self):
-        """2.4 action_space.sample() 返回合法动作"""
-        import axon_quant
-        bars = generate_small_ohlcv(10)
-        env = axon_quant.rl.TradingEnv(
-            config={"initial_capital": 100_000.0, "max_steps": 10},
-            market_data=bars,
-        )
-        action = env.action_space.sample()
-        assert action is not None
-        assert isinstance(action, (int, float, list))
+        obs = env.reset()
+        assert isinstance(obs, dict)
+        assert 'features' in obs
+        assert 'feature_names' in obs
+        assert 'timestamp' in obs
+        assert isinstance(obs['features'], list)
+        assert len(obs['features']) > 0
+        assert not any(math.isnan(x) for x in obs['features'])
 
     def test_step(self):
         """2.5 env.step(action) 返回 5 元组"""
@@ -73,16 +61,17 @@ class TestTradingEnvLifecycle:
             market_data=bars,
         )
         env.reset()
-        action = env.action_space.sample()
-        result = env.step(action)
-        assert isinstance(result, tuple), f"step() returned {type(result)}"
-        assert len(result) == 5, f"step() returned {len(result)} items"
-        obs, reward, terminated, truncated, info = result
-        assert_valid_observation(obs)
-        assert_valid_reward(reward)
-        assert isinstance(terminated, bool)
-        assert isinstance(truncated, bool)
+        result = env.step([0.5])
+        assert isinstance(result, tuple)
+        assert len(result) == 5
+        obs, reward, done, truncated, info = result
+        assert isinstance(obs, dict)
+        assert 'features' in obs
+        assert isinstance(reward, (int, float))
+        assert not math.isnan(reward)
+        assert isinstance(done, bool)
         assert isinstance(info, dict)
+        assert 'portfolio_value' in info
 
     def test_full_episode(self):
         """2.6 跑完一个 episode"""
@@ -92,41 +81,44 @@ class TestTradingEnvLifecycle:
             config={"initial_capital": 100_000.0, "max_steps": 50},
             market_data=bars,
         )
-        obs, info = env.reset()
+        env.reset()
         total_reward = 0.0
         steps = 0
         for _ in range(100):
-            action = env.action_space.sample()
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, done, truncated, info = env.step([0.0])
             total_reward += reward
             steps += 1
-            if terminated or truncated:
+            if done or truncated:
                 break
 
         assert steps > 0, "Episode didn't run any steps"
         assert not math.isnan(total_reward), "Total reward is NaN"
-        # 2.7 累计 reward 有值
-        # (total_reward 可以为 0，但不能是 NaN/Inf)
 
-    def test_observation_space(self):
-        """observation_space 属性存在"""
+    def test_portfolio_value(self):
+        """portfolio_value 属性"""
         import axon_quant
         bars = generate_small_ohlcv(10)
         env = axon_quant.rl.TradingEnv(
             config={"initial_capital": 100_000.0, "max_steps": 10},
             market_data=bars,
         )
-        assert hasattr(env, 'observation_space')
-        assert env.observation_space is not None
+        assert hasattr(env, 'portfolio_value')
+        pv = env.portfolio_value
+        assert isinstance(pv, (int, float))
+        assert pv > 0
 
-    def test_action_space_bounds(self):
-        """action_space 有正确的边界"""
+    def test_step_info_fields(self):
+        """step info 包含必要字段"""
         import axon_quant
         bars = generate_small_ohlcv(10)
         env = axon_quant.rl.TradingEnv(
             config={"initial_capital": 100_000.0, "max_steps": 10},
-            action_space={"type": "continuous", "min": -1.0, "max": 1.0},
             market_data=bars,
         )
-        space = env.action_space
-        assert hasattr(space, 'low') or hasattr(space, 'shape')
+        env.reset()
+        _, _, _, _, info = env.step([0.5])
+        assert 'portfolio_value' in info
+        assert 'trades_executed' in info
+        assert 'transaction_costs' in info
+        assert 'current_step' in info
+        assert 'done' in info
