@@ -93,6 +93,74 @@ impl MockTradingBackend {
     pub fn order_count(&self) -> usize {
         self.orders.lock().expect("poisoned").len()
     }
+
+    /// 拆分 "BASE-QUOTE" 形式的交易对,失败回退 ("<symbol>", "USDT")
+    fn split_symbol(symbol: &str) -> (&str, &str) {
+        symbol.split_once('-').unwrap_or((symbol, "USDT"))
+    }
+
+    /// 成交流水:按方向调整对应币种余额与持仓
+    ///
+    /// 价格缺省时使用 50_000.0(与默认持仓 entry_price 对齐,保证后续查询稳定)。
+    fn apply_fill(&self, symbol: &str, side: OrderSide, quantity: f64, price: Option<f64>) {
+        let (base, quote) = Self::split_symbol(symbol);
+        let price = price.unwrap_or(50_000.0);
+        let notional = quantity * price;
+        let sign = if matches!(side, OrderSide::Buy) { 1.0 } else { -1.0 };
+
+        // 调整余额:买入用 quote 付,收 base;卖出反之
+        self.adjust_currency(quote, -sign * notional);
+        self.adjust_currency(base, sign * quantity);
+
+        // 调整持仓:买入加多,卖出减多(不区分多空,统一按净持仓)
+        self.adjust_position(symbol, sign * quantity, price);
+    }
+
+    /// 调整指定币种 free 余额,若不存在则 push 新条目
+    fn adjust_currency(&self, currency: &str, delta: f64) {
+        let mut b = self.balance.lock().expect("poisoned");
+        if let Some(c) = b.currencies.iter_mut().find(|c| c.currency == currency) {
+            c.free += delta;
+        } else {
+            b.currencies.push(CurrencyBalance {
+                currency: currency.to_string(),
+                free: delta,
+                locked: 0.0,
+            });
+        }
+    }
+
+    /// 调整指定 symbol 的净持仓:delta > 0 加仓,< 0 减仓
+    fn adjust_position(&self, symbol: &str, delta: f64, price: f64) {
+        let mut p = self.positions.lock().expect("poisoned");
+        if let Some(pos) = p.iter_mut().find(|pos| pos.symbol == symbol) {
+            // 计算新均价:简单按加权平均
+            let new_qty = pos.quantity + delta;
+            if new_qty.abs() < f64::EPSILON {
+                // 平仓
+                p.retain(|pos| pos.symbol != symbol);
+                return;
+            }
+            if pos.quantity > 0.0 && delta > 0.0 {
+                // 加仓:更新 entry_price 为加权均价
+                pos.entry_price =
+                    (pos.entry_price * pos.quantity + price * delta) / new_qty;
+            }
+            pos.quantity = new_qty;
+        } else if delta.abs() > f64::EPSILON {
+            // 开新仓
+            p.push(PositionSnapshot {
+                symbol: symbol.to_string(),
+                quantity: delta,
+                entry_price: price,
+                unrealized_pnl: 0.0,
+                as_of_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            });
+        }
+    }
 }
 
 #[async_trait]
@@ -125,6 +193,8 @@ impl TradingBackend for MockTradingBackend {
             confirm_token: None,
         };
         self.orders.lock().expect("poisoned").push(ack.clone());
+        // 成交后更新余额与持仓(否则多次下单后组合状态与实际不符)
+        self.apply_fill(&req.symbol, req.side, req.quantity, req.price);
         Ok(ack)
     }
 
@@ -235,5 +305,79 @@ mod tests {
         let p = m.get_positions().await.unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].symbol, "BTC-USDT");
+    }
+
+    /// 买入 0.05 BTC @ 50_000:应扣 2500 USDT,BTC +0.05,持仓加权均价不变
+    #[tokio::test]
+    async fn buy_updates_balance_and_position() {
+        let m = MockTradingBackend::new();
+        let _ = m.place_order(&mk_args()).await.unwrap();
+
+        let b = m.get_balance().await.unwrap();
+        let usdt = b.currencies.iter().find(|c| c.currency == "USDT").unwrap();
+        let btc = b.currencies.iter().find(|c| c.currency == "BTC").unwrap();
+        assert!((usdt.free - 7_500.0).abs() < 1e-6, "usdt free = {}", usdt.free);
+        assert!((btc.free - 0.15).abs() < 1e-6, "btc free = {}", btc.free);
+
+        let p = m.get_positions().await.unwrap();
+        assert_eq!(p.len(), 1);
+        assert!((p[0].quantity - 0.15).abs() < 1e-6);
+        assert!((p[0].entry_price - 50_000.0).abs() < 1e-6);
+    }
+
+    /// 卖出 0.1 BTC @ 50_000:应增 5000 USDT,BTC 减至 0,持仓被平
+    #[tokio::test]
+    async fn sell_flatten_position_closes_row() {
+        let m = MockTradingBackend::new();
+        let args = PlaceOrderArgs {
+            symbol: "BTC-USDT".into(),
+            side: OrderSide::Sell,
+            quantity: 0.1,
+            order_type: OrderKind::Limit,
+            price: Some(50_000.0),
+            stop_loss: None,
+            take_profit: None,
+            time_in_force: TimeInForce::GTC,
+            extras: serde_json::Value::Null,
+        };
+        m.place_order(&args).await.unwrap();
+
+        let b = m.get_balance().await.unwrap();
+        let usdt = b.currencies.iter().find(|c| c.currency == "USDT").unwrap();
+        let btc = b.currencies.iter().find(|c| c.currency == "BTC").unwrap();
+        assert!((usdt.free - 15_000.0).abs() < 1e-6);
+        assert!(btc.free.abs() < 1e-9);
+
+        let p = m.get_positions().await.unwrap();
+        assert!(p.is_empty(), "positions should be empty after flatten, got {:?}", p);
+    }
+
+    /// 不存在的 symbol:开新仓并加入对应币种余额
+    #[tokio::test]
+    async fn unknown_symbol_opens_new_position() {
+        let m = MockTradingBackend::new();
+        let args = PlaceOrderArgs {
+            symbol: "ETH-USDT".into(),
+            side: OrderSide::Buy,
+            quantity: 1.0,
+            order_type: OrderKind::Limit,
+            price: Some(3_000.0),
+            stop_loss: None,
+            take_profit: None,
+            time_in_force: TimeInForce::GTC,
+            extras: serde_json::Value::Null,
+        };
+        m.place_order(&args).await.unwrap();
+
+        let b = m.get_balance().await.unwrap();
+        let usdt = b.currencies.iter().find(|c| c.currency == "USDT").unwrap();
+        let eth = b.currencies.iter().find(|c| c.currency == "ETH").unwrap();
+        assert!((usdt.free - 7_000.0).abs() < 1e-6);
+        assert!((eth.free - 1.0).abs() < 1e-6);
+
+        let p = m.get_positions().await.unwrap();
+        let eth_pos = p.iter().find(|pos| pos.symbol == "ETH-USDT").unwrap();
+        assert!((eth_pos.quantity - 1.0).abs() < 1e-6);
+        assert!((eth_pos.entry_price - 3_000.0).abs() < 1e-6);
     }
 }

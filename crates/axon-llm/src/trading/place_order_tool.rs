@@ -17,7 +17,7 @@ use tracing::info;
 
 use crate::tools::{Tool, ToolError};
 use crate::trading::backend::{TradingBackend, TradingError};
-use crate::trading::safety::{PendingOrder, RiskLimits, SafetyMode};
+use crate::trading::safety::{DailyCounter, PendingOrder, RiskLimits, SafetyMode};
 use crate::trading::types::{OrderAck, OrderStatus, PlaceOrderArgs};
 
 /// Place order 工具
@@ -28,17 +28,28 @@ pub struct PlaceOrderTool {
     mode: SafetyMode,
     /// 风控规则
     risk: RiskLimits,
+    /// 进程内单日订单计数器(用于 `max_daily_orders` 规则)
+    daily: Arc<DailyCounter>,
     /// TwoPhase 模式下的待确认订单表(token → PendingOrder)
     pub(super) pending: Mutex<HashMap<String, PendingOrder>>,
 }
 
 impl PlaceOrderTool {
     /// 构造(DryRun 为默认安全模式)
-    pub fn new(backend: Arc<dyn TradingBackend>, mode: SafetyMode, risk: RiskLimits) -> Self {
+    ///
+    /// `daily` 由调用方共享(允许多个 tool 共享同一计数器),
+    /// 即使 `risk.max_daily_orders == None` 也会持续计数(便于 observability)。
+    pub fn new(
+        backend: Arc<dyn TradingBackend>,
+        mode: SafetyMode,
+        risk: RiskLimits,
+        daily: Arc<DailyCounter>,
+    ) -> Self {
         Self {
             backend,
             mode,
             risk,
+            daily,
             pending: Mutex::new(HashMap::new()),
         }
     }
@@ -58,6 +69,16 @@ impl PlaceOrderTool {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
+    }
+
+    /// 单日订单计数预检:仅在 `risk.max_daily_orders` 配置时启用
+    fn check_daily(&self) -> Result<(), ToolError> {
+        if let Some(max) = self.risk.max_daily_orders {
+            self.daily
+                .increment_and_check(max)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -93,7 +114,7 @@ impl Tool for PlaceOrderTool {
         let args: PlaceOrderArgs = serde_json::from_str(arguments)
             .map_err(|e| ToolError::InvalidArguments(format!("JSON 解析失败: {}", e)))?;
 
-        // 1. 风控预检
+        // 1. 风控预检(同步,例如白名单 / 单笔金额)
         self.risk
             .check(&args)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
@@ -114,19 +135,19 @@ impl Tool for PlaceOrderTool {
                 serde_json::to_string(&ack)
                     .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
             }
-            SafetyMode::Direct => self
-                .backend
-                .place_order(&args)
-                .await
-                .and_then(|a| {
-                    serde_json::to_string(&a)
-                        .map_err(|e| TradingError::Backend(format!("序列化失败: {}", e)))
-                })
-                .map_err(|e| ToolError::ExecutionFailed(e.to_string())),
-            // TwoPhase 完整流程由 task 6 实现
+            SafetyMode::Direct => {
+                // 真发前做单日计数检查
+                self.check_daily()?;
+                self.backend
+                    .place_order(&args)
+                    .await
+                    .and_then(|a| {
+                        serde_json::to_string(&a)
+                            .map_err(|e| TradingError::Backend(format!("序列化失败: {}", e)))
+                    })
+                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+            }
             SafetyMode::TwoPhase => {
-                // 第二次提交:LLM 须把第一次返回的 confirm_token 放进
-                // PlaceOrderArgs.extras.confirm_token 后再次调用 place_order
                 let supplied_token = args
                     .extras
                     .get("confirm_token")
@@ -134,11 +155,8 @@ impl Tool for PlaceOrderTool {
                     .map(|s| s.to_string());
 
                 if let Some(t) = supplied_token {
-                    // 第二次提交:从 pending map 取出待确认订单并下单
-                    //
-                    // 不变量:`pending` 总是以 `token.clone()` 作为 key 插入,
-                    // 且 `PendingOrder.token == key`,所以 `remove(&t)` 返回的
-                    // value 必然满足 `pending.token == t`,无需再比较。
+                    // 第二次提交:真发前做单日计数检查
+                    self.check_daily()?;
                     let pending = self
                         .pending
                         .lock()
@@ -156,7 +174,7 @@ impl Tool for PlaceOrderTool {
                         })
                         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
                 } else {
-                    // 第一次提交:暂存 + 返回 token
+                    // 第一次提交:仅暂存,不计数(尚未真发)
                     let token = uuid::Uuid::new_v4().to_string();
                     self.pending.lock().expect("poisoned").insert(
                         token.clone(),
@@ -189,6 +207,10 @@ mod tests {
     use super::*;
     use crate::trading::mock::{FailureInjector, MockTradingBackend};
 
+    fn daily() -> Arc<DailyCounter> {
+        Arc::new(DailyCounter::default())
+    }
+
     fn args_json(symbol: &str, qty: f64) -> String {
         serde_json::json!({
             "symbol": symbol,
@@ -209,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn dry_run_does_not_call_backend() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, RiskLimits::permissive(), daily());
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "DRY-RUN");
@@ -220,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn direct_mode_calls_backend() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, RiskLimits::permissive(), daily());
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "MOCK-1");
@@ -230,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_json_returns_invalid_arguments() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive(), daily());
         let e = tool.execute("not a json").await.unwrap_err();
         assert!(matches!(e, ToolError::InvalidArguments(_)));
     }
@@ -242,7 +264,7 @@ mod tests {
             allowed_symbols: Some(vec!["ETH-USDT".into()]),
             ..Default::default()
         };
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk);
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily());
         let e = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap_err();
         assert!(matches!(e, ToolError::ExecutionFailed(_)));
         assert_eq!(m.order_count(), 0);
@@ -254,7 +276,7 @@ mod tests {
             MockTradingBackend::new(),
             FailureInjector::new().with_place_order_error("outage"),
         ));
-        let tool = PlaceOrderTool::new(m, SafetyMode::Direct, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m, SafetyMode::Direct, RiskLimits::permissive(), daily());
         let e = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap_err();
         assert!(matches!(e, ToolError::ExecutionFailed(_)));
     }
@@ -262,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn missing_required_field_returns_invalid_arguments() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive(), daily());
         // 缺 quantity
         let e = tool
             .execute(r#"{"symbol":"BTC-USDT","side":"Buy"}"#)
@@ -274,7 +296,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description_and_schema() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m, SafetyMode::DryRun, RiskLimits::permissive(), daily());
         assert_eq!(tool.name(), "place_order");
         assert!(tool.description().contains("下单"));
         let schema = tool.parameters_schema();
@@ -288,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn two_phase_first_call_returns_pending_with_token() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "PENDING");
@@ -301,7 +323,7 @@ mod tests {
     #[tokio::test]
     async fn two_phase_second_call_with_correct_token_executes() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
         let s1 = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack1: OrderAck = serde_json::from_str(&s1).unwrap();
         let token = ack1.confirm_token.unwrap();
@@ -327,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn two_phase_unknown_token_returns_no_pending() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
         let args2 = serde_json::json!({
             "symbol": "BTC-USDT",
             "side": "Buy",
@@ -345,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn two_phase_token_consumed_once() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive());
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
         let s1 = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let token = serde_json::from_str::<OrderAck>(&s1)
             .unwrap()
@@ -363,5 +385,40 @@ mod tests {
         // 第三次:token 已被消费
         let e = tool.execute(&args2).await.unwrap_err();
         assert!(matches!(e, ToolError::ExecutionFailed(_)));
+    }
+
+    /// 验证 max_daily_orders 限制:超过阈值后直接拒绝
+    #[tokio::test]
+    async fn max_daily_orders_blocks_excess() {
+        let m = Arc::new(MockTradingBackend::new());
+        let risk = RiskLimits {
+            max_daily_orders: Some(2),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily());
+
+        tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap();
+        tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap();
+        assert_eq!(m.order_count(), 2);
+
+        let e = tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        assert_eq!(m.order_count(), 2); // 第三次被风控拦截
+    }
+
+    /// DryRun 不计入每日订单数
+    #[tokio::test]
+    async fn dry_run_does_not_consume_daily_quota() {
+        let m = Arc::new(MockTradingBackend::new());
+        let risk = RiskLimits {
+            max_daily_orders: Some(1),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, risk, daily());
+        // DryRun 多次,但不消耗每日计数
+        for _ in 0..3 {
+            tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap();
+        }
+        assert_eq!(m.order_count(), 0);
     }
 }
