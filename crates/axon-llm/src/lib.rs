@@ -15,6 +15,7 @@ pub mod context;
 pub mod prompt;
 pub mod react_agent;
 pub mod tools;
+pub mod trading;
 pub mod types;
 
 #[cfg(feature = "explain")]
@@ -31,4 +32,10 @@ pub use context::{ContextManager, ConversationMemory};
 pub use prompt::PromptTemplate;
 pub use react_agent::{AgentResponse, ReActAgent, ReasoningStep};
 pub use tools::{Tool, ToolError, ToolResult};
+pub use trading::{
+    BalanceSnapshot, CurrencyBalance, DailyCounter, FailureInjector, MockTradingBackend, OrderAck,
+    OrderKind, OrderSide, OrderStatus, PlaceOrderArgs, PlaceOrderTool, PortfolioSnapshot,
+    PositionSnapshot, QueryPortfolioArgs, QueryPortfolioTool, RiskLimits, SafetyMode, TimeInForce,
+    TradingBackend, TradingError,
+};
 pub use types::{FinishReason, LLMResponse, Message, Role, TokenUsage, ToolCall};
