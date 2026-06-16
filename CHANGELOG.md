@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **axon-llm** 统一 `LlmConfig` 类型(`config.rs`):支持 TOML 配置文件 + 字典构造 + 字段级 `merged_override` + 5 级 fallback 解析。涵盖 `BackendConfig` / `RetryConfig` / `ExplainConfig` 子结构与 `ConfigError` 错误类型。`resolve_with_fallback` 5 级优先级:显式路径 > `config.local.toml` > `config.toml` > 仓库内置 demo 配置 > 默认值(validate 失败,要求显式填 api_key)。`to_template_toml(include_secrets)` 支持生成不含敏感字段的模板。补齐 16 个测试覆盖解析/验证/override/fallback/模板。
+- **axon-llm** `OpenAICompatConfig::from_llm_config(&LlmConfig, index)` 工厂方法(在 `backends/openai_compat.rs`):从统一配置构造 backend,索引越界返回 `BackendInitError`;补齐 2 个测试覆盖字段映射与索引越界。
+- **axon-llm** `live_trading_demo` 重构:移除硬编码 `DEEPSEEK_API_KEY` 环境变量读取,改为 `--config <path>` / `AXON_LLM_CONFIG` 环境变量 + 5 级 fallback 解析,任意 OpenAI 兼容厂商(DeepSeek / OpenAI / Mimo / 本地 Ollama)均可使用。
+- **axon-llm** `demo/bin/config.toml` 升级:从单 `[backend]` 表改为 `[[backends]]` 数组 + `[retry]` + `[explain]` 子段,支持多厂商与可解释性集成配置;附带详细注释说明复制/编辑/运行流程。
+- **axon-llm** 新增 `integrated_trading_demo` example:三阶段演示(多 backend 串行对话 → ensemble `HardVoteStrategy` 投票 → `ReportGenerator` 渲染 Markdown 决策报告)。`axon-ensemble` 与 `axon-explain` 作为 `demo` feature 的可选依赖引入(`Cargo.toml`)。
+- **axon-llm** PyO3 绑定(`src/python/{mod,backend}.rs`,`python` feature 隐含启用 `backends`):暴露 `make_backend(config_dict)` / `LlmBackend` / `LlmMessage` 给 Python;`make_backend` 内部用 `LlmConfig::from_dict` + `OpenAICompatConfig::from_llm_config` 校验并构造 backend,`LlmBackend::chat([LlmMessage, ...])` 同步桥接 `tokio::block_on`。`LlmMessage` 用 `#[pyclass(from_py_object)]` 显式 opt-in FromPyObject(pyo3 0.28 强制要求);`LlmBackend` 字段为 `pub(crate)` 供 `mod.rs` 内部构造。
+- **axon-python** `lib.rs` 在 `_native` 下挂载 `llm` 子模块(通过 `axon_llm::python::axon_llm` 注册);`Cargo.toml` 的 `axon-llm` 依赖启用 `["python", "backends"]` features。Workspace `Cargo.toml` 添加 `axon-llm` workspace 依赖。
+- **axon_quant(顶层 Python API)** `python/axon_quant/llm.py`:Python 端 `LLMConfig` dataclass(`backends` / `retry` / `explain` 字段)+ `make_backend(config)`(接受 dataclass 或 dict)+ `load_config_from_toml(path)`(从 TOML 文件加载)+ `LlmBackend` / `LlmMessage` 类型别名。`python/axon_quant/__init__.py` 顶层 re-export `LLMConfig` / `LlmBackend` / `LlmMessage` / `make_backend` / `load_config_from_toml`,并把 `llm` 加入 `__all__`。注意:`_native` 是 cdylib 单文件(不是 Python package 目录),所以 `from ._native.llm import ...` 不可用,改用 `from axon_quant._native import llm` 取子模块对象后再属性访问。
+
 ### Fixed
 - **axon-monitor** `AlertRule::Missing` 现在基于指标最后一次上报时间与当前时间差判断是否触发告警。新增 `MetricsRegistry::check_missing_alerts()` 与 `AlertRule::check_missing()`，并补齐 3 个测试覆盖。
 - **axon-explain** `ReportGenerator::aggregate_risk` 改为 `pub fn`，从 `Explanation` 列表按 `feature_importance` × `confidence` 加权聚合，产出 `var_contribution` / `sharpe_contribution` / `max_drawdown_factors`，并补齐 3 个测试覆盖。
@@ -18,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **axon-backtest** `engine.rs` 替换为空壳占位：实现事件驱动的 `BacktestEngine` 主循环（`BacktestEngineConfig` + `BacktestEngine::run/step` + `RunResult` 完整字段），处理 `OrderAction` 与 `FillEvent`，累计 events/orders/fills/PnL/drawdown/Nav/duration 指标；新增 8 个测试覆盖空队列、提交/拒绝、撮合、时钟推进、FillEvent、取消/修改/拒绝、step 单步、最大回撤。
 
 ### Tests
-- 全工作区验证（除 `axon-rl` cdylib 在 macOS 上需要 PYTHON 库链接的环境问题外）：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p <crate>` 全部通过。新增覆盖各修复点的 ≥ 25 个测试。
+- 全工作区验证(除 `axon-rl` cdylib 在 macOS 上需要 PYTHON 库链接的环境问题外):`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p <crate>` 全部通过。新增覆盖各修复点的 ≥ 25 个测试。
+- **axon-llm Python 绑定测试**(5 个 lib 单元测试 + 4 个 contract test + 19 个 pytest):覆盖 `PyMessage` 角色映射(4 个 role + 未知 role 降级)、`tool_calls` JSON 合法/非法往返、`tool_call_id` 透传、`__repr__` 包含 role+content、`type_name` 覆盖所有 serde_json variant;contract test 覆盖 `LlmConfig::from_dict` 完整 payload、`OpenAICompatConfig::from_llm_config` 多 backend 索引 / 越界、`Message` 字段对齐;pytest 覆盖模块可见性 / `LLMConfig` 序列化 / `LlmMessage` repr / `make_backend` 校验成功/失败 / `load_config_from_toml` 加载 + 错误路径 / 端到端 TOML→backend 串联。`tests/python/test_llm_python_api.py` 与 `crates/axon-llm/tests/python_binding_test.rs`。
 
 ## [0.1.0] - 2026-06-13
 

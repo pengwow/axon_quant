@@ -101,31 +101,31 @@ fn parse_sse_line(line: &str) -> Vec<TokenDelta> {
         Ok(chunk) => {
             let mut out = Vec::new();
             for choice in chunk.choices {
-                if let Some(content) = choice.delta.content {
-                    if !content.is_empty() {
-                        out.push(TokenDelta::Content(content));
-                    }
+                if let Some(content) = choice.delta.content
+                    && !content.is_empty()
+                {
+                    out.push(TokenDelta::Content(content));
                 }
                 if let Some(tool_calls) = choice.delta.tool_calls {
                     for tc in tool_calls {
                         // ToolCallStart:同时有 id 和 function.name
-                        if let (Some(id), Some(func)) = (&tc.id, tc.function.as_ref()) {
-                            if let Some(name) = &func.name {
-                                out.push(TokenDelta::ToolCallStart {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                });
-                            }
+                        if let (Some(id), Some(func)) = (&tc.id, tc.function.as_ref())
+                            && let Some(name) = &func.name
+                        {
+                            out.push(TokenDelta::ToolCallStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            });
                         }
                         // ToolCallDelta:有 arguments 片段
-                        if let Some(func) = &tc.function {
-                            if !func.arguments.is_empty() {
-                                let id = tc.id.clone().unwrap_or_default();
-                                out.push(TokenDelta::ToolCallDelta {
-                                    id,
-                                    arguments_delta: func.arguments.clone(),
-                                });
-                            }
+                        if let Some(func) = &tc.function
+                            && !func.arguments.is_empty()
+                        {
+                            let id = tc.id.clone().unwrap_or_default();
+                            out.push(TokenDelta::ToolCallDelta {
+                                id,
+                                arguments_delta: func.arguments.clone(),
+                            });
                         }
                     }
                 }
@@ -146,6 +146,39 @@ pub fn parse_sse_body(body: &str) -> Vec<TokenDelta> {
         out.extend(parse_sse_line(line));
     }
     out
+}
+
+// ─── 真正的 stream_complete(在 OpenAICompatBackend 上) ───
+
+/// 把 SSE 字节流转 TokenDelta 流(由 `OpenAICompatBackend::stream_complete` 内部使用)
+///
+/// 把所需字段 move 进 stream(避免借用 self 生命周期问题)
+pub fn sse_bytes_to_deltas(
+    body_stream: impl tokio_stream::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> impl tokio_stream::Stream<Item = Result<TokenDelta, LLMError>> + Send + 'static {
+    use tokio_stream::StreamExt;
+
+    try_stream! {
+        let mut stream = std::pin::pin!(body_stream);
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| LLMError::Network(e.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+            // 按行处理 SSE
+            while let Some(idx) = buffer.find('\n') {
+                let line: String = buffer.drain(..=idx).collect();
+                for d in parse_sse_line(&line) {
+                    yield d;
+                }
+            }
+        }
+        // 处理最后一行(可能没有换行符)
+        if !buffer.trim().is_empty() {
+            for d in parse_sse_line(&buffer) {
+                yield d;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,38 +244,5 @@ data: [DONE]
             .collect();
         assert_eq!(contents, vec!["Hi ", "there"]);
         assert!(deltas.iter().any(|d| matches!(d, TokenDelta::Done { .. })));
-    }
-}
-
-// ─── 真正的 stream_complete(在 OpenAICompatBackend 上) ───
-
-/// 把 SSE 字节流转 TokenDelta 流(由 `OpenAICompatBackend::stream_complete` 内部使用)
-///
-/// 把所需字段 move 进 stream(避免借用 self 生命周期问题)
-pub fn sse_bytes_to_deltas(
-    body_stream: impl tokio_stream::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-) -> impl tokio_stream::Stream<Item = Result<TokenDelta, LLMError>> + Send + 'static {
-    use tokio_stream::StreamExt;
-
-    try_stream! {
-        let mut stream = std::pin::pin!(body_stream);
-        let mut buffer = String::new();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| LLMError::Network(e.to_string()))?;
-            buffer.push_str(&String::from_utf8_lossy(&bytes));
-            // 按行处理 SSE
-            while let Some(idx) = buffer.find('\n') {
-                let line: String = buffer.drain(..=idx).collect();
-                for d in parse_sse_line(&line) {
-                    yield d;
-                }
-            }
-        }
-        // 处理最后一行(可能没有换行符)
-        if !buffer.trim().is_empty() {
-            for d in parse_sse_line(&buffer) {
-                yield d;
-            }
-        }
     }
 }

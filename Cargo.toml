@@ -51,6 +51,7 @@ axon-tracker = { path = "crates/axon-tracker" }
 axon-registry = { path = "crates/axon-registry" }
 axon-explain = { path = "crates/axon-explain" }
 axon-ensemble = { path = "crates/axon-ensemble" }
+axon-llm = { path = "crates/axon-llm" }
 
 # 错误处理
 thiserror = "1.0"

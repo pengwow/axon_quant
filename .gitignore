@@ -45,3 +45,4 @@ logs/
 
 Cargo.lock
 
+python/*

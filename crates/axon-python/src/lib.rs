@@ -39,5 +39,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_distributed::python::register_module(&dist_module)?;
     m.add_submodule(&dist_module)?;
 
+    // axon-llm 子模块（OpenAI 兼容 LLM 后端的 PyO3 绑定）
+    let llm_module = PyModule::new(m.py(), "llm")?;
+    axon_llm::python::axon_llm(&llm_module)?;
+    m.add_submodule(&llm_module)?;
+
     Ok(())
 }

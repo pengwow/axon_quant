@@ -1,89 +1,67 @@
 //! `live_trading_demo` —— axon-llm 真实 LLM 端到端 demo
 //!
 //! 演示:
-//! 1. 从 `demo/bin/config.toml` 读 backend 配置
-//! 2. 构造 `OpenAICompatBackend` 真实调 DeepSeek
-//! 3. 发送一段 query,打印 response
+//! 1. 通过 `--config` 参数 + 5 级 fallback 加载统一 `LlmConfig`
+//! 2. 用 `OpenAICompatConfig::from_llm_config` 构造 backend
+//! 3. 真实调 DeepSeek / OpenAI / 任意 OpenAI 兼容 API
 //! 4. 跑一次"工具调用 → 解析"循环
 //!
 //! 运行:
 //! ```bash
-//! export DEEPSEEK_API_KEY=sk-...
-//! cargo run -p axon-llm --example live_trading_demo --features demo
+//! cp crates/axon-llm/demo/bin/config.toml config.local.toml
+//! # 编辑 config.local.toml,在 [[backends]] 填入真实 api_key
+//! cargo run -p axon-llm --example live_trading_demo \
+//!   --features demo -- --config config.local.toml
 //! ```
+//!
+//! 也支持环境变量 `AXON_LLM_CONFIG=path/to/config.local.toml`。
 //!
 //! 退出码:
 //!  0 — 成功
-//!
 //!  1 — 配置 / 环境错误(缺 API key、config 解析失败)
 //!  2 — backend 错误(网络 / 限流 / 解析)
 //!  3 — 工具执行错误
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use axon_llm::backend::{LLMBackend, LLMError, ToolDefinition};
 use axon_llm::backends::{OpenAICompatBackend, OpenAICompatConfig};
+use axon_llm::config::LlmConfig;
 use axon_llm::types::Message;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct DemoConfig {
-    /// LLM backend 配置
-    backend: BackendSection,
-    /// 演示 query
-    query: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BackendSection {
-    base_url: String,
-    model: String,
-    max_tokens: u32,
-    temperature: f32,
-    timeout_secs: u64,
-}
 
 fn main() {
-    // 1. 读 config
-    let cfg_path = Path::new("crates/axon-llm/demo/bin/config.toml");
-    let cfg = match load_config(cfg_path) {
+    // 1. 解析 --config 参数(env var: AXON_LLM_CONFIG 兜底)
+    let explicit_path = parse_config_arg();
+
+    // 2. 5 级 fallback 解析 LlmConfig
+    let cwd = std::env::current_dir().expect("cwd");
+    let cfg = match LlmConfig::resolve_with_fallback(explicit_path.as_deref(), &cwd) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("❌ 加载 config 失败: {e}");
-            eprintln!("   尝试从 cwd 寻找: {cfg_path:?}");
-            std::process::exit(1);
-        }
-    };
-
-    // 2. 拿 API key
-    let api_key = match std::env::var("DEEPSEEK_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("❌ DEEPSEEK_API_KEY 未设置");
-            eprintln!("   export DEEPSEEK_API_KEY=sk-... 后重试");
+            eprintln!("   提示: cp crates/axon-llm/demo/bin/config.toml config.local.toml");
+            eprintln!("   然后编辑 config.local.toml 填入 api_key");
             std::process::exit(1);
         }
     };
 
     // 3. 构造 backend
-    let llm_cfg = OpenAICompatConfig {
-        base_url: cfg.backend.base_url.clone(),
-        api_key,
-        model: cfg.backend.model.clone(),
-        timeout: std::time::Duration::from_secs(cfg.backend.timeout_secs),
-        max_tokens: cfg.backend.max_tokens,
-        temperature: cfg.backend.temperature,
-        backoff: axon_llm::backends::BackoffConfig::default(),
+    let compat = match OpenAICompatConfig::from_llm_config(&cfg, 0) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ 构造 backend 失败: {e}");
+            std::process::exit(1);
+        }
     };
-    let backend = OpenAICompatBackend::new(llm_cfg);
+    let backend = OpenAICompatBackend::new(compat);
     println!(
         "▶ backend 初始化完成: {} (model={})",
-        cfg.backend.base_url, cfg.backend.model
+        cfg.backends[0].base_url, cfg.backends[0].model
     );
 
     // 4. 启 tokio runtime 跑异步
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
-    if let Err(e) = rt.block_on(run_demo(backend, &cfg.query)) {
+    if let Err(e) = rt.block_on(run_demo(backend)) {
         eprintln!("❌ demo 失败: {e}");
         std::process::exit(match e {
             DemoError::Backend(_) => 2,
@@ -92,13 +70,23 @@ fn main() {
     }
 }
 
-async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoError> {
+/// 解析命令行 `--config` / `-c` 参数,或环境变量 `AXON_LLM_CONFIG`
+fn parse_config_arg() -> Option<PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|a| a == "--config" || a == "-c")
+        .and_then(|i| args.get(i + 1).map(PathBuf::from))
+        .or_else(|| std::env::var("AXON_LLM_CONFIG").ok().map(PathBuf::from))
+}
+
+async fn run_demo(backend: OpenAICompatBackend) -> Result<(), DemoError> {
+    // 阶段 1: 简单对话
     println!("\n=== 阶段 1: 简单对话 ===");
-    println!("user: {query}");
-    let msgs = vec![Message::user(query)];
+    let intro_query = "Hi! Please introduce yourself in one short paragraph.";
+    println!("user: {intro_query}");
+    let msgs = vec![Message::user(intro_query)];
     let resp = backend.complete(&msgs).await.map_err(DemoError::Backend)?;
-    let content = resp.content.clone().unwrap_or_default();
-    println!("assistant: {content}");
+    println!("assistant: {}", resp.content.unwrap_or_default());
     println!(
         "token usage: prompt={} completion={} total={}",
         resp.token_usage.prompt_tokens,
@@ -106,6 +94,7 @@ async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoE
         resp.token_usage.total_tokens
     );
 
+    // 阶段 2: 工具调用
     println!("\n=== 阶段 2: 工具调用 ===");
     let tools = vec![ToolDefinition {
         name: "get_quote".into(),
@@ -119,7 +108,7 @@ async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoE
         }),
     }];
 
-    let tool_query = "What's the current price of AAPL? Use the get_quote tool.".to_string();
+    let tool_query = "What's the current price of AAPL? Use the get_quote tool.";
     println!("user: {tool_query}");
     let resp2 = backend
         .complete_with_tools(&[Message::user(tool_query)], &tools)
@@ -133,14 +122,12 @@ async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoE
             tc.function_name, tc.arguments
         );
         // 真实场景:这里会执行 broker API;demo 直接 mock 返回
-        let mock_result = format!(
-            r#"{{"symbol":"AAPL","price":178.42,"note":"mock result from demo (no real broker call)"}}"#
-        );
+        let mock_result = r#"{"symbol":"AAPL","price":178.42,"note":"mock result from demo (no real broker call)"}"#;
         println!("tool result: {mock_result}");
 
         // 5. 把 tool result 喂回 LLM,获得自然语言答复
         let follow_up = vec![
-            Message::user("What's the current price of AAPL? Use the get_quote tool."),
+            Message::user(tool_query),
             Message::assistant(""),
             axon_llm::types::Message {
                 role: axon_llm::types::Role::Assistant,
@@ -148,7 +135,7 @@ async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoE
                 tool_call_id: None,
                 tool_calls: Some(vec![tc.clone()]),
             },
-            Message::tool_result(&tc.id, &mock_result),
+            Message::tool_result(&tc.id, mock_result),
         ];
         let resp3 = backend
             .complete(&follow_up)
@@ -168,20 +155,20 @@ async fn run_demo(backend: OpenAICompatBackend, query: &str) -> Result<(), DemoE
     Ok(())
 }
 
-fn load_config(path: &Path) -> Result<DemoConfig, String> {
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path:?}: {e}"))?;
-    toml::from_str(&raw).map_err(|e| format!("parse {path:?}: {e}"))
-}
-
 #[derive(Debug)]
 enum DemoError {
     Backend(LLMError),
     /// 本地 tool 执行错误变体。
     ///
-    /// **告警抑制决策**(按 workspace rule #4):`Tool` variant 当前已在 match arm
-    /// (第 89 行 `=> 3`)和 Display impl (第 180 行)中被使用,rustc dead_code lint
-    /// 不会报警,因此**不需要** `#[allow(dead_code)]`。此处保留 variant 是为未来
-    /// 接入真实 broker API 时使用,无需反复改动 demo 错误类型。
+    /// **告警抑制决策**(按 workspace rule #4):`Tool` variant 当前只在 `match` arm
+    /// (主函数 `=> 3`)和 `Display` impl 中被读取,但没有构造点(本 demo 暂未接入
+    /// 真实 broker tool,仅在 LLM 工具调用循环里 mock 返回)。rustc dead_code
+    /// lint 仍会警告"variant never constructed"。
+    ///
+    /// 保留该 variant 是为未来接入真实 broker API(任务 Task 5 `integrated_trading_demo`
+    /// 或后续 broker 适配)时无需反复改动 demo 错误类型。`#[allow(dead_code)]` 是
+    /// **必须**保留的抑制项。
+    #[allow(dead_code)]
     Tool(String),
 }
 

@@ -14,6 +14,7 @@
 use super::retry::{BackoffConfig, with_backoff};
 use super::streaming::{TokenDelta, sse_bytes_to_deltas};
 use crate::backend::{LLMBackend, LLMError, ToolDefinition};
+use crate::config::LlmConfig;
 use crate::types::{FinishReason, LLMResponse, Message, TokenUsage, ToolCall};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,31 @@ impl OpenAICompatConfig {
             temperature: 0.7,
             backoff: BackoffConfig::default(),
         }
+    }
+
+    /// 从统一 `LlmConfig` 构造,选择指定 backend 索引(默认 0)
+    ///
+    /// 用于支持多 backend(ensemble)场景;索引越界时返回 `BackendInitError`。
+    pub fn from_llm_config(cfg: &LlmConfig, index: usize) -> Result<Self, BackendInitError> {
+        let b: &crate::config::BackendConfig = cfg
+            .backends
+            .get(index)
+            .ok_or(BackendInitError::MissingEnv("backends[index] not found"))?;
+        // RetryConfig 字段单位为毫秒,需转 Duration(BackoffConfig 用 Duration)
+        let backoff = BackoffConfig {
+            max_retries: cfg.retry.max_retries,
+            initial_delay: Duration::from_millis(cfg.retry.initial_backoff_ms),
+            max_delay: Duration::from_millis(cfg.retry.max_backoff_ms),
+        };
+        Ok(Self {
+            base_url: b.base_url.clone(),
+            api_key: b.api_key.clone(),
+            model: b.model.clone(),
+            timeout: Duration::from_secs(b.timeout_secs),
+            max_tokens: b.max_tokens,
+            temperature: b.temperature,
+            backoff,
+        })
     }
 }
 
@@ -377,12 +403,68 @@ fn raw_to_llm_response(raw: ChatCompletionResp) -> LLMResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{BackendConfig, ExplainConfig, RetryConfig};
 
     #[test]
     fn config_deepseek() {
         let c = OpenAICompatConfig::deepseek("sk-xxx");
         assert_eq!(c.base_url, "https://api.deepseek.com/v1");
         assert_eq!(c.model, "deepseek-chat");
+    }
+
+    #[test]
+    fn test_from_llm_config_field_mapping() {
+        // 验证 from_llm_config 正确把 LlmConfig 字段映射到 OpenAICompatConfig
+        let cfg = LlmConfig {
+            backends: vec![BackendConfig {
+                name: "primary".into(),
+                base_url: "https://x.com/v1".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                max_tokens: 2048,
+                temperature: 0.3,
+                timeout_secs: 90,
+            }],
+            backend: None,
+            retry: RetryConfig {
+                max_retries: 5,
+                initial_backoff_ms: 100,
+                max_backoff_ms: 3000,
+            },
+            explain: ExplainConfig::default(),
+        };
+        let compat = OpenAICompatConfig::from_llm_config(&cfg, 0).unwrap();
+        assert_eq!(compat.base_url, "https://x.com/v1");
+        assert_eq!(compat.api_key, "k");
+        assert_eq!(compat.model, "m");
+        assert_eq!(compat.max_tokens, 2048);
+        assert!((compat.temperature - 0.3).abs() < 1e-6);
+        assert_eq!(compat.timeout, Duration::from_secs(90));
+        // BackoffConfig 使用 Duration;LlmConfig 的 *_backoff_ms 字段为毫秒数
+        assert_eq!(compat.backoff.max_retries, 5);
+        assert_eq!(compat.backoff.initial_delay, Duration::from_millis(100));
+        assert_eq!(compat.backoff.max_delay, Duration::from_millis(3000));
+    }
+
+    #[test]
+    fn test_from_llm_config_index_out_of_range() {
+        // 索引越界应返回 BackendInitError
+        let cfg = LlmConfig {
+            backends: vec![BackendConfig {
+                name: "x".into(),
+                base_url: "https://x.com/v1".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                max_tokens: 1024,
+                temperature: 0.7,
+                timeout_secs: 60,
+            }],
+            backend: None,
+            retry: RetryConfig::default(),
+            explain: ExplainConfig::default(),
+        };
+        let result = OpenAICompatConfig::from_llm_config(&cfg, 5);
+        assert!(matches!(result, Err(BackendInitError::MissingEnv(_))));
     }
 
     #[test]

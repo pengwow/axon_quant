@@ -10,6 +10,7 @@ pub mod agent;
 pub mod backend;
 #[cfg(feature = "backends")]
 pub mod backends;
+pub mod config;
 pub mod context;
 pub mod prompt;
 pub mod react_agent;
@@ -18,6 +19,9 @@ pub mod types;
 
 #[cfg(feature = "explain")]
 pub mod explain;
+
+#[cfg(feature = "python")]
+pub mod python;
 
 // ─── 公共导出 ──────────────────────────────────────────────
 

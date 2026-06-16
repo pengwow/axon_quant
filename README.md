@@ -34,7 +34,7 @@ AXON 是一个面向量化交易与强化学习的事件驱动交易引擎。Rus
 | M2 | RL 环境（Gymnasium + VecEnv + 6 示例） | 完成 |
 | M3 | 训练管线（HPO + Walk-forward + Tracker + Registry + Distributed） | 完成 |
 | M4 | 生产就绪（交易所 + 风控 + OMS + 监控） | 进行中 |
-| M5 | AI 高级功能（LLM + 集成 + 可解释性） | 待启动 |
+| M5 | AI 高级功能（LLM + 集成 + 可解释性） | 完成 |
 
 ### 已覆盖能力
 
@@ -203,4 +203,4 @@ axon_quant/
 
 ## 许可
 
-[Apache-2.0](./LICENSE) — 可商用、可修改、可分发。
+[Apache-2.0](./LICENSE)

@@ -22,3 +22,4 @@ axon-registry = { workspace = true, features = ["python"] }
 axon-hpo = { workspace = true, features = ["python"] }
 axon-walk-forward = { workspace = true, features = ["python"] }
 axon-distributed = { workspace = true, features = ["python"] }
+axon-llm = { workspace = true, features = ["python", "backends"] }
