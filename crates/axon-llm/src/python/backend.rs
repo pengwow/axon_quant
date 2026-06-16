@@ -101,11 +101,18 @@ fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err("dict message missing 'role'")
             })?;
-        let content: String = d.get_item("content")?.and_then(|v| v.extract().ok()).unwrap_or_default();
-        let tool_call_id: Option<String> =
-            d.get_item("tool_call_id")?.and_then(|v| v.extract().ok()).flatten();
-        let tool_calls: Option<String> =
-            d.get_item("tool_calls")?.and_then(|v| v.extract().ok()).flatten();
+        let content: String = d
+            .get_item("content")?
+            .and_then(|v| v.extract().ok())
+            .unwrap_or_default();
+        let tool_call_id: Option<String> = d
+            .get_item("tool_call_id")?
+            .and_then(|v| v.extract().ok())
+            .flatten();
+        let tool_calls: Option<String> = d
+            .get_item("tool_calls")?
+            .and_then(|v| v.extract().ok())
+            .flatten();
         return Ok(Message::from(PyMessage {
             role,
             content,

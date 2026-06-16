@@ -67,14 +67,17 @@ impl InferenceEngine for CandleBackend {
         })
     }
 
-    fn replace_session(&mut self, _new_session: Box<dyn Any>) -> Result<(), InferenceError> {
-        Err(InferenceError::HotReloadFailed {
-            reason: "Candle backend requires model architecture to be specified; \
-                     current implementation is a stub. \
-                     TODO: implement atomic session replacement for candle-core; \
-                     see `axon-design/01-tdd/05-phase4-production/01-inference.md`"
+    fn replace_session(
+        &mut self,
+        _new_session: Box<dyn Any + Send + Sync>,
+    ) -> Result<(), InferenceError> {
+        Err(InferenceError::Candle(
+            "CandleBackend::replace_session not implemented. \
+             For hot-reload use OnnxBackend or TchBackend, \
+             or call backend.load(new_path) instead (ModelHotReloader does this). \
+             See axon-inference-hot-update-design for the implementation roadmap."
                 .into(),
-        })
+        ))
     }
 }
 
@@ -156,11 +159,21 @@ mod tests {
         let mut backend = CandleBackend::new(sample_config());
         let err = backend.replace_session(Box::new(())).unwrap_err();
         match err {
-            InferenceError::HotReloadFailed { reason } => {
-                assert!(reason.contains("candle"));
-                assert!(reason.contains("01-inference.md"));
+            InferenceError::Candle(reason) => {
+                assert!(
+                    reason.contains("not implemented"),
+                    "错误信息应包含 'not implemented'"
+                );
+                assert!(
+                    reason.contains("OnnxBackend or TchBackend"),
+                    "错误信息应推荐 Onnx/Tch 后端"
+                );
+                assert!(
+                    reason.contains("backend.load"),
+                    "错误信息应推荐用 backend.load 替代"
+                );
             }
-            other => panic!("期望 HotReloadFailed，实际 {other:?}"),
+            other => panic!("期望 Candle，实际 {other:?}"),
         }
     }
 

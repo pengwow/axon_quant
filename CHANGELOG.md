@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **axon-inference** `pipeline/collector.rs` 实现 `ObservationSource` trait 与 `ObservationCollector`（多源聚合 + 后台轮询 + 错误隔离 + sink 关闭优雅退出），新增 3 个测试覆盖。`lib.rs` 已 re-export。
 - **axon-inference** `CandleBackend` 错误信息更新为指向 TDD 规范路径的明确 "未实现" 文案，模块顶部加注契约桩说明，新增 1 个测试验证错误信息。
 - **axon-backtest** `engine.rs` 替换为空壳占位：实现事件驱动的 `BacktestEngine` 主循环（`BacktestEngineConfig` + `BacktestEngine::run/step` + `RunResult` 完整字段），处理 `OrderAction` 与 `FillEvent`，累计 events/orders/fills/PnL/drawdown/Nav/duration 指标；新增 8 个测试覆盖空队列、提交/拒绝、撮合、时钟推进、FillEvent、取消/修改/拒绝、step 单步、最大回撤。
+- **axon-llm** 修复 `backends::cost::tests` 并行测试 flakiness：删除全局状态污染源 `reset_for_test()`，`register_pricing_overrides` 改为增量测试（默认表 + `custom-model` 共存并显式断言默认表未受影响），新增 `register_pricing_idempotent` 验证 `HashMap::insert` 语义；`PRICING` 静态变量与 `register_pricing` 函数加 doc 注释明确禁止 reset 模式。零核心 API 改动 + 零新增依赖，`cargo test --features python --lib` 并行 50/50 稳定通过（重复 5 次验证）。
 
 ### Tests
 - 全工作区验证(除 `axon-rl` cdylib 在 macOS 上需要 PYTHON 库链接的环境问题外):`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p <crate>` 全部通过。新增覆盖各修复点的 ≥ 25 个测试。
