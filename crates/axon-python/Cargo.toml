@@ -12,14 +12,36 @@ description = "AXON Python 统一入口：封装 axon-rl、axon-backtest 等 cra
 
 [lib]
 name = "_native"
-crate-type = ["cdylib"]
+# 默认仅 rlib,避免 `cargo build --workspace` 拉入 Python 工具链。
+# 启用 `python` feature 时通过 maturin/setuptools-rust 构建 cdylib(参见
+# pyproject.toml 与 `make python-build`),不再在 `cargo build` 阶段输出 cdylib。
+crate-type = ["rlib"]
+
+[features]
+# 默认禁用以避免污染 `cargo build --workspace` 与 CI 默认构建。
+# 启用方式:`cargo build -p axon-python --features python`,
+# 需要 PYO3_PYTHON 指向可用 Python,且 macOS 上需正确链接 Python 库。
+default = []
+python = [
+    "dep:pyo3",
+    "dep:axon-rl",
+    "dep:axon-tracker",
+    "dep:axon-registry",
+    "dep:axon-hpo",
+    "dep:axon-walk-forward",
+    "dep:axon-distributed",
+    "dep:axon-llm",
+]
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
-axon-rl = { workspace = true, features = ["python"] }
-axon-tracker = { workspace = true, features = ["python"] }
-axon-registry = { workspace = true, features = ["python"] }
-axon-hpo = { workspace = true, features = ["python"] }
-axon-walk-forward = { workspace = true, features = ["python"] }
-axon-distributed = { workspace = true, features = ["python"] }
-axon-llm = { workspace = true, features = ["python", "backends"] }
+# 默认情况下 axon-python 仅作为聚合占位 crate,不拉入任何 Python 绑定依赖,
+# 以保证 `cargo build --workspace` 在缺少 Python 工具链时也能成功。
+# 启用 `python` feature 时再拉入 pyo3 与各上游 crate 的 python bindings。
+pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
+axon-rl = { workspace = true, optional = true, features = ["python"] }
+axon-tracker = { workspace = true, optional = true, features = ["python"] }
+axon-registry = { workspace = true, optional = true, features = ["python"] }
+axon-hpo = { workspace = true, optional = true, features = ["python"] }
+axon-walk-forward = { workspace = true, optional = true, features = ["python"] }
+axon-distributed = { workspace = true, optional = true, features = ["python"] }
+axon-llm = { workspace = true, optional = true, features = ["python", "backends"] }

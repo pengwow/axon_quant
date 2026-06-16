@@ -1,10 +1,16 @@
 //! AXON Python 统一入口
 //!
 //! 将各个 crate 的 Python 绑定封装到 `axon_quant` 模块中。
+//!
+//! 默认禁用,需要时启用 `python` feature:
+//! `cargo build -p axon-python --features python`
+//! (需要本地 PYO3_PYTHON 与 Python 开发库)。
+
+#![cfg(feature = "python")]
 
 use pyo3::prelude::*;
 
-/// AXON Quant Python 模块（原生扩展，由 __init__.py 导入并重新导出）
+/// AXON Quant Python 模块(原生扩展,由 __init__.py 导入并重新导出)
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", "0.1.0a1")?;
