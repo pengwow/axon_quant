@@ -3,8 +3,9 @@
 //! 详见 `docs/superpowers/specs/2026-06-16-axon-llm-trading-tools-design.md`。
 //!
 //! 适配器后端(均为 opt-in feature):
-//! - `trading-exchange`:`ExchangeTradingBackend`(本仓库)
-//! - 后续 Stage B / C 计划新增 `trading-oms` / `trading-backtest`,同模式扩展。
+//! - `trading-exchange`:`ExchangeTradingBackend`(已交付,2026-06-17)
+//! - `trading-oms`:`OmsTradingBackend`(已交付,2026-06-17)
+//! - `trading-backtest`:`BacktestTradingBackend`(2026-06-17)
 
 pub mod backend;
 pub mod mock;
@@ -16,11 +17,17 @@ pub mod types;
 #[cfg(feature = "trading-exchange")]
 pub mod exchange;
 
+#[cfg(feature = "trading-oms")]
+pub mod oms;
+
+#[cfg(feature = "trading-backtest")]
+pub mod backtest;
+
 pub use backend::{TradingBackend, TradingError};
 pub use mock::{FailureInjector, MockTradingBackend};
 pub use place_order_tool::PlaceOrderTool;
 pub use query_portfolio_tool::QueryPortfolioTool;
-pub use safety::{DailyCounter, PendingOrder, RiskLimits, SafetyMode};
+pub use safety::{AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode};
 pub use types::{
     BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
     PortfolioSnapshot, PositionSnapshot, QueryPortfolioArgs, TimeInForce,
@@ -28,3 +35,9 @@ pub use types::{
 
 #[cfg(feature = "trading-exchange")]
 pub use exchange::{ExchangeTradingBackend, SymbolMap};
+
+#[cfg(feature = "trading-oms")]
+pub use oms::OmsTradingBackend;
+
+#[cfg(feature = "trading-backtest")]
+pub use backtest::BacktestTradingBackend;

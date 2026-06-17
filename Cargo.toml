@@ -53,6 +53,9 @@ axon-explain = { path = "crates/axon-explain" }
 axon-ensemble = { path = "crates/axon-ensemble" }
 axon-llm = { path = "crates/axon-llm" }
 axon-exchange = { path = "crates/axon-exchange" }
+axon-oms = { path = "crates/axon-oms" }
+# Stage D / J 简化版:demo + E2E 测试中桥接 CircuitBreaker,lib 零传递依赖
+axon-risk = { path = "crates/axon-risk" }
 
 # 错误处理
 thiserror = "1.0"

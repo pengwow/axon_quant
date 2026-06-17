@@ -17,7 +17,9 @@ use tracing::info;
 
 use crate::tools::{Tool, ToolError};
 use crate::trading::backend::{TradingBackend, TradingError};
-use crate::trading::safety::{DailyCounter, PendingOrder, RiskLimits, SafetyMode};
+use crate::trading::safety::{
+    AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode,
+};
 use crate::trading::types::{OrderAck, OrderStatus, PlaceOrderArgs};
 
 /// Place order 工具
@@ -30,6 +32,13 @@ pub struct PlaceOrderTool {
     risk: RiskLimits,
     /// 进程内单日订单计数器(用于 `max_daily_orders` 规则)
     daily: Arc<DailyCounter>,
+    /// 风控闸门(Stage D / Stage J 简化版)
+    ///
+    /// 在 TwoPhase 第二次 / Direct 真发订单前调用 `is_blocked()`,
+    /// 返回 `Some(reason)` 时阻断下单并返回 `TradingError::RiskRejected`。
+    /// DryRun 不调用闸门(允许 LLM 任意次 dry-run 探索)。
+    /// 默认 `AlwaysOpenGate`(永远放行),保持向后兼容。
+    gate: Arc<dyn RiskGate>,
     /// TwoPhase 模式下的待确认订单表(token → PendingOrder)
     pub(super) pending: Mutex<HashMap<String, PendingOrder>>,
 }
@@ -39,6 +48,9 @@ impl PlaceOrderTool {
     ///
     /// `daily` 由调用方共享(允许多个 tool 共享同一计数器),
     /// 即使 `risk.max_daily_orders == None` 也会持续计数(便于 observability)。
+    ///
+    /// 风控闸门使用 `AlwaysOpenGate`(永远放行),保持 Stage D 之前的
+    /// 行为完全一致。如需接入熔断器,使用 [`PlaceOrderTool::with_gate`]。
     pub fn new(
         backend: Arc<dyn TradingBackend>,
         mode: SafetyMode,
@@ -50,6 +62,28 @@ impl PlaceOrderTool {
             mode,
             risk,
             daily,
+            gate: Arc::new(AlwaysOpenGate),
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 构造(带风控闸门,Stage D 新增)
+    ///
+    /// 与 [`PlaceOrderTool::new`] 行为一致,但允许指定自定义 `RiskGate`。
+    /// 真发路径(TwoPhase 第二次 / Direct)会在下单前调用 `gate.is_blocked()`。
+    pub fn with_gate(
+        backend: Arc<dyn TradingBackend>,
+        mode: SafetyMode,
+        risk: RiskLimits,
+        daily: Arc<DailyCounter>,
+        gate: Arc<dyn RiskGate>,
+    ) -> Self {
+        Self {
+            backend,
+            mode,
+            risk,
+            daily,
+            gate,
             pending: Mutex::new(HashMap::new()),
         }
     }
@@ -62,6 +96,14 @@ impl PlaceOrderTool {
     /// 调整安全模式(运行时切换 DryRun ↔ Direct 等)
     pub fn set_mode(&mut self, mode: SafetyMode) {
         self.mode = mode;
+    }
+
+    /// 运行时切换风控闸门(Stage D 新增)
+    ///
+    /// 用于在连续亏损后启用熔断器,或在 LLM agent 完成初期探索后切换到严格闸门。
+    /// 切换立即生效,下一次真发路径调用即使用新闸门。
+    pub fn set_gate(&mut self, gate: Arc<dyn RiskGate>) {
+        self.gate = gate;
     }
 
     fn now_ms() -> i64 {
@@ -138,6 +180,13 @@ impl Tool for PlaceOrderTool {
             SafetyMode::Direct => {
                 // 真发前做单日计数检查
                 self.check_daily()?;
+                // Stage D:闸门检查(DryRun 不检查,Direct / TwoPhase 真发前检查)
+                if let Some(reason) = self.gate.is_blocked() {
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "gate blocked: {}",
+                        reason
+                    )));
+                }
                 self.backend
                     .place_order(&args)
                     .await
@@ -157,6 +206,13 @@ impl Tool for PlaceOrderTool {
                 if let Some(t) = supplied_token {
                     // 第二次提交:真发前做单日计数检查
                     self.check_daily()?;
+                    // Stage D:闸门检查(仅真发路径)
+                    if let Some(reason) = self.gate.is_blocked() {
+                        return Err(ToolError::ExecutionFailed(format!(
+                            "gate blocked: {}",
+                            reason
+                        )));
+                    }
                     let pending = self
                         .pending
                         .lock()
@@ -175,6 +231,7 @@ impl Tool for PlaceOrderTool {
                         .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
                 } else {
                     // 第一次提交:仅暂存,不计数(尚未真发)
+                    // 注意:第一次提交也不检查闸门,允许 LLM 发起 confirm 流程
                     let token = uuid::Uuid::new_v4().to_string();
                     self.pending.lock().expect("poisoned").insert(
                         token.clone(),
@@ -453,5 +510,140 @@ mod tests {
             tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap();
         }
         assert_eq!(m.order_count(), 0);
+    }
+
+    // ── RiskGate 测试(Stage D)─────────────────────────────
+
+    /// 测试用阻断闸门(返回固定 reason)
+    struct BlockedGate {
+        reason: String,
+    }
+    impl RiskGate for BlockedGate {
+        fn is_blocked(&self) -> Option<String> {
+            Some(self.reason.clone())
+        }
+    }
+
+    /// Direct 模式:闸门放行 → 正常下单
+    #[tokio::test]
+    async fn gate_open_lets_order_through() {
+        let m = Arc::new(MockTradingBackend::new());
+        let tool = PlaceOrderTool::with_gate(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+            Arc::new(AlwaysOpenGate),
+        );
+        let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        let ack: OrderAck = serde_json::from_str(&s).unwrap();
+        assert_eq!(ack.order_id, "MOCK-1");
+        assert_eq!(m.order_count(), 1);
+    }
+
+    /// Direct 模式:闸门阻断 → 返回 ToolError::ExecutionFailed,backend 不被调
+    #[tokio::test]
+    async fn gate_blocked_direct_mode() {
+        let m = Arc::new(MockTradingBackend::new());
+        let tool = PlaceOrderTool::with_gate(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+            Arc::new(BlockedGate {
+                reason: "circuit breaker open".into(),
+            }),
+        );
+        let e = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        // reason 包含阻断原因
+        let msg = format!("{:?}", e);
+        assert!(msg.contains("circuit breaker open"), "msg = {}", msg);
+        // backend 未被调
+        assert_eq!(m.order_count(), 0);
+    }
+
+    /// TwoPhase 第二次提交被闸门阻断
+    #[tokio::test]
+    async fn gate_blocked_two_phase_second() {
+        let m = Arc::new(MockTradingBackend::new());
+        // 第一次先 open gate(AlwaysOpenGate)→ 拿到 token
+        let tool = Arc::new(tokio::sync::Mutex::new(PlaceOrderTool::with_gate(
+            m.clone(),
+            SafetyMode::TwoPhase,
+            RiskLimits::permissive(),
+            daily(),
+            Arc::new(AlwaysOpenGate),
+        )));
+        let s1 = tool
+            .lock()
+            .await
+            .execute(&args_json("BTC-USDT", 0.1))
+            .await
+            .unwrap();
+        let ack1: OrderAck = serde_json::from_str(&s1).unwrap();
+        let token = ack1.confirm_token.unwrap();
+
+        // 运行时切换到阻断闸门
+        tool.lock().await.set_gate(Arc::new(BlockedGate {
+            reason: "after-trigger".into(),
+        }));
+
+        // 第二次带 token 提交,期望被阻断
+        let args2 = serde_json::json!({
+            "symbol": "BTC-USDT", "side": "Buy", "quantity": 0.1,
+            "order_type": "Limit", "price": 50_000.0,
+            "extras": {"confirm_token": token}
+        })
+        .to_string();
+        let e = tool.lock().await.execute(&args2).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        // 注意:被阻断的请求会消耗 daily counter + 移除 pending,但 backend 未被调
+        // 这一点是为了避免 daily counter 被打爆后 daily 失效,是有意为之。
+        // 此处只验证 backend 未被调
+        assert_eq!(m.order_count(), 0);
+    }
+
+    /// DryRun 模式:闸门即使阻断也不影响(LLM 仍可探索)
+    #[tokio::test]
+    async fn gate_does_not_block_dry_run() {
+        let m = Arc::new(MockTradingBackend::new());
+        let tool = PlaceOrderTool::with_gate(
+            m.clone(),
+            SafetyMode::DryRun,
+            RiskLimits::permissive(),
+            daily(),
+            Arc::new(BlockedGate {
+                reason: "should not block".into(),
+            }),
+        );
+        let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        let ack: OrderAck = serde_json::from_str(&s).unwrap();
+        assert_eq!(ack.status.0, "DryRun");
+        assert_eq!(m.order_count(), 0);
+    }
+
+    /// set_gate 运行时切换立即生效
+    #[tokio::test]
+    async fn set_gate_swaps_at_runtime() {
+        let m = Arc::new(MockTradingBackend::new());
+        let mut tool = PlaceOrderTool::with_gate(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+            Arc::new(AlwaysOpenGate),
+        );
+        // 第一次:open → 通过
+        tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        assert_eq!(m.order_count(), 1);
+        // 切换为阻断
+        tool.set_gate(Arc::new(BlockedGate {
+            reason: "runtime swap".into(),
+        }));
+        // 第二次:被阻断
+        let e = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        assert_eq!(m.order_count(), 1); // backend 仅被调一次
     }
 }

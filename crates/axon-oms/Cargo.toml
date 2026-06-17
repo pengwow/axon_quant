@@ -18,4 +18,5 @@ rust_decimal = { version = "1", features = ["serde-with-str"] }
 
 [dev-dependencies]
 pretty_assertions = "1"
+proptest = "1"
 rust_decimal_macros = "1"

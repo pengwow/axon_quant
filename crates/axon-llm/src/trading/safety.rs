@@ -120,12 +120,41 @@ fn today_key() -> String {
     format!("{}", secs / 86_400)
 }
 
+// ── RiskGate(Stage D + Stage J 简化版)─────────────────────
+
+/// 风控闸门抽象(在 `PlaceOrderTool` 真发订单前调用)
+///
+/// **设计动机**:`axon-llm` 不直接依赖 `axon-risk`,避免传递依赖膨胀。
+/// lib 侧只暴露 trait,具体闸门实现(如 `CircuitBreakerGate` 桥接到
+/// `axon_risk::CircuitBreaker`)由使用方在 demo / 业务 crate 中实现。
+///
+/// `is_blocked` 同步返回:`None` 表示放行,`Some(reason)` 表示阻断并给出原因。
+/// 内部状态推荐使用 `AtomicBool` / `RwLock` 等无锁结构,避免阻塞 LLM 主循环。
+pub trait RiskGate: Send + Sync {
+    /// 返回 `None` 表示放行;返回 `Some(reason)` 表示阻断并给出原因
+    fn is_blocked(&self) -> Option<String>;
+}
+
+/// 永远放行的闸门(`PlaceOrderTool::new` 的默认值)
+///
+/// 用于保持向后兼容:既有的 `PlaceOrderTool::new(backend, mode, risk, daily)`
+/// 构造器在内部使用本闸门,行为与 Stage D 之前完全一致。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AlwaysOpenGate;
+
+impl RiskGate for AlwaysOpenGate {
+    fn is_blocked(&self) -> Option<String> {
+        None
+    }
+}
+
 // ── 测试 ──────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::trading::types::{OrderKind, OrderSide, TimeInForce};
+    use std::sync::Arc;
 
     fn args(symbol: &str, qty: f64, price: Option<f64>) -> PlaceOrderArgs {
         PlaceOrderArgs {
@@ -213,5 +242,43 @@ mod tests {
             serde_json::to_string(&SafetyMode::Direct).unwrap(),
             "\"direct\""
         );
+    }
+
+    // ── RiskGate 测试(Stage D)────────────────────────────
+
+    /// `AlwaysOpenGate` 永远放行
+    #[test]
+    fn always_open_never_blocks() {
+        let g = AlwaysOpenGate;
+        assert!(g.is_blocked().is_none());
+    }
+
+    /// `RiskGate` trait 是 object-safe(可作 `dyn RiskGate` 使用)
+    #[test]
+    fn trait_is_object_safe() {
+        // 编译期检查:函数签名要求 `dyn RiskGate`,如果 trait 非 object-safe 则编译失败
+        fn assert_obj_safe(_g: Arc<dyn RiskGate>) {}
+        let g: Arc<dyn RiskGate> = Arc::new(AlwaysOpenGate);
+        assert_obj_safe(g);
+    }
+
+    /// 自定义阻断闸门(用于 PlaceOrderTool 测试)
+    #[derive(Debug)]
+    struct TestBlockedGate {
+        reason: String,
+    }
+    impl RiskGate for TestBlockedGate {
+        fn is_blocked(&self) -> Option<String> {
+            Some(self.reason.clone())
+        }
+    }
+
+    /// 自定义闸门返回阻断原因
+    #[test]
+    fn custom_gate_returns_reason() {
+        let g = TestBlockedGate {
+            reason: "test block".into(),
+        };
+        assert_eq!(g.is_blocked().as_deref(), Some("test block"));
     }
 }

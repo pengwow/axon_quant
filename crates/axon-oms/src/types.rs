@@ -86,6 +86,15 @@ impl OrderStatus {
                     OrderStatus::PartiallyFilled { .. },
                     OrderStatus::Cancelled { .. }
                 )
+                // Stage B-MVP 新增 — 状态机反向回滚(fill event 失败时 reverse 用)
+                | (
+                    OrderStatus::Filled { .. },
+                    OrderStatus::Acknowledged
+                )
+                | (
+                    OrderStatus::PartiallyFilled { .. },
+                    OrderStatus::Acknowledged
+                )
         )
     }
 
@@ -153,12 +162,9 @@ impl Order {
     }
 
     pub fn transition(&mut self, new_status: OrderStatus) -> Result<(), crate::error::OmsError> {
-        if self.status.is_terminal() {
-            return Err(crate::error::OmsError::AlreadyTerminal(format!(
-                "{:?}",
-                self.status
-            )));
-        }
+        // Stage B-MVP:状态机完全由 can_transition_to 定义(包括 fill event 失败的
+        // reverse 回滚路径 Filled/PartiallyFilled → Acknowledged),不再做 is_terminal
+        // 短路检查(原检查与 can_transition_to 重复,且会阻塞合法的反向回滚)。
         if !self.status.can_transition_to(&new_status) {
             return Err(crate::error::OmsError::InvalidTransition {
                 from: format!("{:?}", self.status),
@@ -178,6 +184,8 @@ impl Order {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
     pub fill_id: String,
+    /// 交易 symbol(如 "BTC-USDT"),由 fill event 携带
+    pub symbol: String,
     pub price: Decimal,
     pub quantity: Decimal,
     pub fee: Decimal,
@@ -192,10 +200,20 @@ pub struct OrderRecord {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// OMS 完整快照 — 扩展为含 portfolio 段
+///
+/// **向后兼容**:portfolio 字段为 `Option`,老 snapshot(无此字段)反序列化时 serde 用 `default` = None,
+/// recover 路径识别 None 时创建空 portfolio(允许老 OMS 进程在升级后继续 recover)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmsSnapshot {
     pub active_orders: HashMap<OrderId, Order>,
     pub order_history: Vec<OrderRecord>,
     pub version: u64,
     pub timestamp: DateTime<Utc>,
+    /// Stage B-MVP 新增 — None 表示老 snapshot(回退到空 portfolio)
+    #[serde(default)]
+    pub portfolio: Option<PortfolioSnapshot>,
 }
+
+// Stage B-MVP 新增 — Portfolio 子结构导出
+pub use crate::portfolio::{PortfolioSnapshot, Position};
