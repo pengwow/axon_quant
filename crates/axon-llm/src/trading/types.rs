@@ -83,6 +83,30 @@ pub struct QueryPortfolioArgs {
     pub symbol: Option<String>,
 }
 
+// ── CancelOrderArgs ──────────────────────────────────────
+
+/// CancelOrderTool 输入参数
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CancelOrderArgs {
+    /// 要撤销的订单 ID
+    pub order_id: String,
+}
+
+// ── ReplaceOrderArgs ─────────────────────────────────────
+
+/// ReplaceOrderTool 输入参数
+///
+/// 携带完整新参数(PlaceOrderArgs 全部字段),后端负责校验 symbol / side /
+/// order_type 与原单是否一致(必须一致),并应用 price / quantity / stop_loss /
+/// take_profit 的变化。
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ReplaceOrderArgs {
+    /// 要修改的订单 ID
+    pub order_id: String,
+    /// 新参数(完整 PlaceOrderArgs)
+    pub new_req: PlaceOrderArgs,
+}
+
 // ── 后端结果 ──────────────────────────────────────────────
 
 /// 订单回执(后端返回)
@@ -244,5 +268,46 @@ mod tests {
         let s = serde_json::to_string(&p).unwrap();
         let b: PortfolioSnapshot = serde_json::from_str(&s).unwrap();
         assert_eq!(p, b);
+    }
+
+    // ── CancelOrderArgs / ReplaceOrderArgs(Stage E)─────────
+
+    /// `CancelOrderArgs` 仅含 order_id
+    #[test]
+    fn cancel_order_args_serde_roundtrip() {
+        let a = CancelOrderArgs {
+            order_id: "MOCK-1".into(),
+        };
+        let s = serde_json::to_string(&a).unwrap();
+        assert_eq!(s, r#"{"order_id":"MOCK-1"}"#);
+        let back: CancelOrderArgs = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.order_id, "MOCK-1");
+    }
+
+    /// `ReplaceOrderArgs` 含 order_id + 完整 PlaceOrderArgs
+    #[test]
+    fn replace_order_args_serde_roundtrip() {
+        let a = ReplaceOrderArgs {
+            order_id: "MOCK-1".into(),
+            new_req: PlaceOrderArgs {
+                symbol: "BTC-USDT".into(),
+                side: OrderSide::Buy,
+                quantity: 0.2,
+                order_type: OrderKind::Limit,
+                price: Some(51_000.0),
+                stop_loss: None,
+                take_profit: Some(53_000.0),
+                time_in_force: TimeInForce::GTC,
+                extras: serde_json::Value::Null,
+            },
+        };
+        let s = serde_json::to_string(&a).unwrap();
+        assert!(s.contains("\"order_id\":\"MOCK-1\""));
+        assert!(s.contains("\"symbol\":\"BTC-USDT\""));
+        assert!(s.contains("\"quantity\":0.2"));
+        let back: ReplaceOrderArgs = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.order_id, "MOCK-1");
+        assert_eq!(back.new_req.symbol, "BTC-USDT");
+        assert_eq!(back.new_req.quantity, 0.2);
     }
 }

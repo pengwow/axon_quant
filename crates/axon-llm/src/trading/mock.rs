@@ -2,6 +2,7 @@
 //!
 //! 使用方按需在自己 crate 实现 `TradingBackend` 适配真实交易所 / OMS / 回测引擎。
 
+use std::collections::HashSet;
 use std::sync::Mutex as StdMutex;
 
 use async_trait::async_trait;
@@ -49,6 +50,12 @@ pub struct MockTradingBackend {
     next_id: StdMutex<u64>,
     /// 错误注入器(测试 / 演示)
     pub failure_injector: StdMutex<FailureInjector>,
+    /// 已取消订单 ID 集合(Stage E 新增)
+    pub cancelled_ids: StdMutex<HashSet<String>>,
+    /// 已改单订单 ID 集合(Stage E 新增)
+    pub replaced_ids: StdMutex<HashSet<String>>,
+    /// 累计撤单次数(Stage E 新增,公开 Mutex 便于测试断言)
+    pub cancel_count: StdMutex<u32>,
 }
 
 impl Default for MockTradingBackend {
@@ -79,6 +86,9 @@ impl Default for MockTradingBackend {
             }]),
             next_id: StdMutex::new(0),
             failure_injector: StdMutex::new(FailureInjector::default()),
+            cancelled_ids: StdMutex::new(HashSet::new()),
+            replaced_ids: StdMutex::new(HashSet::new()),
+            cancel_count: StdMutex::new(0),
         }
     }
 }
@@ -390,5 +400,16 @@ mod tests {
         let eth_pos = p.iter().find(|pos| pos.symbol == "ETH-USDT").unwrap();
         assert!((eth_pos.quantity - 1.0).abs() < 1e-6);
         assert!((eth_pos.entry_price - 3_000.0).abs() < 1e-6);
+    }
+
+    // ── Stage E:状态机字段初始化检查 ─────────────────────────
+
+    /// 新建 Mock 时取消/改单/计数字段为初始值
+    #[test]
+    fn mock_default_cancelled_and_replaced_ids_empty() {
+        let m = MockTradingBackend::new();
+        assert!(m.cancelled_ids.lock().unwrap().is_empty());
+        assert!(m.replaced_ids.lock().unwrap().is_empty());
+        assert_eq!(*m.cancel_count.lock().unwrap(), 0);
     }
 }

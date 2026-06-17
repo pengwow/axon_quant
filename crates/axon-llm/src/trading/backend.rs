@@ -50,6 +50,33 @@ pub trait TradingBackend: Send + Sync {
         let (balance, positions) = tokio::try_join!(self.get_balance(), self.get_positions(),)?;
         Ok(PortfolioSnapshot { balance, positions })
     }
+    /// 取消订单(按 order_id 撤销未成交订单)
+    ///
+    /// 默认实现返回 `Err(Backend("cancel_order not implemented"))`,
+    /// 使用方按需 override(Mock 默认 override,Exchange/OMS/Backtest 可选 override)。
+    async fn cancel_order(&self, order_id: &str) -> Result<OrderAck, TradingError> {
+        Err(TradingError::Backend(format!(
+            "cancel_order not implemented for {}",
+            order_id
+        )))
+    }
+    /// 修改订单(改 price / quantity / stop_loss / take_profit,**保留 order_id**)
+    ///
+    /// 语义对齐 Binance `PUT /api/v3/order` + OKX `POST /api/v5/trade/amend-order`。
+    /// 后端若不支持 in-place replace(如部分交易所),可在内部拆为 cancel + place,
+    /// 但要求返回的 OrderAck.order_id 与入参相同。
+    ///
+    /// 默认实现返回 `Err(Backend("replace_order not implemented"))`。
+    async fn replace_order(
+        &self,
+        order_id: &str,
+        new_req: &PlaceOrderArgs,
+    ) -> Result<OrderAck, TradingError> {
+        Err(TradingError::Backend(format!(
+            "replace_order not implemented for {}",
+            order_id
+        )))
+    }
 }
 
 // ── 测试 ──────────────────────────────────────────────────
@@ -138,5 +165,37 @@ mod tests {
         let ack = backend.place_order(&mk_args()).await.unwrap();
         assert_eq!(ack.order_id, "TEST-1");
         assert_eq!(ack.status.0, "Filled");
+    }
+
+    /// trait 默认 `cancel_order` 返回 "not implemented"
+    #[tokio::test]
+    async fn default_cancel_returns_not_implemented() {
+        let backend = TestBackend {
+            balance: BalanceSnapshot {
+                currencies: vec![],
+                as_of_ms: 0,
+            },
+            positions: vec![],
+            place_calls: Arc::new(Mutex::new(vec![])),
+        };
+        let e = backend.cancel_order("X-1").await.unwrap_err();
+        assert!(matches!(e, TradingError::Backend(_)));
+        assert!(format!("{}", e).contains("not implemented"));
+    }
+
+    /// trait 默认 `replace_order` 返回 "not implemented"
+    #[tokio::test]
+    async fn default_replace_returns_not_implemented() {
+        let backend = TestBackend {
+            balance: BalanceSnapshot {
+                currencies: vec![],
+                as_of_ms: 0,
+            },
+            positions: vec![],
+            place_calls: Arc::new(Mutex::new(vec![])),
+        };
+        let e = backend.replace_order("X-1", &mk_args()).await.unwrap_err();
+        assert!(matches!(e, TradingError::Backend(_)));
+        assert!(format!("{}", e).contains("not implemented"));
     }
 }

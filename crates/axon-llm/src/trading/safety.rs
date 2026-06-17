@@ -32,6 +32,10 @@ pub struct RiskLimits {
     pub max_order_notional: Option<f64>,
     /// 单日最大订单数(进程内计数,重启清零)
     pub max_daily_orders: Option<u32>,
+    /// 单日最大撤单数(进程内计数,重启清零)
+    /// None = 不限制;Some(x) = cancel 累计到 x+1 时拒绝
+    /// Stage E 新增,CancelOrderTool 单前检查(复用 DailyCounter)
+    pub max_daily_cancels: Option<u32>,
     /// 单 symbol 最大持仓绝对值(本期不实现,留待 OMS 适配 spec 引入)
     pub max_position_abs: Option<f64>,
     /// 允许交易的 symbol 白名单(None = 不限制)
@@ -280,5 +284,27 @@ mod tests {
             reason: "test block".into(),
         };
         assert_eq!(g.is_blocked().as_deref(), Some("test block"));
+    }
+
+    // ── max_daily_cancels 字段(Stage E)─────────────────────
+
+    /// `max_daily_cancels` 字段默认 None
+    #[test]
+    fn risk_limits_max_daily_cancels_default_none() {
+        let l = RiskLimits::permissive();
+        assert!(l.max_daily_cancels.is_none());
+    }
+
+    /// `RiskLimits` 序列化/反序列化保留 `max_daily_cancels` 字段
+    #[test]
+    fn risk_limits_serde_with_max_daily_cancels() {
+        let l = RiskLimits {
+            max_daily_cancels: Some(5),
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&l).unwrap();
+        assert!(s.contains("\"max_daily_cancels\":5"), "got: {}", s);
+        let back: RiskLimits = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.max_daily_cancels, Some(5));
     }
 }
