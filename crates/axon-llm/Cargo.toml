@@ -36,6 +36,14 @@ backends = [
 e2e = ["backends", "dep:wiremock"]
 # demo bin(deepseek 真实调用 + 真实工具) + ensemble 集成(多 backend 投票)
 demo = ["backends", "dep:axon-ensemble", "dep:axon-explain"]
+# 交易后端适配器:把 axon-exchange 适配为 TradingBackend
+# 默认禁用,使用方按需启用 `cargo build -p axon-llm --features trading-exchange`。
+# 启用时拉入 axon-exchange(其依赖 hmac/sha2/tokio-tungstenite 等)+ wiremock 集成测试
+# + rust_decimal(axon-exchange 传递依赖,但 lib 显式用 f64 <-> Decimal 转换需直接访问)。
+trading-exchange = ["dep:axon-exchange", "dep:wiremock", "dep:rust_decimal"]
+# meta feature:启用所有 trading-* 适配器。CI 默认跑这个组合,使用方按需单选。
+# Stage B (OMS) 完成后追加 "trading-oms" / Stage C (Backtest) 完成后追加 "trading-backtest"。
+trading-all = ["trading-exchange"]
 
 [dependencies]
 # 序列化
@@ -77,6 +85,13 @@ toml = { version = "0.8" }
 bytes = { version = "1", optional = true }
 # Stream trait
 futures-core = { version = "0.3", optional = true }
+
+# 真实交易所适配(默认禁用,trading-exchange feature 启用时激活)
+# 引入后传递依赖 hmac / sha2 / hex / tokio-tungstenite / rust_decimal。
+axon-exchange = { workspace = true, optional = true }
+# rust_decimal 是 axon-exchange 传递依赖,lib 的 f64 <-> Decimal 转换需直接访问
+# 显式声明保持类型稳定(避免传递依赖重命名时编译失败)。
+rust_decimal = { version = "1", features = ["serde-with-str"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

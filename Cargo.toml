@@ -31,9 +31,9 @@ version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.96.0"
 license = "Apache-2.0"
-repository = "https://github.com/pengwow/axon"
-homepage = "https://github.com/pengwow/axon"
-documentation = "https://github.com/pengwow/axon"
+repository = "https://github.com/pengwow/axon_quant"
+homepage = "https://github.com/pengwow/axon_quant"
+documentation = "https://github.com/pengwow/axon_quant"
 
 # 统一作者信息
 authors = ["pengwow <pengwow@hotmail.com>"]
@@ -52,6 +52,7 @@ axon-registry = { path = "crates/axon-registry" }
 axon-explain = { path = "crates/axon-explain" }
 axon-ensemble = { path = "crates/axon-ensemble" }
 axon-llm = { path = "crates/axon-llm" }
+axon-exchange = { path = "crates/axon-exchange" }
 
 # 错误处理
 thiserror = "1.0"

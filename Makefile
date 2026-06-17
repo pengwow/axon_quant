@@ -114,10 +114,6 @@ python-develop: ## 安装 Python 包到当前环境（开发模式）
 python-install: python-build ## 安装 Python wheel(默认 --no-deps,避免拉 numpy 等大依赖)
 	$(VENV_PIP) install --no-deps --force-reinstall target/wheels/axon_quant-*.whl
 
-.PHONY: python-wheel-docker
-python-wheel-docker: ## 通过 Docker 构建 wheel（多阶段导出）
-	docker build --target wheel --output target/wheels .
-
 .PHONY: python-clean
 python-clean: ## 清理 Python 构建产物
 	rm -rf target/wheels/
@@ -125,6 +121,16 @@ python-clean: ## 清理 Python 构建产物
 	rm -rf python/axon_quant/_native*.so
 	rm -rf python/axon_quant/__pycache__
 	rm -rf python/axon_quant/*/__pycache__
+
+.PHONY: python-publish-test
+python-publish-test: python-build ## 发布到 TestPyPI（测试）
+	$(VENV_PIP) install twine
+	$(VENV_PIP) run twine upload --repository testpypi target/wheels/*
+
+.PHONY: python-publish
+python-publish: python-build ## 发布到 PyPI（正式）
+	$(VENV_PIP) install twine
+	$(VENV_PIP) run twine upload target/wheels/*
 
 # ==================== 性能基准 ====================
 .PHONY: bench bench-cmp bench-one
