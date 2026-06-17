@@ -187,6 +187,31 @@ axon_quant/
 | 分布式加速 | > 5x (8 workers) |
 | 测试用例 | 1200+ Rust + 24 Python |
 
+### 性能基准
+
+workspace 已建立 50+ Criterion bench,跨 5 个 crate:
+
+| Crate | Bench 入口 | 覆盖 |
+|-------|-----------|------|
+| `axon-core` | `benches/core_bench.rs` | 28 个:冲击模型/波动率/延迟/订单簿/订单/事件/费用 |
+| `axon-backtest` | `benches/impact_bench.rs` | 8 个:撮合延迟/不同冲击模型/订单簿深度/永久衰减/多笔/TOML 配置 |
+| `axon-data` | `benches/axon_data_bench.rs` | 7 个 group(8+ bench):LRU/Dataset lazy/CSV/Parquet 流式/Bar 聚合/Mock/Mmap |
+| `axon-rl` | `benches/rl_bench.rs` | 11 个:观测/奖励/TradingEnv 端到端/Action 转换 |
+| Phase 4 crates | `benches/phase4_bench.rs` | 15 个:风控/OMS/监控延迟 |
+
+跑法:
+
+```bash
+make bench                 # 全 workspace,本地 5-10 分钟
+make bench-cmp             # 存 main baseline,PR 对比
+make bench-one CRATE=axon-core BENCH=event_builder_tick   # 单个 bench
+cargo bench -p axon-core -- impact_linear    # 直接 cargo 跑
+```
+
+CI 不跑 bench(避免 main runner 性能噪声)。报告:`target/criterion/<group>/report/index.html`。
+
+---
+
 ### CPU/GPU 亲和性
 
 `axon-inference` 提供 `affinity` 模块,跨平台绑核降低跨核 cache miss:

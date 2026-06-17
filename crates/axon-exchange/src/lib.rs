@@ -40,6 +40,7 @@
 //!     },
 //!     proxy: None,
 //!     position_endpoint: "/fapi/v2/positionRisk".into(),
+//!     fapi_base_url: None,
 //! };
 //! ```
 //!

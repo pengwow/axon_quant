@@ -118,6 +118,26 @@ python-clean: ## 清理 Python 构建产物
 	rm -rf python/axon_quant/__pycache__
 	rm -rf python/axon_quant/*/__pycache__
 
+# ==================== 性能基准 ====================
+.PHONY: bench bench-cmp bench-one
+
+bench: ## 跑全 workspace bench(本地,不进 CI)
+	cargo bench --workspace --no-fail-fast -- --output-format bencher
+
+bench-cmp: ## 存 main baseline,用于 PR 对比
+	@echo "Saving baseline 'main'..."
+	cargo bench --workspace --no-fail-fast -- --save-baseline main
+
+# 跑单个 bench(用法:make bench-one CRATE=axon-core BENCH=event_builder_tick)
+bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
+	@if [ -z "$(CRATE)" ] || [ -z "$(BENCH)" ]; then \
+		echo "Usage: make bench-one CRATE=<crate> BENCH=<bench-name>"; \
+		echo "  e.g. make bench-one CRATE=axon-core BENCH=event_builder_tick"; \
+		echo "  e.g. make bench-one CRATE=axon-backtest BENCH=submit_linear_impact"; \
+		exit 1; \
+	fi
+	cargo bench -p $(CRATE) -- $(BENCH)
+
 # ==================== 验证完整流程 ====================
 .PHONY: verify
 verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
