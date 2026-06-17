@@ -903,10 +903,7 @@ impl ExchangeAdapter for BinanceAdapter {
                 .as_str()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
-            index_price: entry["indexPrice"]
-                .as_str()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
+            index_price: Decimal::ZERO, // /fapi/v1/fundingRate 端点不返回 indexPx
         })
     }
 
