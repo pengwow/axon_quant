@@ -94,17 +94,25 @@ install: ## 安装 axon CLI 到本地
 	cargo install --path crates/axon-cli --locked
 
 # ==================== Python ====================
+# 项目规则:必须使用本仓库 `.venv` 下的 Python/maturin/pip,
+# 不能用 miniconda3 下的环境(否则 PYO3_PYTHON 与 cargo 链接的 libpython
+# 会不一致,导致 build/import 失败)。
+
+VENV_PYTHON ?= .venv/bin/python
+VENV_MATURIN ?= .venv/bin/maturin
+VENV_PIP ?= .venv/bin/pip
+
 .PHONY: python-build
 python-build: ## 构建 Python wheel（包含 Rust 扩展）
-	maturin build --release
+	PYO3_PYTHON=$(VENV_PYTHON) $(VENV_MATURIN) build --release
 
 .PHONY: python-develop
 python-develop: ## 安装 Python 包到当前环境（开发模式）
-	maturin develop
+	PYO3_PYTHON=$(VENV_PYTHON) $(VENV_MATURIN) develop
 
 .PHONY: python-install
-python-install: python-build ## 安装 Python wheel
-	pip install target/wheels/axon_quant-*.whl --force-reinstall
+python-install: python-build ## 安装 Python wheel(默认 --no-deps,避免拉 numpy 等大依赖)
+	$(VENV_PIP) install --no-deps --force-reinstall target/wheels/axon_quant-*.whl
 
 .PHONY: python-wheel-docker
 python-wheel-docker: ## 通过 Docker 构建 wheel（多阶段导出）

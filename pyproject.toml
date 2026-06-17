@@ -45,6 +45,11 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
+# 启用 axon-python 的 `python` feature,让 `pyo3`(在 Cargo.toml 中是
+# `optional = true` 依赖)出现在 `cargo metadata` 的依赖图里,maturin 1.14
+# 的 `find_bridge` 才能识别为 pyo3 绑定。否则 `find_pyo3_bindings` 返回
+# `None`,触发 "unknown binding type" / "Couldn't detect the binding type"。
+features = ["python"]
 manifest-path = "crates/axon-python/Cargo.toml"
 python-source = "python"
 module-name = "axon_quant._native"

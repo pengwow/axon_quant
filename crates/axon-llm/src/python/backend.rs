@@ -1,12 +1,12 @@
 //! PyO3 绑定:将 `OpenAICompatBackend` 暴露给 Python
 //!
-//! `PyLlmBackend` 持有内部 backend + tokio runtime,使 Python 端可以同步
+//! `PyLLMBackend` 持有内部 backend + tokio runtime,使 Python 端可以同步
 //! 调用 `chat()` / `chat_with_tools()`,内部把 async 调用桥到 sync。
 //!
 //! ## Python 用法
 //!
 //! ```python
-//! from axon_quant._native.llm import make_backend, LlmMessage
+//! from axon_quant._native.llm import make_backend, LLMMessage
 //!
 //! backend = make_backend({
 //!     "backends": [{
@@ -15,7 +15,7 @@
 //!         "model": "gpt-4o-mini",
 //!     }],
 //! })
-//! resp = backend.chat([LlmMessage("user", "Hi!")])
+//! resp = backend.chat([LLMMessage("user", "Hi!")])
 //! # 或者直接传 dict(更贴近 OpenAI 原生消息结构)
 //! resp = backend.chat([{"role": "user", "content": "Hi!"}])
 //! print(resp["content"])
@@ -37,8 +37,8 @@ use crate::types::Message;
 ///
 /// 内部持有一个 `OpenAICompatBackend` + 一个 `tokio::runtime::Runtime`,
 /// 通过 `block_on` 桥接 async → sync,使 Python 端能直接同步调用 `chat()`。
-#[pyclass(name = "LlmBackend")]
-pub struct PyLlmBackend {
+#[pyclass(name = "LLMBackend")]
+pub struct PyLLMBackend {
     /// 内部 backend(用 Mutex 包装以便未来支持可重入)
     pub(crate) inner: Arc<Mutex<OpenAICompatBackend>>,
     /// 独占的 tokio runtime
@@ -46,10 +46,10 @@ pub struct PyLlmBackend {
 }
 
 #[pymethods]
-impl PyLlmBackend {
-    /// 同步 chat:Python list[`LlmMessage` | dict] → Rust `Message[]` → LLM → Python dict
+impl PyLLMBackend {
+    /// 同步 chat:Python list[`LLMMessage` | dict] → Rust `Message[]` → LLM → Python dict
     ///
-    /// 每条消息可以是 `LlmMessage` 实例,也可以是包含 `role`/`content` 的 dict
+    /// 每条消息可以是 `LLMMessage` 实例,也可以是包含 `role`/`content` 的 dict
     /// (允许可选字段 `tool_call_id` / `tool_calls`,后者为 JSON 字符串)。
     fn chat<'py>(
         &self,
@@ -78,7 +78,7 @@ impl PyLlmBackend {
 
     /// 字符串表示
     fn __repr__(&self) -> String {
-        "LlmBackend(OpenAICompatBackend)".to_string()
+        "LLMBackend(OpenAICompatBackend)".to_string()
     }
 }
 
@@ -87,9 +87,9 @@ fn map_err(e: LLMError) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
 }
 
-/// 解析单条 Python 消息,接受 `LlmMessage` 或 dict
+/// 解析单条 Python 消息,接受 `LLMMessage` 或 dict
 fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
-    // 优先尝试 `LlmMessage` 实例(精确类型路径)
+    // 优先尝试 `LLMMessage` 实例(精确类型路径)
     if let Ok(pym) = obj.extract::<PyMessage>() {
         return Ok(pym.into());
     }
@@ -121,7 +121,7 @@ fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
         }));
     }
     Err(pyo3::exceptions::PyTypeError::new_err(
-        "each message must be LlmMessage or dict",
+        "each message must be LLMMessage or dict",
     ))
 }
 
@@ -131,8 +131,8 @@ fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
 /// 暴露为 `pyclass` 以便 Python 端可以直接构造。
 ///
 /// `#[pyclass(from_py_object)]`:pyo3 0.28 起需要显式 opt-in FromPyObject
-/// 才能在 `chat(messages: Vec<LlmMessage>)` 等函数签名中提取 pyclass 值。
-#[pyclass(name = "LlmMessage", from_py_object)]
+/// 才能在 `chat(messages: Vec<LLMMessage>)` 等函数签名中提取 pyclass 值。
+#[pyclass(name = "LLMMessage", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyMessage {
     /// role:"system" | "user" | "assistant" | "tool"
@@ -147,7 +147,7 @@ pub struct PyMessage {
 
 #[pymethods]
 impl PyMessage {
-    /// 构造 LlmMessage
+    /// 构造 LLMMessage
     ///
     /// `tool_calls` 是 JSON 字符串(避免暴露 Rust 类型给 Python)。
     #[new]
@@ -168,7 +168,7 @@ impl PyMessage {
 
     fn __repr__(&self) -> String {
         format!(
-            "LlmMessage(role={}, content={:?}{})",
+            "LLMMessage(role={}, content={:?}{})",
             self.role,
             self.content,
             self.tool_call_id

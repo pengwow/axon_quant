@@ -1,14 +1,14 @@
 //! axon-llm PyO3 模块入口
 //!
-//! 暴露 `LlmBackend` / `LlmMessage` 类 + `make_backend` 函数。
-//! 典型用法:Python 端用 dict 传 LlmConfig,Rust 端校验后构造 backend。
+//! 暴露 `LLMBackend` / `LLMMessage` 类 + `make_backend` 函数。
+//! 典型用法:Python 端用 dict 传 LLMConfig,Rust 端校验后构造 backend。
 //!
 //! ## 设计说明
 //!
-//! - `make_backend(config_dict)`:从 Python dict 构造 `LlmBackend`,
-//!   内部用 `LlmConfig::from_dict` 解析 + `OpenAICompatConfig::from_llm_config` 构造。
-//! - `LlmBackend.chat([...])`:同步 chat,内部把 async complete 桥到 sync。
-//! - `LlmMessage`:Python 端 DTO,内部转 Rust `Message`。
+//! - `make_backend(config_dict)`:从 Python dict 构造 `LLMBackend`,
+//!   内部用 `LLMConfig::from_dict` 解析 + `OpenAICompatConfig::from_llm_config` 构造。
+//! - `LLMBackend.chat([...])`:同步 chat,内部把 async complete 桥到 sync。
+//! - `LLMMessage`:Python 端 DTO,内部转 Rust `Message`。
 
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::useless_conversion)]
@@ -19,25 +19,25 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::backends::{OpenAICompatBackend, OpenAICompatConfig};
-use crate::config::LlmConfig;
+use crate::config::LLMConfig;
 
 mod backend;
-use backend::{PyLlmBackend, PyMessage};
+use backend::{PyLLMBackend, PyMessage};
 
-/// Python 端 `LlmBackend` 的构造函数
+/// Python 端 `LLMBackend` 的构造函数
 ///
 /// `config` 是 dict,字段:
 ///   - `backends`: list[dict],每个 dict 包含 base_url/api_key/model/max_tokens/temperature/timeout_secs
 ///   - `retry`: dict{max_retries, initial_backoff_ms, max_backoff_ms}(可选)
 ///   - `explain`: dict{record_decisions, store_path}(可选)
 ///
-/// 返回 `LlmBackend` 实例。
+/// 返回 `LLMBackend` 实例。
 #[pyfunction]
-fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLlmBackend> {
+fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLLMBackend> {
     // 1. Python dict → serde_json::Value
     let json_value = pythonize(py, config.as_any())?;
 
-    // 2. 转为 HashMap<String, Value>(供 LlmConfig::from_dict)
+    // 2. 转为 HashMap<String, Value>(供 LLMConfig::from_dict)
     let map: std::collections::HashMap<String, serde_json::Value> = match json_value {
         serde_json::Value::Object(m) => m.into_iter().collect(),
         other => {
@@ -48,8 +48,8 @@ fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLlmBac
         }
     };
 
-    // 3. 解析为 LlmConfig(内部会 validate)
-    let cfg = LlmConfig::from_dict(map)
+    // 3. 解析为 LLMConfig(内部会 validate)
+    let cfg = LLMConfig::from_dict(map)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     // 4. 构造 OpenAICompatConfig(取第一个 backend)
@@ -61,7 +61,7 @@ fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLlmBac
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-    Ok(PyLlmBackend {
+    Ok(PyLLMBackend {
         inner: Arc::new(Mutex::new(backend)),
         runtime: Arc::new(runtime),
     })
@@ -134,7 +134,7 @@ fn type_name(v: &serde_json::Value) -> &'static str {
 #[pymodule]
 pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_backend, m)?)?;
-    m.add_class::<PyLlmBackend>()?;
+    m.add_class::<PyLLMBackend>()?;
     m.add_class::<PyMessage>()?;
     Ok(())
 }

@@ -21,13 +21,13 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
     )
 
     # LLM 后端:主动传参,避免依赖环境变量
-    from axon_quant.llm import LLMConfig, make_backend, LlmMessage
+    from axon_quant.llm import LLMConfig, make_backend, LLMMessage
     backend = make_backend(LLMConfig(backends=[{
         "base_url": "https://api.example.com/v1",
         "api_key": "sk-xxx",
         "model": "model-name",
     }]))
-    print(backend.chat([LlmMessage("user", "Hi!")])["content"])
+    print(backend.chat([LLMMessage("user", "Hi!")])["content"])
 """
 
 from __future__ import annotations
@@ -54,9 +54,9 @@ from ._native import (  # noqa: F401
 # 后者会优先复用 sys.modules['axon_quant.llm'] 缓存,
 # 而该缓存可能已经被 `from ._native import *` 注入为原生 _native.llm 引用。
 from .llm import (  # noqa: F401
-    LlmBackend,
+    LLMBackend,
     LLMConfig,
-    LlmMessage,
+    LLMMessage,
     load_config_from_toml,
     make_backend,
 )
@@ -74,8 +74,8 @@ __all__ = [  # noqa: F405
     "distributed",
     "llm",
     "LLMConfig",
-    "LlmBackend",
-    "LlmMessage",
+    "LLMBackend",
+    "LLMMessage",
     "make_backend",
     "load_config_from_toml",
 ]

@@ -1,7 +1,7 @@
 //! `live_trading_demo` —— axon-llm 真实 LLM 端到端 demo
 //!
 //! 演示:
-//! 1. 通过 `--config` 参数 + 5 级 fallback 加载统一 `LlmConfig`
+//! 1. 通过 `--config` 参数 + 5 级 fallback 加载统一 `LLMConfig`
 //! 2. 用 `OpenAICompatConfig::from_llm_config` 构造 backend
 //! 3. 真实调 DeepSeek / OpenAI / 任意 OpenAI 兼容 API
 //! 4. 跑一次"工具调用 → 解析"循环
@@ -26,16 +26,16 @@ use std::path::PathBuf;
 
 use axon_llm::backend::{LLMBackend, LLMError, ToolDefinition};
 use axon_llm::backends::{OpenAICompatBackend, OpenAICompatConfig};
-use axon_llm::config::LlmConfig;
+use axon_llm::config::LLMConfig;
 use axon_llm::types::Message;
 
 fn main() {
     // 1. 解析 --config 参数(env var: AXON_LLM_CONFIG 兜底)
     let explicit_path = parse_config_arg();
 
-    // 2. 5 级 fallback 解析 LlmConfig
+    // 2. 5 级 fallback 解析 LLMConfig
     let cwd = std::env::current_dir().expect("cwd");
-    let cfg = match LlmConfig::resolve_with_fallback(explicit_path.as_deref(), &cwd) {
+    let cfg = match LLMConfig::resolve_with_fallback(explicit_path.as_deref(), &cwd) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("❌ 加载 config 失败: {e}");

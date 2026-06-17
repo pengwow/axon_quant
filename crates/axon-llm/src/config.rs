@@ -92,7 +92,7 @@ pub struct ExplainConfig {
 
 /// 顶层 LLM 配置
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct LlmConfig {
+pub struct LLMConfig {
     /// backend 列表(单 demo 时通常 length=1, ensemble 时 length=2..3)
     #[serde(default)]
     pub backends: Vec<BackendConfig>,
@@ -135,7 +135,7 @@ pub enum ConfigError {
     OverrideConflict(String),
 }
 
-impl LlmConfig {
+impl LLMConfig {
     /// 从 TOML 字符串解析
     #[allow(clippy::should_implement_trait)] // 命名与 toml::from_str 对齐
     pub fn from_str(s: &str) -> Result<Self, ConfigError> {
@@ -213,8 +213,8 @@ impl LlmConfig {
         Ok(())
     }
 
-    /// 字段级 override,返回新 LlmConfig
-    pub fn merged_override(mut self, ovr: LlmConfigOverride) -> Self {
+    /// 字段级 override,返回新 LLMConfig
+    pub fn merged_override(mut self, ovr: LLMConfigOverride) -> Self {
         for b in self.backends.iter_mut() {
             if let Some(ref v) = ovr.api_key {
                 b.api_key = v.clone();
@@ -243,7 +243,7 @@ impl LlmConfig {
     ///   2. cwd/config.local.toml
     ///   3. cwd/config.toml
     ///   4. cwd/crates/axon-llm/demo/bin/config.toml
-    ///   5. LlmConfig::default()(validate 必失败,要求显式 set api_key)
+    ///   5. LLMConfig::default()(validate 必失败,要求显式 set api_key)
     pub fn resolve_with_fallback(
         explicit_path: Option<&Path>,
         cwd: &Path,
@@ -263,7 +263,7 @@ impl LlmConfig {
             }
         }
         // 兜底:返回 default 并 validate,提示用户需显式 set api_key
-        let default = LlmConfig::default();
+        let default = LLMConfig::default();
         default.validate()?;
         Ok(default)
     }
@@ -282,7 +282,7 @@ impl LlmConfig {
 
 /// 单字段 override
 #[derive(Debug, Clone, Default)]
-pub struct LlmConfigOverride {
+pub struct LLMConfigOverride {
     /// 覆盖 api_key
     pub api_key: Option<String>,
     /// 覆盖 model
@@ -328,7 +328,7 @@ mod tests {
             api_key = "sk-yyy"
             model = "gpt-4o-mini"
         "#;
-        let cfg = LlmConfig::from_str(toml_str).expect("parse");
+        let cfg = LLMConfig::from_str(toml_str).expect("parse");
         assert_eq!(cfg.backends.len(), 2);
         assert_eq!(cfg.backends[0].name, "primary");
         assert_eq!(cfg.backends[1].model, "gpt-4o-mini");
@@ -349,14 +349,14 @@ mod tests {
         "#,
         )
         .unwrap();
-        let cfg = LlmConfig::from_file(&path).unwrap();
+        let cfg = LLMConfig::from_file(&path).unwrap();
         assert_eq!(cfg.backends.len(), 1);
         assert_eq!(cfg.backends[0].model, "deepseek-chat");
     }
 
     #[test]
     fn test_from_file_missing_returns_descriptive_error() {
-        let result = LlmConfig::from_file(Path::new("/nonexistent/path.toml"));
+        let result = LLMConfig::from_file(Path::new("/nonexistent/path.toml"));
         match result {
             Err(ConfigError::NotFound { path }) => assert!(path.contains("nonexistent")),
             other => panic!("expected NotFound, got {:?}", other),
@@ -368,7 +368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.toml");
         std::fs::write(&path, "this is = = not valid toml = = =").unwrap();
-        let result = LlmConfig::from_file(&path);
+        let result = LLMConfig::from_file(&path);
         assert!(matches!(result, Err(ConfigError::Parse(_))));
     }
 
@@ -386,14 +386,14 @@ mod tests {
             "backends".to_string(),
             serde_json::Value::Array(vec![serde_json::Value::Object(b)]),
         );
-        let cfg = LlmConfig::from_dict(map).unwrap();
+        let cfg = LLMConfig::from_dict(map).unwrap();
         assert_eq!(cfg.backends[0].model, "m");
         assert_eq!(cfg.backends[0].api_key, "k");
     }
 
     #[test]
     fn test_validate_rejects_empty_api_key() {
-        let cfg = LlmConfig {
+        let cfg = LLMConfig {
             backends: vec![BackendConfig {
                 name: "x".into(),
                 base_url: "https://x.com/v1".into(),
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_non_http_base_url() {
-        let cfg = LlmConfig {
+        let cfg = LLMConfig {
             backends: vec![BackendConfig {
                 name: "x".into(),
                 base_url: "ftp://x.com/v1".into(),
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_placeholder_api_key() {
-        let cfg = LlmConfig {
+        let cfg = LLMConfig {
             backends: vec![BackendConfig {
                 name: "x".into(),
                 base_url: "https://x.com/v1".into(),
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_empty_backends() {
-        let cfg = LlmConfig {
+        let cfg = LLMConfig {
             backends: vec![],
             backend: None,
             retry: RetryConfig::default(),
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_override_merges_partially() {
-        let mut cfg = LlmConfig::default();
+        let mut cfg = LLMConfig::default();
         cfg.backends.push(BackendConfig {
             name: "x".into(),
             base_url: "https://a.com/v1".into(),
@@ -483,7 +483,7 @@ mod tests {
             temperature: 0.7,
             timeout_secs: 60,
         });
-        let ovr = LlmConfigOverride {
+        let ovr = LLMConfigOverride {
             api_key: Some("k2".into()),
             model: Some("m2".into()),
             ..Default::default()
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_override_preserves_unset_fields() {
-        let mut cfg = LlmConfig::default();
+        let mut cfg = LLMConfig::default();
         cfg.backends.push(BackendConfig {
             name: "x".into(),
             base_url: "https://a.com/v1".into(),
@@ -506,7 +506,7 @@ mod tests {
             temperature: 0.5,
             timeout_secs: 90,
         });
-        let ovr = LlmConfigOverride::default();
+        let ovr = LLMConfigOverride::default();
         let merged = cfg.merged_override(ovr);
         assert_eq!(merged.backends[0].max_tokens, 2048);
         assert_eq!(merged.backends[0].temperature, 0.5);
@@ -538,7 +538,7 @@ mod tests {
         )
         .unwrap();
         let resolved =
-            LlmConfig::resolve_with_fallback(Some(explicit.as_path()), dir.path()).unwrap();
+            LLMConfig::resolve_with_fallback(Some(explicit.as_path()), dir.path()).unwrap();
         assert_eq!(resolved.backends[0].base_url, "https://explicit.com/v1");
     }
 
@@ -565,7 +565,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        let resolved = LlmConfig::resolve_with_fallback(None, dir.path()).unwrap();
+        let resolved = LLMConfig::resolve_with_fallback(None, dir.path()).unwrap();
         assert_eq!(resolved.backends[0].base_url, "https://local.com/v1");
     }
 
@@ -573,14 +573,14 @@ mod tests {
     fn test_resolve_fallback_uses_builtin_when_no_file() {
         let dir = tempfile::tempdir().unwrap();
         // 不放任何文件
-        let result = LlmConfig::resolve_with_fallback(None, dir.path());
+        let result = LLMConfig::resolve_with_fallback(None, dir.path());
         // 返回 default(),但 validate 必失败
         assert!(result.is_err());
     }
 
     #[test]
     fn test_save_template_redacts_secrets() {
-        let mut cfg = LlmConfig::default();
+        let mut cfg = LLMConfig::default();
         cfg.backends.push(BackendConfig {
             name: "x".into(),
             base_url: "https://a.com/v1".into(),

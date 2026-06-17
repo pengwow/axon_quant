@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use axon_llm::backend::LLMBackend;
 use axon_llm::backends::{OpenAICompatBackend, OpenAICompatConfig};
-use axon_llm::config::LlmConfig;
+use axon_llm::config::LLMConfig;
 use axon_llm::types::Message;
 
 use axon_ensemble::traits::VotingStrategy;
@@ -38,8 +38,8 @@ fn main() {
     let explicit_path = parse_config_arg();
     let cwd = std::env::current_dir().expect("cwd");
 
-    // 2. 5 级 fallback 解析 LlmConfig
-    let cfg = match LlmConfig::resolve_with_fallback(explicit_path.as_deref(), &cwd) {
+    // 2. 5 级 fallback 解析 LLMConfig
+    let cfg = match LLMConfig::resolve_with_fallback(explicit_path.as_deref(), &cwd) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("❌ 加载 config 失败: {e}");
@@ -101,7 +101,7 @@ impl std::fmt::Display for DemoError {
 impl std::error::Error for DemoError {}
 
 /// 顺序执行三阶段 demo
-async fn run_all_phases(cfg: &LlmConfig) -> Result<(), DemoError> {
+async fn run_all_phases(cfg: &LLMConfig) -> Result<(), DemoError> {
     // 阶段 1: 多 backend 简单对话
     println!("\n=== 阶段 1: 多 backend 简单对话 ===");
     let responses = phase1_parallel_collect(cfg).await?;
@@ -121,7 +121,7 @@ async fn run_all_phases(cfg: &LlmConfig) -> Result<(), DemoError> {
 ///
 /// 串行而非并行的考虑:不同厂商 rate limit 不同,并发可能触发限流;
 /// demo 更关注可读性,串行输出更清晰。
-async fn phase1_parallel_collect(cfg: &LlmConfig) -> Result<Vec<BackendResponse>, DemoError> {
+async fn phase1_parallel_collect(cfg: &LLMConfig) -> Result<Vec<BackendResponse>, DemoError> {
     let query = "Should I buy BTC at $65000 right now? Answer YES or NO in one word.";
     let mut out = Vec::with_capacity(cfg.backends.len());
     for (i, b) in cfg.backends.iter().enumerate() {
@@ -205,7 +205,7 @@ fn phase2_ensemble_vote(responses: &[BackendResponse]) -> EnsembleDecision {
 fn phase3_explain_report(
     responses: &[BackendResponse],
     decision: &EnsembleDecision,
-    cfg: &LlmConfig,
+    cfg: &LLMConfig,
 ) -> Result<(), DemoError> {
     // 构造 Explanation 列表:每个 backend 回答对应一条 Explanation
     let explanations: Vec<Explanation> = responses

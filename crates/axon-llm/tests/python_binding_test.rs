@@ -1,8 +1,8 @@
 //! axon-llm Python 绑定契约测试
 //!
 //! 验证 Rust 端 Python 绑定的关键公开契约:
-//! - `LlmConfig::from_dict` 接受 dict 形式的配置
-//! - `OpenAICompatConfig::from_llm_config` 从 LlmConfig 构造
+//! - `LLMConfig::from_dict` 接受 dict 形式的配置
+//! - `OpenAICompatConfig::from_llm_config` 从 LLMConfig 构造
 //! - `Message` 类型与 PyMessage 字段对齐(role / content / tool_call_id / tool_calls)
 //!
 //! 这些测试作为「contract tests」放在 integration tests 目录,
@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use axon_llm::backends::OpenAICompatConfig;
-use axon_llm::config::LlmConfig;
+use axon_llm::config::LLMConfig;
 use axon_llm::types::{Message, Role, ToolCall};
 use pretty_assertions::assert_eq;
 
@@ -47,7 +47,7 @@ fn llm_config_from_dict_supports_full_payload() {
         }),
     );
 
-    let cfg = LlmConfig::from_dict(map).expect("should parse");
+    let cfg = LLMConfig::from_dict(map).expect("should parse");
     assert_eq!(cfg.backends.len(), 1);
     assert_eq!(cfg.backends[0].model, "mimo-v2.5");
     assert_eq!(cfg.retry.max_retries, 5);
@@ -73,7 +73,7 @@ fn openai_compat_from_llm_config_uses_first_backend() {
     .collect();
     map.insert("backends".to_string(), serde_json::json!([b1, b2]));
 
-    let cfg = LlmConfig::from_dict(map).expect("should parse");
+    let cfg = LLMConfig::from_dict(map).expect("should parse");
     let compat = OpenAICompatConfig::from_llm_config(&cfg, 0).expect("should build");
     assert_eq!(compat.base_url, "https://a/v1");
     assert_eq!(compat.model, "model-a");
@@ -95,7 +95,7 @@ fn openai_compat_from_llm_config_out_of_range_returns_error() {
     .into_iter()
     .collect();
     map.insert("backends".to_string(), serde_json::json!([b]));
-    let cfg = LlmConfig::from_dict(map).expect("should parse");
+    let cfg = LLMConfig::from_dict(map).expect("should parse");
     let err = OpenAICompatConfig::from_llm_config(&cfg, 5).expect_err("index 5 should be OOB");
     assert!(err.to_string().to_lowercase().contains("not found"));
 }

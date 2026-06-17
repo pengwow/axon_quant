@@ -45,4 +45,9 @@ logs/
 
 Cargo.lock
 
-python/*
+# Python 包(axon_quant)构建产物 — 源码仍需进版本控制,只忽略产物
+# 见 `make python-clean` 与 `python/axon_quant/*.so` / `__pycache__` / `_native*.so`
+python/axon_quant/*.so
+python/axon_quant/_native*.so
+python/axon_quant/__pycache__/
+python/axon_quant/*/__pycache__/

@@ -14,7 +14,7 @@
 use super::retry::{BackoffConfig, with_backoff};
 use super::streaming::{TokenDelta, sse_bytes_to_deltas};
 use crate::backend::{LLMBackend, LLMError, ToolDefinition};
-use crate::config::LlmConfig;
+use crate::config::LLMConfig;
 use crate::types::{FinishReason, LLMResponse, Message, TokenUsage, ToolCall};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -69,10 +69,10 @@ impl OpenAICompatConfig {
         }
     }
 
-    /// 从统一 `LlmConfig` 构造,选择指定 backend 索引(默认 0)
+    /// 从统一 `LLMConfig` 构造,选择指定 backend 索引(默认 0)
     ///
     /// 用于支持多 backend(ensemble)场景;索引越界时返回 `BackendInitError`。
-    pub fn from_llm_config(cfg: &LlmConfig, index: usize) -> Result<Self, BackendInitError> {
+    pub fn from_llm_config(cfg: &LLMConfig, index: usize) -> Result<Self, BackendInitError> {
         let b: &crate::config::BackendConfig = cfg
             .backends
             .get(index)
@@ -414,8 +414,8 @@ mod tests {
 
     #[test]
     fn test_from_llm_config_field_mapping() {
-        // 验证 from_llm_config 正确把 LlmConfig 字段映射到 OpenAICompatConfig
-        let cfg = LlmConfig {
+        // 验证 from_llm_config 正确把 LLMConfig 字段映射到 OpenAICompatConfig
+        let cfg = LLMConfig {
             backends: vec![BackendConfig {
                 name: "primary".into(),
                 base_url: "https://x.com/v1".into(),
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(compat.max_tokens, 2048);
         assert!((compat.temperature - 0.3).abs() < 1e-6);
         assert_eq!(compat.timeout, Duration::from_secs(90));
-        // BackoffConfig 使用 Duration;LlmConfig 的 *_backoff_ms 字段为毫秒数
+        // BackoffConfig 使用 Duration;LLMConfig 的 *_backoff_ms 字段为毫秒数
         assert_eq!(compat.backoff.max_retries, 5);
         assert_eq!(compat.backoff.initial_delay, Duration::from_millis(100));
         assert_eq!(compat.backoff.max_delay, Duration::from_millis(3000));
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn test_from_llm_config_index_out_of_range() {
         // 索引越界应返回 BackendInitError
-        let cfg = LlmConfig {
+        let cfg = LLMConfig {
             backends: vec![BackendConfig {
                 name: "x".into(),
                 base_url: "https://x.com/v1".into(),

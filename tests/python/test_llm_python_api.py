@@ -2,10 +2,10 @@
 
 覆盖:
 - LLMConfig dataclass 构造 + to_dict
-- LlmMessage 构造 + repr
+- LLMMessage 构造 + repr
 - make_backend 工厂(校验成功/失败路径)
 - load_config_from_toml 加载 + 校验
-- module 公开 API 表面(LLMConfig / LlmBackend / LlmMessage / make_backend / load_config_from_toml)
+- module 公开 API 表面(LLMConfig / LLMBackend / LLMMessage / make_backend / load_config_from_toml)
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ class TestModuleSurface:
 
     def test_top_level_exports_match_module(self):
         from axon_quant import (
-            LlmBackend,
+            LLMBackend,
             LLMConfig,
-            LlmMessage,
+            LLMMessage,
             llm,
             load_config_from_toml,
             make_backend,
@@ -42,8 +42,8 @@ class TestModuleSurface:
 
         # 顶层 re-export 与 submodule 引用一致
         assert llm.LLMConfig is LLMConfig
-        assert llm.LlmBackend is LlmBackend
-        assert llm.LlmMessage is LlmMessage
+        assert llm.LLMBackend is LLMBackend
+        assert llm.LLMMessage is LLMMessage
         assert llm.make_backend is make_backend
         assert llm.load_config_from_toml is load_config_from_toml
 
@@ -89,26 +89,26 @@ class TestLLMConfig:
 
 
 # ──────────────────────────────────────────────────────────────
-# LlmMessage
+# LLMMessage
 # ──────────────────────────────────────────────────────────────
 
 
-class TestLlmMessage:
-    """LlmMessage 构造 + repr"""
+class TestLLMMessage:
+    """LLMMessage 构造 + repr"""
 
     def test_basic_message(self):
-        from axon_quant import LlmMessage
+        from axon_quant import LLMMessage
 
-        m = LlmMessage("user", "hello")
+        m = LLMMessage("user", "hello")
         assert repr(m)  # repr 不抛错
         r = repr(m)
         assert "user" in r
         assert "hello" in r
 
     def test_message_with_tool_call_id(self):
-        from axon_quant import LlmMessage
+        from axon_quant import LLMMessage
 
-        m = LlmMessage("tool", "result", tool_call_id="abc-123")
+        m = LLMMessage("tool", "result", tool_call_id="abc-123")
         r = repr(m)
         assert "tool_call_id=abc-123" in r
 
@@ -122,16 +122,16 @@ class TestMakeBackend:
     """make_backend 工厂函数"""
 
     def test_dataclass_input(self):
-        from axon_quant import LlmBackend, LLMConfig, make_backend
+        from axon_quant import LLMBackend, LLMConfig, make_backend
 
         cfg = LLMConfig(backends=[{"base_url": "https://x/v1", "api_key": "k", "model": "m"}])
         backend = make_backend(cfg)
-        assert isinstance(backend, LlmBackend)
+        assert isinstance(backend, LLMBackend)
         # repr 不抛错,包含可读信息
-        assert "LlmBackend" in repr(backend)
+        assert "LLMBackend" in repr(backend)
 
     def test_dict_input(self):
-        from axon_quant import LlmBackend, make_backend
+        from axon_quant import LLMBackend, make_backend
 
         backend = make_backend(
             {
@@ -146,7 +146,7 @@ class TestMakeBackend:
                 ]
             }
         )
-        assert isinstance(backend, LlmBackend)
+        assert isinstance(backend, LLMBackend)
 
     def test_string_input_raises_type_error(self):
         from axon_quant import make_backend
@@ -292,7 +292,7 @@ class TestIntegration:
     """端到端串联:load_config_from_toml → make_backend"""
 
     def test_toml_to_backend_succeeds(self):
-        from axon_quant import LlmBackend, load_config_from_toml, make_backend
+        from axon_quant import LLMBackend, load_config_from_toml, make_backend
 
         path = _write_toml(
             """
@@ -305,6 +305,6 @@ class TestIntegration:
         try:
             cfg = load_config_from_toml(path)
             backend = make_backend(cfg)
-            assert isinstance(backend, LlmBackend)
+            assert isinstance(backend, LLMBackend)
         finally:
             os.unlink(path)
