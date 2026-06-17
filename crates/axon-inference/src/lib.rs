@@ -50,6 +50,7 @@
 //! | 16 资产批推理 | < 1ms |
 //! | 热更新切换 | < 10ms |
 
+pub mod affinity;
 pub mod backend;
 pub mod engine;
 pub mod error;

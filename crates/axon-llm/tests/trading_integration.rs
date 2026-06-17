@@ -87,7 +87,12 @@ fn mk_config() -> AgentConfig {
 #[tokio::test]
 async fn agent_place_order_dry_run_observation() {
     let m = Arc::new(MockTradingBackend::new());
-    let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, RiskLimits::permissive(), Arc::new(DailyCounter::default()));
+    let tool = PlaceOrderTool::new(
+        m.clone(),
+        SafetyMode::DryRun,
+        RiskLimits::permissive(),
+        Arc::new(DailyCounter::default()),
+    );
 
     let tc = mk_tool_call(
         "call-1",
@@ -148,7 +153,12 @@ async fn agent_query_portfolio_in_observation() {
 #[tokio::test]
 async fn agent_two_phase_full_cycle() {
     let m = Arc::new(MockTradingBackend::new());
-    let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), Arc::new(DailyCounter::default()));
+    let tool = PlaceOrderTool::new(
+        m.clone(),
+        SafetyMode::TwoPhase,
+        RiskLimits::permissive(),
+        Arc::new(DailyCounter::default()),
+    );
 
     // 预生成 confirm_token(Mock 不知道 LLM 在 Observation 里看到什么,需要预先生成)
     let pre = tool

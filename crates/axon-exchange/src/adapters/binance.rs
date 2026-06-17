@@ -6,6 +6,7 @@ use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
+use rust_decimal::Decimal;
 use sha2::Sha256;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::time::{Duration, interval};
@@ -13,10 +14,12 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::error::ExchangeError;
+use crate::sign;
 use crate::traits::ExchangeAdapter;
 use crate::types::{
-    AccountBalance, DepthSnapshot, ExchangeConfig, ExchangeId, Order, OrderId, OrderStatus,
-    Position, Symbol, Ticker, WsMessage,
+    AccountBalance, AccountInfo, DepthSnapshot, ExchangeConfig, ExchangeId, FundingRate,
+    LeverageBracket, LongShortRatio, MarginType, OpenInterest, Order, OrderId, OrderStatus,
+    Position, PositionMode, Symbol, Ticker, WsMessage,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -795,6 +798,307 @@ impl ExchangeAdapter for BinanceAdapter {
             .take()
             .expect("market_data_rx already taken")
     }
+
+    // === 杠杆/合约实现(Stage 4' D) ===
+
+    async fn set_leverage(&self, symbol: &str, leverage: u8) -> Result<(), ExchangeError> {
+        // 校验范围(避免发送到非法值)
+        if !(1..=125).contains(&leverage) {
+            return Err(ExchangeError::OrderRejected {
+                reason: format!("leverage {leverage} out of range 1..=125"),
+            });
+        }
+        self.fapi_post(
+            "/fapi/v1/leverage",
+            &format!("symbol={symbol}&leverage={leverage}"),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn set_margin_type(
+        &self,
+        symbol: &str,
+        margin_type: MarginType,
+    ) -> Result<(), ExchangeError> {
+        let mt = match margin_type {
+            MarginType::Isolated => "ISOLATED",
+            MarginType::Cross => "CROSSED",
+        };
+        self.fapi_post(
+            "/fapi/v1/marginType",
+            &format!("symbol={symbol}&marginType={mt}"),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn get_leverage_brackets(
+        &self,
+        symbol: &str,
+    ) -> Result<Vec<LeverageBracket>, ExchangeError> {
+        let json = self
+            .fapi_get("/fapi/v1/leverageBracket", &format!("symbol={symbol}"))
+            .await?;
+        let arr = json
+            .as_array()
+            .ok_or_else(|| ExchangeError::ParseError("leverageBracket: expected array".into()))?;
+        let mut out = Vec::new();
+        for entry in arr {
+            // 仅取第一档的 maxNotional / 维持保证金,简化模型
+            if let Some(brackets) = entry["brackets"].as_array() {
+                for b in brackets {
+                    out.push(LeverageBracket {
+                        bracket: b["bracket"].as_u64().unwrap_or(0) as u32,
+                        min_leverage: 1,
+                        max_leverage: b["initialLeverage"].as_u64().unwrap_or(1) as u8,
+                        max_notional: b["notionalCap"]
+                            .as_str()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or_default(),
+                        maint_margin_ratio: b["maintMarginRatio"]
+                            .as_str()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn set_position_mode(&self, hedge_mode: bool) -> Result<(), ExchangeError> {
+        let dual = if hedge_mode { "true" } else { "false" };
+        self.fapi_post(
+            "/fapi/v1/positionSide/dual",
+            &format!("dualSidePosition={dual}"),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn get_funding_rate(&self, symbol: &str) -> Result<FundingRate, ExchangeError> {
+        // /fapi/v1/fundingRate 是公开端点(无签名),最近 1 条记录
+        let json = self
+            .fapi_get_public("/fapi/v1/fundingRate", &format!("symbol={symbol}"))
+            .await?;
+        let entry = json
+            .as_array()
+            .and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::ParseError("fundingRate: empty response".into()))?;
+        let funding_time: i64 = entry["fundingTime"].as_i64().unwrap_or(0);
+        Ok(FundingRate {
+            symbol: symbol.to_string(),
+            rate: entry["fundingRate"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+            // 下次结算 = 当前 + 8h(Binance 默认 8h 结算周期)
+            next_funding_ms: if funding_time > 0 {
+                funding_time + 8 * 3600 * 1000
+            } else {
+                0
+            },
+            mark_price: entry["markPrice"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+            index_price: entry["indexPrice"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+        })
+    }
+
+    async fn get_account_info(&self) -> Result<AccountInfo, ExchangeError> {
+        let json = self.fapi_get("/fapi/v2/account", "").await?;
+        let parse_dec = |k: &str| -> Decimal {
+            json[k]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default()
+        };
+        // positionMode 是 hedge / one-way 字符串
+        let position_mode = match json["positionMode"].as_str() {
+            Some("hedge") => PositionMode::Hedge,
+            _ => PositionMode::Net,
+        };
+        Ok(AccountInfo {
+            total_balance: parse_dec("totalWalletBalance"),
+            available_balance: parse_dec("availableBalance"),
+            unrealized_pnl: parse_dec("totalUnrealizedProfit"),
+            margin_used: parse_dec("totalInitialMargin"),
+            initial_margin: parse_dec("totalInitialMargin"),
+            maintenance_margin: parse_dec("totalMaintMargin"),
+            position_mode,
+            as_of_ms: chrono::Utc::now().timestamp_millis(),
+        })
+    }
+
+    async fn get_open_interest(&self, symbol: &str) -> Result<OpenInterest, ExchangeError> {
+        // /fapi/v1/openInterest 是公开端点
+        let json = self
+            .fapi_get_public("/fapi/v1/openInterest", &format!("symbol={symbol}"))
+            .await?;
+        Ok(OpenInterest {
+            symbol: symbol.to_string(),
+            contracts: json["openInterest"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            notional: Decimal::ZERO, // 该端点不直接给美元名义
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        })
+    }
+
+    async fn get_long_short_ratio(&self, symbol: &str) -> Result<LongShortRatio, ExchangeError> {
+        // 走 fapi 域(datadry 不在 fapi) - 用 base url
+        let url = format!(
+            "{}/futures/data/globalLongShortAccountRatio?symbol={symbol}&period=5m",
+            self.fapi_base_url()
+        );
+        let resp = self.client.get(&url).send().await?;
+        let json: serde_json::Value = resp.json().await?;
+        let entry = json
+            .as_array()
+            .and_then(|a| a.first())
+            .ok_or_else(|| ExchangeError::ParseError("longShortRatio: empty response".into()))?;
+        let long_ratio: f64 = entry["longAccount"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5);
+        let short_ratio: f64 = entry["shortAccount"]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5);
+        Ok(LongShortRatio {
+            symbol: symbol.to_string(),
+            long_ratio,
+            short_ratio,
+            long_short_ratio: entry["longShortRatio"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1.0),
+            timestamp_ms: entry["timestamp"].as_i64().unwrap_or(0),
+        })
+    }
+}
+
+// === 私有 helper(独立 impl 块,不进 trait) ===
+
+impl BinanceAdapter {
+    /// 拿合约 base URL(优先配置,否则按 testnet 推断)
+    fn fapi_base_url(&self) -> &str {
+        if let Some(url) = self.config.fapi_base_url.as_deref() {
+            url
+        } else if self.config.testnet {
+            "https://testnet.binancefuture.com"
+        } else {
+            "https://fapi.binance.com"
+        }
+    }
+
+    /// 签名 GET 请求到 fapi
+    async fn fapi_get(&self, path: &str, params: &str) -> Result<serde_json::Value, ExchangeError> {
+        let ts = chrono::Utc::now().timestamp_millis();
+        let query = if params.is_empty() {
+            format!("timestamp={ts}")
+        } else {
+            format!("{params}&timestamp={ts}")
+        };
+        let sig = sign::binance::sign_query(&query, &self.config.api_secret);
+        let url = format!("{}{path}?{query}&signature={sig}", self.fapi_base_url());
+        // 先读 headers/status 再消费 resp，避免 borrow-of-moved-value
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if status.as_u16() == 429 {
+            let wait_ms = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+                .map(|s: u64| s * 1000)
+                .unwrap_or(1000);
+            return Err(ExchangeError::RateLimited { wait_ms });
+        }
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            let code = body["code"].as_i64().unwrap_or(-1);
+            let msg = body["msg"].as_str().unwrap_or("unknown error");
+            return Err(ExchangeError::ApiError {
+                code: code as i32,
+                message: msg.to_string(),
+            });
+        }
+        Ok(body)
+    }
+
+    /// 签名 POST 请求到 fapi
+    async fn fapi_post(
+        &self,
+        path: &str,
+        params: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let ts = chrono::Utc::now().timestamp_millis();
+        let query = if params.is_empty() {
+            format!("timestamp={ts}")
+        } else {
+            format!("{params}&timestamp={ts}")
+        };
+        let sig = sign::binance::sign_query(&query, &self.config.api_secret);
+        let url = format!("{}{path}?{query}&signature={sig}", self.fapi_base_url());
+        // 先读 headers/status 再消费 resp，避免 borrow-of-moved-value
+        let resp = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.as_u16() == 429 {
+            let wait_ms = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+                .map(|s: u64| s * 1000)
+                .unwrap_or(1000);
+            return Err(ExchangeError::RateLimited { wait_ms });
+        }
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            let code = body["code"].as_i64().unwrap_or(-1);
+            let msg = body["msg"].as_str().unwrap_or("unknown error");
+            return Err(ExchangeError::ApiError {
+                code: code as i32,
+                message: msg.to_string(),
+            });
+        }
+        Ok(body)
+    }
+
+    /// 公共 GET(无签名)用于公开端点如 fundingRate / openInterest
+    async fn fapi_get_public(
+        &self,
+        path: &str,
+        params: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let url = if params.is_empty() {
+            format!("{}{path}", self.fapi_base_url())
+        } else {
+            format!("{}{path}?{params}", self.fapi_base_url())
+        };
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() {
+            return Err(ExchangeError::ApiError {
+                code: status.as_u16() as i32,
+                message: body.to_string(),
+            });
+        }
+        Ok(body)
+    }
 }
 
 #[cfg(test)]
@@ -826,6 +1130,7 @@ mod tests {
             },
             proxy: None,
             position_endpoint: "/fapi/v2/positionRisk".into(),
+            fapi_base_url: Some("https://testnet.binancefuture.com".into()),
         }
     }
 
@@ -1011,6 +1316,282 @@ mod tests {
             let sub = adapter.subscribed_symbols.lock().await;
             assert_eq!(sub.len(), 1);
             assert_eq!(sub[0], Symbol::new("BTCUSDT"));
+        });
+    }
+
+    // ============== Stage 4' D: 杠杆/合约 wiremock 集成测试 ==============
+
+    /// 构造指向 wiremock server 的 config
+    fn wiremock_config(server_uri: &str) -> ExchangeConfig {
+        ExchangeConfig {
+            exchange_id: ExchangeId::Binance,
+            api_key: "test_key".into(),
+            api_secret: "test_secret".into(),
+            passphrase: None,
+            testnet: false,
+            rest_base_url: server_uri.to_string(),
+            ws_url: "ws://invalid".into(),
+            rate_limit: RateLimitConfig {
+                requests_per_second: 1000,
+                orders_per_minute: 6000,
+                ws_messages_per_second: 50,
+            },
+            reconnect: ReconnectConfig {
+                max_retries: 1,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(100),
+                backoff_multiplier: 2.0,
+                circuit_breaker_threshold: 100,
+                circuit_breaker_reset: Duration::from_secs(60),
+            },
+            proxy: None,
+            position_endpoint: "/fapi/v2/positionRisk".into(),
+            fapi_base_url: Some(server_uri.to_string()),
+        }
+    }
+
+    #[test]
+    fn fapi_set_leverage_rejects_out_of_range() {
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let adapter = BinanceAdapter::new(wiremock_config("http://127.0.0.1:1"));
+            // 0 不在 1..=125
+            let r = adapter.set_leverage("BTCUSDT", 0).await;
+            assert!(matches!(r, Err(ExchangeError::OrderRejected { .. })));
+            // 200 超出
+            let r = adapter.set_leverage("BTCUSDT", 200).await;
+            assert!(matches!(r, Err(ExchangeError::OrderRejected { .. })));
+        });
+    }
+
+    #[test]
+    fn fapi_set_leverage_ok_against_wiremock() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/fapi/v1/leverage"))
+                .and(query_param("symbol", "BTCUSDT"))
+                .and(query_param("leverage", "10"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "symbol": "BTCUSDT",
+                    "leverage": 10,
+                    "maxNotionalValue": "1000000"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let r = adapter.set_leverage("BTCUSDT", 10).await;
+            assert!(r.is_ok(), "set_leverage failed: {r:?}");
+        });
+    }
+
+    #[test]
+    fn fapi_get_account_info_parses_v2_payload() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/fapi/v2/account"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "totalWalletBalance": "10000.50",
+                    "availableBalance": "8000.25",
+                    "totalUnrealizedProfit": "120.00",
+                    "totalInitialMargin": "2000.25",
+                    "totalMaintMargin": "150.00",
+                    "positionMode": "hedge"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let info = adapter.get_account_info().await.expect("get_account_info");
+            assert_eq!(info.total_balance, "10000.50".parse().unwrap());
+            assert_eq!(info.available_balance, "8000.25".parse().unwrap());
+            assert_eq!(info.unrealized_pnl, "120.00".parse().unwrap());
+            assert_eq!(info.position_mode, PositionMode::Hedge);
+            assert!(info.as_of_ms > 0);
+        });
+    }
+
+    #[test]
+    fn fapi_get_leverage_brackets_parses_array() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/fapi/v1/leverageBracket"))
+                .and(query_param("symbol", "BTCUSDT"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {
+                        "symbol": "BTCUSDT",
+                        "brackets": [
+                            { "bracket": 1, "initialLeverage": 125, "notionalCap": "50000", "maintMarginRatio": "0.004" },
+                            { "bracket": 2, "initialLeverage": 100, "notionalCap": "250000", "maintMarginRatio": "0.005" }
+                        ]
+                    }
+                ])))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let brackets = adapter.get_leverage_brackets("BTCUSDT").await.unwrap();
+            assert_eq!(brackets.len(), 2);
+            assert_eq!(brackets[0].max_leverage, 125);
+            assert_eq!(brackets[0].max_notional, "50000".parse().unwrap());
+            assert_eq!(brackets[0].maint_margin_ratio, "0.004".parse().unwrap());
+            assert_eq!(brackets[1].max_leverage, 100);
+        });
+    }
+
+    #[test]
+    fn fapi_get_funding_rate_uses_public_endpoint() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            let funding_time = 1_700_000_000_000_i64;
+            Mock::given(method("GET"))
+                .and(path("/fapi/v1/fundingRate"))
+                .and(query_param("symbol", "BTCUSDT"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {
+                        "symbol": "BTCUSDT",
+                        "fundingRate": "0.0001",
+                        "fundingTime": funding_time,
+                        "markPrice": "50000.00"
+                    }
+                ])))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let fr = adapter.get_funding_rate("BTCUSDT").await.unwrap();
+            assert_eq!(fr.symbol, "BTCUSDT");
+            assert_eq!(fr.rate, "0.0001".parse().unwrap());
+            assert_eq!(fr.mark_price, "50000.00".parse().unwrap());
+            // next = funding + 8h
+            assert_eq!(fr.next_funding_ms, funding_time + 8 * 3600 * 1000);
+        });
+    }
+
+    #[test]
+    fn fapi_get_open_interest_uses_public_endpoint() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/fapi/v1/openInterest"))
+                .and(query_param("symbol", "BTCUSDT"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "symbol": "BTCUSDT",
+                    "openInterest": "12345",
+                    "time": 1_700_000_000_000_i64
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let oi = adapter.get_open_interest("BTCUSDT").await.unwrap();
+            assert_eq!(oi.contracts, 12345);
+            assert_eq!(oi.symbol, "BTCUSDT");
+        });
+    }
+
+    #[test]
+    fn fapi_set_margin_type_ok() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/fapi/v1/marginType"))
+                .and(query_param("symbol", "BTCUSDT"))
+                .and(query_param("marginType", "ISOLATED"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 200,
+                    "msg": "success"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let r = adapter
+                .set_margin_type("BTCUSDT", MarginType::Isolated)
+                .await;
+            assert!(r.is_ok(), "set_margin_type failed: {r:?}");
+        });
+    }
+
+    #[test]
+    fn fapi_set_position_mode_ok() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/fapi/v1/positionSide/dual"))
+                .and(query_param("dualSidePosition", "true"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 200,
+                    "msg": "success"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            let r = adapter.set_position_mode(true).await;
+            assert!(r.is_ok(), "set_position_mode failed: {r:?}");
         });
     }
 }

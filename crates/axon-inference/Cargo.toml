@@ -21,6 +21,7 @@ tch = { version = "0.24", optional = true }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 notify = { version = "7", optional = true }
+core_affinity = "0.8"
 
 [features]
 default = ["onnx", "hot-reload"]
@@ -31,3 +32,4 @@ hot-reload = ["dep:notify"]
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile = { workspace = true }

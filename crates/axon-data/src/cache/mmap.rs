@@ -3,6 +3,16 @@
 //! 集成到 DataService 的第二层缓存。
 //! 使用 SharedMemoryPool 管理跨进程共享的 Arrow IPC 数据。
 //!
+//! # Safety
+//!
+//! 本模块使用 `memmap2` 的 unsafe API 进行内存映射(进程内 + 跨进程共享)。
+//! 在我们的使用场景中是安全的:
+//! 1. 写入后立即映射,不在映射期间修改文件
+//! 2. 我们控制文件生命周期
+//! 3. 使用元数据头验证数据完整性
+// 显式放行 crate-level `deny(unsafe_code)`:memmap2 / fs2 内部 unsafe 必需
+#![allow(unsafe_code)]
+//!
 //! # 设计决策
 //!
 //! - 使用文件系统存储而非 POSIX shm_open

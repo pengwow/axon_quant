@@ -36,6 +36,12 @@ pub struct BatchConfig {
     pub collect_timeout_us: u64,
     pub num_workers: usize,
     pub prealloc_buffer_size: usize,
+    /// CPU 亲和性:启动时绑定的 core id 列表(空 = 不绑核)
+    #[serde(default)]
+    pub collect_cpu_cores: Vec<u32>,
+    /// CUDA 设备亲和性:启动时绑定的 GPU device id(None = 不绑)
+    #[serde(default)]
+    pub collect_gpu_device_id: Option<u32>,
 }
 
 impl Default for BatchConfig {
@@ -45,6 +51,8 @@ impl Default for BatchConfig {
             collect_timeout_us: 500,
             num_workers: 2,
             prealloc_buffer_size: 64,
+            collect_cpu_cores: Vec::new(),
+            collect_gpu_device_id: None,
         }
     }
 }
@@ -92,6 +100,9 @@ pub enum InferenceError {
 
     #[error("model load failed: {reason}")]
     ModelLoadFailed { reason: String },
+
+    #[error("model not loaded: call backend.load(path) before infer")]
+    ModelNotLoaded,
 
     #[error("inference failed: {reason}")]
     InferenceFailed { reason: String },

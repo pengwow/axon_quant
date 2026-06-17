@@ -2,11 +2,12 @@
 
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
+use futures::stream;
 use futures_core::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::dataset::Dataset;
+use crate::dataset::{Dataset, ticks_to_batches};
 use crate::error::DataResult;
 use crate::traits::DataSource;
 use crate::types::{DataRequest, SchemaField};
@@ -95,8 +96,12 @@ impl DataSource for MockSource {
         &self,
         _req: &DataRequest,
     ) -> DataResult<Pin<Box<dyn Stream<Item = DataResult<RecordBatch>> + Send>>> {
-        // Mock:空 stream(测试桩不流式)
-        Ok(Box::pin(EmptyStream::<DataResult<RecordBatch>>::new()))
+        // Mock:把 rows 转成 RecordBatch 流(列式 yield,与 `query` 等价但流式)
+        // 空 rows 返回空 stream,与之前行为兼容
+        let batches = ticks_to_batches(&self.rows, 1024)?;
+        // 包装为标准 stream(每个 batch 包成 Ok)
+        let s = stream::iter(batches.into_iter().map(DataResult::Ok));
+        Ok(Box::pin(s))
     }
 }
 

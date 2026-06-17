@@ -106,7 +106,11 @@ impl MockTradingBackend {
         let (base, quote) = Self::split_symbol(symbol);
         let price = price.unwrap_or(50_000.0);
         let notional = quantity * price;
-        let sign = if matches!(side, OrderSide::Buy) { 1.0 } else { -1.0 };
+        let sign = if matches!(side, OrderSide::Buy) {
+            1.0
+        } else {
+            -1.0
+        };
 
         // 调整余额:买入用 quote 付,收 base;卖出反之
         self.adjust_currency(quote, -sign * notional);
@@ -143,8 +147,7 @@ impl MockTradingBackend {
             }
             if pos.quantity > 0.0 && delta > 0.0 {
                 // 加仓:更新 entry_price 为加权均价
-                pos.entry_price =
-                    (pos.entry_price * pos.quantity + price * delta) / new_qty;
+                pos.entry_price = (pos.entry_price * pos.quantity + price * delta) / new_qty;
             }
             pos.quantity = new_qty;
         } else if delta.abs() > f64::EPSILON {
@@ -316,7 +319,11 @@ mod tests {
         let b = m.get_balance().await.unwrap();
         let usdt = b.currencies.iter().find(|c| c.currency == "USDT").unwrap();
         let btc = b.currencies.iter().find(|c| c.currency == "BTC").unwrap();
-        assert!((usdt.free - 7_500.0).abs() < 1e-6, "usdt free = {}", usdt.free);
+        assert!(
+            (usdt.free - 7_500.0).abs() < 1e-6,
+            "usdt free = {}",
+            usdt.free
+        );
         assert!((btc.free - 0.15).abs() < 1e-6, "btc free = {}", btc.free);
 
         let p = m.get_positions().await.unwrap();
@@ -349,7 +356,11 @@ mod tests {
         assert!(btc.free.abs() < 1e-9);
 
         let p = m.get_positions().await.unwrap();
-        assert!(p.is_empty(), "positions should be empty after flatten, got {:?}", p);
+        assert!(
+            p.is_empty(),
+            "positions should be empty after flatten, got {:?}",
+            p
+        );
     }
 
     /// 不存在的 symbol:开新仓并加入对应币种余额

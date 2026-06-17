@@ -20,6 +20,12 @@ impl BatchInferencePipeline {
         let (action_tx, action_rx) = mpsc::channel(batch_config.prealloc_buffer_size);
         let stats = Arc::new(RwLock::new(InferenceStats::default()));
 
+        // 绑核(失败仅 warn,不阻断 pipeline 启动)
+        let plan = crate::affinity::AffinityPlan::from_batch_config(&batch_config);
+        if let Err(e) = crate::affinity::pin_to(&plan) {
+            tracing::warn!("affinity pin failed (continuing without binding): {e}");
+        }
+
         let stats_clone = stats.clone();
         tokio::spawn(Self::batch_loop(
             obs_rx,

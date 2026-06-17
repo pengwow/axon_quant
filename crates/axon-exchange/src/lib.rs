@@ -62,6 +62,7 @@ pub mod adapters;
 pub mod error;
 pub mod lifecycle;
 pub mod rate_limiter;
+pub mod sign;
 pub mod traits;
 pub mod types;
 pub mod ws;
@@ -69,6 +70,7 @@ pub mod ws;
 pub use error::ExchangeError;
 pub use lifecycle::{OrderLifecycleManager, OrderRecord, TrackedOrder};
 pub use rate_limiter::TokenBucketRateLimiter;
+pub use sign::{binance as sign_binance, okx as sign_okx};
 pub use traits::ExchangeAdapter;
 pub use types::*;
 pub use ws::manager::WebSocketManager;
@@ -119,6 +121,7 @@ mod tests {
             },
             proxy: None,
             position_endpoint: "/fapi/v2/positionRisk".into(),
+            fapi_base_url: None,
         }
     }
 

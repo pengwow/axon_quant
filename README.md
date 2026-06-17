@@ -187,6 +187,26 @@ axon_quant/
 | 分布式加速 | > 5x (8 workers) |
 | 测试用例 | 1200+ Rust + 24 Python |
 
+### CPU/GPU 亲和性
+
+`axon-inference` 提供 `affinity` 模块,跨平台绑核降低跨核 cache miss:
+
+```rust
+use axon_inference::affinity::{AffinityPlan, pin_to};
+let plan = AffinityPlan::new().with_cpus(vec![0, 1]).with_cuda(0);
+pin_to(&plan)?;
+```
+
+或通过 `BatchConfig` 配置(`BatchInferencePipeline::new` 启动时自动调):
+
+```toml
+[batch]
+collect_cpu_cores = [0, 1, 2, 3]
+collect_gpu_device_id = 0
+```
+
+平台支持:Linux / macOS 完整支持,Windows 编译期拒绝(用 WSL2 / numactl 替代)。
+
 ---
 
 ## 工程实践

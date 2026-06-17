@@ -231,7 +231,12 @@ mod tests {
     #[tokio::test]
     async fn dry_run_does_not_call_backend() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::DryRun,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "DRY-RUN");
@@ -242,7 +247,12 @@ mod tests {
     #[tokio::test]
     async fn direct_mode_calls_backend() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "MOCK-1");
@@ -310,7 +320,12 @@ mod tests {
     #[tokio::test]
     async fn two_phase_first_call_returns_pending_with_token() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::TwoPhase,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let s = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack: OrderAck = serde_json::from_str(&s).unwrap();
         assert_eq!(ack.order_id, "PENDING");
@@ -323,7 +338,12 @@ mod tests {
     #[tokio::test]
     async fn two_phase_second_call_with_correct_token_executes() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::TwoPhase,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let s1 = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let ack1: OrderAck = serde_json::from_str(&s1).unwrap();
         let token = ack1.confirm_token.unwrap();
@@ -349,7 +369,12 @@ mod tests {
     #[tokio::test]
     async fn two_phase_unknown_token_returns_no_pending() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::TwoPhase,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let args2 = serde_json::json!({
             "symbol": "BTC-USDT",
             "side": "Buy",
@@ -367,7 +392,12 @@ mod tests {
     #[tokio::test]
     async fn two_phase_token_consumed_once() {
         let m = Arc::new(MockTradingBackend::new());
-        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::TwoPhase, RiskLimits::permissive(), daily());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::TwoPhase,
+            RiskLimits::permissive(),
+            daily(),
+        );
         let s1 = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
         let token = serde_json::from_str::<OrderAck>(&s1)
             .unwrap()
@@ -401,7 +431,10 @@ mod tests {
         tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap();
         assert_eq!(m.order_count(), 2);
 
-        let e = tool.execute(&args_json("BTC-USDT", 0.01)).await.unwrap_err();
+        let e = tool
+            .execute(&args_json("BTC-USDT", 0.01))
+            .await
+            .unwrap_err();
         assert!(matches!(e, ToolError::ExecutionFailed(_)));
         assert_eq!(m.order_count(), 2); // 第三次被风控拦截
     }

@@ -28,3 +28,4 @@ async-trait = "0.1"
 [dev-dependencies]
 pretty_assertions = "1"
 proptest = "1"
+wiremock = "0.6"

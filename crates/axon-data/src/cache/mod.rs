@@ -15,7 +15,8 @@
 //! │         ▼                   ▼                               │
 //! │  ┌────────────────────────────────────────────────────────┐ │
 //! │  │                   Unified API                          │ │
-//! │  │  load() / stream() / cache_stats() / cache_control()   │ │
+//! │  │  load() / stream(旁路缓存,直透源) / cache_stats() /    │ │
+//! │  │  cache_control()                                       │ │
 //! │  └────────────────────────────────────────────────────────┘ │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -41,14 +42,19 @@
 //! let data = cache.get_zero_copy("key");
 //! ```
 
-#[cfg(feature = "mmap-cache")]
-pub mod shared_memory;
-
+// 缓存运维句柄(无 feature 依赖,默认可用)
+pub mod control;
+// mmap 共享内存实现(feature-gated: mmap-cache)
 #[cfg(feature = "mmap-cache")]
 pub mod mmap;
+#[cfg(feature = "mmap-cache")]
+pub mod shared_memory;
 
 #[cfg(feature = "mmap-cache")]
 pub use mmap::{CachedDataset, MmapCache, MmapCacheConfig};
 
 #[cfg(feature = "mmap-cache")]
 pub use shared_memory::SharedMemoryPool;
+
+// 公开 re-export
+pub use control::CacheControl;
