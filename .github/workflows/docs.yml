@@ -1,0 +1,78 @@
+name: Documentation
+
+# 触发条件:
+# 1. push 到 main 且改动 docs/ 或 mkdocs.yml → 自动部署
+# 2. 手动触发(workflow_dispatch)
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements-docs.txt'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+# 权限:允许写 GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 防止并发部署
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build mkdocs site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git-revision-date-localized 插件需要历史
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-docs-${{ hashFiles('requirements-docs.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-docs-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-docs.txt
+
+      - name: Build site
+        run: |
+          mkdocs build --strict
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

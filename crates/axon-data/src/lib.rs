@@ -10,17 +10,22 @@
 //! - [`traits`]:数据源抽象 `DataSource` trait
 //! - [`sources`]:具体数据源实现（默认仅暴露 `MockSource`,csv/ws feature-gated）
 //! - [`pipeline`][]:特征管道（归一化、滑动窗口）骨架
+//! - [`cache`]:L1 缓存运维(`CacheControl`)+ L2 mmap 共享缓存(`mmap-cache` feature)
 //!
 //! ## Feature flag
 //!
 //! - `csv-source`:启用 `CsvSource`
 //! - `ws-source`:启用 `WebSocketSource`(默认关闭)
+//! - `mmap-cache`:启用 L2 mmap 共享缓存(memmap2 unsafe API)
 
-#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
+// 业务模块禁止 unsafe;mmap 子模块单独 `#[allow(unsafe_code)]` 显式放行
+// (原因:memmap2 / fs2 内部需要 unsafe,封装在 cache::mmap 内对业务透明)
+#![deny(unsafe_code)]
 
 pub mod bar;
+pub mod cache;
 pub mod dataset;
 pub mod error;
 pub mod ipc;
@@ -29,29 +34,14 @@ pub mod sources;
 pub mod traits;
 pub mod types;
 
-/// L2 mmap 共享缓存模块（feature-gated: mmap-cache）
-///
-/// # Safety
-///
-/// 本模块使用 `memmap2` 的 unsafe API 进行内存映射。
-/// 这是必要的，因为：
-/// 1. 文件在映射期间可能被其他进程修改
-/// 2. 文件可能被截断
-///
-/// 在我们的使用场景中，这是安全的，因为：
-/// 1. 我们在写入后立即映射，不会在映射期间修改文件
-/// 2. 我们控制文件的生命周期
-/// 3. 我们使用元数据头验证数据完整性
-#[cfg(feature = "mmap-cache")]
-#[allow(unsafe_code)]
-pub mod cache;
-
 // 内部模块
 mod service;
 // Property-based fuzz tests(仅测试时编译)
 #[cfg(test)]
 mod fuzz;
 
+// 公开 re-export
+pub use cache::CacheControl;
 pub use dataset::Dataset;
 pub use error::DataError;
 pub use pipeline::{FeatureMatrix, FeaturePipeline, Normalizer, ZScoreNormalizer};

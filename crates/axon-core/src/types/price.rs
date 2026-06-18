@@ -99,6 +99,12 @@ impl Price {
         self.0
     }
 
+    /// 消耗 self，返回内部 `f64`（零拷贝）
+    #[inline]
+    pub fn into_inner(self) -> f64 {
+        self.0
+    }
+
     /// 是否为零
     #[inline]
     pub fn is_zero(&self) -> bool {

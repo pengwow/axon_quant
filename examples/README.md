@@ -1,100 +1,157 @@
-# AXON 示例
+# AXON Quant 示例
 
-本目录提供 AXON 强化学习模块的可运行示例。所有示例均以**零外部数据
-依赖**为目标，使用 `examples/_common.py` 生成的合成 K 线（随机游走）
-进行训练/回放验证。
+本目录包含 AXON Quant 的使用示例，按功能分类组织。
+
+**约定**：所有示例使用 `_common.py` 工具层加载 `axon_rl` Rust 扩展。
 
 ## 目录结构
 
 ```
 examples/
-├── _common.py            # 共享工具：共享库探测 + 合成数据 + 环境工厂
-├── _vec_env.py           # Gymnasium / DummyVecEnv 包装层
-├── random_agent.py       # 随机策略基线（零第三方依赖）
-├── custom_reward.py      # 自定义奖励函数对比（零第三方依赖）
-├── train_ppo.py          # PPO 训练（依赖 stable-baselines3）
-├── train_sac.py          # SAC 训练（依赖 stable-baselines3）
-└── vec_env_train.py      # 向量化环境训练（依赖 stable-baselines3）
+├── 01_getting_started/      # 入门示例
+├── 02_rl_training/          # RL 训练示例
+├── 03_hpo/                  # 超参数优化示例
+├── 04_distributed/          # 分布式训练示例
+├── 05_registry/             # 注册表示例
+├── 06_tracker/              # 指标追踪示例
+├── 07_visualization/        # 可视化示例
+├── 08_walk_forward/         # Walk-Forward 验证示例
+├── _common.py               # 共享工具层
+├── _vec_env.py              # VecEnv 包装层
+└── README.md                # 本文档
 ```
 
-## Python 环境要求
+## 示例列表
 
-由于 PyO3 与 Python 3.13 在 macOS 上的 GIL 兼容性问题（参考
-`axon-design/01-tdd/02-phase1-rl/06-pyo3-bindings.md`），当前推荐使用
-**macOS Framework Python 3.12**：
+### 01_getting_started - 入门示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `01_quick_start.py` | 快速入门：创建环境、运行随机策略、观察交互 | axon_rl (Rust 扩展) |
+| `02_data_analysis.py` | 策略分析：多种策略运行、性能指标计算、对比排名 | axon_rl, numpy |
+| `03_strategy_backtest.py` | 策略回测：动量/均值回归/RSI 策略实现与回测 | axon_rl, numpy |
+
+### 02_rl_training - RL 训练示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `random_agent.py` | 随机策略基线（5 episodes × 500 步） | 零依赖 |
+| `custom_reward.py` | PnL / Sharpe / Sortino 三种奖励函数对比 | 零依赖 |
+| `train_ppo.py` | PPO 训练（与随机基线对比） | stable-baselines3, torch |
+| `train_sac.py` | SAC 训练（连续动作空间） | stable-baselines3, torch |
+| `vec_env_train.py` | 向量化环境训练（n_envs 对比） | stable-baselines3, torch |
+
+### 03_hpo - 超参数优化示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `hpo_single_objective.py` | 单目标 HPO 示例（Optuna） | axon-hpo |
+| `hpo_smoke_test.py` | HPO 冒烟测试 | axon-hpo |
+
+### 04_distributed - 分布式训练示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `distributed_basic.py` | 分布式基础示例 | axon-distributed |
+| `distributed_actor_pool.py` | Actor 池示例 | axon-distributed |
+
+### 05_registry - 注册表示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `registry_register_promote.py` | 注册与升级示例 | axon-registry |
+| `registry_rollback.py` | 回滚示例 | axon-registry |
+
+### 06_tracker - 指标追踪示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `tracker_basic.py` | 指标追踪基础示例 | axon-tracker |
+| `tracker_multi_backend.py` | 多后端指标追踪示例 | axon-tracker |
+
+### 07_visualization - 可视化示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `visualize.py` | 回测结果可视化（净值曲线 + 回撤 + 交易信号） | matplotlib, numpy |
+
+### 08_walk_forward - Walk-Forward 验证示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `walk_forward_basic.py` | Walk-Forward 基础示例 | axon-walk-forward |
+| `walk_forward_purging.py` | Purged Walk-Forward 示例 | axon-walk-forward |
+
+### 共享工具
+
+| 文件 | 说明 |
+|------|------|
+| `_common.py` | 共享工具层：合成数据生成、环境工厂、随机策略 |
+| `_vec_env.py` | Gymnasium / sb3 VecEnv 包装层（支持 AsyncVectorEnv） |
+
+## 运行方法
 
 ```bash
-PY=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
-$PY -m pip install stable-baselines3 gymnasium torch numpy
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 入门示例
+python examples/01_getting_started/01_quick_start.py
+python examples/01_getting_started/02_data_analysis.py
+python examples/01_getting_started/03_strategy_backtest.py
+
+# RL 训练示例（零依赖）
+python examples/02_rl_training/random_agent.py
+python examples/02_rl_training/custom_reward.py
+
+# RL 训练示例（需要 sb3 + torch）
+pip install stable-baselines3 gymnasium torch
+python examples/02_rl_training/train_ppo.py --timesteps 5000 --n-envs 1
+python examples/02_rl_training/train_sac.py --timesteps 5000 --reward sharpe
+python examples/02_rl_training/vec_env_train.py --n-envs 4 --timesteps 5000
+
+# HPO 示例
+python examples/03_hpo/hpo_single_objective.py
+python examples/03_hpo/hpo_smoke_test.py
+
+# 分布式示例
+python examples/04_distributed/distributed_basic.py
+python examples/04_distributed/distributed_actor_pool.py
+
+# 注册表示例
+python examples/05_registry/registry_register_promote.py
+python examples/05_registry/registry_rollback.py
+
+# 追踪示例
+python examples/06_tracker/tracker_basic.py
+python examples/06_tracker/tracker_multi_backend.py
+
+# 可视化示例
+pip install matplotlib numpy
+python examples/07_visualization/visualize.py --n-bars 500 --show
+
+# Walk-Forward 示例
+python examples/08_walk_forward/walk_forward_basic.py
+python examples/08_walk_forward/walk_forward_purging.py
 ```
 
-构建 Rust 扩展（仅需一次）：
+## 依赖安装
 
 ```bash
-cd axon
-RUSTFLAGS="-C link-arg=-Wl,-rpath,/Library/Frameworks/Python.framework/Versions/3.12/lib" \
-PYO3_PYTHON=$PY \
-cargo build -p axon-rl --features python
+# 基础依赖
+pip install axon-quant
+
+# RL 训练依赖
+pip install stable-baselines3 gymnasium torch
+
+# 可视化依赖
+pip install matplotlib numpy
 ```
-
-## 运行示例
-
-按从简单到复杂的顺序：
-
-```bash
-# 1. 零依赖：随机策略基线
-$PY examples/random_agent.py
-
-# 2. 零依赖：对比 3 种奖励函数
-$PY examples/custom_reward.py
-
-# 3. PPO 训练（需要 sb3）
-$PY examples/train_ppo.py --timesteps 5000 --n-envs 1
-
-# 4. SAC 训练（需要 sb3）
-$PY examples/train_sac.py --timesteps 5000 --reward sharpe
-
-# 5. 向量化环境训练（n_envs=4 vs 1 对比）
-$PY examples/vec_env_train.py --n-envs 4 --timesteps 5000 --compare-with-serial
-```
-
-每个脚本：
-- 退出码 0 = 通过；非 0 = 失败
-- stdout 包含 PASS/FAIL 标记，便于 CI 抓取
-- 不需要 GPU（PPO/SAC 在小规模 demo 上 CPU 足够）
-
-## 常见问题
-
-### 找不到 `axon_rl` 模块
-
-`examples/_common.py:find_axon_rl_lib()` 会自动：
-1. 在 `target/debug` 寻找 `libaxon_rl.dylib`
-2. 在同目录创建 `axon_rl.cpython-XYZ-platform.so` 符号链接
-3. 把 `target/debug` 加入 `sys.path`
-
-如果提示 `libaxon_rl` 找不到，先 `cargo build -p axon-rl --features python`。
-
-### GIL 错误
-
-如果使用 `conda` / `miniconda` 的 Python 3.13，可能会触发
-`PyInterpreterState_Get: GIL is released` 致命错误。解决方法：
-1. 优先使用 macOS Framework Python 3.12（最稳定）
-2. 升级到 `pyo3 0.23+`
 
 ## 设计原则
 
-1. **零数据依赖**：`_common.make_synthetic_market_data` 生成随机 K 线，
-   避免依赖外部 parquet / CSV。生产环境替换为真实数据时只需修改这一处。
-2. **零强制依赖**：基线示例（`random_agent.py`、`custom_reward.py`）
-   不依赖 `numpy` / `torch` / `stable-baselines3`，可作为 CI 入口。
-3. **可对比**：`train_ppo.py` / `train_sac.py` 自动与 `random_agent.py`
-   基线对比，方便评估训练收益。
-4. **可扩展**：`make_env` / `make_vec_env` 提供统一工厂，未来新增策略
-   或回测时复用同一套环境构造逻辑。
-
-## 后续工作
-
-- [ ] 添加 `backtest.py`：用训练好的 PPO/SAC 模型在样本外数据上回测
-- [ ] 添加 `hpo_optuna.py`：用 Optuna 做 PPO 超参数搜索
-- [ ] 添加 `visualize.py`：净值曲线 + 回撤 + 交易信号的可视化
-- [ ] 完善 `gymnasium.vector.AsyncVectorEnv` 包装（多进程并行）
+1. **零外部数据依赖**：所有 RL 示例使用 `_common.make_synthetic_market_data` 生成合成 K 线
+2. **零强制依赖**：基线示例（`random_agent.py` / `custom_reward.py`）不依赖 numpy/torch/sb3
+3. **优雅降级**：若可选依赖不可用，提示用户安装并退出
+4. **可配置**：通过 CLI 参数调整训练步数、并行环境数等
+5. **按功能分类**：示例按使用场景组织到不同子目录，便于查找和学习

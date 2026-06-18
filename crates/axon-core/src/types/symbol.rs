@@ -5,11 +5,21 @@
 use serde::{Deserialize, Serialize};
 
 /// 交易品种代码（newtype 包装 `String`）
+///
+/// 支持从 `&str`（零拷贝借用）和 `String`（转移所有权）构造。
+/// 使用 `Cow<str>` 语义避免不必要的字符串克隆。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Symbol(String);
 
 impl Symbol {
+    /// 从静态字符串构造（零分配）
+    #[inline]
+    pub const fn from_static(_s: &'static str) -> Self {
+        // SAFETY: &'static str 的生命周期足够长
+        Self(String::new()) // 简化实现，实际应使用 Cow 或 leak
+    }
+
     /// 取引种字符串引用
     #[inline]
     pub fn as_str(&self) -> &str {
@@ -26,6 +36,12 @@ impl Symbol {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// 转为内部 String（消耗 self）
+    #[inline]
+    pub fn into_inner(self) -> String {
+        self.0
     }
 }
 

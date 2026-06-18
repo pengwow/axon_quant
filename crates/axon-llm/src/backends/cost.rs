@@ -85,6 +85,14 @@ pub fn pricing_for(model: &str) -> Option<ModelPricing> {
 }
 
 /// 注册自定义定价(测试 / 私有部署用)
+///
+/// # 幂等性
+/// 多次注册同 model 取最后一次的值(`HashMap::insert` 语义)。
+///
+/// # 不可撤销
+/// 本函数无对应的 unregister 入口: 默认定价表 + 已注册的 model
+/// 在进程生命周期内共存。测试间**禁止**通过 reset 破坏 PRICING
+/// (历史上由 `reset_for_test` 提供,已删除以修复并行测试 flakiness)。
 pub fn register_pricing(model: &'static str, pricing: ModelPricing) {
     ensure_default_pricing();
     let mut guard = PRICING.write().expect("pricing poisoned");
@@ -134,11 +142,6 @@ impl CostTracker {
 mod tests {
     use super::*;
 
-    fn reset_for_test() {
-        let mut guard = PRICING.write().expect("pricing poisoned");
-        *guard = None;
-    }
-
     #[test]
     fn compute_known_pricing() {
         let p = ModelPricing {
@@ -159,7 +162,9 @@ mod tests {
 
     #[test]
     fn register_pricing_overrides() {
-        reset_for_test();
+        // 不再 reset: register_pricing 自身是 HashMap::insert 语义,
+        // 默认表(deepseek-chat / gpt-4o-mini 等)始终存在。
+        // 显式断言默认表未受影响,作为 reset 已删除的回归保护。
         register_pricing(
             "custom-model",
             ModelPricing {
@@ -167,10 +172,36 @@ mod tests {
                 output_per_million: 2.0,
             },
         );
+        // 自定义 model 生效
         let p = pricing_for("custom-model").unwrap();
         assert_eq!(p.input_per_million, 1.0);
-        // 重置避免污染其他测试
-        reset_for_test();
+        assert_eq!(p.output_per_million, 2.0);
+        // 默认表不受影响(回归保护: reset_for_test 已被删除)
+        assert!(pricing_for("deepseek-chat").is_some());
+        assert!(pricing_for("gpt-4o-mini").is_some());
+    }
+
+    #[test]
+    fn register_pricing_idempotent() {
+        // 同一 model 多次 register: HashMap::insert 语义,最后一次胜出。
+        // 这是 PRICING 不可 reset 约束的契约,作为未来重构者参考。
+        register_pricing(
+            "idem-model",
+            ModelPricing {
+                input_per_million: 1.0,
+                output_per_million: 2.0,
+            },
+        );
+        register_pricing(
+            "idem-model",
+            ModelPricing {
+                input_per_million: 3.0,
+                output_per_million: 4.0,
+            },
+        );
+        let p = pricing_for("idem-model").unwrap();
+        assert_eq!(p.input_per_million, 3.0);
+        assert_eq!(p.output_per_million, 4.0);
     }
 
     #[test]

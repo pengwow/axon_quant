@@ -53,8 +53,10 @@
 
 pub mod error;
 pub mod manager;
+pub mod portfolio;
 pub mod types;
 
 pub use error::OmsError;
 pub use manager::OrderManager;
+pub use portfolio::{Portfolio, PortfolioError, PortfolioSnapshot, Position};
 pub use types::*;

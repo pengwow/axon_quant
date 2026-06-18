@@ -59,5 +59,5 @@ axon/
 
 ## 参考
 
-- [`axon-design/00-meta/01-architecture.md`](../../../axon-design/00-meta/01-architecture.md) — 模块结构
-- [`axon-design/00-meta/03-modularity.md`](../../../axon-design/00-meta/03-modularity.md) — Feature 详细定义
+- AXON 项目总览见[首页](../index.md)
+- 系统架构见[架构总览](../user-guide/architecture.md) — Feature 详细定义

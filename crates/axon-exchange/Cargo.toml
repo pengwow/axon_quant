@@ -9,7 +9,7 @@ description = "交易所对接：REST + WebSocket，Binance/OKX 适配器"
 axon-core = { path = "../axon-core" }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -20,8 +20,12 @@ chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1", features = ["serde-with-str"] }
 hmac = "0.12"
 sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+futures-util = "0.3"
 async-trait = "0.1"
 
 [dev-dependencies]
 pretty_assertions = "1"
 proptest = "1"
+wiremock = "0.6"

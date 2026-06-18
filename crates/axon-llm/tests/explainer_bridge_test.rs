@@ -76,7 +76,10 @@ impl Explainer for MockExplainer {
         _a: &ActionSnapshot,
         _d: &str,
     ) -> Result<axon_explain::types::ActionAttribution, ExplainabilityError> {
-        unimplemented!()
+        // 测试 mock 不实现此方法,返回明确错误(0 调用点,不会触发)
+        Err(ExplainabilityError::ModelNotLoaded(
+            "test mock: explain_action_dimension not exercised in test scope".into(),
+        ))
     }
 
     fn get_attention_weights(

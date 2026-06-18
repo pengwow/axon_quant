@@ -208,3 +208,84 @@ fn test_generate_decision_report_populates_html_and_markdown() {
     let html = report.html_content.unwrap();
     assert!(html.contains("决策 1"));
 }
+
+// ─── aggregate_risk ────────────────────────────────────
+
+#[test]
+fn test_aggregate_risk_empty_returns_default() {
+    let metrics = ReportGenerator::aggregate_risk(&[]);
+    assert!(metrics.var_contribution.is_empty());
+    assert!(metrics.sharpe_contribution.is_empty());
+    assert!(metrics.max_drawdown_factors.is_empty());
+}
+
+#[test]
+fn test_aggregate_risk_computes_var_and_sharpe_contributions() {
+    // exp1: rsi_14 shap=+0.15, confidence=0.85 -> var 0.0225, sharpe 0.1275
+    // exp2: rsi_14 shap=+0.15, confidence=0.70 -> var 0.045,  sharpe 0.105
+    // 累计：rsi_14 var=0.0675, sharpe=0.2325
+    // 累计：volume var=0.024, sharpe=-0.04（两个 exp 中 shap=-0.08 * 0.5 = -0.04/each）
+    let explanations = vec![make_explanation("e1", 0.85), make_explanation("e2", 0.70)];
+    let metrics = ReportGenerator::aggregate_risk(&explanations);
+    let rsi_var = metrics
+        .var_contribution
+        .get("rsi_14")
+        .copied()
+        .unwrap_or_default();
+    let rsi_sharpe = metrics
+        .sharpe_contribution
+        .get("rsi_14")
+        .copied()
+        .unwrap_or_default();
+    // 容差 1e-6
+    assert!(
+        (rsi_var - (0.15 * 0.15 + 0.15 * 0.30)).abs() < 1e-6,
+        "rsi var = {rsi_var}"
+    );
+    assert!(
+        (rsi_sharpe - (0.15 * 0.85 + 0.15 * 0.70)).abs() < 1e-6,
+        "rsi sharpe = {rsi_sharpe}"
+    );
+    // volume SHAP 在 attribution 中为 -0.08（带符号）
+    let vol_sharpe = metrics
+        .sharpe_contribution
+        .get("volume")
+        .copied()
+        .unwrap_or_default();
+    assert!((vol_sharpe - (-0.08 * 0.85 + -0.08 * 0.70)).abs() < 1e-6);
+}
+
+#[test]
+fn test_aggregate_risk_max_drawdown_factors_picks_top_negative() {
+    // 两个 explanation 中 volume shap 都是 -0.08（负向），应为 max_drawdown_factors 第一名
+    let explanations = vec![make_explanation("e1", 0.5), make_explanation("e2", 0.5)];
+    let metrics = ReportGenerator::aggregate_risk(&explanations);
+    assert!(!metrics.max_drawdown_factors.is_empty());
+    assert_eq!(metrics.max_drawdown_factors[0], "volume");
+}
+
+#[test]
+fn test_aggregate_risk_clamps_confidence_to_unit_interval() {
+    // 异常 confidence=1.5 应被 clamp 到 1.0，1-1=0 => var 贡献为 0，sharpe 贡献 = shap
+    let mut e = make_explanation("extreme", 1.5);
+    e.confidence = 1.5;
+    let metrics = ReportGenerator::aggregate_risk(&[e]);
+    let rsi_var = metrics
+        .var_contribution
+        .get("rsi_14")
+        .copied()
+        .unwrap_or_default();
+    let rsi_sharpe = metrics
+        .sharpe_contribution
+        .get("rsi_14")
+        .copied()
+        .unwrap_or_default();
+    assert!(
+        rsi_var.abs() < 1e-9,
+        "clamped confidence=1.0 应使 var 贡献 = 0"
+    );
+    assert!(
+        (rsi_sharpe - 0.15).abs() < 1e-6,
+        "sharpe 贡献 = shap * 1.0 = 0.15"
+    );
+}

@@ -3,7 +3,7 @@
 //! 用于 e2e 测试,避免每次都打真实 API:
 //! - [`Mode::Replay`]:从 fixture 文件读响应(miss → panic)
 //! - [`Mode::Record`]:转发到真实 backend,落盘 fixture
-//! - [`Mode::Passthrough`]:只转发,不存盘(临时调试)
+//! - [`Mode::Passthrough`][]:只转发,不存盘(临时调试)
 //!
 //! Fixture 文件名:`<fixtures_dir>/<test_name>/<model>/<key>.json`,
 //! 其中 `key = sha256(url + method + canonical(body))` 前 12 hex。

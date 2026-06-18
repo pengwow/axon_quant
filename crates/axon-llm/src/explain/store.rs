@@ -60,6 +60,9 @@ impl ExplanationStore {
     ///
     /// - 若 `decision_id` 已存在：覆盖并将其移到 order 末尾（保持"最近更新"语义）
     /// - 若达到容量上限：淘汰最旧（FIFO）
+    // 嵌套 if 风格：保留可读性。rust 1.96 工具链升级后 clippy 新增
+    // `clippy::collapsible_if` 规则报 lint,本函数非本次任务改动范围,加 allow 抑制。
+    #[allow(clippy::collapsible_if)]
     pub async fn insert(&self, decision_id: String, exp: Explanation) {
         let mut guard = self.inner.write().await;
 

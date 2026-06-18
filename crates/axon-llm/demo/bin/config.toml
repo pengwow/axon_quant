@@ -1,32 +1,50 @@
 # axon-llm live_trading_demo 配置
 #
 # 使用前请:
-#   1. 复制为本地配置: cp config.toml config.local.toml,然后修改
-#   2. 设置环境变量: export DEEPSEEK_API_KEY=sk-...
-#   3. 运行: cargo run -p axon-llm --example live_trading_demo --features demo
+#   1) 复制为本地配置: cp crates/axon-llm/demo/bin/config.toml config.local.toml
+#   2) 编辑 config.local.toml,在 [[backends]] 中填入真实的 api_key
+#   3) 运行:
+#        cargo run -p axon-llm --example live_trading_demo \
+#          --features demo -- --config config.local.toml
 #
-# 注意:本文件提交到 git,不要把真实 API key 写进来
+# 注意:本文件提交到 git,不要把真实 API key 写进来。
+# 真实 api_key 应放 config.local.toml(已被 .gitignore `*.local.toml` 排除)。
 
-[backend]
-# API base URL
+[[backends]]
+# backend 标识(ensemble 中用于区分)
+name = "primary"
+# API base URL(末尾不带 `/`)
 #   - DeepSeek: https://api.deepseek.com/v1
 #   - OpenAI:   https://api.openai.com/v1
-#   - 本地推理服务: http://localhost:11434/v1 (Ollama) 等
+#   - 本地推理服务: http://localhost:11434/v1 (Ollama)
 base_url = "https://api.deepseek.com/v1"
-
 # 模型名
 #   - DeepSeek 系列: deepseek-chat / deepseek-coder / deepseek-reasoner
-#   - OpenAI 系列: gpt-4o-mini / gpt-4o / gpt-3.5-turbo
+#   - OpenAI 系列:   gpt-4o-mini / gpt-4o / gpt-3.5-turbo
 model = "deepseek-chat"
-
+# API key(必须从 config.local.toml 覆盖,不要提交到 git)
+# 支持多种厂商:
+#   - DeepSeek: sk-...
+#   - OpenAI:   sk-...
+#   - Mimo / 其他: tp-...
+api_key = "<set-me>"
 # 单次请求最大输出 token
 max_tokens = 1024
-
 # 采样温度(0 = 确定性最高,1 = 创造性最高)
 temperature = 0.7
-
 # HTTP 超时(秒)
 timeout_secs = 60
 
-# 演示 query
-query = "Hi! Please introduce yourself in one short paragraph."
+[retry]
+# 最大重试次数(不含首次)
+max_retries = 3
+# 首次重试前退避(毫秒)
+initial_backoff_ms = 200
+# 单次退避上限(毫秒)
+max_backoff_ms = 5000
+
+[explain]
+# 是否记录每次 LLM 决策到本地 store
+record_decisions = false
+# 决策持久化路径(JSONL,可选)
+store_path = "./explain_decisions.jsonl"

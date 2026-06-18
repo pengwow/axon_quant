@@ -181,7 +181,16 @@ pub fn compute_hypervolume_from_points(
     }
 
     let n_obj = directions.len();
-    let objectives: Vec<Vec<f64>> = pareto_points.iter().map(|p| p.objectives.clone()).collect();
+    // 过滤掉 objectives 为空或维度不匹配的点
+    let objectives: Vec<Vec<f64>> = pareto_points
+        .iter()
+        .map(|p| p.objectives.clone())
+        .filter(|o| o.len() == n_obj)
+        .collect();
+
+    if objectives.is_empty() {
+        return Ok(0.0);
+    }
 
     // 2D 精确
     if n_obj == 2 {
@@ -205,6 +214,9 @@ fn compute_hypervolume_2d(
     reference: &[f64],
     directions: &[StudyDirection],
 ) -> f64 {
+    if directions.len() < 2 || objectives.is_empty() {
+        return 0.0;
+    }
     // 仅处理 maximize + maximize 场景的精确梯形面积
     // 其他方向可通过坐标变换归约（暂简化）
     if !matches!(directions[0], StudyDirection::Maximize)

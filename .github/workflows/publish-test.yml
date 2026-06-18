@@ -1,0 +1,98 @@
+name: Publish to TestPyPI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'crates/**'
+      - 'python/**'
+      - 'pyproject.toml'
+      - 'Cargo.toml'
+      - '.github/workflows/publish-test.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==================== 构建 Wheels ====================
+  build-wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install maturin
+
+      - name: Build wheel
+        run: |
+          for i in {1..3}; do
+            maturin build --release --out dist && break
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+        env:
+          PYO3_PYTHON: ${{ matrix.python-version }}
+
+      - name: Build source distribution
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: maturin sdist --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          path: dist/*
+
+  # ==================== 汇总 Artifacts ====================
+  collect-artifacts:
+    name: Collect artifacts
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ==================== 发布到 TestPyPI ====================
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: collect-artifacts
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password: ${{ secrets.TESTPYPI_API_TOKEN }}
+          skip-existing: true

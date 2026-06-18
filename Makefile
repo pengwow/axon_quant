@@ -93,7 +93,93 @@ tree: ## 打印依赖树
 install: ## 安装 axon CLI 到本地
 	cargo install --path crates/axon-cli --locked
 
+# ==================== Python ====================
+# 项目规则:必须使用本仓库 `.venv` 下的 Python/maturin/pip,
+# 不能用 miniconda3 下的环境(否则 PYO3_PYTHON 与 cargo 链接的 libpython
+# 会不一致,导致 build/import 失败)。
+
+VENV_PYTHON ?= .venv/bin/python
+VENV_MATURIN ?= .venv/bin/maturin
+VENV_PIP ?= .venv/bin/pip
+
+.PHONY: python-build
+python-build: ## 构建 Python wheel（包含 Rust 扩展）
+	PYO3_PYTHON=$(VENV_PYTHON) $(VENV_MATURIN) build --release
+
+.PHONY: python-develop
+python-develop: ## 安装 Python 包到当前环境（开发模式）
+	PYO3_PYTHON=$(VENV_PYTHON) $(VENV_MATURIN) develop
+
+.PHONY: python-install
+python-install: python-build ## 安装 Python wheel(默认 --no-deps,避免拉 numpy 等大依赖)
+	$(VENV_PIP) install --no-deps --force-reinstall target/wheels/axon_quant-*.whl
+
+.PHONY: python-clean
+python-clean: ## 清理 Python 构建产物
+	rm -rf target/wheels/
+	rm -rf python/axon_quant/*.so
+	rm -rf python/axon_quant/_native*.so
+	rm -rf python/axon_quant/__pycache__
+	rm -rf python/axon_quant/*/__pycache__
+
+.PHONY: python-publish-test
+python-publish-test: python-build ## 发布到 TestPyPI（测试）
+	$(VENV_PIP) install twine
+	$(VENV_PIP) run twine upload --repository testpypi target/wheels/*
+
+.PHONY: python-publish
+python-publish: python-build ## 发布到 PyPI（正式）
+	$(VENV_PIP) install twine
+	$(VENV_PIP) run twine upload target/wheels/*
+
+# ==================== 性能基准 ====================
+.PHONY: bench bench-cmp bench-one
+
+bench: ## 跑全 workspace bench(本地,不进 CI)
+	cargo bench --workspace --no-fail-fast -- --output-format bencher
+
+bench-cmp: ## 存 main baseline,用于 PR 对比
+	@echo "Saving baseline 'main'..."
+	cargo bench --workspace --no-fail-fast -- --save-baseline main
+
+# 跑单个 bench(用法:make bench-one CRATE=axon-core BENCH=event_builder_tick)
+bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
+	@if [ -z "$(CRATE)" ] || [ -z "$(BENCH)" ]; then \
+		echo "Usage: make bench-one CRATE=<crate> BENCH=<bench-name>"; \
+		echo "  e.g. make bench-one CRATE=axon-core BENCH=event_builder_tick"; \
+		echo "  e.g. make bench-one CRATE=axon-backtest BENCH=submit_linear_impact"; \
+		exit 1; \
+	fi
+	cargo bench -p $(CRATE) -- $(BENCH)
+
 # ==================== 验证完整流程 ====================
 .PHONY: verify
 verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
 	@echo "✅ 所有本地检查通过"
+
+# ==================== 文档站(mkdocs + Material) ====================
+# 部署到 GitHub Pages 由 .github/workflows/docs.yml 处理
+# 本地命令:docs-install / docs-serve / docs-build / docs-validate / docs-clean
+
+.PHONY: docs-install
+docs-install: ## 安装 mkdocs 依赖(运行一次或 requirements-docs.txt 变更时)
+	@echo "==> 安装 mkdocs 依赖"
+	@python3 -m pip install -r requirements-docs.txt
+
+.PHONY: docs-serve
+docs-serve: docs-install ## 本地预览文档站(开发时用,自动 reload)
+	@echo "==> 启动 mkdocs 开发服务器,访问 http://localhost:8000"
+	@mkdocs serve
+
+.PHONY: docs-build
+docs-build: docs-install ## 构建静态站点(产出在 site/ 目录)
+	@echo "==> 构建 mkdocs 静态站点"
+	@mkdocs build --strict
+
+.PHONY: docs-validate
+docs-validate: docs-build ## 严格校验 mkdocs 配置 + 链接 + 引用
+	@echo "==> mkdocs 站点构建成功,链接 / 引用校验通过(由 --strict 触发)"
+
+.PHONY: docs-clean
+docs-clean: ## 清理 mkdocs 临时产物
+	@rm -rf site/ .cache/

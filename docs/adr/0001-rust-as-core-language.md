@@ -54,5 +54,5 @@ AXON 是一个事件驱动的交易引擎，对延迟、吞吐和内存安全有
 
 ## 参考
 
-- [`axon-design/00-meta/01-architecture.md`](../../../axon-design/00-meta/01-architecture.md)
-- [`axon-design/00-meta/00-project-overview.md`](../../../axon-design/00-meta/00-project-overview.md)
+- AXON 项目总览见[首页](../index.md)
+- 系统架构见[架构总览](../user-guide/architecture.md)

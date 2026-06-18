@@ -55,6 +55,16 @@ def _try_import_sb3() -> tuple[bool, Any]:
         return False, None
 
 
+def _try_import_async_vec_env() -> tuple[bool, Any]:
+    """尝试 import `gymnasium.vector.AsyncVectorEnv`，返回 (ok, module)。"""
+    try:
+        from gymnasium.vector import AsyncVectorEnv  # noqa: PLC0415
+
+        return True, AsyncVectorEnv
+    except ImportError:
+        return False, None
+
+
 # ──────────────────────────────────────────────
 # 单环境包装
 # ──────────────────────────────────────────────
@@ -296,6 +306,7 @@ def make_vec_env(
     env_fn: Callable[[], Any],
     n_envs: int = 1,
     use_stable_baselines3: bool = True,
+    use_async: bool = False,
 ) -> Any:
     """构造向量化环境：优先使用 `stable_baselines3.DummyVecEnv`，否则 fallback。
 
@@ -303,11 +314,18 @@ def make_vec_env(
         env_fn: 工厂函数 `() -> axon_rl.TradingEnv`（或已包装的 `AxonTradingEnv`）
         n_envs: 并行环境数
         use_stable_baselines3: True 时尝试 sb3；False 时强制使用 fallback
+        use_async: 当 n_envs >= 4 时自动使用 AsyncVectorEnv（多进程并行）
 
     Returns:
         支持 `reset() -> list[obs]` 与
         `step(actions) -> (obs, rewards, dones, infos)` 的对象
     """
+    # 当 n_envs >= 4 且 use_async=True 时，尝试使用 AsyncVectorEnv
+    if use_async and n_envs >= 4:
+        async_ok, AsyncVectorEnv = _try_import_async_vec_env()
+        if async_ok:
+            return AsyncVectorEnv([env_fn for _ in range(n_envs)])
+
     if use_stable_baselines3:
         sb3_ok, DummyVecEnv = _try_import_sb3()
         if sb3_ok:

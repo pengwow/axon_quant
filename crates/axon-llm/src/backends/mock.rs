@@ -122,22 +122,23 @@ mod tests {
 
     #[tokio::test]
     async fn with_responses_consumed_in_order() {
-        let mut v = Vec::new();
-        v.push(LLMResponse::text("a", TokenUsage::default()));
-        v.push(LLMResponse::tool_calls(
-            vec![ToolCall {
-                id: "1".into(),
-                function_name: "x".into(),
-                arguments: "{}".into(),
-            }],
-            TokenUsage::default(),
-        ));
-        v.push(LLMResponse {
-            content: Some("c".into()),
-            tool_calls: None,
-            token_usage: TokenUsage::default(),
-            finish_reason: FinishReason::Stop,
-        });
+        let v = vec![
+            LLMResponse::text("a", TokenUsage::default()),
+            LLMResponse::tool_calls(
+                vec![ToolCall {
+                    id: "1".into(),
+                    function_name: "x".into(),
+                    arguments: "{}".into(),
+                }],
+                TokenUsage::default(),
+            ),
+            LLMResponse {
+                content: Some("c".into()),
+                tool_calls: None,
+                token_usage: TokenUsage::default(),
+                finish_reason: FinishReason::Stop,
+            },
+        ];
         let b = MockBackend::with_responses(v);
         assert_eq!(b.remaining(), 3);
         let r1 = b.complete(&[]).await.unwrap();

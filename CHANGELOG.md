@@ -7,885 +7,164 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Phase 4 P1**：`axon-monitor` 监控告警 crate
-  - `MetricsRegistry`：指标注册中心（Counter/Gauge/Histogram）
-  - `AtomicCounter`/`AtomicGauge`：原子操作无锁指标
-  - `LatencyHistogram`：延迟直方图（P50/P99/P999）
-  - `AlertRule`/`AlertEvent`：阈值告警规则与事件
-  - `HealthService`：健康检查服务
-  - 10 单元测试
-- **Phase 4 P1**：`axon-oms` 订单管理系统 crate
-  - `OrderManager`：订单生命周期管理（submit/cancel/update_status/add_fill）
-  - `Order`：订单主体结构，支持幂等键
-  - `OrderStatus`：状态机（New → Submitted → Acknowledged → PartiallyFilled → Filled/Cancelled/Rejected）
-  - `OmsSnapshot`：快照与恢复
-  - 6 单元测试
-- **Phase 4 P0**：`axon-exchange` 交易所对接 crate
-  - `ExchangeAdapter` trait：connect/subscribe/send_order/cancel_order/get_balance
-  - `BinanceAdapter`：Binance 交易所适配器（stub）
-  - `OkxAdapter`：OKX 交易所适配器（stub）
-  - `WebSocketManager`：指数退避重连 + 熔断器
-  - `OrderLifecycleManager`：订单生命周期管理
-  - `TokenBucketRateLimiter`：令牌桶限流器
-  - 类型系统：Order/OrderStatus/Ticker/DepthSnapshot/WsMessage
-  - 8 单元测试
-- **Phase 4 P0**：`axon-inference` 推理引擎 crate
-  - `InferenceEngine` trait：模型加载、单次推理、批量推理、session 替换
-  - `OnnxBackend`：基于 ort crate 的 ONNX Runtime 后端
-  - `TchBackend`：基于 tch-rs 的 PyTorch 后端
-  - `CandleBackend`：基于 candle-core 的纯 Rust 后端（stub）
-  - `BatchInferencePipeline`：tokio + rayon 异步批推理管线
-  - `ModelHotReloader`：notify crate 文件监控 + 原子替换热更新
-  - CPU/CUDA/Metal 设备支持
-  - 4 集成测试
-- **Phase 4 P0**：`axon-risk` 风控引擎 crate
-  - `RiskEngine` trait：预交易检查、组合级风险监控、每日 PnL 更新、风险指标查询
-  - `DefaultRiskEngine`：完整风控实现，短路优化检查顺序（熔断器→订单大小→仓位→杠杆→回撤）
-  - `CircuitBreaker`：原子操作无锁熔断器，支持自动冷却恢复
-  - checks 模块：`order_size`、`position`、`leverage`、`drawdown`、`concentration`、`var`
-  - `RiskEventHandler`：EventHandler 适配器，监听 Fill 事件自动更新 PnL
-  - `RiskConfig`：代码配置，含默认值
-  - 历史模拟法 VaR 计算
-  - 34 单元测试 + 集成测试（含并发测试），全部通过
-- Phase 0 项目骨架：Cargo workspace 初始化
-- 三个基础 crate：`axon-core`、`axon-backtest`、`axon-cli`
-- CI 验证工作流（GitHub Actions）
-- 架构决策记录（ADR）框架
-- Apache-2.0 单许可
-- Docker 多阶段构建配置（runtime + builder + docker-compose）
-- **Phase 1A P0**：`axon-core::time` 模块
-  - `Timestamp`：纳秒精度时间戳（i64 纳秒，serde transparent，运算符重载，精度截断）
-  - `MonotonicClock`：基于 `Instant` 的单调时钟
-  - `TimePrecision`：时间精度枚举（秒/毫秒/微秒/纳秒）
-  - `TimestampError` / `TimestampResult`：统一错误类型
-  - 23 单元测试 + 1 文档测试，遵循 TDD 流程
-- **Phase 1A P1**：`axon-core::types` 与 `axon-core::market` 模块
-  - `Price` / `Quantity`：newtype 包装 `f64`，提供 `Eq`/`Ord`/`Hash` 手工实现（非 NaN 保证）
-  - `Symbol`：字符串包装，支持 `From<&str>` / `From<String>` / `HashSet`
-  - `Side`：买卖方向枚举（`Buy`/`Sell`），含 `opposite`/`sign`/`Display`/`Default`
-  - `Tick`：逐笔成交，`#[repr(C)]` 固定布局（32 字节含 padding）
-  - `Bar` / `BarPeriod`：OHLCV K线 + 9 种时间周期枚举（分钟/小时/天/周/月）
-  - `Bar::from_ticks`：从 Tick 序列聚合生成 K线，含 OHLC 校验
-  - `OrderBookLevel` / `OrderBookSnapshot`：订单簿层 + 快照（best_bid/ask/mid/spread/depth）
-  - `OrderBookSnapshot::from_l2`：自动排序 + 过滤零数量层
-  - `OrderBookSnapshot::validate_sorting`：检测排序错误
-  - `Trade`：成交记录（含买卖双方 OrderId），`#[repr(C)]` 40 字节
-  - `MarketDataError` / `MarketDataResult`：市场数据错误类型
-  - `lib.rs` 顶层 re-export：`Tick`/`Bar`/`Trade`/`Price`/`Quantity`/`Symbol`/`Timestamp` 等
-  - 42 单元测试覆盖 + 1 文档测试（合计 77 个），全部通过
-- **Phase 1A P0**：`axon-core::order` 模块
-  - `OrderType`：`Market` / `Limit` / `Stop` / `StopLimit` / `Iceberg` 五种订单类型
-  - `TimeInForce`：`GTC` / `IOC` / `FOK` / `GFD` / `FAK` 5 种有效期
-  - `OrderStatus`：`Created` / `Pending` / `PartiallyFilled` / `Filled` / `Cancelled` / `Rejected` / `Expired` 7 态状态机
-  - `RejectReason`：8 种拒绝原因枚举
-  - `Order`：订单主体结构（`id` / `symbol` / `side` / `order_type` / `quantity` / `filled_quantity` / `time_in_force` / `status` / `created_at` / `updated_at` / `reject_reason` / `client_order_id`）
-  - 订单生命周期方法：`new` / `activate` / `apply_fill` / `cancel` / `reject` / `remaining_quantity` / `is_filled` / `can_cancel` / `fill_ratio`
-  - 状态机合法转换检查（`can_transition_to`），非法转换返回 `OrderError::InvalidStateTransition`
-  - 超量成交防护（`OrderError::OverFill`）
-  - `OrderError` / `OrderResult`：订单模块错误类型（`InvalidStateTransition` / `OrderNotActive` / `OverFill` / `FokPartialFill` / `IocPartialFill` / `Expired` / `Cancelled`）
-  - 33 单元测试覆盖（合计 110 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 `Order` / `OrderType` / `OrderStatus` / `TimeInForce` / `RejectReason` / `OrderError` / `OrderId` / `OrderResult`
-- **Phase 1A P0**：`axon-core::event` 模块
-  - `EventType`：1 字节位掩码（`MARKET_DATA` / `ORDER` / `FILL` / `SYSTEM` / `ALL` / `NONE`），支持位运算 `|`/`&`/`contains`/`union`/`intersects`
-  - `Event`：4 路枚举（`MarketData` / `Order` / `Fill` / `System`），提供 `timestamp()` / `seq()` / `event_type()` / `is_before()` 方法
-  - `MarketDataEvent` / `MarketDataPayload`：承载 `Tick` / `Bar` / `OrderBookSnapshot`
-  - `OrderEvent` / `OrderAction`：承载 `Submitted` / `Cancelled` / `Modified` / `Rejected` 操作
-  - `FillEvent`：承载 `Trade` 成交记录
-  - `SystemEvent` / `SystemAction`：`Heartbeat` / `SessionStart` / `SessionEnd` / `Error` / `Custom`
-  - `EventHandler` trait：`on_event` / `event_types` / `is_interested`（默认） / `on_events`（默认批量过滤）
-  - `EventBuilder`：自增序列号、4 种事件类型便捷构造
-  - `EventRouter`：多处理器分发 + 类型位掩码过滤
-  - `EventCollector`：事件收集器，缓存感兴趣事件用于回放/审计
-  - `EventError` / `EventResult`：`SequenceNotMonotonic` / `TimestampNotMonotonic` / `InvalidEventType` / `HandlerRegistration`
-  - 31 单元测试覆盖（合计 141 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 `Event` / `EventBuilder` / `EventCollector` / `EventError` / `EventHandler` / `EventResult` / `EventRouter` / `EventType` / `FillEvent` / `MarketDataEvent` / `MarketDataPayload` / `OrderAction` / `OrderEvent` / `SystemAction` / `SystemEvent`
-- **Phase 1A P0**：`axon-core::queue` 模块（事件队列）
-  - `EventQueue`：基于 `BinaryHeap` 的最小堆优先级队列（反转 `Ord` 实现）
-  - `QueuedEvent`：队列条目（`timestamp` / `seq` / `event`）
-  - `QueueMode`：`Normal` / `Paused` / `StepOnce` 三态模式
-  - `QueueStats`：统计信息（`total_pushed` / `total_popped` / `total_skipped` / `replay_count`）
-  - `EventQueueError`：`QueueEmpty` / `ReplayNotEnabled` / `ReplayLogEmpty`
-  - 核心方法：`new` / `with_replay_log` / `push` / `push_at` / `push_batch` / `from_sorted` / `next` / `peek` / `peek_time` / `is_empty` / `len` / `current_time` / `fast_forward_to` / `fast_forward_collect` / `drain_until` / `pause` / `resume` / `step` / `mode` / `reset` / `replay` / `replay_log` / `clear_replay_log` / `stats`
-  - 严格时间戳排序 + 同一时间戳内 `seq` 升序（FIFO 语义）
-  - 批量加载（`from_sorted`）走 O(n) 建堆，单次插入 O(log n)
-  - 可选重放日志：完整记录入队事件，支持 `reset` 后从日志重放
-  - 29 单元测试覆盖（合计 170 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 `EventQueue` / `EventQueueError` / `EventQueueResult` / `QueueMode` / `QueueStats` / `QueuedEvent`
-- **Phase 1A P1**：`axon-backtest::matching` 模块（L1 撮合引擎）
-  - `MatchingEngine` trait：`submit` / `cancel` / `best_bid` / `best_ask` / `spread` / `depth` / `active_order_count`
-  - `L1MatchingEngine`：价格-时间优先撮合，支持 `Limit` / `Market` / `IOC` / `FOK`
-  - 数据结构：`BTreeMap<Price, VecDeque<Order>>` 订单簿 + `HashMap<OrderId, (Side, Price)>` 订单索引
-  - FOK 预检：撮合前先检查订单簿深度，避免部分成交
-  - IOC 取消：未完全成交的剩余部分自动 `cancel`
-  - `MatchFill`：撮合成交记录（`fill_id` / `taker_order_id` / `maker_order_id` / `price` / `quantity` / `taker_side` / `timestamp`），含 `turnover()` 便捷方法
-  - `OrderBookLevel`：订单簿层（`price` / `quantity` / `order_count`）
-  - `SubmitResult`：提交结果（`fills` / `is_filled` / `is_partially_filled` / `remaining_quantity`），提供 `empty` / `filled` / `partial` 工厂
-  - `TradeRole`：`Maker` / `Taker` 撮合角色
-  - `MatchingError`：`OrderNotFound` / `InvalidModification` / `OrderAlreadyFilled` / `InvalidPrice` / `InvalidQuantity` / `OrderBookEmpty` / `FokPartialFill` / `UnsupportedOrderType`
-  - `axon-backtest` re-export 扩展：新增 `MatchFill` / `SubmitResult` / `MatchingError`
-  - 30 单元测试覆盖（合计 200 个），全部通过
-- **Phase 1A P1**：`axon-backtest::matching::l2` 模块（L2 撮合引擎）
-  - `L2MatchingEngine`：在 L1 基础上增加修改/统计/O(1) 取消/订单簿导入导出
-  - `MatchingStats`：累计统计（`total_fills` / `total_volume` / `total_turnover` / `matched_orders`）
-  - `OrderLocation`：订单位置（`side` / `price` / `offset`）
-  - `OrderAmend`：订单修改请求（`order_id` / `new_price` / `new_quantity`）
-  - `OrderBookEntry`：订单簿重建条目（`order_id` / `side` / `price` / `quantity` / `filled_quantity`）
-  - 核心方法：`new` / `with_symbol` / `submit` / `cancel` / `modify` / `volume_at_price` / `depth` / `best_bid` / `best_ask` / `spread` / `active_order_count` / `stats` / `location` / `contains` / `from_entries` / `export_entries`
-  - `build_limit_order` 便捷工厂方法
-  - 17 单元测试覆盖（合计 220 个），全部通过
-  - `axon-backtest` re-export 扩展：新增 `L2MatchingEngine` / `MatchingStats` / `OrderAmend` / `OrderBookEntry` / `OrderLocation` / `build_limit_order`
-- **Phase 1A P1**：`axon-core::scheduler` 模块（调度器）
-  - `SimulatedClock`：模拟时钟（`start` / `end` / `time_scale` / `now` / `set` / `advance` / `is_exhausted`）
-  - `TaskId` / `Task` / `TaskStatus`（`Pending` / `Running` / `Completed` / `Cancelled` / `Scheduled`）/ `RepeatPolicy`（`Once` / `Interval` / `Cron`）
-  - `TaskCallback` trait + `ClosureCallback<F>` 适配器
-  - `SchedulerContext`：任务回调上下文（`current_time` / `event_queue` / `user_data`）
-  - `SchedulerError`：`TaskNotFound` / `ScheduleInPast` / `ClockExhausted` / `InvalidInterval` / `TaskAlreadyCancelled` / `CallbackExecution`
-  - `SchedulerStats`：`total_registered` / `total_fired` / `total_cancelled` / `total_ticks`
-  - `Scheduler`：核心调度器，支持定时/周期/延时任务、取消、时钟推进、批量执行
-  - 核心方法：`new` / `with_end` / `now` / `schedule_at` / `schedule_after` / `schedule_interval` / `cancel` / `task_status` / `task` / `active_count` / `task_count` / `run_until` / `tick` / `stats` / `clock` / `next_fire_time` / `reset`
-  - 任务存储：HashMap（按 ID 查找）+ BTreeMap（按时间索引），Vec TaskId 时间槽合并
-  - 回调存储：单独 HashMap TaskId → Box dyn TaskCallback，serde 跳过（不可序列化）
-  - `SchedulerContext` 使用 `*mut EventQueue` 避免生命周期约束（仅单线程事件循环）
-  - 时钟耗尽检查：任务触发时间超过 `clock.end()` 时停止执行
-  - 42 单元测试覆盖（合计 303 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 11 个 scheduler 类型
-- **Phase 1A P2**：`axon-core::impact` 模块（市场冲击模型）
-  - `Impact`：冲击结果（`instantaneous` / `permanent` / `total` / `adjusted_price`）
-  - `ImpactModel` trait：`compute_impact` / `name` / `params`
-  - `LinearImpactModel`：线性冲击 `impact = coefficient × (qty / depth)`
-  - `PowerLawImpactModel`：幂律冲击 `impact = coefficient × (qty / depth)^exponent`（默认 square-root law）
-  - `AdaptiveImpactModel`：自适应冲击 `base × (volatility_scale × (1 + current_volatility))`
-  - `ImpactModelConfig`：`Linear` / `PowerLaw` tagged enum
-  - 工厂函数：`linear_impact`（coefficient=0.05）、`sqrt_impact`（coefficient=0.1, exponent=0.5）、`create_model(config)`
-  - `ImpactModelError`：`EmptyOrderBook` / `InvalidParameter` / `InsufficientDepth` / `ComputationOverflow`
-  - `AdaptiveImpactModel` 限制说明：因 `Box<dyn ImpactModel>` 不支持 derive，**不实现** `Clone` / `PartialEq` / `Serialize` / `Deserialize`（需使用 `ImpactModelConfig` + `create_model` 工厂路径序列化）
-  - 44 单元测试覆盖（合计 347 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 10 个 impact 类型
-- **Phase 1A P2**：`axon-core::latency` 模块（延迟模型）
-  - `LatencyModel` trait：`sample_delay(path)` / `name` / `params`，`Send + Sync` 约束
-  - `PathType`：`MarketData` / `OrderSubmit` / `OrderCancel` / `AccountQuery` / `Heartbeat`（含 `ALL` 常量与 `as_str`）
-  - `LatencyParams`：模型参数摘要（`model_type` / `base_delay_ms` / `jitter_ms` / `path_overrides`）
-  - `ConstantLatencyModel`：固定延迟（`uniform` / `with_paths` / `set_path` / `get`）
-  - `NormalLatencyModel`：正态分布延迟，**Box-Muller 变换**实现，截断为非负
-  - `ExponentialLatencyModel`：指数分布延迟（逆变换采样），`from_mean_ms` 便捷构造
-  - `UniformLatencyModel`：均匀分布延迟，`max <= min` 时回退为 `min`
-  - `QueueLatencyModel`：队列延迟模型（基础 + 队列长度 × 处理时间），`Mutex<usize>` 保护状态，`enqueue` / `dequeue` / `set_queue_length` / `queue_length` / `with_max_queue_length`，路径权重 `OrderSubmit=4` / `OrderCancel=2` / 其他=1
-  - `CompositeLatencyModel`：组合延迟模型（`HashMap<PathType, Box<dyn LatencyModel>>` + `default_model`），未配置路径回退到默认
-  - `LatencyModelFactory`：`constant` / `normal` / `exponential` / `uniform` / `queue` / `realistic_combo`（毫秒参数）
-  - `LatencyModelError`：`InvalidParameter` / `PathNotConfigured` / `NegativeStdDev` / `NonPositiveRate` / `InvalidRange` / `QueueOverflow`
-  - `CompositeLatencyModel` 限制说明：因 `Box<dyn LatencyModel>` 不支持 derive，**不实现** `Clone` / `PartialEq` / `Serialize` / `Deserialize`
-  - `QueueLatencyModel` 手动实现 `Clone` / `Serialize` / `Deserialize`（因 `Mutex` 字段无法自动 derive，但语义上可序列化为 `(base, processing, max, current)`）
-  - 38 单元测试覆盖（合计 335 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 12 个 latency 类型
-  - 工作区新增 `rand = "0.8"` 依赖（仅 axon-core 使用）
-- **Phase 1A P2**：`axon-core::fee` 模块（费用模型）
-  - `TradeRole`：`Maker` / `Taker`（含 `as_str` / `Display`）
-  - `ExchangeId`：`Binance` / `CoinbasePro` / `Kraken` / `Bybit` / `Okx` / `Custom(String)`（注意：`Custom` 用 `String` 而非 `&'static str` 以支持 `Deserialize`）
-  - `FeeType`：`Percentage(Decimal)` / `Fixed(Decimal)`，含 `calculate(notional)` 便捷方法
-  - `FeeBreakdown`：`commission` / `brokerage` / `funding` / `total` 四要素，含 `add` / `Add` 操作符
-  - `FeeRecord`：`trade_id` / `instrument_id` / `role` / `fee_breakdown` / `timestamp`
-  - `VolumeTier`：`min_volume` / `maker_fee` / `taker_fee` / `label`
-  - `FeeTable`：`new` / `add_tier` / `with_native_token_discount` / `with_institutional_discount` / `find_tier` / `maker_fee` / `taker_fee`，折扣顺序应用
-  - **默认费率表**：`binance_default()`（5 档 Regular-VIP9） / `coinbase_default()`（4 档 Tier1-Tier4） / `kraken_default()`（3 档 Tier1-Tier4）
-  - `FeeTrade` / `FeePosition`：fee 模块的轻量视图结构（与 `market::Trade` / `portfolio::Position` 解耦）
-  - `FeeModel` trait：`calculate_fee` / `calculate_funding` / `get_tier` / `accumulate`
-  - `TieredFeeModel`：`register_exchange` / `update_volume` / `record` / `exchanges` / `accumulate` / 内部 `HashMap<ExchangeId, FeeTable>`
-  - `FeeModelError`：`ExchangeNotRegistered` / `NoTiersConfigured` / `InvalidRate` / `InvalidQuantity` / `Overflow`
-  - 44 单元测试覆盖（合计 379 个），全部通过
-  - `lib.rs` 顶层 re-export 扩展：新增 13 个 fee 类型
-  - 工作区新增 `rust_decimal_macros = "1.35"` 依赖（axon-core 使用）
-- **Phase 1A P2**：`axon-backtest::matching::l3` 模块（撮合引擎 L3：多资产路由 / 暗池 / 批量拍卖 / 套利）
-  - **位置调整**：原 TDD 规划在 `axon-core`，实际放在 `axon-backtest`（与 L1/L2 同位置，避免跨 crate 依赖）
-  - **类型适配**：`Order` 无 `price` 字段，通过 `order.order_type.limit_price()` 获取；`FillEvent` → `MatchFill`；`timestamp_ns` → `created_at`；`Order::new()` 替代 `Order::new_limit()`
-  - `Venue` 枚举：Binance / Coinbase / Kraken / Bybit / Okx / Huobi / Custom(u16)
-  - `CrossPair`：leg1 / leg2 / ratio / max_quantity（自动校验 leg1 != leg2 与 ratio > 0）
-  - `BatchMode`：Continuous / Auction / DarkPool
-  - `PriceLevel` / `L2Snapshot` / `MatchingEngineSnapshot`：含价格级别与交易对配置的完整快照
-  - `L3Stats`：total_assets / total_cross_fills / total_batch_fills / total_dark_fills / total_arbitrage_profit
-  - `ArbitrageOpportunity`：只读报告（pair / leg1_mid / leg2_mid / implied_ratio / deviation / estimated_profit）
-  - `AuctionResult`：clearing_price / clearing_volume / fills / unfilled_orders
-  - `DarkOrder`：visible_quantity / hidden_quantity / order（`new()` 验证 visible <= hidden）
-  - `MultiAssetMatchingEngine`：
-    - `register_asset` / `register_cross_pair` / `set_batch_mode` / `batch_mode`
-    - `engine` / `engine_mut` / `asset_count` / `cross_pair_count` / `stats`
-    - `submit` / `submit_batch` / `submit_dark_order`（路由到 L2 或暂存）
-    - `run_auction`（按 symbol 执行批量拍卖，drain pending_batch）
-    - `detect_arbitrage` / `execute_arbitrage`（跨资产套利检测与执行）
-    - `snapshot` / `restore`（**仅资产 / 配置 / 批量模式**，价格级别恢复需 L2 `from_entries`）
-  - `find_clearing_price`（独立函数）：累积供需差算法 O(n log n)
-  - `try_dark_match`（独立函数）：软暗池撮合（maker price 成交 + 清理完全成交订单）
-  - `MatchingL3Error`：AssetNotFound / InvalidCrossPair / InvalidDarkOrderQuantity / AuctionNoClearingPrice / SnapshotFailed / RestoreFailed / Matching / OrderMissingLimitPrice
-  - **架构决策**：1 个独立模块 l3（5 个子模块 types / engine_l3 / dark_pool / auction / error），不引入跨 crate 依赖
-  - 41 单元测试覆盖（合计 470 个），全部通过
-  - `axon-backtest::matching::mod.rs` re-export 扩展：新增 13 个 L3 类型
-- **横向任务：边界测试（Boundary Tests）**：覆盖全部核心模块的极端输入 / 状态 / 资源 / 时间边界
-  - `Price` / `Quantity` / `Timestamp`：NaN、±∞、极小 / 极大值、Year 2038、闰秒、负时间戳
-  - `Order` / `OrderBookLevel`：零数量、超量成交、状态机非法转换
-  - `L1MatchingEngine` / `L3 Engine`：空订单簿、同价位 FIFO、10K 订单性能、跨价位撮合
-  - `EventQueue`：Unix 纪元、i64::MAX、seq 排序、大批量事件
-  - **`impact` 模块**（44 个新增测试）：零系数 / 极小正数量 / 负 / 极大中间价、系数越界 panic、序列化往返
-  - **`latency` 模块**（53 个新增测试）：零延迟 / 极大延迟、长尾分布、min>max 回退、嵌套 Composite、路径权重
-  - **`fee` 模块**（71 个新增测试）：零 / 负 / 极小 / 极大费率、100% 折扣、阶梯边界值（阈值-1/阈值/阈值+1）、Fixed/Percentage 混合、Custom 交易所
-  - **`error` 模块**：5 个 FeeModelError variant 序列化、空字符串 payload
-  - `ImpactModel` / `LatencyModel` / `FeeModel` 的 `Send + Sync` 验证
-  - **FeeType 序列化修复**：将 `#[serde(tag = "type")]` 改为 `#[serde(tag = "kind", content = "value")]` 修复 newtype variant + tag 不兼容导致的 `cannot serialize tagged newtype variant` 错误
-  - **Clippy 修复**：`FeeBreakdown::clone` on `Copy` 类型去除 `clone()` / `QueueLatencyModel` 极端断言去除恒真比较 / `BatchMode` 改用 `#[derive(Default)] + #[default]` / `MultiAssetMatchingEngine::register_asset` 改用 `Entry::or_default()` / 清理 `auction.rs` 测试模块未使用的 `Symbol` 导入
-  - **`cargo fmt --all`**：所有代码已格式化
-  - **合计**：602 个单元测试 + 1 文档测试 = 603 个全部通过，`cargo clippy --workspace --all-targets -- -D warnings` 零警告
-- **Phase 1B P0**：`axon-rl` crate（强化学习环境）
-  - **`observation` 模块**：特征工程 + 归一化 + 窗口聚合
-    - `FeatureConfig` / `FeatureSource`（`PriceField` / `VolumeField` / `PositionField` / `TimeField`） + `NormalizerType`（`ZScore` / `MinMax` / `Robust` / `None`）
-    - `RunningStats` / `ZScoreNormalizer` / `MinMaxNormalizer` / `RobustNormalizer` / `NoopNormalizer`
-    - `TickBuffer`（环形缓冲区） + `DefaultObservationSpace`（含 `gymnasium_box` 兼容 Box 空间）
-    - `Observation` / `BoxSpace` / `DType` / `TimeFeature` / `MarketState`
-    - 25 单元测试覆盖边界场景（空特征、零窗口、NaN、归一化边界）
-  - **`action` 模块**：离散 / 连续动作空间
-    - `TradingDirection`（`LongOnly` / `ShortOnly` / `Both`） + `QuantityBin`（仓位分箱）
-    - `DiscreteAction`（`Hold` / `Buy(QuantityBin)` / `Sell(QuantityBin)`） + `DiscreteActionSpace`（含 `index_to_action` / `action_mask`）
-    - `ContinuousActionSpace`（目标仓位 `[-1, 1]`） + `ActionSpace` 枚举
-    - `Action` / `ActionType` + `apply_action_mask`（masked logits 设为 `LARGE_NEG`）
-    - `ActionConverter` trait + `DiscreteActionConverter` / `ContinuousActionConverter` + `Order` / `OrderSide` / `OrderType`
-    - `ActionSmoother`（EMA 平滑 + delta 限制）
-    - `PortfolioState`（cash / position / last_price / portfolio_value / unrealized_pnl）
-    - 73 单元测试覆盖（包含掩码、平滑器、转换器、状态字段）
-  - **`reward` 模块**：奖励函数族
-    - `RewardFn` trait（`calculate` / `name` / `reset`）
-    - `PnLReward`（绝对 / 相对 PnL + scale） + `SharpeReward`（Sharpe / Sortino 风险调整 + clip）
-    - `MultiObjectiveReward`（权重自动归一化 + turnover penalty）
-    - `ScaledReward`（装饰器：缩放 + 裁剪）
-    - `ReturnHistory`（FIFO 环形缓冲 `VecDeque` 实现）
-    - `RewardError` + `to_py_err`（PyO3 异常映射）
-    - `create_reward_fn` / `default_multi_objective` 工厂函数
-    - 33 单元测试覆盖（含 NaN、零方差、风险利率、短历史退化）
-  - **`env` 模块**：交易环境（Gymnasium 兼容）
-    - `EnvConfig`（initial_capital / transaction_cost / slippage / max_position_ratio / max_steps / seed / symbol / return_window）
-    - `EnvError` + `EnvResult`（`EpisodeAlreadyDone` → `PyStopIteration`，其他 → `PyValueError`）
-    - `MarketBar`（OHLCV，含 `typical_price`） + `ExecutionResult` + `EnvInfo`（portfolio_value / trades_executed / transaction_costs / current_step / done / initial_capital）
-    - `ActionDecoder`（统一离散 / 连续动作 → `Order`，含 `from_space` 工厂）
-    - `Executor`（订单执行 + 组合重估，模拟滑点与手续费）
-    - `TradingEnv`（Gymnasium 风格 `reset` / `step` / `render`） + `StepResult`
-    - 8 单元测试覆盖（空数据、Hold、Buy、max_steps、episode 终止、LongOnly/ShortOnly 方向）
-  - **`python` 模块**：PyO3 绑定（feature = `python`）
-    - `PyTradingEnv`（`#[pyclass(name = "TradingEnv")]`） + `#[pymethods]`（`new` / `reset` / `step` / `render` / `close` + `current_step` / `done` / `portfolio_value` / `info` getters + `__repr__`）
-    - `parse_config`（Python dict → `EnvConfig`） / `parse_action`（int / list → `Action`） / `parse_action_space`（"discrete" / "continuous" → `ActionSpace`） / `parse_market_data`（list[dict] → `Vec<MarketBar>`）
-    - `env_info_to_dict`（`EnvInfo` → Python dict） / `env_error_to_py`（`EnvError` → Python 异常映射）
-    - `axon_rl` `#[pymodule]` 入口（暴露 `TradingEnv` + `VERSION` 常量）
-    - **18 单元测试**覆盖：默认值覆盖、未知键忽略、类型错误、离散/连续动作、动作空间、长/空仓方向、OHLCV 解析、Python 异常类型验证
-    - **PyO3 0.22 兼容**：使用 `PyDict::new_bound` / `PyTuple::new_bound` / `into_py` Bound API；`unsafe_op_in_unsafe_fn` + `useless_conversion` lint 抑制（pyo3 0.23+ 可移除）
-    - **Gymnasium 5 元组 API**：`step` 返回 `(observation, reward, terminated, truncated, info)`
-  - **`axon-rl` 集成**：所有公开类型在 `lib.rs` 顶层 re-export；`Cargo.toml` 新增 `axon-core` / `axon-backtest` / `serde` / `serde_json` / `thiserror` / `tracing` 依赖 + `pyo3 = "0.22"` 可选依赖 + `python` feature
-  - **合计**：157 个 axon-rl 单元测试（其中 18 个需要 `--features python`）+ 1 文档测试，全部通过
-- **Phase 1B P1**：向量化环境（`vec_env` 模块，22 单元测试）
-  - **`error` 模块**：`VecEnvError` 枚举（`ChannelSend` / `ChannelRecv` / `WorkerPanic` / `Env(usize, String)` / `DimensionMismatch { expected, got }` / `AllFailed` / `ZeroEnvs`），含 `From<EnvError>` 自动转换 + `env_index()` 辅助方法
-  - **`stats` 模块**：`VecEnvStatistics` 结构（`num_envs` / `total_rewards` / `step_counts` / `done_count` / `all_done`），含 `mean_reward()` / `mean_steps()` 聚合方法，序列化支持
-  - **`factory` 模块**：`EnvFactory` trait（`Send + Sync`，`build_env(env_id)` 方法）+ `BasicEnvFactory` 内置实现（`Clone + Debug`，自动 seed 偏移 `seed + env_id`，支持自定义 features / reward_kind）
-  - **`sync` 模块**：`SyncVecEnv` 同步向量化环境
-    - `reset_all()` / `reset_one(i)` / `step_batch(actions)` / `step_one(i, &action)`
-    - 自动重置：done 环境 zero-start，`episode_counts[i] += 1`
-    - 统计：累计奖励、step 计数、episode 计数、done 状态
-    - `env(i)` / `env_mut(i)` 直接访问内部 env
-    - `statistics()` 收集 `VecEnvStatistics`
-  - **`async_env` 模块**：`AsyncVecEnv` 异步（std::thread + mpsc）向量化环境
-    - 每个 worker 拥有独立 `TradingEnv` 实例
-    - `WorkerCommand`（`Reset` / `Step` / `Shutdown`）+ `WorkerResponse`（`Reset` / `Step` / `Error`）消息
-    - `WorkerHandle` 通信句柄（`Drop` 自动 shutdown + join）
-    - `F: EnvFactory + Clone + 'static` 约束（每个 worker 持有独立 factory 副本）
-    - 串行派发 + 串行回收（N 个 worker 在独立线程里跑 env.step）
-  - **21 单元测试**覆盖：批量 reset / step、维度校验、零 envs 错误、自动重置（含 episode 计数）、统计、env 访问器、工厂 build_env 调用次数验证、AsyncVecEnv reset/step/auto_reset、close join workers、VecEnvError `env_index` / Display / From 转换、VecEnvStatistics 空值边界
-  - **架构改进**：把"如何创建 env"抽成 `EnvFactory` trait，避免 Box<dyn ObservationSpace>/Box<dyn RewardFn> 不可 Clone 的限制；AsyncVecEnv 通过 `F: Clone` 约束让每个 worker 拥有独立工厂副本
-- **Phase 1B P2**：示例脚本与 PyO3 兼容性收尾
-  - **`examples/_common.py`**：共享工具层
-    - `find_axon_rl_lib()`：自动探测 `target/{debug,release}/libaxon_rl.{dylib,so,dll}`，在同目录创建 `axon_rl.cpython-XYZ-platform.so` 符号链接，加入 `sys.path`；跨平台回退（macOS/Linux/Windows）
-    - `make_synthetic_market_data(n, start_price, vol, seed)`：生成几何布朗运动 K 线（开/高/低/收/量），零外部数据依赖
-    - `make_env_config(initial_capital, transaction_cost, slippage, max_steps, seed, symbol, return_window)`：构造环境配置字典
-    - `make_env(config, market_data, reward, action_space)`：工厂函数，统一注入共享库并构造 `TradingEnv`
-    - `set_seed(seed)`：统一设置 `random` / `numpy` / `torch` 种子
-    - `run_random_episode(env, max_steps, seed)` / `summarize(records)`：随机基线 + 聚合统计
-  - **`examples/_vec_env.py`**：Gymnasium 包装层
-    - `AxonTradingEnv(gym.Env)`：将 `axon_rl.TradingEnv` 适配为 Gymnasium 5 元组 API（reset 返回 `(obs, info)`，step 返回 `(obs, reward, terminated, truncated, info)`）
-    - 动态继承：`gymnasium` 不可用时回退到 `gym.Env`，`render_mode` 显式传入避免 `metadata` 警告
-    - `make_vec_env(env_fn, n_envs, use_stable_baselines3)`：智能选择 `gymnasium.vector.SyncVectorEnv`（真实多 env） / `sb3 DummyVecEnv`（与 sb3 完全兼容）
-  - **`examples/random_agent.py`**：零依赖基线，5 个 episode × 500 步
-  - **`examples/custom_reward.py`**：PnL / Sharpe / Sortino 三种奖励函数对比，输出均值/标准差/夏普比率/最终组合价值
-  - **`examples/train_ppo.py`**：stable-baselines3 PPO 训练，命令行参数（`--timesteps` / `--n-envs` / `--reward` / `--learning-rate` / `--seed`），与随机基线对比
-  - **`examples/train_sac.py`**：stable-baselines3 SAC 训练，连续动作空间，配置 buffer / batch_size / tau
-  - **`examples/vec_env_train.py`**：向量化环境训练，对比 `n_envs=1` 与 `n_envs=4` 的 steps/s 与累计 reward
-  - **`examples/README.md`**：示例目录说明（结构、Python 环境要求、构建命令、运行步骤、常见问题、设计原则、后续工作）
-  - **关键决策**
-    - 强制使用 macOS Framework Python 3.12（PyO3 与 Anaconda 3.13 的 GIL 兼容性已知问题，参考 `axon-design/01-tdd/02-phase1-rl/06-pyo3-bindings.md`）
-    - `examples/_common.py:make_env` 仅在 `find_axon_rl_lib()` 之后才 import `axon_rl`，避免子进程在没有 dylib 时崩溃
-    - `gym.Env` 动态继承解决 `gymnasium` 与 `gym` 二选一：导入时探测，运行时绑定
-  - **代码质量**：5 个示例脚本全部可运行，stdout 含 PASS/FAIL 标记与退出码；`cargo test --workspace --features axon-rl/python` 179 个测试通过；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo fmt --all --check` 通过
-  - **后续工作（待办）**：`backtest.py`（样本外回测） / `hpo_optuna.py`（超参数优化） / `visualize.py`（净值曲线 + 回撤 + 交易信号）/ `gymnasium.vector.AsyncVectorEnv` 多进程包装
-- **Phase 2 P0**：`axon-hpo` crate（超参数优化：Optuna 集成 + 搜索空间 + 剪枝 + 多目标 + Pareto 前沿）
-  - **`config` 模块**：`StudyConfig`（study_name / direction / sampler / pruner / storage / load_if_exists）+ `StudyDirection`（Minimize / Maximize，Optuna 字符串转换）+ `SamplerType`（TPE / Random / CmaEs / Grid）+ `PrunerType`（MedianPruner / HyperbandPruner / SuccessiveHalvingPruner / NopPruner）+ `ObjectiveConfig` / `ObjectiveDef`（Single / Multi）+ `HPOConfig`（study / search_space / objective / hpo 四大子表）+ `HPOConfig::from_toml_file` TOML 加载 + 默认 `config/default_hpo.toml`（11 个 PPO 超参数）
-  - **`search_space` 模块**：`SearchSpaceDef` 6 种参数类型（`Uniform` / `LogUniform` / `IntUniform` / `Discrete` / `Choice` / `Categorical`），含 `validate()` 合法性校验（low < high、log 低界 > 0、step > 0、choices 非空）
-  - **`trial` 模块**：`TrialResult`（trial_id / params / values / state / duration_ms / intermediate_values）+ `TrialState`（Running / Complete / Pruned / Fail，含 `is_finished` / `is_complete`）
-  - **`result` 模块**：`HPOResult`（study_config / best_trial / all_trials / param_importances / pareto_front / elapsed_ms）+ `n_complete` / `n_by_state` 辅助方法
-  - **`pareto` 模块**：`ParetoPoint` / `ParetoFront` + `dominates`（Pareto 支配判定）+ `compute_pareto_front`（O(n²) 找出不被支配的 trial 子集，自动过滤 Pruned/Fail 状态）+ `compute_hypervolume`（2D 精确 / N-D 近似）+ `compute_hypervolume_from_points` 便捷函数
-  - **`error` 模块**：`HPOError` 统一错误类型（Config / SearchSpace / TrialFailed / Optuna / DirectionsMismatch / MissingValues / Io / Serialization）+ `HPOResult<T>` 类型别名
-  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
-    - `HPORunner`（`#[pyclass(name = "HPORunner")]`） + `#[pymethods]`（`new` / `run` / `__repr__`）
-    - 通信流程：Rust 配置校验 → Python 端 `axon_hpo.optuna_runner.OptunaHPO` 调度 Optuna study → Rust 端 `compute_pareto_front` 后处理 → Python dict 返回
-    - `py_compute_pareto_front` / `py_compute_hypervolume` / `py_validate_search_space` 便捷函数（`#[pyfunction]`）
-    - `register_module`：暴露 `HPORunner` + 3 个函数 + `__version__` 常量
-    - 类型转换：`serde_json::Value` ↔ Python object 的完整映射（Null/Bool/Int/UInt/Float/String/Array/Object）
-  - **Python 端 `axon_hpo` 包**：
-    - `types.py`：`SearchSpaceDef`（含 `suggest` 方法直接对接 Optuna API）+ `StudyDirection` / `SamplerType` / `PrunerType` 枚举 + `SamplerConfig` / `PrunerConfig` / `TrialResult` 数据类
-    - `optuna_runner.py`：`OptunaHPO` 主类（`run` / `collect_results` / `get_best_trial` / `get_pareto_front` / `compute_hypervolume` / `report` 中间值）；`_build_sampler` 支持 4 种 sampler
-    - `search_space.py`：`default_ppo_search_space`（11 个 PPO 超参）/ `default_sac_search_space`（8 个 SAC 超参）/ `small_search_space`（2 个小型）
-    - `pruning.py`：自定义剪枝器（`AdaptivePruner` / `HyperbandPruner` / `SuccessiveHalvingPruner` 封装）
-    - `multi_objective.py`：`ParetoPoint` + `dominates` + `compute_pareto_front` + `compute_hypervolume`（2D 精确 / N-D 近似）+ `select_by_constraint`（约束选择）
-  - **示例脚本**：
-    - `examples/hpo_single_objective.py`：二维抛物面目标函数（最大值在 (0.5, 0.3)），30 trials 找到 x=0.514, y=0.202, value=-0.0097（PASS）
-    - `examples/hpo_smoke_test.py`：模块导入 + 6 种搜索空间校验 + Pareto/HV 计算 + OptunaHPO 完整流程 smoke test
-  - **代码质量**：
-    - **35 单元测试**全部通过（`config` 13 + `pareto` 12 + `search_space` 6 + `trial` 3 + 集成 1）
-    - `cargo clippy -p axon-hpo --all-targets -- -D warnings` 零警告
-    - `cargo fmt -p axon-hpo --check` 通过
-    - **Clippy 修复**：`SamplerConfig` / `PrunerConfig` 的手写 `Default` impl 替换为 `#[derive(Default)]`
-  - **架构决策**：
-    - **Rust-Python 边界清晰**：Rust 端负责配置校验、Pareto 前沿与超体积的权威计算；Python 端负责 Optuna study 调度、trial 执行
-    - **TOML 配置优先**：`config/default_hpo.toml` 单一事实源，避免代码硬编码
-    - **混合类型 Choice**：`Choice { choices: Vec<serde_json::Value> }` 支持整数/浮点/字符串/布尔混合选择（适配 RL 超参如 `batch_size=32` / `activation="relu"` / `use_layernorm=true`）
-    - **方向无关的超体积**：2D 精确算法走 maximize+maximize 快路径，其他方向自动回退到 N-D 近似（坐标变换为后续优化点）
-- **Phase 2 P1**：`axon-walk-forward` crate（滚动前向验证：时间序列分割 + 防泄漏 + 指标聚合 + 稳定性分析）
-  - **`config` 模块**：`WalkForwardConfig`（train_size / validation_size / test_size / step_size / window_type / purge_gap / embargo_pct） + `WindowType`（Rolling / Expanding） + `validate()` 合法性校验 + `expanding` / `rolling` 便捷构造
-  - **`split` 模块**：`FoldSplit`（fold_id / train_start / train_end / validation_start / validation_end / test_start / test_end） + `TimeSeriesSplitter`（Rolling / Expanding 两种窗口） + `expand_window` / `rolling_window` 便捷函数
-  - **`purge` 模块**：`purge_overlapping_labels`（移除与测试集标签重叠的训练样本） + `embargo_indices`（测试集后添加隔离期） + `detect_leakage`（索引重叠 + 时间邻近性泄漏检测） + `leakage_check`（结构化报告）
-  - **`metrics` 模块**：`ISMetrics`（in-sample 5 指标）+ `OOSMetrics`（out-of-sample 6 指标，含 calmar_ratio） + `FoldResult`（fold_id / split / is_metrics / oos_metrics / overfit_ratio） + `WalkForwardResult`（config / folds / aggregated / stability） + `AggregatedMetrics`（8 字段汇总） + `StabilityMetrics`（4 字段稳定性） + `LeakageCheck`（has_leakage / leaked_indices / details）
-  - **`evaluation` 模块**：`aggregate_folds`（汇总 + 稳定性指标聚合） + `compute_deflated_sharpe`（Bailey & López de Prado 2014 修正） + 辅助统计（mean / stddev / median / pearson_correlation / normal_cdf / erf_approx）
-  - **`error` 模块**：`WalkForwardError` 统一错误类型（Config / InsufficientData / IndexOutOfBounds / LeakageDetected / Serialization / Io）+ `WalkForwardResult<T>` 类型别名
-  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
-    - `WalkForwardRunner`（`#[pyclass(name = "WalkForwardRunner")]`） + `#[pymethods]`（`new` / `split` / `__repr__`）
-    - `py_aggregate_folds` / `py_deflated_sharpe` / `py_detect_leakage` / `py_purge_overlapping_labels` / `py_embargo_indices` 便捷函数
-    - `register_module`：暴露 `WalkForwardRunner` + 5 个函数 + `__version__` 常量
-  - **Python 端 `axon_walk_forward` 包**：
-    - `types.py`：`WalkForwardConfig` / `WindowType` / `FoldSplit` / `ISMetrics` / `OOSMetrics` / `FoldResult` / `AggregatedMetrics` / `StabilityMetrics` / `WalkForwardResult`（与 Rust 端 1:1 对应，含 `to_dict` / 便捷构造方法）
-    - `splitter.py`：`TimeSeriesSplitter` 类（`split` 返回 FoldSplit 列表 / `split_indices` 返回 numpy 数组） + `expand_window` / `rolling_window` 便捷函数
-    - `purging.py`：`purge_overlapping_labels` / `embargo_indices` / `detect_leakage`（接受 numpy 数组）
-    - `evaluation.py`：`aggregate_folds` + `_deflated_sharpe` + `_norm_cdf` / `_erf` 辅助函数（A&S 7.1.26 近似）
-  - **TOML 配置文件**：`config/default_wf.toml`（5 年 train + 1 季度 test + Expanding + 5 天 purge gap + 1% embargo）
-  - **示例脚本**：
-    - `examples/walk_forward_basic.py`：合成 1000 个交易日收益率，Expanding / Rolling / Purge gap 三种模式演示 + 完整指标聚合
-    - `examples/walk_forward_purging.py`：purge / embargo / leakage 三种防泄漏机制 smoke test
-  - **代码质量**：
-    - **48 单元测试**全部通过（config 8 + split 11 + purge 10 + metrics 8 + evaluation 11）
-    - `cargo clippy -p axon-walk-forward --all-targets -- -D warnings` 零警告
-    - `cargo fmt -p axon-walk-forward --check` 通过
-  - **架构决策**：
-    - **索引单位而非时间单位**：Rust 端基于数据点索引分割，避免 `Duration` 的时间精度问题；Python 端可自行按时间戳转换
-    - **Rolling vs Expanding 二选一**：通过 `WindowType` 枚举区分，Rolling 训练窗口固定大小，Expanding 训练窗口从 0 累积
-    - **purge_gap vs embargo 分工**：purge_gap 处理 train→test 的标签泄漏，embargo_pct 处理 test→后续 train 的自相关泄漏
-    - **Deflated Sharpe 在 Rust 端实现**：避免 Python scipy 依赖，使用 A&S erf 近似（误差 ~1.5e-7）
-- **Phase 2 P2**：`axon-distributed` crate（Ray + RLLib 分布式训练：集群管理 + 算法封装 + Parameter Server + Checkpoint 容错 + PyO3 桥接）
-  - **`config` 模块**：5 个配置类型
-    - `DistributedConfig`：顶层配置（cluster / algorithm / resources / fault_tolerance 4 大段）
-    - `ClusterConfig`：`local()` 工厂 + `validate()`（num_workers / num_cpus_per_worker / num_gpus_per_worker / cluster_address / object_store_memory_gb）
-    - `AlgorithmConfig`：算法白名单（PPO / SAC / DQN / IMPALA / APE_X）+ 框架（torch / tensorflow）+ 动态 hparams
-    - `ResourceConfig`：num_envs_per_worker / rollout_fragment_length / train_batch_size / sgd_minibatch_size / num_sgd_iter / lr_schedule
-    - `FaultToleranceConfig`：max_retries / checkpoint_interval_s / checkpoint_dir / checkpoint_at_end / keep_checkpoints_num / restore
-    - TOML 加载：`from_toml_file` / `from_toml` + 嵌套 `validate()` 级联校验
-  - **`actor` 模块**：`ActorConfig`（actor_id / env_name / env_config / num_envs / observation_space_shape / action_space_shape）+ `validate()`
-  - **`param_server` 模块**：`ParamServerConfig` + `default_config()` + `validate()`（server_address / port / sync_interval_s / push_pull_timeout_ms）
-  - **`checkpoint` 模块**：`TrainingCheckpoint`（iteration / policy_state / optimizer_state / rng_state / metrics_history / timestamp_ms）+ `StepMetrics`（7 字段单步指标）+ `CheckpointMetadata`（迭代 + 时间戳 + 历史）+ `TrainingCheckpoint::new()` + `to_json()` / `from_json()` + `add_metrics()` + `size_bytes()` 自动时间戳
-  - **`error` 模块**：`DistributedError`（9 种变体：Config / Validation / Toml / Io / Serialization / Cluster / Algorithm / Checkpoint / ParamServer）+ `DistributedResult<T>` 类型别名
-  - **`python` 模块**：PyO3 桥接层（`feature = "python"`）
-    - `DistributedRunner`（`#[pyclass(name = "DistributedRunner")]`） + `#[pymethods]`（`new(dict)` / `from_toml_file` / `__repr__`）— 自动 Python dict → JSON → serde 解析 + validate
-    - `py_save_checkpoint` / `py_load_checkpoint` / `py_serialize_metrics` 便捷函数
-    - `register_module`：暴露 `DistributedRunner` + 3 个函数 + `__version__` 常量
-  - **Python 端 `axon_distributed` 包**：5 个子模块
-    - `types.py`：`Algorithm`（Enum）+ `RayConfig`（num_workers / num_cpus_per_worker / num_gpus_per_worker / object_store_memory_gb / ray_address）+ `RLLibTrainConfig`（14 字段 + `validate()` + `to_rllib_config()` + `_load_default_toml()`）+ `CheckpointConfig`
-    - `ray_trainer.py`：`DistributedTrainer`（封装 RLLib 2.x builder 模式，支持 PPO / SAC；`init_ray=False` 走 mock 模式，生成合成 metrics）
-    - `actor.py`：`EnvironmentWorker` Ray Actor（条件 `@ray.remote` 装饰器）+ `ActorPool`（reset_all / step_all / get_all_metrics 并行批处理）+ `WorkerMetrics`（worker_id / num_envs / avg_reward / total_steps）
-    - `param_server.py`：`ParameterServer` Ray Actor（version / push_count / pull_count / pickle 化的 gradient 缓冲）+ `DistributedPolicy`（sync_parameters / push_update）+ `ParamServerStats`
-    - `fault_tolerance.py`：`CheckpointManager`（save / find_latest / restore + 自动清理超出 keep_checkpoints_num 的旧 checkpoint）+ `FaultTolerantTrainer`（train_with_recovery 自动恢复 + 重试 max_retries 次）
-  - **TOML 配置文件**：`config/default_distributed.toml`（4 workers / PPO / torch / 4000 batch / lr=3e-4 / checkpoint 5min / keep 5）
-  - **示例脚本**：
-    - `examples/distributed_basic.py`：mock 模式 + FaultTolerantTrainer + CheckpointManager 完整流程（加载 TOML → 训练 → 容错循环 → checkpoint 文件验证）
-    - `examples/distributed_actor_pool.py`：ActorPool 的 reset / step / metrics 演示（2 workers × 2 envs）
-    - 两个脚本均输出 `=== ALL PASS ===`
-  - **代码质量**：
-    - **22 单元测试**全部通过（config 11 + actor 4 + param_server 4 + checkpoint 4）
-    - `cargo test -p axon-distributed` 全绿
-    - `cargo clippy -p axon-distributed --all-targets -- -D warnings` 零警告
-    - `cargo fmt -p axon-distributed --check` 通过
-    - `cargo test --workspace` 全量通过（axon_distributed 22 个 + 其他 crate 共 967 个）
-  - **架构决策**：
-    - **Python 优先**：Ray/RLLib 主要是 Python 生态，Python 端承担核心逻辑（Actor 管理、算法执行、环境交互）
-    - **Rust 端职责**：配置类型校验（serde）+ Checkpoint 序列化 + PyO3 桥接层
-    - **RLLib 2.x builder API**：使用新版 `PPOConfig().environment().framework().resources().env_runners().training().model()` 链式构造
-    - **TOML + dataclass 镜像**：Rust `DistributedConfig` 与 Python `RLLibTrainConfig` 字段名一致，便于 Rust↔Python 互操作
-    - **mock 模式（CI 友好）**：`RAY_AVAILABLE=False` 时所有 Actor 退化为本地类，`init_ray=False` 时跳过 `ray.init()`，无 ray 依赖即可运行所有示例 + 测试
-- **Phase 2 P3**：`axon-tracker` crate（统一实验追踪：4 个后端 + 指标缓冲 + 重试策略 + PyO3 桥接）
-  - **`types` 模块**：11 个核心数据类型
-    - `ExperimentId` / `RunId`（带 `Hash` + `Eq` 的 NewType）
-    - `ImageFormat`（Png / Jpeg / Svg）
-    - `MetricValue`（Scalar / Histogram{values,bins} / Image{data,format,width,height} / Table{columns,rows}）
-    - `ParamValue`（Int / Float / String / Bool / List + `Display` 实现）
-    - `MetricEntry`（key / value / step / timestamp）
-    - `RunStatus`（Running / Completed / Failed / Killed + `as_mlflow_str()` 状态字符串映射）
-    - `ExperimentConfig`（hyperparameters / git_commit / dataset_hash / seed / start_time / tags + `#[serde(default)]`）
-    - `ArtifactInfo`（name / path / size_bytes / content_hash / timestamp）
-    - `RunContext`（run_id / experiment_id / config / status / start_time / end_time / metrics / artifacts）
-  - **`config` 模块**：`TrackerBackend`（Mlflow / Wandb / Local / Memory，serde tag + rename_all lowercase）+ `MetricBuffer`（capacity / flush_interval / push / should_flush / drain / mark_flushed，capacity-满 或 间隔到达 触发刷新）
-  - **`error` 模块**：`TrackerError`（Network / Io / Parse / Auth / RateLimited / ExperimentNotFound / RunNotFound / ArtifactTooLarge{size,limit} / Config / Serialization）+ `is_retryable()` 标识可重试错误 + `TrackerResult<T>` 类型别名
-  - **`retry` 模块**：`RetryPolicy`（max_retries / base_delay / max_delay / backoff_factor）+ `execute()` 同步执行 + 指数退避 + max_delay 上限；非 `is_retryable()` 错误直接返回不重试
-  - **`tracker` 模块**：`ExperimentTracker` trait（9 个方法：log_param / log_params / log_metric / log_histogram / log_image / log_artifact / set_tag / finish / flush）+ `ExperimentTrackerExt` 扩展 trait 批量记录指标
-  - **`backends` 模块**：4 个后端
-    - `MemoryTracker`（Mutex 保护内部状态，提供 get_metrics / get_metrics_by_key / get_param / get_all_params / get_status / run_id 查询接口）
-    - `LocalTracker`（写入 `params.json` / `metrics.jsonl` / `tags.json` / `status.json` / `images/` / `artifacts/` 文件，支持 buffer + flush 批量持久化）
-    - `MlflowTracker`（`feature = "http"` 启用，reqwest 阻塞客户端 + MLflow REST API：experiments/search / create / runs/create / log-parameter / log-batch / log-image / log-artifact / set-tag / update）
-    - `WandbTracker`（`feature = "http"` 启用，reqwest + base64 + GraphQL API：CreateRun / logArtifacts / logMedia / logMetrics / updateRun）
-  - **`python` 模块**：PyO3 桥接层（`feature = "python"` 启用）
-    - `PyMemoryTracker` / `PyLocalTracker`（`#[pyclass]` + `#[pymethods]`）支持 `log_param` / `log_metric` / `set_tag` / `finish` / `flush` / `get_metrics` / `__repr__`
-    - `python_to_param_value`：自动类型推断（bool → int → float → str）
-    - `register_module`：暴露 2 个 pyclass + 1 个 pyfunction + `__version__` 常量
-  - **Python 端 `axon_tracker` 包**：4 个子模块（纯 Python 实现，CI 无外部依赖）
-    - `types.py`：`RunStatus` / `ImageFormat` / `ParamValueType` 枚举 + `TrackerConfig` dataclass（8 字段 + `_load_default_toml()` 加载 Rust 端 TOML）
-    - `memory.py`：`MetricEntry` dataclass + `MemoryTracker` 类（run_id 自动时间戳生成 + 6 个查询方法）
-    - `local.py`：`LocalTracker(MemoryTracker)`（写入 `params.json` / `metrics.jsonl` / `status.json` + flush 批量 + images / artifacts 子目录）
-    - `composite.py`：`MultiTracker`（fan-out 写入多个 backend + 优雅 flush）
-  - **TOML 配置文件**：`config/default_tracker.toml`（backend=memory + capacity=1000 + flush_interval_s=30 + retry 3/100ms/10s/2.0）
-  - **示例脚本**：
-    - `examples/tracker_basic.py`：Memory + Local Tracker 演示（参数/指标/标签/finish + 文件验证）
-    - `examples/tracker_multi_backend.py`：MultiTracker 多后端并行（3 trackers 同步 5 个 epoch × 2 指标）
-  - **代码质量**：
-    - **24 单元测试**全部通过（types 5 + config 6 + retry 3 + memory 5 + local 3 + tracker 2）
-    - `cargo test -p axon-tracker` 全绿
-    - `cargo build -p axon-tracker --features http` 编译通过
-    - `cargo build -p axon-tracker --features python` 编译通过
-    - `cargo clippy -p axon-tracker --all-targets -- -D warnings` 零警告
-    - `cargo test --workspace --no-run` 全量编译通过
-    - 两个 Python 示例均输出 `=== ALL PASS ===`
-  - **架构决策**：
-    - **统一 trait + 多后端**：`ExperimentTracker` 提供 9 个方法的稳定接口，4 个后端各自实现，避免业务代码与具体后端耦合
-    - **指标缓冲 + 自动刷新**：`MetricBuffer` 减少高频指标的网络/IO 开销，capacity 满或 interval 到达时自动 flush
-    - **同步 + 异步兼容**：Trait 同步方法 + MLflow/WandB 内部用 `reqwest::blocking`，避免强制依赖 tokio runtime；后续可平滑迁移到 async
-    - **Feature 隔离**：`http` / `python` 都是 optional feature，不启用时编译零开销；CI 友好
-    - **Python 纯实现**：MemoryTracker / LocalTracker / MultiTracker 都有纯 Python 版本（不依赖 Rust 编译产物），保证 CI / 离线环境可用
-    - **Content Hash 简化**：用 `format!("{size:x}")` 作为文件 hash 占位（避免 SHA256 计算开销），未来用 `sha2` crate 升级
-- **Phase 2 P4**：`axon-registry` crate（统一模型注册表：版本管理 + 阶段生命周期 + 本地存储 + 元数据签名 + PyO3 桥接）
-  - **`types` 模块**：11 个核心数据类型
-    - `SemVer`（major/minor/patch + `bump_patch/minor/major` 三个递增方法 + `parse("1.2.3")` 解析 + Display + `PartialOrd` 全序）
-    - `ModelStage`（Staging/Production/Archived/RolledBack 4 态 + Display + `rename_all = "snake_case"`）
-    - `DataType`（Float32/Float64/Int32/Int64/Bool/String + Display）
-    - `SignatureField`（name/dtype/shape/description + `new`/`with_description` 构造器）
-    - `ModelSignature`（inputs/outputs 两个 `Vec<SignatureField>`）
-    - `ModelMetadata`（description/hyperparameters/metrics/dataset_hash/git_commit/training_duration_secs/created_at/author/tags + 9 字段 + `#[serde(default)]`）
-    - `ModelVersion`（name/version/stage/metadata/signature/storage_uri/artifact_size_bytes/artifact_hash 8 字段）
-    - `StorageBackend` enum（`tag = "type"` + `rename_all = "snake_case"`，本期仅 Local 变体）
-    - `UploadResult`（key/size_bytes/content_hash）
-    - `StorageObject`（key/size_bytes/last_modified）
-    - 10 个类型测试 + 2 个 SemVer 解析测试 = 12 个
-  - **`error` 模块**：`RegistryError`（12 变体：ModelNotFound / VersionNotFound / NoProductionVersion / InvalidVersion / InvalidTransition{from,to} / StorageError / ArtifactNotFound / ConfigError / RollbackFailed / IndexCorrupted / Io / Serialization）+ `is_retryable()` 标识可重试错误 + `RegistryResult<T>` 类型别名
-  - **`filter` 模块**：`VersionFilter`（stage/tags/min_version/max_version/limit 5 字段 + 5 个 `with_*` 链式构造器）
-  - **`signature` 模块**：`DataType` + `SignatureField` + `ModelSignature` + 3 个测试（Display / builder / serialize roundtrip）
-  - **`storage` 模块**：
-    - `StorageBackendTrait`（async_trait，5 个方法 + `as_any()` 用于 downcast）+ `LocalStorage`（4 个测试：upload+download / list / exists+delete / SHA256 一致性）
-    - **SHA-256 真实计算**（用 `sha2` crate），与 axon-tracker 的 `format!("{size:x}")` 占位 hash 区分
-    - **tokio::task::spawn_blocking**：将阻塞 IO 包装为异步任务，避免阻塞 runtime
-  - **`registry` 模块**：`ModelRegistry` 核心（DashMap 并发索引 + 阶段转换 + 回滚 + 持久化）
-    - **6 个核心方法**：`register` / `get` / `get_production` / `list_versions` / `transition_stage` / `rollback` / `download_artifact` / `list_models`
-    - **自动阶段管理**：提升新版本到 Production 时，自动将当前 Production 降级为 Archived
-    - **回滚场景支持**：`Archived -> Production` 是合法转换（rollback 专用路径）
-    - **persist_index**：每次 register/transition_stage 后同步写入 `<base>/<name>/registry.json`
-    - **8 个测试**：register_first_version / register_increments_patch / promote_to_production_archives_previous / rollback_to_archived / invalid_stage_transition / list_versions_filtered / get_latest_version / download_artifact
-  - **`python` 模块**：PyO3 桥接层（`feature = "python"` 启用）
-    - `PyLocalStorage`（`#[pyclass]` + `#[pymethods]`）支持 `base_dir` / `__repr__`
-    - `PyModelRegistry`（含内部 tokio runtime + block_on）支持 `register` / `promote_to_production` / `get_production` / `list_models` / `__repr__`
-    - `model_version_to_dict`：ModelVersion → PyDict（7 字段）
-    - **pyo3 0.28 兼容**：用 `PyDict::new(py)`（已移除 `_bound` 后缀）
-  - **Python 端 `axon_registry` 包**：3 个子模块（纯 Python 实现，CI 无外部依赖）
-    - `types.py`：`ModelStage` 枚举 + `SemVer` dataclass（含 `__lt__` / `__eq__` / `__hash__` 全套比较）+ `ModelMetadata` + `ModelVersion`（4 个 SemVer 比较运算符 + parse 构造器）
-    - `storage.py`：`UploadResult` dataclass + `LocalStorageBackend` 类（upload/download/exists/delete 4 方法 + hashlib.sha256 真实计算）
-    - `registry.py`：`ModelRegistry` 类（8 个方法：register/get/get_production/list_versions/transition_stage/rollback/list_models/download_artifact + 阶段转换校验 + 自动归档 + registry.json 持久化）
-  - **TOML 配置文件**：`config/default_registry.toml`（storage=local + base_dir=./models + 6 个阶段转换开关）
-  - **示例脚本**：
-    - `examples/registry_register_promote.py`：单模型注册 + 提升 Production + 文件验证
-    - `examples/registry_rollback.py`：3 版本连续注册 + 自动归档 + rollback 验证
-  - **代码质量**：
-    - **27 单元测试**全部通过（types 12 + error 0 + filter 1 + signature 3 + storage/local 4 + registry 8 = 28 → 实际 27）
-    - `cargo test -p axon-registry --lib` 全绿
-    - `cargo build -p axon-registry --features python` 编译通过
-    - `cargo clippy -p axon-registry --all-targets -- -D warnings` 零警告
-    - `cargo test --workspace --no-run` 全量编译通过
-    - 两个 Python 示例均输出 `=== ALL PASS ===`
-  - **架构决策**：
-    - **DashMap 内存索引**：版本索引用 `DashMap` 实现并发安全，register/transition 互不阻塞
-    - **持久化到本地文件**：每次索引变更后同步写入 `registry.json`，进程重启后可通过反序列化恢复
-    - **async_trait + spawn_blocking**：保留 async API 以支持未来 S3/HTTP 后端，LocalStorage 用 `spawn_blocking` 避免阻塞 runtime
-    - **as_any 抽象**：通过 trait 提供 `as_any()` 让 `ModelRegistry` 在创建时自动推断 `persist_dir`
-    - **阶段转换表**：`validate_transition` 用 `matches!` 宏声明 6 种合法转换（含 Archived -> Production 回滚场景），非法转换返回 `InvalidTransition` 错误
-    - **Feature 隔离**：`python` 是 optional feature，不启用时编译零开销
-    - **Python 纯实现**：3 个核心子模块都是纯 Python（不依赖 Rust 编译产物），保证 CI / 离线环境可用
-    - **回滚语义**：rollback 时 current Production → RolledBack（Production -> RolledBack 是合法转换），然后 latest Archived → Production（Archived -> Production 是合法转换）
-- **Phase 2 P5**：`axon-integration-tests` crate（跨模块端到端集成测试：HPO + Walk-forward + Tracker + Registry + Distributed 联合验证）
-  - **`fixtures` 模块**：`SyntheticReturns` 固定种子收益率生成器（含趋势 + 漂移 + 噪声） + `simulate_strategy_oos` 模拟 OOS 表现 + `make_trial` / `make_pareto` 合成 HPO 试验与 Pareto 点
-  - **`hpo_tracker` 模块**：3 个集成测试 — HPO trial 评估后实时写入 Tracker、Config + 模拟 trial 评估、批量超参日志
-  - **`walkforward_registry` 模块**：3 个集成测试 — Walk-forward 评估后最佳 fold 自动注册 + 提升 Production、不同窗口类型组合、3 轮迭代累积注册
-  - **`tracker_registry` 模块**：3 个集成测试 — Tracker 指标驱动 Registry 阶段转换、Tracker 与 Registry 元数据一致性、Tracker flush 与 Registry 持久化独立
-  - **`multi_objective` 模块**：3 个集成测试 — 多目标 HPO + Pareto 前沿 + Tracker 一体化验证、Pareto 支配关系传递性、多目标 HPO 配置
-  - **`e2e_pipeline` 模块**：3 个集成测试 — 端到端 HPO → Walk-forward → Tracker → Registry 全链路、训练 → 注册 → 回滚、不同窗口类型 + Tracker 指标报告
-  - **15 个集成测试**全部通过（`cargo test -p axon-integration-tests` 全绿）
-  - **测试覆盖**：
-    - 端到端数据流验证：tracker 记录的指标与 registry 写入的元数据完全一致
-    - 阶段转换决策：基于指标阈值（final_sharpe ≥ 1.5 && final_loss ≤ 0.3）自动 Production
-    - 多目标 Pareto：6 个 trial 评估 → 2D Pareto 前沿 → 超体积计算 → 最优解注册
-    - 回滚流程：3 版本注册 → 自动归档 → rollback 自动恢复上一个 Archived 到 Production
-  - **架构决策**：
-    - **独立 integration crate**：避免循环依赖（axon-hpo 依赖 axon-walk-forward 等，integration crate 反向组合所有 Phase 2 模块）
-    - **临时目录隔离**：所有集成测试用 `tempfile::tempdir()` 创建独立存储，重启自动清理
-    - **合成数据驱动**：用 `SyntheticReturns` + 数学模型（`parabolic_objective` / `multi_objective_eval`）模拟真实场景，避免依赖外部数据集
-    - **`#[allow(dead_code)]` 标注公共辅助**：保持测试 helper 函数为 pub 以便跨模块复用，未使用时不报警告
-    - **`SemVer::new(0, 0, 0)` 起始**：walker + registry 的迭代注册从 patch=0 递增，确保多版本顺序可追溯
-- **Phase 2 P6**：横向任务 — 模糊测试 + 契约测试 + Registry 并发修复
-  - **`axon-integration-tests::fuzz` 模块**（基于 `proptest` 的 property-based fuzz）
-    - 23 个 `proptest!` 块覆盖：线性冲击 / 幂律冲击 / 自适应冲击 / Almgren-Chriss / 撮合引擎（L1 撮合 + 零冲击/部分成交/成交价单调性） / 波动率估计器（EWMA / Rolling） / 订单簿（零价差零成交、深度边界、L2 构建有序性）
-    - 自定义 `order_book_strategy()`：约束 `ask > bid` 避免生成交叉订单簿（locked/crossed book），与 `LinearImpactModel` / `PowerLawImpactModel` 默认 `depth_levels = 10` 保持一致
-    - 幂律单调性测试用相对深度比例（0.1% / 1% / 10%）避免极端 `qty/depth` 比值导致浮点失真
-    - `PROPTEST_CASES=200`（release 模式）下全部 23 个 prop_test 仍然通过
-  - **`axon-integration-tests::contract` 模块**（API / 数据契约稳定性）
-    - 28 个 `pub fn contract_*` 入口，覆盖：SemVer 解析/递增/排序、ModelStage 字符串映射、TrialState 谓词、StudyDirection Optuna 字符串、WindowType 默认值、RunStatus MLflow 字符串、WalkForwardConfig 向后兼容（缺字段回退默认值）、SamplerType adjacently-tagged 别名、TrialResult 缺字段容错、HPOResult/HPOConfig 必填字段、f64 序列化精度（含整数+小数往返无误差）
-    - 与 `hpo_tracker.rs` / `walkforward_registry.rs` 一致：契约函数去掉 `#[test]` 标记，由 `tests/integration_tests.rs` 中的 `#[test]` 包装调用，pub fn 在 lib 模式下也能被 cargo test 找到
-  - **`axon-registry::ModelRegistry` 并发修复**（修复 3 个集成测试失败根因）
-    - **根因**：`register` 是 async 函数，`next_version` 用 `entry()` 持锁计算版本号后，需跨 `storage.upload().await` 才 `push` 到 index，期间锁被释放；多个线程同时执行会读到同一个 `max_ver`，全部 `bump_patch` 到相同值 → 版本号重复
-    - **修复方案**：新增 `version_counters: DashMap<String, Arc<AtomicU64>>` 字段，每个 model name 一个独立计数器；用 `AtomicU64::fetch_add(1, Ordering::SeqCst)` 原子递增 patch，天然唯一
-    - **架构改进**：
-      - `next_version` 从 `async fn` 改为 `fn`（不需要 await），与 `storage.upload().await` 完全并发安全
-      - 懒初始化：`or_insert_with` 中根据 index 最大 patch 初始化计数器，index 为空时从 0 开始
-      - 首版本固定为 `1.0.0`（修复原实现 0.0.1 与单元测试期望不一致的问题）
-    - **关键代码**：
-
-      ```rust
-      let counter = self.version_counters.entry(name.to_string())
-          .or_insert_with(|| {
-              let max_patch = self.index.get(name)
-                  .and_then(|v| v.iter().map(|mv| mv.version.patch).max())
-                  .unwrap_or(0);
-              Arc::new(AtomicU64::new(u64::from(max_patch)))
-          }).clone();
-      let patch = counter.fetch_add(1, Ordering::SeqCst);
-      SemVer::new(1, 0, patch as u32)
-      ```
-
-  - **3 个并发集成测试转绿**
-    - `concurrent_registry_registrations`（8 线程 × 5 版本 = 40 次 register，40 个唯一 patch 0..39）
-    - `walkforward_registry_iterative_registration`（3 次迭代 register，patch 0/1/2 顺序递增）
-    - `e2e_pipeline_train_register_rollback`（HPO → 训练 → 注册 → 提升 Production → rollback 全链路）
-  - **测试统计**
-    - `cargo test -p axon-integration-tests` 27 个集成测试 + 23 个 prop_test 全部通过
-    - `cargo test -p axon-registry --lib` 27 个单元测试全部通过（含之前失败的 `test_register_first_version`）
-    - `cargo test --workspace` ~1301 个测试全部通过，无回归
-
 ### Changed
+- **docs/ 重组为 GitHub Pages 文档站(Stage L 收口)**:`docs/` 重新组织为 mkdocs + Material 主题可直接部署的 user-facing 文档站,内部 spec/plan 文件移到仓库根的 `.axon-internal/`。
+  - **docs/ 内部清理**:删除内部 spec/plan 目录 `docs/superpowers/`(35 个 specs + 43 个 plans)、`docs/compose/plans/`(1 个 plan),`git mv` 全部 75 个内部文件到 `.axon-internal/{specs,plans}/`,保留完整历史。删除零散临时文档 `docs/rename-summary.md`(重命名已完成)。
+  - **docs/ 重组为 mkdocs 标准结构**:`docs/{index,getting-started/installation,getting-started/quickstart,user-guide/architecture,user-guide/llm-trading/{overview,risk-safety,metrics-alerting,operations-runbook},reference/{api,cli,python-bindings,configuration},about/{contributing,changelog,license,testing-plan,pypi-publishing}}` —— 共 14 份新建 / 重组的 user-facing 文档。
+  - **存量迁移**:`docs/guide/` → `docs/user-guide/`,`docs/TESTING-PLAN.md` → `docs/about/testing-plan.md`,`docs/pypi-publishing-guide.md` → `docs/about/pypi-publishing.md`,`docs/adr/README.md` → `docs/adr/index.md`。
+  - **ADR 内链修复**:3 份 ADR(`0001` / `0002` / `0003`)移除失效的 `../../../axon-design/...` 内部设计文档链接(axon-design 是内部仓库,已不在用户文档范围),改为指向 docs/ 内对应页面。
+  - **导航冲突修复**:`docs/user-guide/llm-trading/architecture.md` 重命名为 `docs/user-guide/llm-trading/overview.md`,解决与 `docs/user-guide/architecture.md` 在 mkdocs autolinks 插件下的同名冲突(其他 3 份 LLM 文档交叉引用同步更新)。
+- **axon-quant-docs 合并到 docs/**:将 `axon-quant-docs/` 中的 10 个文档按主题分类合并到 `docs/` 对应子目录,冲突时以 axon-quant-doc 为主。
+  - `axon-quant-docs/index.md` → `docs/index.md`(覆盖)
+  - `axon-quant-docs/01-what-is-axon.md` → `docs/user-guide/what-is-axon.md`
+  - `axon-quant-docs/02-installation.md` → `docs/getting-started/installation.md`(覆盖)
+  - `axon-quant-docs/03-ai-native-design.md` → `docs/user-guide/ai-native-design.md`
+  - `axon-quant-docs/04-scenario-strategy-development.md` → `docs/user-guide/strategy-development.md`
+  - `axon-quant-docs/05-scenario-llm-oader.md` → `docs/user-guide/llm-trading/oader.md`
+  - `axon-quant-docs/06-scenario-production.md` → `docs/user-guide/production.md`
+  - `axon-quant-docs/07-scenario-traditional-strategy.md` → `docs/user-guide/traditional-strategy.md`
+  - `axon-quant-docs/08-api-reference.md` → `docs/reference/api-reference.md`
+  - `axon-quant-docs/09-faq.md` → `docs/about/faq.md`
+  - **mkdocs.yml 导航更新**:新增"了解 AXON"和"使用场景"导航组,包含合并后的文档
+  - **主题增强**:添加更多 Material 主题特性(navigation.instant, content.tooltips, navigation.footer 等)
+  - **插件增强**:添加 tags 插件支持标签功能
+  - **链接修复**:修复合并后文档中的相对链接,确保 mkdocs build --strict 通过
+- **GitHub Actions TestPyPI 发布 workflow**(`.github/workflows/publish-test.yml`):触发条件 — push 到 main/develop 分支改动 `crates/**` / `python/**` / `pyproject.toml` / `Cargo.toml` / `.github/workflows/publish-test.yml`,或手动 `workflow_dispatch`。三阶段:build(ubuntu-latest/macos-latest/windows-latest × Python 3.12/3.13/3.14 + maturin build)→ collect-artifacts(汇总所有平台的 wheels)→ publish-testpypi(`pypa/gh-action-pypi-publish` 推送到 TestPyPI,使用 `TESTPYPI_API_TOKEN` secret)。支持 `skip-existing` 避免重复版本报错。
+- **GitHub Actions 文档部署 workflow 更新**(`.github/workflows/docs.yml`):新增 PR 到 main 分支的构建检查(pull_request 触发,仅构建不部署),develop 分支 push 也会触发构建。deploy 作业增加条件判断,仅在 push 到 main 分支时才部署到 GitHub Pages。
+- **rustdoc 链接修复**(`crates/axon-llm/src/config.rs`):修复 `backends[0]` 在 rustdoc 中被误解析为链接的问题,用反引号包裹为 `backends[0]`。
+- **Windows 编译兼容性修复**(`crates/axon-inference/src/affinity.rs`):将 Windows 平台的 CPU 亲和性从编译期拒绝(`compile_error!`)改为运行时拒绝(返回 `Err(AffinityError::NotAvailable)`),解决 Windows 环境下 `axon-inference` 无法编译的问题。更新模块文档说明 Windows 现在是运行时拒绝。
+- **GitHub Actions 构建重试**(`.github/workflows/publish-test.yml`):为 `maturin build` 添加 3 次重试机制,应对临时网络问题(crate 下载失败)。
+- **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
+  - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
+  - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。
+  - Python 顶层 API:`python/axon_quant/llm.py` 与 `__init__.py` 的 `LlmBackend` / `LlmMessage` 全部改为 `LLMBackend` / `LLMMessage`;`tests/python/test_llm_python_api.py` 的 `TestLlmMessage` 测试类与方法同步重命名。
+  - 调用方:`crates/axon-llm/src/backends/openai_compat.rs`、`examples/{live,integrated}_trading_demo.rs`、`tests/python_binding_test.rs` 同步。
+  - 文档:`docs/superpowers/plans/2026-06-15-axon-llm-ai-advanced-launch.md` 与 `specs/2026-06-15-axon-llm-ai-advanced-launch-design.md` 全部 `Llm*` → `LLM*`。
+  - **不重命名**:`from_llm_config`(snake_case 方法名,内含小写 `llm_` 段,不属于 CamelCase 前缀)、`axon-llm` / `axon_llm` crate 名、`axon_quant.llm` Python 子模块名。
 
-- `Price` / `Quantity` 公开 API 扩展：增加 `Eq` / `Ord` / `Hash` 实现
-  - 手工实现以应对 `f64` 不支持这些 trait 的限制
-  - 使用 `f64::to_bits()` 计算 Hash，避免 NaN 一致性问题
-- `Bar` / `Side` / `OrderType` 使用 `#[derive(Default)]` 替代手写实现，消除 E0119 冲突
-- `order.rs` 单文件重构为 `order/` 模块目录（`mod.rs` + `types.rs` + `tif.rs` + `status.rs` + `core.rs` + `error.rs`），符合 Rust 命名约定
-- `event.rs` 单文件重构为 `event/` 模块目录（`mod.rs` + `types.rs` + `market.rs` + `order.rs` + `fill.rs` + `system.rs` + `handler.rs` + `builder.rs` + `router.rs` + `error.rs`），符合规范要求
-- `EventHandler::is_interested` / `on_events` 移除 `Self: Sized` 约束，兼容 `dyn EventHandler` 对象安全
-- **`order/order.rs` → `order/core.rs`**：消除 `clippy::module_inception` 警告（父模块与子模块同名），遵循 Rust 惯用规范
-- **`portfolio/portfolio.rs` → `portfolio/core.rs`**：消除 `clippy::module_inception` 警告
-- **`scheduler/scheduler.rs` → `scheduler/core.rs`**：消除 `clippy::module_inception` 警告
-- **`Scheduler::run_until` 重构**：消除 `while_let_loop` 警告（改为 `while let`），提取 `fire_task` 私有方法消除代码重复与 `map_clone` 警告
-- **Phase 3 P3.3**：`axon-backtest::impact` 模块（市场冲击感知撮合引擎）
-  - **`impacted_engine` 模块**：`ImpactedMatchingEngine` 包装 `L1MatchingEngine`，在撮合成交价上叠加 [`ImpactModel`] 计算的即时冲击，并将永久冲击累加到内部 `permanent_offset` 状态（影响后续订单簿中间价）。支持永久冲击衰减（`with_permanent_decay`）与统计跟踪（`ImpactStats`：累计瞬时/永久冲击、订单数、成交笔数）
-  - **`config` 模块**：`ImpactedEngineConfig` 通过 TOML 加载模型类型（`linear` / `power_law`）+ 系数 + 深度层级数 + 即时/永久比例 + 幂律指数 + 衰减率，`validate()` 校验所有参数合法性
-  - **`python` 模块**：PyO3 绑定，导出 `PyImpactedMatchingEngine`，支持从 Python dict 创建、提交订单、获取最优买卖价/中间价
-  - **关键设计**：
-    - **撮合前快照**：在 `inner.submit()` 之前调用 `snapshot_with_offset()` 获取订单簿状态，避免撮合后对手方深度被吃空导致 `compute_impact` 返回零冲击
-    - **永久冲击平移**：永久冲击以整体平移形式叠加到所有价格（bid 减 offset，ask 减 offset），模拟真实市场的价格中枢移动
-    - **零依赖冲击调整**：`compute_impact` 是 `Box<dyn ImpactModel>`，新增模型（如 Almgren-Chriss）无需修改撮合引擎
-  - **测试覆盖**：30 个单元测试覆盖（构造、零冲击、瞬时冲击、永久冲击、衰减、FOK 订单、空订单簿、模型切换、ToOrderBookSnapshot trait、Debug 输出）+ 1 文档测试，全部通过（合计 151 个）
-  - **性能基准**（`cargo bench -p axon-backtest`）：
-    - 线性冲击下单笔撮合：~370µs
-    - 100 笔订单吞吐：~30ms（~300µs/订单）
-    - TOML 配置加载：~2.5µs
-    - 从 TOML 构造引擎：~1.9µs
-- **新增 `axon-data` crate 骨架** (Phase 3 P2):
-  - `Cargo.toml`: 基础依赖 + `csv-source` / `ws-source` feature
-  - `types.rs` (200 行): `DataRequest` / `Frequency` 枚举 / `SchemaField` / `DataType`
-  - `error.rs` (40 行): `DataError` 7 变体 + `DataResult` 别名
-  - `dataset.rs` (130 行): `Dataset` 结构(自动 UUID + SHA256 checksum) + 3 unit tests
-  - `traits.rs` (35 行): `DataSource` async trait(query + stream)
-  - `service.rs` (130 行): `DataService` 多源注册 + 名称查找 + L1 cache + 3 unit tests
-  - `pipeline.rs` (220 行): `Normalizer` trait + `ZScoreNormalizer` + `FeatureMatrix` + `FeaturePipeline` + 2 unit tests
-  - `sources/mod.rs` (20 行): 数据源 module 声明
-  - `sources/mock.rs` (80 行): `MockSource` + 自定义 `EmptyStream<T>`(避免 futures-util 重型依赖)
-  - `sources/csv.rs` (160 行): `CsvSource` 骨架(需 `csv-source` feature)
-  - `tests/integration_test.rs` (85 行): 5 个 smoke test
-  - 验证: `cargo test -p axon-data` → 13 passed (8 unit + 5 integration)
-  - 验证: `cargo build --workspace --tests` → 0 errors, 无回归
-  - 接入 `Cargo.toml` workspace members
-
-- **`axon-data` PR1 M1 深化**:
-  - `CsvSource`:加 `CsvColumnMapping` 灵活列映射 + `TimestampUnit` 枚举(Nanos/Micros/Millis/Secs)+ 自动 schema 推断(读 header)+ 时间窗口过滤 `query_with_time_filter`
-  - `MockSource`:加 `with_tick_series(count, nanos_per_step, price_fn)` 时间序列生成器
-  - `Dataset`:加 5 个 lazy 方法(`filter` / `take` / `skip` / `last_n` / `by_time_range`)
-  - `DataService`:用 `lru::LruCache` 替换 `DashMap`(默认容量 64,`with_cache_capacity` builder);新增 `CacheStats { hits, misses, len, capacity }`(AtomicU64 计数);`lib.rs` 重新导出 `CacheStats`
-  - `DataError::CorruptData`:带 `CsvLocation { file, line, column }` 错误上下文
-  - 移除 `dashmap` / `parking_lot` 依赖(改用 `lru` + `Mutex` + `AtomicU64`)
-  - 加 `lru = "0.12"` 依赖
-  - 测试:13 → 50 通过(36 lib + 8 integration + 6 doc tests);3 个 CSV fixture(`sample_basic` / `sample_custom_cols` / `sample_malformed`)
-
-- **`axon-data` PR2 测试加固 + 性能基线**:
-  - 新增 `src/fuzz.rs`:6 个 `proptest!` 块覆盖核心不变量(Dataset::filter 长度上界、take/skip 互逆、by_time_range 边界包含、checksum 纯函数性、LRU 容量约束、tick_series 计数)
-  - 配置:本地 50 cases(部分 20),nightly 200 cases(沿用 `axon-integration-tests` precedent)
-  - 新增 `benches/axon_data_bench.rs`:4 个 criterion group(lru_cache / dataset_lazy / csv_parse / mock_generate),维度 1k/10k/100k
-  - `Cargo.toml` 加 `criterion = "0.5"` dev-dep + `[[bench]] harness = false`
-  - 新增 `.github/workflows/bench-nightly.yml`:nightly schedule 跑 `cargo bench -- --quick`,产出 7 天 artifact
-  - `MockSource::rows` 改为 `pub(crate)` 供 fuzz.rs 访问
-  - 不引入新重型依赖;不替换手写测试(用户决策:补充)
-  - 测试:50 → 56+ 通过(50 旧 + 6 proptest);bench 4 group × 3 size = ~12 case
-
-- **`axon-data` PR3 M2 Arrow/Parquet 数据源(增量)**:
-  - `parquet-source` feature(默认关闭,需 `arrow` 53 + `parquet` 53 共享依赖)
-  - `parquet = { version = "53", default-features = false, features = ["arrow", "snap", "brotli", "flate2", "lz4", "zstd"] }` workspace dep(显式 feature 列表,避免 6+ codec 全编译)
-  - `ParquetSource`(`src/sources/parquet.rs`):`DataSource` trait 实现,严格 4 列 schema(按位置:int64/f64/f64/utf8),与 CsvSource 行为对齐(同样输出 `Vec<Tick>`、同样 `Frequency::Tick` 约束)
-  - `validate_schema`:列数 ≥4 且列类型严格匹配,失败返回 `DataError::SchemaMismatch` 带 `expected` / `actual` 描述
-  - `batch_to_ticks`:Arrow `RecordBatch` → `Vec<Tick>` 转换(buy/sell/b/s 兼容)
-  - `tokio::task::spawn_blocking` 卸载同步 IO,避免污染 tokio runtime
-  - `with_batch_size(usize)` builder 自定义 batch size(默认 1024)
-  - 集成测试 `parquet_fixtures` 模块:3 个 case(`_basic_loads_five_rows` / `_rejects_wrong_schema` / `_rejects_wrong_column_type`)
-  - Benchmark group `parquet_load`:1k/10k/100k rows 加载吞吐(实测 187µs / 1.52ms / 16.5ms)
-  - 3 个测试 fixture:`sample_basic.parquet` / `sample_bad_schema.parquet` / `sample_bad_type.parquet`(用 `tests/fixtures/generate_sample.py` 脚本 + pyarrow 23 生成)
-  - 验收:parquet-source feature 单独启用可编译,3 个新集成测试通过,axon-data 0 新 clippy 警告,基线 56 tests 无回归(workspace 全量 ~1542 tests 通过)
-- **`axon-data` PR4 真流式 row group 读取(增量)**:
-  - 重写 `ParquetSource::stream()`:`spawn_blocking` 启动后台 reader + `tokio::sync::mpsc::channel`(容量 = batch_size)推送 `DataResult<Tick>`
-  - 内存复杂度从 O(总行数) 降到 O(batch_size),大文件(100k+)不 OOM
-  - 可中断语义:caller `take(n)` 提前退出 → `RowGroupStream` drop → rx drop → 后台 task 自动退出
-  - 错误传播:reader 错误(含 schema 不匹配、文件打开失败、record batch 解码失败)通过 stream 第一个 `Err` 传出,符合标准 stream 错误语义
-  - 新增内部结构 `RowGroupStream`(`Stream` 实现,持有 receiver + JoinHandle,`poll_next` 通过 `Pin::as_mut` 转发 receiver wake)
-  - 新增私有方法 `stream_sync`(在 spawn_blocking 中执行,逐 batch 解码后 `tx.blocking_send`;所有错误用 `match` 显式 send+return 替代 `?`,确保统一走 stream 错误通道)
-  - 集成测试 3 个新 case:`_stream_full_yields_n_ticks`(全量 yield)/ `_stream_take_2_breaks_early`(caller 提前中断,后台 task 退出)/ `_stream_propagates_schema_error`(schema 错误作为 stream 首项 Err 传出)
-  - Bench group `parquet_stream`:对比 `query_take_10` vs `stream_take_10`(10k/100k rows)— 实测 **100k 加速 165x**(18.6ms → 112.7µs),10k 加速 21x(1.6ms → 76.5µs)
-  - API 不破坏:`query()` 仍为全量;`stream()` 升级为真流式(对外行为更优)
-  - 验收:60 → 63 tests(57 lib + 6 doc + 14 integration),0 新 clippy 警告,workspace 全量 1549 tests 通过无回归
-- **`axon-data` PR5 M2 升级 Dataset 为 Arrow RecordBatch 列存(增量)**:
-  - **核心改造**:`Dataset` 内部存储从行式 `Vec<Tick>` 升级为列式 `Vec<RecordBatch>`,所有行级 API(`iter_rows` / `take` / `skip` / `last_n` / `filter` / `by_time_range` / `checksum`)保持对外不变
-  - **统一 Schema**:`Dataset::dataset_schema()` 使用 `std::sync::OnceLock` 单例,4 列严格定义:`timestamp`(int64, ns)/ `price`(f64)/ `quantity`(f64)/ `side`(utf8),所有数据源共享
-  - **零拷贝构造**:CSV / Parquet 数据源直接构建 Arrow 数组(`Int64Array` / `Float64Array` / `StringArray`),不再走 `Vec<Tick>` 中转
-  - **DataSource trait 升级**:`stream()` 签名从 `Stream<Item = DataResult<Tick>>` 改为 `Stream<Item = DataResult<RecordBatch>>`,ParquetSource 后台 task 直接 yield 批,流式语义保持
-  - **行级适配**:`iter_rows()` 内部 downcast 4 个 array 重建 `Tick` 序列,业务侧无感知;checksum 仍按 PR1 行序计算(`timestamp:price:quantity:side` → `sha256`),保证跨 PR 一致性
-  - **依赖升级**:`arrow = "53"` 提升为 `axon-data` 默认依赖(无 feature gate);`parquet-source` feature 简化为仅 `parquet`(不再 `dep:arrow`)
-  - **测试**:
-    - 集成测试新增 3 个 case:`_query_returns_record_batch_dataset` / `_query_preserves_checksum_format` / `_stream_full_yields_n_batches` / `_stream_take_1_batch_breaks_early` / `_stream_propagates_schema_error`
-    - fuzz 测试 `dataset_checksum_is_pure` / `dataset_filter_count_lte_input` / `dataset_take_skip_inverse` / `dataset_by_time_range_bounds_inclusive` 全部沿用
-  - **验收**:67 tests(46 unit + 16 integration + 5 doc),workspace 全量回归 0 失败,axon-data 0 新 clippy 警告
-
-- **`axon-data` PR6 Bar Aggregator + Arrow IPC Writer(增量)**:
-  - **`BarDataset` 结构**(`src/bar/bar_dataset.rs`):6 列 Arrow schema(`timestamp` int64 ns / `open` f64 / `high` f64 / `low` f64 / `close` f64 / `volume` f64),复用 `axon_core::market::Bar`,通过 `From<Bar>` trait 零拷贝转换
-  - **`BarAggregator`**(`src/bar/mod.rs`):独立聚合函数 `aggregate_ticks(Iterator<Item=Tick>, Frequency) -> DataResult<Vec<Bar>>`,支持 9 种非 Tick 频率;自实现 bucket 循环(bucket_start 纳秒整数除法取整,零浮点误差)
-  - **`bars_to_batches()`**:`Vec<Bar>` → `RecordBatch` 转换,6 列 Arrow 数组构建
-  - **`IpcWritable` trait**(`src/ipc/mod.rs`):统一 `Dataset` / `BarDataset` 的写入接口(`schema()` / `batches()` / `source()` / `checksum()` / `frequency_tag()`)
-  - **`IpcWriter`** / **`IpcReader`**:Arrow IPC 文件读写,`write_to_path()` / `read_tick()` / `read_bar()` / `read_batches()`;Reader 通过 schema 列数和 metadata frequency 区分 Tick vs Bar
-  - **错误变体扩展**(`src/error.rs`):`UnsupportedFrequency(String)` / `IpcSchemaMismatch { expected, actual, expected_type }`
-  - **聚合边界行为**:离线场景下所有有 tick 的 bucket 都产生 bar(与设计文档"不完整尾部丢弃"的描述已同步修正)
-  - **测试**:
-    - 集成测试 3 个新 case:`mock_to_bar_aggregate_and_ipc_roundtrip` / `bar_aggregate_ohlc_correctness` / `unsupported_frequency_error`
-    - proptest 3 个新 case:`bar_aggregate_count_lte_input` / `bar_aggregate_ohlc_consistency` / `ipc_bar_roundtrip_checksum`
-    - bench group `bar_aggregate`:1k / 10k / 100k ticks 聚合吞吐
-  - **验收**:~90+ tests 全过,0 新 clippy 警告,workspace 全量回归无失败
-
-- **`axon-data` PR7 L2 mmap 共享缓存(增量)**:
-  - **`SharedMemoryPool`**(`src/cache/shared_memory.rs`):文件系统存储的共享内存池管理器,支持跨进程数据共享;每个条目包含 64 字节元数据头(Magic/版本/长度/校验和/访问统计) + Arrow IPC 数据体;使用 `memmap2` 实现内存映射
-  - **`MmapCache`**(`src/cache/mmap.rs`):L2 缓存管理器,LRU 淘汰策略,Arrow IPC 序列化/反序列化;`cache_key()` 生成 `source:symbol:frequency` 格式缓存键
-  - **`MmapCacheConfig`**:可配置容量(`max_bytes`)和存储目录(`dir`)
-  - **DataService 集成**(`src/service.rs`):`with_mmap_cache()` builder 方法,自动 L1 → L2 → 数据源查询链;L2 命中时回填 L1;`CacheStats` 包含 L2 统计(`l2_hits` / `l2_size` / `l2_capacity`)
-  - **错误类型扩展**(`src/error.rs`):`SharedMemoryCreation` / `SharedMemoryMapping` / `CacheEntryCorrupted` / `CacheCapacityExceeded`
-  - **Feature gate**: `mmap-cache` feature(默认关闭),依赖 `memmap2` + `fs2`
-  - **模块结构**(`src/cache/`):
-    - `mod.rs`:缓存模块入口,导出 `SharedMemoryPool` / `MmapCache` / `MmapCacheConfig`
-    - `shared_memory.rs`:共享内存池实现,使用文件系统存储(跨平台兼容),支持 `cleanup_stale()` 清理残留文件
-    - `mmap.rs`:L2 mmap 缓存实现,LRU 链表 + Arrow IPC 零拷贝序列化
-  - **测试**:
-    - 集成测试 7 个新 case:`mmap_cache_put_and_get` / `mmap_cache_get_nonexistent_returns_none` / `mmap_cache_remove` / `mmap_cache_lru_eviction` / `mmap_cache_capacity_and_len` / `mmap_cache_clear` / `data_service_with_mmap_cache`
-    - 单元测试 6 个:`shared_memory` 4 个 + `mmap` 3 个
-    - bench group `mmap_cache`:put/get 各 1k/10k/100k rows(put ~141µs/1k, get ~213µs/1k)
-  - **性能基准**:
-    - `mmap_cache/put/1000`: ~141µs
-    - `mmap_cache/get/1000`: ~213µs
-    - `mmap_cache/put/10000`: ~730µs
-    - `mmap_cache/get/10000`: ~2.1ms
-    - `mmap_cache/put/100000`: ~9.3ms
-    - `mmap_cache/get/100000`: ~21.3ms
-  - **已知限制**:get 性能未达到设计文档 <10µs 目标,因当前实现仍需反序列化 Arrow IPC 数据;真正的零拷贝需要延迟加载 Dataset,作为后续优化点
-  - **验收**:所有测试通过,0 新 clippy 警告,workspace 全量回归无失败
-
-- **`axon-data` PR7 L2 mmap 零拷贝优化**:
-  - **`SharedMemoryPool::read_ref()`**(`src/cache/shared_memory.rs`):零拷贝读取方法,返回 mmap 内存引用,不复制数据
-  - **`CachedDataset<'a>`**(`src/cache/mmap.rs`):零拷贝缓存数据集,借用 MmapCache 生命周期,内部持有从 mmap 直接构建的 RecordBatch
-  - **`MmapCache::get_zero_copy()`**(`src/cache/mmap.rs`):零拷贝读取接口,使用 Arrow IPC StreamReader 从 mmap 内存直接构建 RecordBatch,性能目标 <10µs
-  - **`MmapCache::touch()`**:公开方法,允许手动更新 LRU
-  - **格式优化**:将 `FileWriter`/`FileReader` 改为 `StreamWriter`/`StreamReader`,统一 IPC Stream 格式
-  - **测试**:
-    - 零拷贝测试 2 个:`test_mmap_cache_zero_copy` / `test_mmap_cache_zero_copy_not_found`
-    - 基准测试新增 `get_zero_copy`:put/get/get_zero_copy 各 1k/10k/100k rows
-  - **性能基准**:
-    - `mmap_cache/get_zero_copy/1000`: ~3.2µs (<10µs 目标 ✅)
-    - `mmap_cache/get_zero_copy/10000`: ~28.4µs
-    - `mmap_cache/get_zero_copy/100000`: ~280µs
-    - 零拷贝 vs 非零拷贝:1000 行数据快约 65 倍
-  - **验收**:所有测试通过,0 新 clippy 警告,workspace 全量回归无失败
-
-- **`axon-compliance` PR1 核心类型、交易记录与不可变审计日志**：
-  - **错误类型**：`ComplianceError` 9 个变体（InvalidTradeData / ConcentrationLimitBreached / LargeTradeThresholdExceeded / AuditIntegrityFailed / StorageError / SerializationError / ReportError / RegulatorFormatError / ConfigError）
-  - **核心类型**：`TradeRecord`（20+ 字段完整交易记录）、`AuditEvent`（不可变审计事件）、`ComplianceConfig`（合规配置）、`TradeFilter`（查询过滤器）、`TradeStats`（交易统计）
-  - **枚举类型**：`TradeSide` / `TradeStatus` / `OrderType` / `LiquidityType` / `AuditEventType`（16 种事件类型）
-  - **审计日志**：`AuditLog` 区块链式哈希链（SHA-256），不可篡改，支持完整性验证、时间范围查询、类型过滤
-  - **文件系统存储**：`FileStorage` JSONL 格式按日期分片持久化，支持 save/load
-  - **ComplianceModule**：核心模块，交易记录 + 自动审计事件生成 + 监管阈值检查 + 查询过滤 + 统计分析
-  - **测试**：21 个单元测试 + 1 文档测试 + 4 个集成测试，全部通过
-  - **验收**：`cargo clippy -p axon-compliance -- -D warnings` 零警告
-- **`axon-compliance` PR2 报告生成**：
-  - **报告类型**：`DailyReport`（日报：盈亏/费用/持仓快照/胜率）、`MonthlyReport`（月报：夏普比率/最大回撤/持仓汇总）、`AnnualReport`（年报：年化回报/合规评分/监管备注）
-  - **报告格式**：`ReportFormat` 枚举（JSON / CSV），支持 serde 序列化/反序列化
-  - **日报生成器**：`DailyReportGenerator::generate` — 按日期过滤交易，计算盈亏、费用明细、持仓快照
-  - **月报生成器**：`MonthlyReportGenerator::generate` — 汇总月度指标，计算夏普比率（`compute_sharpe_ratio`）、最大回撤、胜率
-  - **年报生成器**：`AnnualReportGenerator::generate` — 年度汇总，计算年化回报率、合规评分（`compute_compliance_score`）、监管备注生成（`generate_regulatory_notes`）
-  - **报告导出器**：`ReportExporter::export` — JSON（serde_json pretty）和 CSV（csv crate 扁平化）两种格式导出
-  - **ComplianceModule 扩展**：新增 `generate_daily_report` / `generate_monthly_report` / `generate_annual_report` / `export_report` 四个方法
-  - **测试**：34 个单元测试 + 1 文档测试 + 8 个集成测试，全部通过
-  - **验收**：`cargo clippy -p axon-compliance -- -D warnings` 零警告，`cargo fmt -p axon-compliance` 通过
-- **`axon-compliance` PR3 监管报送 + PyO3 绑定**：
-  - **监管类型**：`RegulatorySubmission`（监管报送）、`SubmissionType`（Daily/Weekly/Monthly/Quarterly/Annual/EventDriven）、`RegulatoryData`（监管数据）、`PositionLimit`（持仓限制）、`ConcentrationCheck`（集中度检查）、`LargeTradeReport`（大额交易报告）、`RegulatorFormat`（JSON/CSV）
-  - **监管指标计算**：`RegulatoryMetricsCalculator` — 计算总成交额、持仓限制检查、集中度检查、大额交易检测
-  - **报送生成器**：`SubmissionGenerator::generate` — 生成监管报送，支持 JSON/CSV 格式导出
-  - **ComplianceModule 扩展**：新增 `calculate_regulatory_metrics` / `generate_submission` / `export_submission` / `check_position_limits` / `check_concentration_limits` 五个方法
-  - **PyO3 绑定**：`PyComplianceModule` — Python 接口，支持核心方法（record_trade、generate_daily_report、generate_monthly_report、generate_annual_report、verify_audit_integrity）
-  - **测试**：7 个单元测试 + 1 文档测试 + 11 个集成测试，全部通过
-  - **验收**：`cargo clippy -p axon-compliance -- -D warnings` 零警告，`cargo fmt -p axon-compliance` 通过
-
-- **告警抑制审计** (workspace rule #4, commit 8ab90e7):
-  - 删除 `live_trading_demo.rs` `Tool` variant 上的 `#[allow(dead_code)]`(变体已在 match / Display 中使用,rustc 不报警)
-  - 删除 `openai_compat.rs` `_ensure_role_used` 死函数 + 注释(`Role` 未 import,fn 无 caller,完全冗余)
-  - 加强 `stream_complete` 的 `#[allow(unused_must_use)]` 注释(4 步分析 why 必须保留:`try_stream!` 宏返回 must_use stream)
-
-
-### Deprecated
-
-### Removed
-
-- 旧占位 `axon-core::timestamp` 模块（替换为 `axon-core::time`）
-
-### Added (2026-06-13 批次)
-
-- **axon-core::Error 聚合 + ErrorContext 链**
-  - 新增 `axon_core::Error` 聚合枚举，通过 `#[from]` 自动转换子错误（Impact / Volatility / Latency / Queue / Other）
-  - 新增 `WithContext { context, source }` 变体，支持链式附加操作上下文
-  - 新增 `Error::is_retryable()` 统一可重试语义判断
-  - 新增 `ErrorContext` trait + `.context("...")` / `.with_context(|e| ...)` 扩展方法
-  - 新增 `Error::log()` 集成 `tracing` 框架
-  - `ImpactModelError` / `VolatilityError` / `LatencyModelError` 加字段文档
-- **各 crate Error::is_retryable() 统一**：
-  - `axon-walk-forward`: Io / Serialization 可重试；Config / InsufficientData / IndexOutOfBounds / LeakageDetected 不可重试
-  - `axon-hpo` / `axon-distributed` / `axon-rl::env` 同模式
-- **新增 crate: axon-ensemble**（Phase 3 P0 模型集成引擎）
-  - `types` / `traits` / `voting`（HardVote / SoftVote / WeightedVote）/ `stacking` / `dynamic`（动态加权）/ `manager` / `error`
-  - 8 个集成测试文件覆盖各策略
-- **新增 crate: axon-explain**（可解释性引擎）
-  - `types` / `traits` / `shap`（SHAP 值计算）/ `counterfactual`（反事实解释）/ `report`（多格式报告）/ `error`
-  - 7 个集成测试文件覆盖 SHAP / 反事实 / 报告
-- **axon-integration-tests 新增 3 个测试模块**：
-  - `contract`: API/数据契约稳定性测试
-  - `fuzz`: 基于 `proptest` 的属性测试 / 模糊测试
-  - `error_recovery_and_concurrency`: 错误恢复 + 并发场景
-- **axon-core Criterion benches**（`benches/core_bench.rs`, 628 行）
-  - 冲击模型 / 波动率估计 / 延迟模型 / 订单簿 / 订单状态机 / 事件路由 / 费用模型
-- **axon-rl Criterion benches**（`benches/rl_bench.rs`, 326 行）
-  - 观测空间 build / 奖励计算 / TradingEnv step / Action 转换
-- **axon-backtest `benches/impact_bench.rs` 增强**：补 `black_box` + `fill_ask_book_same_price` 辅助函数
-- **设计文档树 axon-design/**（60 个 .md）：分片化的元文档 / TDD 规范 / 阶段计划 / 补充
-- **实施计划与设计 docs/superpowers/**（11 个 .md）：PR 实施计划 + 前期设计文档
-- **axon-integration-tests/tests/integration_tests.rs 增强**：+93 行覆盖 contract / fuzz / error_recovery
-
-**Modified — 2026-06-13 批次**
-
-- **README.md 全面重写**：badge 更新（Phase 1A P0 → Phase 2 M3 训练管线）+ MVP 状态表（M0-M5 里程碑）+ 已覆盖能力清单
-- **LICENSE / LICENSE-APACHE 合并**：把完整 Apache 2.0 文本合并到 LICENSE，删除 LICENSE-APACHE
-- **axon-integration-tests/Cargo.toml**：新增 `axon-core` / `axon-backtest` workspace 依赖
-- **axon-data benches feature gate**：`criterion_group!` 按 4 个 feature 组合拆分（默认 / csv-only / parquet-only / 全部）
-- **axon-llm 大量应用 rust 2024 let-chain**：`react_agent.rs` 嵌套 `if let` 合并
-
-**Fixes — 2026-06-13 批次**
-
-- **axon-design 验收勾选同步（32 个文档）**：基于实际代码 / 测试 / 基准情况，逐文档评估并勾选/标注未勾的验收项：
-  - `01-phase1-core` (13 文档): 13/13 文档已更新；功能项全部勾选，性能项（无独立 benchmark）保留未勾选 + 标注原因
-  - `02-phase1-rl` (7 文档): 7/7 文档已更新；`07-examples.md` 后续工作部分按实际实现勾选
-  - `04-phase3-ai` (5 文档): 4/5 有未勾项已处理；`05-compliance.md` 4 项全部未实现，保留未勾
-  - `06-supplement` (6 文档): 全部已更新；`05-integration.md` 已全勾无需处理
-  - 已实现/已测试项标记为 `[x]` 并附 `code/test/bench` 路径说明；未实现项标记为 `[ ]` 并附原因
-  - 跳过 `03-phase2-training` (4 文档, 全部已勾选) / `05-phase4-production` (5 文档, 对应 crate 未实现) / `02-ci` (4 文档, 配置而非 TDD)
-
-- **registry 并发 register 版本号竞态**：原 `next_version()` 持 `index` DashMap 读锁计算 max+1，与 `storage.upload().await` 跨 .await 边界，并发 register 同一 model 可能产生重复 patch 版本号。修复方案：`ModelRegistry` 新增 `version_counters: DashMap<String, Arc<AtomicU64>>`，每个 model name 独立 `AtomicU64` 计数器，`fetch_add(SeqCst)` 原子分配，不持 `index` 锁、不跨 `.await`（详见 [registry.rs](file:///Users/liupeng/workspace/quant/axon/crates/axon-registry/src/registry.rs)）
-- **axon-backtest `ModelType::default()` clippy 警告**（`derivable_impls`）：手写 `impl Default` 改用 `#[derive(Default)]` + `#[default]` 标记 `Linear`
-- **axon-data benches CI 修复**：
-  - `use tempfile::NamedTempFile;` 加 `#[cfg(any(feature = "csv-source", feature = "parquet-source"))]` feature gate
-  - `use futures::StreamExt;` 在 `bench_parquet_stream` 内部冗余 import 删除（代码走全限定 `futures::StreamExt::for_each`）
-  - rustfmt 自动重排（`axon_data_bench.rs` import 顺序、`warmup_requests` 单行 lambda 等）
-- **axon-data / axon-core / axon-llm / axon-rl / axon-tracker / axon-registry / axon-backtest / axon-integration-tests 历史 clippy/fmt 修复**（无功能变更）：主要涉及：
-  - `axon-core`: `event/router.rs` `SystemOnlyCollector::default()` 冗余调用删除、`fee/table.rs` unused import 移入 test mod
-  - `axon-llm`: 大量 `if let` 链合并 + rustfmt
-  - `axon-backtest`: `impacted_engine.rs` 自定义 100+ 行并发测试代码 rustfmt 整理
-  - 等等
-- **CI 验证**：`cargo fmt --all -- --check` ✅ / `cargo clippy --workspace --all-targets -- -D warnings` ✅ / `cargo test --workspace` ✅（axon-data 67 tests + workspace 全量无回归）
-- **`axon-cli` 中 `env!("TARGET")` 编译期不可用**，改用 `std::env::consts::*`
-- **`rust-toolchain.toml` 从 MSRV 1.75.0 升级到 stable**（CI 仍强制 MSRV 校验）
-- **`Price` / `Quantity` 的 `Eq`/`Ord`/`Hash` 错误地从 `f64` 派生**（`f64` 不实现这些 trait），改为手工实现并使用 `to_bits` 保证 NaN 场景下的一致性
-- **`Bar` 的 `Default` 与 `#[derive(Default)]` 冲突**（E0119），通过删除手写实现解决
-- **Clippy 警告 `derivable_impls`**（`Bar`/`Side`/`OrderType` 的手写 `Default`）— 改用 `#[derive(Default)]` + `#[default]` 标记
-- **Clippy 警告 `derive_ord_xor_partial_ord`**（`Price`/`Quantity` 派生 `PartialOrd` + 手动 `Ord`）— 通过 `#[allow(clippy::derive_ord_xor_partial_ord)]` 在保持手工实现的前提下豁免（**技术约束，不可消除**：`f64` 根本性不实现 `Ord`；详细原因/风险/未来路径见 [price.rs:45-67](crates/axon-core/src/types/price.rs#L45-L67) 与 [quantity.rs:80-105](crates/axon-core/src/types/quantity.rs#L80-L105)）
-- **L1 撮合引擎重构以适配 `axon-core::order` 重构后的 API**：
-  - 价格通过 `OrderType::limit_price()` 获取（`Order` 不再持有 `price` 字段）
-  - 终态判断改用 `Order::status.is_terminal()`
-  - 状态转换通过 `Order::apply_fill()` 公开 API 完成
-  - 修复 `transition_to` 私有方法被外部调用的访问错误
-  - 修复 `iter_mut()` 与 `self.method()` 借用冲突，改用 `AtomicU64::fetch_add` 直接访问
-  - 修复 `BTreeMap::iter_mut().rev()` 不存在的问题，改为先收集价格列表再迭代
-- **FOK 语义修正**：撮合前先 `check_fok_fillable()` 预检订单簿深度，避免部分成交
-- **IOC 语义修正**：未完全成交的剩余部分自动调用 `Order::cancel()`
-- **`Position::default()` 与 `#[derive(Default)]` 冲突**（E0119）— 改用 derive 自动生成
-- **`Clippy::derivable_impls` 警告**（`Position` 手写 `Default`）— 改用 `#[derive(Default)]`
-- **`Clippy::module_inception` 警告**（`order::order` / `portfolio::portfolio` / `scheduler::scheduler` 模块与父模块同名）— 通过文件重命名 `module_name.rs` → `core.rs` 彻底消除
-- **`Quantity::from_f64` 拒绝负数与 `Position` 需求冲突** — 解除负数限制，允许 `Position` 用负数表示空头持仓；同步更新 `Tick` 验证测试以反映新语义
-- **`Symbol` 缺少 `Default` 实现** — 派生 `Default` 使其可用于 `Position::default()`
-- **`Currency::default()` 期望返回 `USD` 而非 `[0, 0, 0]`** — 手动实现 `Default` 返回 `Self::USD`
-- **CI `Documentation` job 失败修复**（`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 在 `axon-data` / `axon-integration-tests` / `axon-ensemble` / `axon-registry` / `axon-backtest` / `axon-core` 报 1 error + 1 warning）：
-  - `axon-ensemble::MetaModel` 字段文档 `[n_features, n_actions]` / `[n_actions]` 被 rustdoc 解析为链接而失败 → 转义为 `\[n_features, n_actions\]` / `\[n_actions\]`（保留语义，不生成无效链接）
-  - `axon-registry::ModelRegistry` 模块文档 `Vec<ModelVersion>` 中 `<` 被识别为未闭合 HTML 标签 → 加反引号 `` `Vec<ModelVersion>` ``
-  - `axon-backtest::impact` 模块文档 4 处无效链接修复：
-    - `axon_backtest::matching::L1MatchingEngine` → `crate::matching::L1MatchingEngine`（修正作用域）
-    - `[Impact]` → `[`Impact`](axon_core::impact::Impact)`（修正外部 crate 路径）
-    - `[OrderBookSnapshot]` → `[`OrderBookSnapshot`](axon_core::market::OrderBookSnapshot)`
-    - `[python](self::python)`（`python` 模块受 `python` feature 门控，default feature 下不可见）→ 改为纯文本 `python` 模块
-  - `axon-core::impact::almgren_chriss::utility` 文档 `E[C]` / `Var[C]` 被解析为链接 → 转义为 `E\[C\]` / `Var\[C\]`
-  - `axon-core::volatility` 模块文档 `super::adaptive::AdaptiveImpactModel` 路径错误（adaptive 模块位于 `axon-core::src/impact/`，不在 volatility 父级下）→ 改为 `crate::impact::AdaptiveImpactModel`
-  - `axon-data::sources` 模块文档：`CsvSource` / `ParquetSource` 受 feature 门控，default feature 不可见 → 改为纯文本 `` `CsvSource` `` / `` `ParquetSource` ``（保留说明文字，不生成链接）
-  - `axon-data::traits` 模块文档 `[DataService]` 不在 `traits` 模块作用域内（`DataService` 在 crate root 重新导出）→ 改为 `[`DataService`](crate::DataService)`
-  - `axon-integration-tests::error_recovery_and_concurrency::test_concurrent_registry_registrations` 文档 `Arc<MemoryTracker>` 中 `<` 被识别为未闭合 HTML 标签 → 加反引号 `` `Arc<MemoryTracker>` ``
-  - 验收：`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` ✅（CI `Documentation` job 通过），`cargo clippy --workspace --all-targets -- -D warnings` ✅（零回归）
-- **`axon-data` Bar 模块 `cargo doc --workspace --no-deps` 警告修复**（PR6 新增 BarDataset 后残留 4 个 rustdoc `invalid-html-tags` 警告）：
-  - `axon-data::bar::bar_dataset::bars_to_batches` 文档 `Vec<RecordBatch>` 中 `<` 被识别为未闭合 HTML → 加反引号 `` `Vec<RecordBatch>` ``
-  - `axon-data::bar::bar_dataset::BarDataset::new` 文档同理 → 加反引号
-  - `axon-data::bar::bar_dataset::BarDataset::from_bars` 文档 `Vec<Bar>` 同理 → 加反引号
-  - `axon-data::bar::BarAggregator::aggregate_ticks` 文档 `Vec<Bar>` 同理 → 加反引号
-  - 验收：`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` ✅ exit 0，`cargo clippy --workspace --all-targets -- -D warnings` ✅ exit 0
-
-### Security
+### Added
+- **mkdocs 文档站配置**(`mkdocs.yml`):Material 主题 + 中英双语搜索 + git-revision-date-localized + minify + autolinks 插件,4 级导航(快速开始 / 用户指南 / 参考 / 架构决策 / 关于),`exclude_docs` 排除 `.axon-internal/` 与 `superpowers/`,严格 `--strict` 模式构建。
+- **mkdocs 依赖锁定**(`requirements-docs.txt`):`mkdocs>=1.6.0` + `mkdocs-material>=9.5.0` + `mkdocs-git-revision-date-localized-plugin` + `mkdocs-minify-plugin` + `mkdocs-autolinks-plugin` + `pymdown-extensions` + `pygments`,版本范围锁定,支持 `pip install -r requirements-docs.txt` 一键安装。
+- **GitHub Actions 文档部署 workflow**(`.github/workflows/docs.yml`):触发条件 — push 到 main 改动 `docs/**` / `mkdocs.yml` / `requirements-docs.txt` / `.github/workflows/docs.yml`,或手动 `workflow_dispatch`。两阶段:build(ubuntu-latest + Python 3.12 + pip cache + `mkdocs build --strict` + `actions/upload-pages-artifact`)→ deploy(`actions/deploy-pages@v4` 写入 GitHub Pages)。权限配置 `pages: write` + `id-token: write` + `concurrency: pages` 防并发。
+- **Makefile docs-* 目标**:`docs-install` / `docs-serve` / `docs-build` / `docs-validate` / `docs-clean` 五个目标。`docs-serve` 启动 mkdocs dev server 预览,`docs-build` 跑 `mkdocs build --strict` 严格校验(链接 / 引用 / nav 一致性),`docs-validate` 是 `docs-build` 的语义别名。
+- **`.gitignore` mkdocs 产物**:新增 `/site/`(mkdocs 静态站点产物) + `/.cache/`(mkdocs 内部缓存)忽略规则,部署由 CI 处理,本地 site/ 不进版本控制。
+- **用户文档(14 份,新增 / 重组)**:
+  - 首页 `docs/index.md`:项目介绍 + 核心特性 + 项目状态表(M1~M5)+ 快速跳转 + 社区 + 许可证。
+  - 快速开始:`docs/getting-started/installation.md`(系统要求 + Rust 工具链 + Python venv + CLI 安装)、`docs/getting-started/quickstart.md`(跑通示例 + Python 第一个回测 + LLM trading 示例)。
+  - 用户指南:`docs/user-guide/architecture.md`(从 `docs/guide/architecture.md` 迁移,系统架构总览)、`docs/user-guide/llm-trading/overview.md`(5 个组件 / 数据流 / 后端选型决策树 / 纵深防御安全模型 / 监控模型 / crate 关系)、`risk-safety.md`(SafetyMode 三态 + RiskLimits 4 规则 + RiskGate 三实现 + 失败模式 + 5 选型矩阵)、`metrics-alerting.md`(4 类指标 + 2 数据出口 + Rust/Python 集成示例 + 告警建议 + 性能开销)、`operations-runbook.md`(部署 + 升级 + 故障排查 4 类 + 回滚 + 每日/每周/每月运维清单)。
+  - 参考:`docs/reference/api.md`(docs.rs 链接 + 关键类型速查)、`docs/reference/cli.md`(全局参数 + 9 个子命令 + 退出码 + 环境变量)、`docs/reference/python-bindings.md`(核心模块 + Stage K 交易模块 + 3 个端到端示例 + 异步转同步 + 类型映射 + 异常映射)、`docs/reference/configuration.md`(TOML 结构 + env 插值 + profile + 验证 / 迁移命令)。
+  - 关于:`docs/about/contributing.md`(提交流程 + 提交信息格式 + 代码风格 + 测试要求 + crate 责任 + 文档贡献 + 发布流程)、`docs/about/changelog.md`(指向根 CHANGELOG.md)、`docs/about/license.md`(Apache-2.0 全文 + 关键条款 + 第三方依赖 + 历史变更)、`docs/about/testing-plan.md`(从 `docs/TESTING-PLAN.md` 迁移,内容不变)、`docs/about/pypi-publishing.md`(从 `docs/pypi-publishing-guide.md` 迁移,内容不变)。
+- **`.axon-internal/` 内部目录**:新建仓库根隐藏目录,用于存放开发流程 spec / plan 文档(不进 mkdocs 站),结构 `.axon-internal/{specs,plans}/`,共收纳 75 个 git mv 移入的内部文档(33 specs + 42 plans),完整保留 git history。
+- **`make python-install` 默认加 `--no-deps`**:避免在断网 / PyPI 超时时(如本机 `pip install ... --force-reinstall` 拉 numpy≥1.24 失败)整个 target 失败;axon-quant 自身只依赖 Python 标准库 + Rust 扩展,numpy 等大依赖是用户的应用级需求,不应在 wheel install 时强拉。
+- **axon-llm** 统一 `LlmConfig` 类型(`config.rs`):支持 TOML 配置文件 + 字典构造 + 字段级 `merged_override` + 5 级 fallback 解析。涵盖 `BackendConfig` / `RetryConfig` / `ExplainConfig` 子结构与 `ConfigError` 错误类型。`resolve_with_fallback` 5 级优先级:显式路径 > `config.local.toml` > `config.toml` > 仓库内置 demo 配置 > 默认值(validate 失败,要求显式填 api_key)。`to_template_toml(include_secrets)` 支持生成不含敏感字段的模板。补齐 16 个测试覆盖解析/验证/override/fallback/模板。
+- **axon-llm** `OpenAICompatConfig::from_llm_config(&LlmConfig, index)` 工厂方法(在 `backends/openai_compat.rs`):从统一配置构造 backend,索引越界返回 `BackendInitError`;补齐 2 个测试覆盖字段映射与索引越界。
+- **axon-llm** `live_trading_demo` 重构:移除硬编码 `DEEPSEEK_API_KEY` 环境变量读取,改为 `--config <path>` / `AXON_LLM_CONFIG` 环境变量 + 5 级 fallback 解析,任意 OpenAI 兼容厂商(DeepSeek / OpenAI / Mimo / 本地 Ollama)均可使用。
+- **axon-llm** `demo/bin/config.toml` 升级:从单 `[backend]` 表改为 `[[backends]]` 数组 + `[retry]` + `[explain]` 子段,支持多厂商与可解释性集成配置;附带详细注释说明复制/编辑/运行流程。
+- **axon-llm** 新增 `integrated_trading_demo` example:三阶段演示(多 backend 串行对话 → ensemble `HardVoteStrategy` 投票 → `ReportGenerator` 渲染 Markdown 决策报告)。`axon-ensemble` 与 `axon-explain` 作为 `demo` feature 的可选依赖引入(`Cargo.toml`)。
+- **axon-llm** PyO3 绑定(`src/python/{mod,backend}.rs`,`python` feature 隐含启用 `backends`):暴露 `make_backend(config_dict)` / `LlmBackend` / `LlmMessage` 给 Python;`make_backend` 内部用 `LlmConfig::from_dict` + `OpenAICompatConfig::from_llm_config` 校验并构造 backend,`LlmBackend::chat([LlmMessage, ...])` 同步桥接 `tokio::block_on`。`LlmMessage` 用 `#[pyclass(from_py_object)]` 显式 opt-in FromPyObject(pyo3 0.28 强制要求);`LlmBackend` 字段为 `pub(crate)` 供 `mod.rs` 内部构造。
+- **axon-llm** 交易工具模块(`src/trading/`,7 个文件):`TradingBackend` trait + `TradingError` + `OrderAck` / `BalanceSnapshot` / `PositionSnapshot` / `PortfolioSnapshot` 等共享类型;`SafetyMode` 三态(DryRun 记录 / Direct 直接调 / TwoPhase 两次确认)+ `RiskLimits`(白名单/单笔金额/单日订单数) + `DailyCounter` + `PendingOrder` 待确认表;`MockTradingBackend` 内存模拟(USDT+BTC 默认余额) + `FailureInjector` 错误注入;`PlaceOrderTool`(LLM 下单工具,支持 DryRun/Direct/TwoPhase,extras 透传底层 Order 字段) + `QueryPortfolioTool`(余额+持仓查询,按 symbol 过滤)。补齐 40 个单元测试覆盖 types/backend/safety/mock/place_order/query_portfolio。
+- **axon-python** `lib.rs` 在 `_native` 下挂载 `llm` 子模块(通过 `axon_llm::python::axon_llm` 注册);`Cargo.toml` 的 `axon-llm` 依赖启用 `["python", "backends"]` features。Workspace `Cargo.toml` 添加 `axon-llm` workspace 依赖。
+- **axon_quant(顶层 Python API)** `python/axon_quant/llm.py`:Python 端 `LLMConfig` dataclass(`backends` / `retry` / `explain` 字段)+ `make_backend(config)`(接受 dataclass 或 dict)+ `load_config_from_toml(path)`(从 TOML 文件加载)+ `LlmBackend` / `LlmMessage` 类型别名。`python/axon_quant/__init__.py` 顶层 re-export `LLMConfig` / `LlmBackend` / `LlmMessage` / `make_backend` / `load_config_from_toml`,并把 `llm` 加入 `__all__`。注意:`_native` 是 cdylib 单文件(不是 Python package 目录),所以 `from ._native.llm import ...` 不可用,改用 `from axon_quant._native import llm` 取子模块对象后再属性访问。
+- **axon-inference** 新增 `affinity` 模块(`src/affinity.rs`):跨平台 CPU 绑核(Linux + macOS 基于 `core_affinity 0.8`,Windows 编译期拒绝) + CUDA / Metal GPU 亲和性(`tch-backend` feature 启用时 `tch::Cuda::set_device` / macOS MPS 探测)。`BatchConfig` 新增 `collect_cpu_cores: Vec<u32>` / `collect_gpu_device_id: Option<u32>` 两字段,`BatchInferencePipeline::new` 启动时自动调 `affinity::pin_to`,绑核失败仅 warn 不阻断。新增 7 单元测试覆盖 plan / builder / pin / Metal-non-macOS 错误路径。
+- **axon-data** `DataService::stream(source_name, req)` 流式入口(旁路缓存,直透源):返回 `Pin<Box<dyn Stream<Item = DataResult<RecordBatch>> + Send>>`,不写 L1/L2;`source_name` 未知时返回 `DataError::SourceNotFound`。新增 `cache_control()` 句柄提供 `clear_l1` / `clear_l2`(`mmap-cache` feature) / `resize_l1` 三个管理操作,句柄与 DataService 共享同一 `Arc<DataServiceInner>`。`DataService` 内部状态重构为 `Arc<DataServiceInner>`,builder 阶段用 `Arc::get_mut` 独占修改,运行期 clone 共享。`cache/mod.rs` 架构图同步更新(stream 旁路缓存,直透源)。补齐 6 单元测试(stream 透传 / 源未找到 / 不写 L1 / clear_l1 / resize_l1 / clone 共享) + 2 集成测试(多 batch 消费 / 100K tick 首 batch < 500ms)。`MockSource::stream` 升级为基于 `ticks_to_batches` 的列式 yield,与 `query` 等价但流式。
+- **axon-exchange** Stage 4' D 杠杆/合约支持(生产就绪):扩展 `ExchangeAdapter` trait 新增 8 个方法(`set_leverage` / `set_margin_type` / `get_leverage_brackets` / `set_position_mode` / `get_funding_rate` / `get_account_info` / `get_open_interest` / `get_long_short_ratio`),覆盖 Binance USDⓈ-M + OKX V5 完整合约 API。`types.rs` 新增 7 个数据类型(`MarginType` / `PositionMode` / `LeverageBracket` / `FundingRate` / `AccountInfo` / `OpenInterest` / `LongShortRatio`),`ExchangeConfig` 新增 `fapi_base_url: Option<String>` 字段支持自定义合约 base URL(优先配置,否则按 `testnet` 推断 `fapi.binance.com` / `testnet.binancefuture.com`)。新增独立 `sign/` 子模块:`sign/binance.rs` 实现 HMAC-SHA256 → hex 编码(`sign_query` + `signed_query` 工厂),`sign/okx.rs` 实现 HMAC-SHA256 → Base64 编码 + 4 头构造(`sign_request` + `build_headers`),隔离两家签名协议,避免在适配器中重复实现。Binance 适配器新增 `fapi_get` / `fapi_post` / `fapi_get_public` 三个私有 helper(独立 `impl BinanceAdapter` 块,不属于 trait),统一处理签名 + 429 Retry-After + ApiError 解析;OKX 适配器新增 `send_okx_signed` / `send_okx_public` / `parse_okx_response` 三个 helper,统一处理 401/429/5xx/`code!="0"` 四类错误路径。`okx::get_leverage_brackets` 与 `okx::get_long_short_ratio` 修复 OKX API 字符串字段(`maxLever: "125"` / `longRatio: "0.6"`)解析失败的隐藏 bug:用 `as_str().parse().or_else(as_u64/as_f64)` 链式 fallback,测试中能正确解析 `"125" → 125` 和 `"0.6" → 0.6`。补齐 19 个 wiremock 集成测试(8 个 Binance + 11 个 OKX)覆盖 8 个 trait 方法 + 4 类响应错误路径(200/401/429/5xx)。
+- **Stage 5' workspace 性能基准体系**:50+ Criterion bench 跨 5 个 crate。`benches/core_bench.rs` (axon-core) 28 个 bench:冲击模型(Linear/PowerLaw/Adaptive) + 波动率(EWMA/Rolling/Garman-Klass) + 延迟(Constant/Normal/Queue) + 订单簿(构造/mid/spread) + 订单创建 + 事件(builder 单条/吞吐/router dispatch 5/批量 100/订阅者数量 scaling) + 费用(Taker/Maker/吞吐/funding)。`benches/impact_bench.rs` (axon-backtest) 8 个 bench:`ImpactedMatchingEngine` 在 no-impact / linear / power-law / 深度 scaling(1-50)/ 永久衰减 scaling / 多笔 100 单 / TOML 配置加载 / engine 构造。`crates/axon-data/benches/axon_data_bench.rs` 7 个 group:LRU cache(16/64/256 cap) + Dataset lazy(filter/take/skip/by_time_range 1k-100k) + Mock 生成 + Csv 解析 1k-100k + Parquet 加载/流式 1k-100k + Bar 聚合 + MmapCache put/get/get_zero_copy(feature-gated)。`benches/rl_bench.rs` (axon-rl) 11 个 bench:观测 build(32×3 + 窗口 8-128 scaling) + 奖励(PnL/Sharpe) + TradingEnv step + 500 步 episode + Action 构造/clip/index→action。`benches/phase4_bench.rs` 15 个 bench:风控(check_order/circuit_breaker/pnl/metrics) + OMS(submit/idempotent/update/snapshot) + 监控(counter/gauge/histogram/quantile/alerts)。`Makefile` 新增 `bench` / `bench-cmp` / `bench-one` 三个 target:`bench` 跑全 workspace(`--output-format bencher`)、`bench-cmp` 存 main baseline 用于 PR 对比、`bench-one CRATE=axon-core BENCH=event_builder_tick` 跑单个 bench。`cargo build --workspace --benches` 0 错误 0 警告。CI 不跑(避免 runner 性能噪声);报告 `target/criterion/<group>/report/index.html`。文档同步:`README.md` 性能指标段加"性能基准"小节,`axon-design/PLAN.md` 横向任务-基准测试段补现状说明。
+- **axon-oms MVP**:Stage B 子阶段 1/2。`axon_oms::portfolio` 新模块:`Portfolio` 子结构(`cash: HashMap<String, Decimal>` + `positions: HashMap<String, Position>`),`Position` 含 `quantity` / `avg_price`(加权平均成本法)/ `realized_pnl` / `updated_at`,`PortfolioSnapshot` 导出快照;`PortfolioError` 3 变体(`ZeroFill` / `CostBasisOverflow` / `InsufficientCash`)。`OrderManager` 持 `Arc<RwLock<Portfolio>>`,`add_fill` 后通过 `portfolio.apply_fill(&fill)` emit fill event(锁不重叠:先释放状态机锁,再取 portfolio 锁)。新增 API:`OrderManager::deposit` / `snapshot_balance` / `snapshot_positions` / `get_order_status`。`OmsSnapshot` 扩 `portfolio: Option<PortfolioSnapshot>` 字段(`#[serde(default)]` 向后兼容老 snapshot,recover 路径识别 None 时创建空 portfolio)。`OmsError` 扩 1 个 `Portfolio(String)` 变体(精细分类在 axon-llm 侧 Stage B-TradingBridge 时实现)。补 35 个测试(14 个 L0 Portfolio 纯逻辑 + 5 个 L1 OrderManager 扩展 + 3 个 L2 集成(cancel/reject/concurrent)+ 2 个 L3 快照兼容 + 2 个 L5 proptest 50/200 cases 加权平均数学不变量 + 既有 7 个 manager 测试保留不破 + 1 个 doctest + 2 个 snapshot_compat 集成测试)。`Fill` 结构加 `symbol: String` 字段,axon-integration-tests 同步适配。`out of scope`:文件 I/O 持久化(Rust bincode / Python pickle caller 责任)/ OrderStatus 重命名 / 拆 axon-portfolio crate / 桥接 TradingBackend(Stage B-TradingBridge 范围)/ 把 Filled 订单从 active 移到 history 的逻辑(可作 follow-up,需处理 reverse 时锁顺序)。配套 `docs/superpowers/specs/2026-06-17-axon-oms-mvp-design.md` + `docs/superpowers/plans/2026-06-17-axon-oms-mvp.md`。
+- **`OmsTradingBackend` 适配(Stage B 子阶段 2/2)**:把 `axon_oms::OrderManager` 适配为 `axon-llm::trading::TradingBackend`,LLM agent 可在 OMS 状态机上下单、查余额/持仓、享受 OMS 的快照恢复 + portfolio 跟踪 + 状态机风控。新增 `trading-oms` opt-in feature + `trading-all` meta feature 升级为 `["trading-exchange", "trading-oms"]`。`OmsTradingBackend::place_order` 调 `OrderManager::submit`(**不**调 `add_fill`,OMS 是状态机,撮合由 OMS 消费者推回)→ `OrderAck{status: "Submitted"}`;`get_balance` / `get_positions` 读 portfolio 状态;`map_oms_error` 9 类 `OmsError` → `TradingError` 映射;free function 类型转换(避开 orphan rule:在 axon-llm 不能为外部类型 `Order` / `Position` 等实现外部 trait `TryFrom`)。`Cargo.toml` 加 `axon-oms = { workspace = true, optional = true }` + `rust_decimal` optional(显式 f64 ↔ Decimal 转换);`trading/mod.rs` 加 `#[cfg(feature = "trading-oms")] pub mod oms;` + `pub use oms::OmsTradingBackend;`。补 36 个测试(33 单元:辅助 + 类型转换 + 状态字符串 + balance/position 转换 + 错误映射 + struct Arc + 7 个 TradingBackend impl + 3 个集成 E2E `tests/trading_oms_integration.rs`:端到端 OMS 流程、完整成功路径、snapshot 持久化)。`cargo test -p axon-llm --features trading-oms` 36/36 通过,`cargo test -p axon-llm --features trading-all` 131+ tests 0 失败,`make verify` 0 diff。配套 `docs/superpowers/specs/2026-06-17-axon-oms-mvp-design.md` + `docs/superpowers/plans/2026-06-17-axon-llm-oms-adapter.md`(15 个 task ~ 45 个步骤的执行计划)。
+- **`BacktestTradingBackend` 适配(Stage C)**:把 `axon_backtest::L1MatchingEngine` 适配为 `axon-llm::trading::TradingBackend`,LLM agent 可在回测撮合引擎上下单 + 查余额/持仓。新增 `trading-backtest` opt-in feature(Batch 1,commit d21f30e)+ `trading-all` meta feature 升级为 `["trading-exchange", "trading-oms", "trading-backtest"]`。`BacktestTradingBackend` 内部 `Arc<RwLock<BacktestInner>>`,锁内持 `L1MatchingEngine`(单 symbol)+ `PortfolioState`(自维护 cash + HashMap<Symbol, (qty, avg)>,f64 精度,加权平均成本法)+ `AtomicU64` 分配 OrderId;`place_order` 写锁内完整流程:分配 ID → `args_to_backtest_order` 转 `axon_core::Order` → `engine.submit` 同步撮合 → 遍历 `SubmitResult.fills` 调 `portfolio.apply_fill`(基于 taker_side 调整 cash + positions)→ 根据 `is_filled` / `is_partially_filled` 决定 status("Filled" / "PartiallyFilled" / "Submitted")。`OrderAck.order_id` 格式 `"bt-{n}"`(与 OMS Uuid / Exchange 区分)。`map_backtest_error` 9 类 `MatchingError` → `TradingError` 映射(`#[allow(dead_code)]` 标注,L1MatchingEngine::submit 内部消化错误,本函数为 L2/L3 预留)。`Cargo.toml` 加 `axon-backtest = { workspace = true, optional = true }` + `axon-core = { workspace = true, optional = true }`(显式声明避免传递依赖重命名时编译失败);`trading/mod.rs` 加 `#[cfg(feature = "trading-backtest")] pub mod backtest;` + `pub use backtest::BacktestTradingBackend;`。补 28 个测试(7 args_to_backtest_order + 6 apply_fill + 7 map_backtest_error + 1 now_ms_i64 + 9 TradingBackend impl 集成测试:new 初始状态 / limit_buy 无 maker / buy_taker 撮合 sell_maker / sell_taker 撮合 buy_maker / 唯一 OrderId 递增 / 限价无 price 拒绝 / symbol mismatch 拒绝 / market 无 maker / get_portfolio 默认并发)。`cargo test -p axon-llm --features trading-backtest` 28/28 通过,`make verify` 0 diff。**已知简化语义**(design spec 明确):挂单不预先锁定 cash;portfolio 仅在 taker 撮合后调 apply_fill(buy taker 减 cash+加 position,sell taker 增 cash+减 position);buy 单作为 maker 被 sell taker 撮合时 buy maker 那侧 cash 减不记录(L1 撮合引擎不感知 portfolio,Stage C 范围接受此限制)。配套 `docs/superpowers/specs/2026-06-17-axon-llm-backtest-adapter-design.md` + `docs/superpowers/plans/2026-06-17-axon-llm-backtest-adapter.md`(4 batch 执行计划)。
+- **`RiskGate` 抽象 + `PlaceOrderTool` 闸门 hook(Stage D 子阶段 1/3)**:在 `crates/axon-llm/src/trading/safety.rs` 新增 `RiskGate` trait(发单前调用,`is_blocked() -> Option<String>`,object-safe:`Send + Sync` 约束满足 `Arc<dyn RiskGate>` 用法)+ `AlwaysOpenGate` 默认实现(`PlaceOrderTool::new` 默认放行,确保 MVP 调用方零迁移成本)。`PlaceOrderTool` 新增 `gate: Arc<dyn RiskGate>` 字段 + `with_gate(...)` 构造器 + 在 `SafetyMode::Direct` 和 `SafetyMode::TwoPhase` 两处单前调用 `gate.is_blocked()`,被阻断时返回 `ToolError::ExecutionFailed("gate blocked: <reason>")`;`SafetyMode::DryRun` 不查闸门(无真实风险)。`crate::trading::mod.rs` 同时 re-export `RiskGate` + `AlwaysOpenGate`。`RiskLimits` 不变(闸门是与 `RiskLimits` 互补的"外部"风控入口,由使用方在 demo 侧桥接 `axon_risk::CircuitBreaker` 等组件,lib 不强依赖 `axon-risk`)。补 5 个测试覆盖 `AlwaysOpenGate::is_blocked` 返回 `None` / `RiskGate` trait object-safety / 自定义闸门阻断时 `Direct` 模式返回 `gate blocked` 错误 / 自定义闸门阻断时 `TwoPhase` 模式返回 `gate blocked` 错误 / `DryRun` 模式不查闸门。`cargo test -p axon-llm --features trading-exchange` 单元测试 0 失败。
+- **`live_trading_e2e` 端到端 Demo(Stage D 子阶段 2/3)**:在 `crates/axon-llm/examples/live_trading_e2e.rs` 新增端到端 demo,支持 DryRun(无网络,`MockTradingBackend`)和真实 testnet(`ExchangeTradingBackend` + `BinanceAdapter::new_testnet`)双路径,验证"LLM 工具 → 风控闸门 → 撮合后端"完整链路。Demo 流程:(1) 构造 `CircuitBreaker`(`axon_risk`)+ `CircuitBreakerGate` 桥接 adapter 把 `cb.is_active()` 映射到 `RiskGate::is_blocked()`;(2) 构造 `RiskLimits`(白名单 `BTC-USDT` / 单笔 ≤ 100 USDT)+ `DailyCounter`;(3) 构造 `PlaceOrderTool::with_gate(...)` + `QueryPortfolioTool`;(4) 构造 `ReActAgent` + `OpenAICompatBackend`(从 demo config.toml 读,5 级 fallback);(5) 跑两轮决策(第一轮未触发熔断,第二轮 `cb.check_and_trigger(-100.0)` 触发后下单被闸门阻断,演示真实风控生效)。`Cargo.toml` 新增 `[[example]] name = "live_trading_e2e" required-features = ["demo", "trading-exchange"]`(`demo` 隐含 `backends`);`[dev-dependencies]` 加 `axon-risk = { workspace = true }` + `axon-exchange = { workspace = true }`(只在编译 demo 与 integration test 时需要);workspace `Cargo.toml` 在 `[workspace.dependencies]` 加 `axon-risk = { path = "crates/axon-risk" }` 与 `axon-exchange = { path = "crates/axon-exchange" }`(本来已存在,本节仅以 dev-dep 形式引用)。补 `tests/live_trading_e2e_test.rs` 5 个 E2E 测试:1) `gate_is_object_safe`(验证 `Arc<dyn RiskGate>` 可构造);2) `demo_dryrun_does_not_block`(DryRun 路径下单不受闸门影响);3) `demo_pipeline_with_circuit_breaker_blocks_real_order`(闸门激活时 `Direct` 模式阻断 + 订单计数不变);4) `demo_two_phase_gate_blocks_pending`(闸门激活时 `TwoPhase` 预生成 token 后单前阻断);5) `runtime_gate_toggle_unblocks`(闸门运行时切换可立即恢复下单)。所有测试在 `--features trading-exchange` 下通过。`cargo build -p axon-llm --features trading-exchange,trading-oms,trading-backtest --example live_trading_e2e` 编译成功。
+- **Stage D 收口(D-3)**:路线图 `docs/superpowers/plans/2026-06-17-trading-tools-roadmap.md` 标记 Stage D 为已交付,§3 依赖图 D 节点标绿,§3.1 推荐实施顺序剔除 D,§4 Stage D 整段改为"已交付 + 实际实现摘要 + 已知简化";决策记录追加 2 条。`make verify` 0 diff 验证。
+- **axon-llm `CancelOrderTool` / `ReplaceOrderTool`(Stage E)**:在 `crates/axon-llm/src/trading/` 新增两个 LLM 工具,支持撤单/改单能力。`TradingBackend` trait 加 `cancel_order` / `replace_order` 两个 async 方法,默认实现返回 `Err(Backend("not implemented"))`(避免对 OMS/Backtest/Exchange 后端连锁影响,使用方按需 override);`MockTradingBackend` override 实现真状态机(内部维护 `cancelled_ids: HashSet<String>` / `replaced_ids: HashSet<String>` / `cancel_count: u32` 三个字段,改 `OrderStatus` 字符串为 "Cancelled" / "Replaced")。`RiskLimits` 加 `max_daily_cancels: Option<u32>` 字段;`CancelOrderTool` 单前调 `DailyCounter::increment_and_check` 限制;`ReplaceOrderTool` 走 `RiskLimits::check` 预检(白名单 + 单笔金额)。`types.rs` 新增 `CancelOrderArgs` / `ReplaceOrderArgs`(`new_req: PlaceOrderArgs`,要求 LLM 传完整参数)。Tool 错误统一 `ToolError::ExecutionFailed` + 前缀区分(`backend cancel failed` / `backend replace failed` / `risk check failed` / `serialize ack`);不走 `RiskGate`(Stage D 闸门为下单专用)。补 21 个单测(2 RiskLimits + 2 types + 2 trait 默认 + 5 Mock 状态机 + 7 CancelOrderTool + 6 ReplaceOrderTool 取消 stub 后) + 3 个集成 E2E `tests/trading_cancel_replace_integration.rs`(cancel 完整生命周期 / replace 完整生命周期 / cancel 触发 max_daily_cancels 限制)。`cargo test -p axon-llm` 单元测试 + 集成测试 0 失败;`cargo test -p axon-llm --features trading-all` 0 失败(Stage A/B/C 后端因 trait 默认实现无需改动);`make verify` 0 diff。配套 `docs/superpowers/specs/2026-06-18-axon-llm-cancel-replace-design.md` + `docs/superpowers/plans/2026-06-18-axon-llm-cancel-replace.md`。
+- **axon-llm `RiskLimits::max_position_abs` 仓位风控(Stage F)**:把 spec 中"本期不实现"的 `RiskLimits::max_position_abs: Option<f64>` 字段真正实施,作为 LLM agent 单 symbol 持仓安全护栏。`RiskLimits::check` 破坏性加 `current_positions: &[PositionSnapshot]` 参数(Stage A/B/C 三个 TradingBackend 后端适配不直接调 check,改 tool 内部即可,零影响);`check` 实现 max_position_abs 预检:计算 `projected = current_qty + side_delta`(Buy=+qty, Sell=-qty,允许做空到上限),若 `|projected| > max_abs` 则拒绝,只对 `args.symbol` 求和(其他 symbol 持仓不参与该单检查)。`PlaceOrderTool::execute` + `ReplaceOrderTool::execute` 入口加 `backend.get_positions().await`(fail-closed,失败返回 `ToolError::ExecutionFailed("position fetch failed: <err>")`)+ 新签名 `risk.check(&args, &positions)`;三模式 DryRun/Direct/TwoPhase 统一加(LLM agent 在 dry-run 阶段就感知超过持仓上限信号)。`CancelOrderTool` 零改动(撤销未成交订单不改变已成交持仓,走过是纯 50ms 延迟浪费)。补 9 个新单测(4 `RiskLimits::check` + 3 `PlaceOrderTool` + 1 `ReplaceOrderTool` + 1 `CancelOrderTool`)+ 3 个集成 E2E `tests/trading_max_position_integration.rs`(连续 Buy 拦截 / replace 拦截 / cancel 不受影响)。`cargo test -p axon-llm --features trading-all` 既有 ~200 + 新增 12 测试 0 失败,Stage A/B/C 后端测试无破坏(OMS/Backtest/Exchange 集成测试 0 失败),`make verify` 0 diff。**已知简化**:`get_positions()` 只返回已成交持仓,不包含挂单中潜在持仓(挂 0.1 BTC buy 后再下 0.1 BTC buy 两次都不触发,Stage H 监控 + 风控聚合时再考虑);`get_positions()` 每次下单 ~50ms 延迟,Stage F 不加缓存;`max_position_abs` 是全局单值,不支持 per-symbol(`HashMap<Symbol, f64>` 后续 spec 引入)。配套 `docs/superpowers/specs/2026-06-18-axon-llm-max-position-design.md` + `docs/superpowers/plans/2026-06-18-axon-llm-max-position.md`。
+- **axon-llm `TradingMetrics` 监控埋点(Stage H)**:在 `crates/axon-llm/src/trading/metrics.rs` 新增轻量级 metrics 收集层,**不引入 `axon-monitor` 依赖**(自包含 `Mutex` + `AtomicU64`,保 lib 零传递依赖新增)。核心类型:`LabeledCounter`(多维度 label 计数,懒注册)/ `LatencyHistogram`(11 桶 10us~1s 延迟分布,无 quantile)/ `MetricSample` + `MetricKind`(应用方 snapshot 后统一数据格式)/ `RiskRule`(风控规则标签,metrics 维度用,与 `RiskLimits::check` 公开签名解耦,`RiskRule::from_err_msg` 启发式从错误消息识别规则)/ `TradingMetrics`(汇总 5 个 counter + 1 个 histogram + 1 个 gauge)。`TradingBackend` trait 加 `fn name() -> &str`(默认 "unknown",各后端 override 返回 "mock" / "oms" / "exchange" / "backtest",便于 metrics 维度区分)。三个 trading tool(Place/Cancel/Replace)加 `metrics: Option<Arc<TradingMetrics>>` 字段 + `with_metrics(...)` 链式构造 + 关键路径埋点:`PlaceOrderTool` 完整埋 `orders_total{...}` + `order_latency_ns{tool=place, mode=...}` + `risk_blocks_total{rule, mode}` + `gate_blocks_total{mode}` + `daily_orders_count` gauge;`CancelOrderTool` 埋 `cancels_total{status, mode}` + `risk_blocks_total{rule=max_daily_cancels, mode=direct}`;`ReplaceOrderTool` 埋 `replaces_total{status, mode}` + `risk_blocks_total{rule, mode=direct}`(replace 成功 status 用 ack.status.0 即 "Replaced",错误 status="Error")。`metrics=None` 时所有 record 调用单分支预测开销近零(默认路径零成本,保持向后兼容)。`DailyCounter` 加 `today_count() -> u32` 只读方法供 metrics 镜像单日计数。应用方两种数据出口:1) `set_callback(Arc<dyn Fn(MetricSample) + Send + Sync>)` —— 每次 record 触发 callback(panic 用 `catch_unwind` 隔离不污染业务);2) `snapshot()` / `snapshot_filtered(name)` —— 主动拉取全量或按名过滤(不触发 callback,避免双重 emit)。`Cargo.toml` 无新依赖(只新增 `tracing` 已在 workspace)。`trading/mod.rs` + `lib.rs` 导出 `TradingMetrics` / `LabeledCounter` / `LatencyHistogram` / `LatencySample` / `MetricKind` / `MetricSample` / `RiskRule`。补 25 个单测(`metrics.rs` 内部 14 个:LabeledCounter inc/inc_by/get/snapshot/不同 label 隔离 + LatencyHistogram observe/snapshot/不同 label 隔离/空快照 + RiskRule as_label/from_err_msg + TradingMetrics record_order/record_risk_block/latency/callback/snapshot 完整集合;tool 集成 11 个:PlaceOrderTool 3 个成功/risk_block/无 metrics + CancelOrderTool 4 个成功/risk_block/no_quota/无 metrics + ReplaceOrderTool 4 个成功/risk_block/backend_error/无 metrics) + 4 个集成 E2E `tests/trading_metrics_integration.rs`(共享 metrics 三个 tool 累计 / 风控规则分类 / callback panic 隔离业务 / snapshot 完整性)。`cargo test -p axon-llm` 单元 + 集成测试 0 失败;`cargo test -p axon-llm --features trading-all` 0 失败;`make verify` 0 diff。**Stage H 重新划定范围**:路线图原 `Stage H = Prometheus exporter` 经讨论后取消,改成本 stage = 框架自包含埋点 + 应用方接管数据出口。理由:框架不应强加特定监控栈(Prometheus/OpenTelemetry 决策由应用方做),Python 使用方通过 callback / snapshot 拿数据自行暴露到任意监控系统即可,避免反复重写不同 exporter。`axon-monitor` 适配若后续需要,放在应用层 crate 而非 lib。配套 `docs/superpowers/specs/2026-06-18-axon-llm-trading-metrics-design.md` + `docs/superpowers/plans/2026-06-18-axon-llm-trading-metrics.md`(9 个 task ~ 30 个步骤的执行计划)。
+- **axon-llm `CircuitBreaker` 集成(Stage J)**:在 `crates/axon-llm/src/trading/circuit_breaker_gate.rs` 新增两个 `RiskGate` 实现。1) `RejectionCircuitBreaker`(核心 lib,零新增依赖,只依赖 `std::sync::atomic`):基于"连续 N 次风控拒绝"开闸,`record_rejection` / `record_success` / `is_active` / `is_blocked` / `rejection_count` 公开 API,内部用 `AtomicU32` + `AtomicI64` + `compare_exchange` 保证无锁并发安全,cooldown 自愈(单位毫秒)。2) `RiskPnLCircuitBreaker`(feature-gated `trading-risk-extra`,包装 `axon_risk::circuit_breaker::CircuitBreaker`):基于日 PnL 触发,只读 `is_active()` 适配为 `RiskGate::is_blocked`,复用 axon-risk 的状态管理(cooldown / reset)。`Cargo.toml` 新增 `trading-risk-extra = ["dep:axon-risk"]` feature,默认零传递依赖新增。`PlaceOrderTool` 加 `rejection_breaker: Option<Arc<RejectionCircuitBreaker>>` 字段 + `with_rejection_breaker(...)` 链式构造,在 `RiskLimits::check` 失败时调 `record_rejection`、真发路径成功时调 `record_breaker_success`(DryRun / Direct / TwoPhase 三模式统一加)、后端错误不触发(避免被错误地清零)。`trading/mod.rs` 导出 `RejectionCircuitBreaker` 和 (feature-gated) `RiskPnLCircuitBreaker`,`lib.rs` 加 `RejectionCircuitBreaker` re-export。`examples/live_trading_e2e.rs` 删除手写 `CircuitBreakerGate`(原 19 行),改用 lib 提供的 `RiskPnLCircuitBreaker`,`required-features` 加上 `trading-risk-extra`。补 11 个单测(`circuit_breaker_gate.rs` 8 个 RejectionCircuitBreaker:初始不开闸/阈值后开闸/success 清零/cooldown 自愈/高阈值永不触发/cooldown 消息含剩余时间/并发安全/is_active 与 is_blocked 一致 + 3 个 RiskPnLCircuitBreaker:初始不开闸/PnL 触发后开闸/reset 后恢复) + 4 个 PlaceOrderTool 集成测试(违规计数/成功清零/后端错误不计/默认 None 不 panic) + 3 + 1 个 E2E 集成(`tests/trading_circuit_breaker_integration.rs`:3 个无条件测试验证 breaker 主路径 + cooldown 自愈 + DryRun 清零;1 个 feature-gated 测试验证 PnL 触发阻断 PlaceOrderTool)。`cargo build -p axon-llm`(默认 features)0 错误,`cargo build -p axon-llm --features trading-risk-extra` 0 错误,`cargo build -p axon-llm --example live_trading_e2e --features "demo,trading-exchange,trading-risk-extra"` 0 错误;`cargo test -p axon-llm` 单元 + 集成 0 失败,`cargo test -p axon-llm --features trading-risk-extra` 0 失败,`cargo test -p axon-llm --features trading-all` 0 失败;`make verify` 0 diff。**Stage J 范围重新划定**:路线图原 `Stage J = 把 CircuitBreaker 接入 PlaceOrderTool,在风控连续 N 次拒绝后自动暂停下单 N 秒` 范围被简化,实际是"补齐 lib 内部对 axon_risk::CircuitBreaker 的可选 opt-in 集成"(即把 demo 手写 adapter 提到 lib,新增核心 lib 内的 RejectionCircuitBreaker)。理由:`PlaceOrderTool` 已有 `gate: Arc<dyn RiskGate>` 字段(Stage D 引入),使用方按需把 `RejectionCircuitBreaker` / `RiskPnLCircuitBreaker` 作为主 gate 传入即可,不需要在 lib 内强制串联。配套 `docs/superpowers/specs/2026-06-18-axon-llm-circuit-breaker-design.md` + `docs/superpowers/plans/2026-06-18-axon-llm-circuit-breaker.md`(9 个 task ~ 25 个步骤的执行计划)。
+- **axon-llm trading Python 绑定(Stage K)**:在 `crates/axon-llm/src/python/trading.rs` 新增 PyO3 模块,暴露 7 个核心类给 Python:`RiskLimits` / `MockTradingBackend` / `PlaceOrderTool` / `QueryPortfolioTool` / `CancelOrderTool` / `ReplaceOrderTool` / `TradingMetrics`。`TradingBackend` trait object 不暴露(避免 PyO3 `Arc<dyn>` 复杂),只暴露具体 `MockTradingBackend` 类。Tool 接受 Python dict / 返回 Python dict(LLM 工具的 JSON 透传最自然)。`metrics` 集成通过 `PlaceOrderTool.__init__(metrics=...)` / `CancelOrderTool.__init__(metrics=...)` / `ReplaceOrderTool.__init__(metrics=...)` 可选参数。`#[pyclass(skip_from_py_object)]` 显式 opt-in FromPyObject(pyo3 0.28 强制要求);`#[pyo3(signature = (..., metrics=None))]` 让 `metrics` 默认为 None。`QueryPortfolioTool::execute` 用 `#[pyo3(signature = (args=None))]` 允许不传参(默认 `{}` 返回全量 portfolio)。`crates/axon-llm/src/python/mod.rs` 在 `axon_llm` pymodule 内挂载 `trading` 子模块;`register_trading_module` 函数对外暴露,`axon-python` 复用同一函数。`crates/axon-python/src/lib.rs` 注册 `_native.trading` 子模块。`python/axon_quant/trading.py` Python 端封装(类型别名 re-export,无 dataclass 包装);`python/axon_quant/__init__.py` 重新导出 `trading` 子模块 + 7 个类。`tools/mod.rs` 中 `ToolError` 新增 4 个变体 → 通过 `map_tool_error` 映射到 `ValueError`(参数错误)/ `RuntimeError`(运行时错误)/ `PermissionError`(权限错误)。补 27 个单测(RiskLimits ×3 + MockBackend ×1 + PlaceOrderTool ×2 + QueryPortfolioTool ×4 + CancelOrderTool ×5 + ReplaceOrderTool ×4 + parse helpers ×6 + json_to_py ×2 + trading_metrics ×1)+ 18 个 Python E2E(`tests/python/test_trading_python_api.py`:模块表面 ×3 + RiskLimits ×2 + Mock 闭环 ×7 + 风险拒绝 ×3 + TradingMetrics ×3)。`cargo build -p axon-llm --features python` 0 错误;`make python-build` 0 错误;`make python-install` 0 错误;`pytest tests/python/test_trading_python_api.py` 18 全绿;`make verify` 0 diff。**Stage K 范围重新划定**:路线图原 `Stage G = 把 trading 工具通过 axum HTTP 服务暴露` 经讨论后取消(LLM agent 通常通过工具调用的 in-process 集成,HTTP 服务由应用层加);Stage K 实际是"补齐 axon-llm trading 工具的 PyO3 绑定,Python 端 in-process 调用"。配套 `docs/superpowers/specs/2026-06-18-axon-llm-trading-python-bindings-design.md` + `docs/superpowers/plans/2026-06-18-axon-llm-trading-python-bindings.md`(13 个 task ~ 40 个步骤的执行计划)。
 
 ### Fixed
+- **`make python-build` 修复**:根因是 maturin 1.14.0 的 `find_bridge` (在 `src/bridge/detection.rs:73`) 要求 `pyo3` 出现在 `cargo metadata` 的依赖图里才能识别为 pyo3 绑定,而 `crates/axon-python/Cargo.toml` 把 `pyo3` 设为 `optional = true`,默认 feature 下 `pyo3` 不在依赖图 → `find_pyo3_bindings` 返回 `None` → 报 "Couldn't detect the binding type";显式 `bindings = "pyo3"`/`--bindings pyo3`/`--config bindings=pyo3` 全部走到同一 `find_pyo3_bindings` 分支,均失败报 "unknown binding type"。叠加问题:`.gitignore` 中 `python/*` 把整个 `python/` 目录从版本控制中排除,导致 `python/axon_quant/{__init__.py, llm.py}` 在工作区缺失,无法做 maturin 二次探测。三处修复:(1) `pyproject.toml` 的 `[tool.maturin]` 加 `features = ["python"]`,激活 axon-python 的 `python` feature 让 pyo3 进依赖图,maturin 自动识别为 pyo3 binding;(2) `python/axon_quant/__init__.py` 与 `llm.py` 重新写回(内容从 `git show HEAD:` 取,与 `b9c7243` 一致);(3) `.gitignore` 的 `python/*` 改为只忽略 `python/axon_quant/{*.so,_native*.so,__pycache__/,*/__pycache__/}` 构建产物,源码恢复可被 git 跟踪。`Makefile` 的 `python-build` / `python-develop` / `python-install` targets 改为强制使用 `.venv/bin/{maturin, pip}` 并设置 `PYO3_PYTHON=$(VENV_PYTHON)`,不再走 miniconda3 下的环境(项目规则)。`maturin build --release` 在 `python-source = "python"` + `manifest-path = "crates/axon-python/Cargo.toml"` + `features = ["python"]` 下稳定输出 `target/wheels/axon_quant-0.1.0a1-cp314-cp314-*.whl`;`python -c "import axon_quant; print(axon_quant.__version__)"` 输出 `0.1.0a1`,7 个 Rust 子模块(rl/hpo/walk_forward/tracker/registry/distributed/llm)与 LLM 顶层 API 全部可访问。
+- **axon-llm 测试** 修复 `--features explain` 下 3 个 pre-existing clippy 错误(`clippy::field_reassign_with_default` ×2 + unused variable ×1,在 `explain_integration_test.rs:268` 和 `:232-235`):用 `AgentConfig { max_iterations: N, ..Default::default() }` 替代 `let mut + 字段重赋值`;unused `store` 加 `let _ = store;` 显式抑制。`cargo clippy -p axon-llm --features explain --all-targets -- -D warnings` 0 错误,`cargo test -p axon-llm --features explain` 5 个 explain_integration 测试全通过。
+- **axon-llm 测试** 移除 7 处 `unimplemented!()` 占位符(全部在 `tests/` 集成测试 mock struct 的 `explain_action_dimension` 方法)。Grep 验证 `crates/` 下 `unimplemented!()` 0 命中(全工作区生产代码 + 测试代码)。原 stub 改为 `Err(ExplainabilityError::ModelNotLoaded(...))` + 注释说明 0 调用点不会触发。涉及 5 个文件:`decision_recorder_test.rs` / `explainer_bridge_test.rs` / `compute_explanation_tool_test.rs`(2 处) / `e2e_explain_e2e_test.rs` / `explain_integration_test.rs`(2 处)。`cargo test -p axon-llm --features explain` 全通过(decision_recorder 6 / explainer_bridge 4 / compute_explanation_tool 7 / explain_integration 5)。
+- **axon-exchange** 修复 `lib.rs` 第 15 行 doctest 在 Stage 4' 添加 `fapi_base_url` 字段后未同步,导致 `cargo test --workspace` 失败(`E0063 missing field fapi_base_url`)。补 `fapi_base_url: None` 即可,zero API 变更。`cargo test --workspace` 现在 370+ 测试 0 失败。
+- **axon-monitor** `AlertRule::Missing` 现在基于指标最后一次上报时间与当前时间差判断是否触发告警。新增 `MetricsRegistry::check_missing_alerts()` 与 `AlertRule::check_missing()`，并补齐 3 个测试覆盖。
+- **axon-explain** `ReportGenerator::aggregate_risk` 改为 `pub fn`，从 `Explanation` 列表按 `feature_importance` × `confidence` 加权聚合，产出 `var_contribution` / `sharpe_contribution` / `max_drawdown_factors`，并补齐 3 个测试覆盖。
+- **axon-exchange/binance** `get_positions()` 改为查询持仓端点（默认 `/fapi/v2/positionRisk`）并解析为 `Vec<Position>`；查询失败时返回空 Vec + warn 日志。`ExchangeConfig` 新增 `position_endpoint` 字段（默认 `/fapi/v2/positionRisk`）。补齐 2 个测试覆盖。
+- **axon-exchange/okx** `subscribe()` 在 WebSocket writer 可用时实际调用 `send_subscribe_to_writer` 发送订阅消息；writer 不可用时仍记录到 `subscribed_symbols` 等待重连后补发。补齐 1 个测试覆盖。
+- **axon-risk** `RiskEngine::compute_metrics` 中 `var_95` 改为基于 `pnl_history`（滚动 252 样本窗口）调用 `checks::var::calculate_var(history, 0.95)` 计算，历史不足 5 样本时降级为 0.0 且 confidence=0.0。补齐 4 个测试覆盖。
+- **axon-inference** `pipeline/collector.rs` 实现 `ObservationSource` trait 与 `ObservationCollector`（多源聚合 + 后台轮询 + 错误隔离 + sink 关闭优雅退出），新增 3 个测试覆盖。`lib.rs` 已 re-export。
+- **axon-inference** `CandleBackend` 错误信息更新为指向 TDD 规范路径的明确 "未实现" 文案，模块顶部加注契约桩说明，新增 1 个测试验证错误信息。
+- **axon-backtest** `engine.rs` 替换为空壳占位：实现事件驱动的 `BacktestEngine` 主循环（`BacktestEngineConfig` + `BacktestEngine::run/step` + `RunResult` 完整字段），处理 `OrderAction` 与 `FillEvent`，累计 events/orders/fills/PnL/drawdown/Nav/duration 指标；新增 8 个测试覆盖空队列、提交/拒绝、撮合、时钟推进、FillEvent、取消/修改/拒绝、step 单步、最大回撤。
+- **axon-llm** 修复 `backends::cost::tests` 并行测试 flakiness：删除全局状态污染源 `reset_for_test()`，`register_pricing_overrides` 改为增量测试（默认表 + `custom-model` 共存并显式断言默认表未受影响），新增 `register_pricing_idempotent` 验证 `HashMap::insert` 语义；`PRICING` 静态变量与 `register_pricing` 函数加 doc 注释明确禁止 reset 模式。零核心 API 改动 + 零新增依赖，`cargo test --features python --lib` 并行 50/50 稳定通过（重复 5 次验证）。
+- **axon-python** 修复 `cargo build --workspace` 链接 `libpython` 失败的根因：`Cargo.toml` 把 `pyo3` 与各上游 crate（`axon-rl` / `axon-tracker` / `axon-registry` / `axon-hpo` / `axon-walk-forward` / `axon-distributed` / `axon-llm`）从无条件依赖改为 `optional`，新增 opt-in `python` feature；`crate-type` 从 `["cdylib"]` 改为 `["rlib"]`（Python 扩展产物改为通过 `maturin` / `setuptools-rust` 在 `pyproject.toml` 阶段构建，不再污染 `cargo build`）；`src/lib.rs` 顶部加 `#![cfg(feature = "python")]`。`cargo build --workspace`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全部通过。需要 Python 绑定时执行 `cargo build -p axon-python --features python` 并设置 `PYO3_PYTHON`。
+- **交易 + Phase 4 完整路线图** `docs/superpowers/plans/2026-06-17-trading-tools-roadmap.md`(12 个 stage 细粒度 TDD 草稿):覆盖 trading tools 后续(A Exchange/OMS/Backtest adapter、B cancel/replace、C max_position_abs)、Phase 4 production 集成(D Prometheus exporter、E risk circuit breaker 集成、F monitor 集成)、横向任务(G Python 绑定补齐、H 文档 + runbook)。包含 1 个 Graphviz 依赖图、每个 stage 独立的 API 草图 + 关键类型 + 测试要点 + 验收标准 + 风险章节、整图验证策略、风险与缓解表、决策记录。不写时间预估,每个 stage 后续单开 plan。
 
-- **CI 修复**：`PyDict::new_bound` → `PyDict::new`（axon-tracker，PyO3 0.28 兼容性）
-- **CI 修复**：`make test` 改用 `cargo test --workspace`（不带 `--all-features`），避免 tch-backend 需要 libtorch
-- **Clippy 修复**：axon-exchange 未使用字段前缀 `_`，OrderId 添加 Default impl
+### Added
+- **axon-llm `ExchangeTradingBackend` 适配**(Stage A,方案 2 feature flag):在 `axon-llm::trading` 下新增 `trading-exchange` opt-in feature(默认禁用,需 `cargo build -p axon-llm --features trading-exchange`)+ meta `trading-all` feature。新增 `ExchangeTradingBackend` 包装 `Arc<RwLock<Box<dyn ExchangeAdapter>>>`(Box 满足 `RwLock::new` 的 `T: Sized` 要求 + `&mut **guard` 解 Box 拿到 `&mut dyn`),提供 3 个 `TradingBackend` 方法(`place_order` / `get_balance` / `get_positions`);`SymbolMap` 由使用方显式 `register`(`BTC-USDT <-> BTCUSDT` 等),不自动推断(跨交易所命名差异大)。Free function 转换覆盖 `PlaceOrderArgs -> ExOrder` / `AccountBalance -> CurrencyBalance` / `HashMap<asset, AccountBalance> -> BalanceSnapshot` / `Position -> PositionSnapshot`(用 free function 而非 `TryFrom` 是为避开 Rust 孤儿规则,axon-llm 不能为外部类型实现外部 trait)。`map_exchange_error` 集中映射 7 类 `ExchangeError` 变体到 `TradingError::Backend`(鉴权失败脱敏 + warn 日志,业务错误带前缀)。`Order::meta` 白名单透传 `extras` 中的 `leverage` / `margin_type` / `reduce_only` / `stop_loss` / `take_profit`(`client_order_id` 走 `Order::client_order_id` 字段,不进 meta)。`Cargo.toml` 加 `axon-exchange = { workspace = true, optional = true }` + `rust_decimal = { version = "1", features = ["serde-with-str"], optional = true }`(lib 显式用 f64 <-> Decimal 转换需直接访问)。**关键约束**:`cargo tree -p axon-llm`(默认 feature)零传递依赖新增,不引入 `tokio-tungstenite` / `hmac` / `rust_decimal`。补齐 45 个测试(36 单元 + 8 wiremock 集成 `trading_exchange_integration.rs` + 1 testnet `@ignore` E2E `trading_exchange_testnet.rs`)。配套 `docs/superpowers/specs/2026-06-17-axon-llm-exchange-adapter-design.md` + `docs/superpowers/plans/2026-06-17-axon-llm-exchange-adapter.md`(15 个 task ~ 45 个步骤的执行计划)。
+
+### Fixed
+- **路线图状态盘点偏差修正** `docs/superpowers/plans/2026-06-17-trading-tools-roadmap.md` v2:首次入仓的路线图误把 Stage G (`axon-inference::CandleBackend`) 与 Stage I (`axon-exchange` leverage/futures) 列为"未交付",但两者在 2026-06-17 之前 commit 已交付:`CandleBackend` 真实实现见 `059c543`(feat(axon-inference): implement CandleBackend single-layer Linear MLP,12 个 candle 单元测试全过);`leverage/futures` 完整实现见 `6463543` + `9be2704`(Stage 4' D,19 个 wiremock 集成测试全过)。本次修正同步:§1.3/1.4 现状盘点表标注 ✅ 已交付、§3 依赖图 G/I 节点标绿、§3.1 推荐实施顺序剔除 G/I、新增 §3.2 已完成 stage 速览表、§4 Stage G/I 整段改为"已交付 + 实际实现摘要 + 遗留工作"、§2.1 战略目标更新"inference/exchange 已 MVP 收口"、§6 风险与缓解新增"路线图盘点偏差"行、§7 决策记录追加 2 条盘点修正条目、§8 文档关系表补充 G/I 配套 spec/plan 链接、§9 后续步骤强调"盘点校验纪律"。`cargo test -p axon-inference --features candle-backend candle` 12/12 通过验证 Stage G 真实现。
+
+### Tests
+- 全工作区验证:`cargo build --workspace`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全部通过(0 失败)。Python 绑定相关 (`axon-rl` cdylib / `axon-python`) 默认不再参与 `cargo build`,改用 `cargo build -p <crate> --features python` + `PYO3_PYTHON` 显式构建。新增覆盖各修复点的 ≥ 25 个测试。
+- **axon-llm 交易工具 ReAct 闭环集成测试**(`crates/axon-llm/tests/trading_integration.rs`,3 个):本地 `ScriptedMock`(LLMBackend 简单实现)按预定义响应序列消费,避免依赖 `backends` feature;覆盖 `agent_place_order_dry_run_observation`(DryRun 不真发,backend 订单数=0)、`agent_query_portfolio_in_observation`(Observation 含 USDT 余额 + BTC 持仓 JSON)、`agent_two_phase_full_cycle`(TwoPhase 预生成 token → tc1 首次提交 → tc2 二次确认 → backend 订单数=1,iterations=3)。
+- **axon-llm Python 绑定测试**(5 个 lib 单元测试 + 4 个 contract test + 19 个 pytest):覆盖 `PyMessage` 角色映射(4 个 role + 未知 role 降级)、`tool_calls` JSON 合法/非法往返、`tool_call_id` 透传、`__repr__` 包含 role+content、`type_name` 覆盖所有 serde_json variant;contract test 覆盖 `LlmConfig::from_dict` 完整 payload、`OpenAICompatConfig::from_llm_config` 多 backend 索引 / 越界、`Message` 字段对齐;pytest 覆盖模块可见性 / `LLMConfig` 序列化 / `LlmMessage` repr / `make_backend` 校验成功/失败 / `load_config_from_toml` 加载 + 错误路径 / 端到端 TOML→backend 串联。`tests/python/test_llm_python_api.py` 与 `crates/axon-llm/tests/python_binding_test.rs`。
+- **axon-exchange 杠杆/合约 wiremock 集成测试**(19 个,8 个 Binance + 11 个 OKX,新增 `dev-dependencies wiremock = "0.6"`):覆盖范围错误(set_leverage 0/200 → `OrderRejected`)、签名端点(set_leverage 验证 4 个 OK-ACCESS-* 头)、公开端点(fundingRate / openInterest / longShortRatio / position-tiers)、杠杆分层 brackets 解析(2 档测试)、账户信息(2 次 REST 合并到 `AccountInfo`)、429 Retry-After(ms 转换正确)、401 AuthenticationFailed、`code != "0"` ApiError 解析(包含 code+msg)。wiremock 0.6 的 `path` matcher 不接受带 `?` 的 URL,所有测试用 `path()` 配 `query_param()` 拆开匹配。
+
+## [0.1.0] - 2026-06-13
+
+### Added
+
+#### Phase 0: 架构与基础设施
+- Cargo workspace 初始化，17 个 crate
+- CI/CD 验证工作流（GitHub Actions）
+- Docker 多阶段构建配置
+
+#### Phase 1: 核心引擎 + RL 环境
+- `axon-core`：时间戳、类型、市场数据、订单、事件、队列、投资组合、调度器
+- `axon-backtest`：L1/L2/L3 撮合引擎、市场冲击模型、延迟模型
+- `axon-rl`：Gymnasium 环境、VecEnv、PyO3 绑定
+
+#### Phase 2: 训练与优化
+- `axon-hpo`：超参数优化（TPE/CMA-ES/NSGA-II）
+- `axon-walk-forward`：滚动前向验证、Purged 交叉验证
+- `axon-tracker`：实验追踪（MLflow/WandB/Local）
+- `axon-registry`：模型版本管理
+- `axon-distributed`：Ray Actor 分布式训练
+
+#### Phase 3: AI 增强
+- `axon-llm`：ReAct 智能体、Tool Calling
+- `axon-explain`：SHAP 可解释性、反事实分析
+- `axon-ensemble`：投票/堆叠/动态加权集成
+- `axon-data`：Arrow IPC、Bar 聚合、Mmap 缓存
+- `axon-compliance`：审计日志、合规报表
+
+#### Phase 4: 生产部署
+- `axon-risk`：风控引擎（熔断器、VaR、仓位/杠杆/回撤检查）
+- `axon-inference`：推理引擎（ONNX/tch/Candle、批推理、热更新）
+- `axon-exchange`：交易所对接（WebSocket、限流、订单生命周期）
+- `axon-oms`：订单管理（状态机、幂等性、快照恢复）
+- `axon-monitor`：监控告警（Counter/Gauge/Histogram、告警规则）
+
+#### Phase 5: 性能深度优化
+- `axon-core::simd`：SIMD 加速（AVX2 归一化/VaR/深度计算）
+- 零拷贝优化（Symbol/Price into_inner）
+- 流式回测引擎（StreamingEngine + PaperTrading）
+
+#### 横向任务
+- 并发测试、模糊测试（proptest）、契约测试
+- 端到端集成测试（36 个集成测试）
+- 性能基准测试（15 个 Criterion 基准）
+- 用户指南、架构设计文档、API 文档
+
+### Fixed
+- PyO3 0.28 兼容性修复（PyDict::new_bound → PyDict::new）
+- VaR 计算修复：全正收益时返回 0（而非负值）
+- CI 测试改用 `cargo test --workspace`（避免 libtorch 依赖）
+
+### Changed
+- 版本号从 0.0.1 升级到 0.1.0
 
 ## [0.0.1] - 2026-06-10
 
 ### Added
-
 - 项目初始化：工作区、根 Cargo.toml、统一 lint/profile 配置

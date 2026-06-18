@@ -3,6 +3,8 @@
 //! 使用文件映射创建跨进程共享的内存区域。
 //! 每个缓存条目是一个独立的文件，包含：
 //! - 元数据头（Magic、版本、长度、校验和）
+// 显式放行 crate-level `deny(unsafe_code)`:memmap2 unsafe 必需
+#![allow(unsafe_code)]
 //! - Arrow IPC 数据体
 //!
 //! # 设计决策

@@ -1,0 +1,66 @@
+[project]
+name = "axon-quant"
+version = "0.1.0a1"
+description = "AXON - 量化交易回测与强化学习框架"
+authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/pengwow/axon_quant"
+Repository = "https://github.com/pengwow/axon_quant"
+Documentation = "https://github.com/pengwow/axon_quant"
+Issues = "https://github.com/pengwow/axon_quant/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+# 启用 axon-python 的 `python` feature,让 `pyo3`(在 Cargo.toml 中是
+# `optional = true` 依赖)出现在 `cargo metadata` 的依赖图里,maturin 1.14
+# 的 `find_bridge` 才能识别为 pyo3 绑定。否则 `find_pyo3_bindings` 返回
+# `None`,触发 "unknown binding type" / "Couldn't detect the binding type"。
+features = ["python"]
+manifest-path = "crates/axon-python/Cargo.toml"
+python-source = "python"
+module-name = "axon_quant._native"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --new-first --failed-first"

@@ -1,0 +1,36 @@
+# Nightly benchmark 跑 axon-data 基准,产出 target/criterion/ 报告
+# 触发:每天 UTC 04:00 + 手动
+# 不加回归门限(避免性能抖动误报;基线由人工 review artifact 评估)
+name: bench-nightly
+
+on:
+  schedule:
+    # UTC 04:00 = 北京时间中午 12:00
+    - cron: '0 4 * * *'
+  workflow_dispatch: # 手动触发
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  bench:
+    name: axon-data benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "target -> .cargo/audit-cache"
+      - name: Run benchmarks (--quick)
+        run: cargo bench -p axon-data --features csv-source --bench axon_data_bench -- --quick
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-report
+          path: target/criterion/
+          retention-days: 7
+          if-no-files-found: warn

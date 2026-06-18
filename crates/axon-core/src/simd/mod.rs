@@ -51,7 +51,7 @@ pub fn detect_simd_level() -> SimdLevel {
         if is_x86_feature_detected!("avx2") {
             return SimdLevel::Avx2;
         }
-        return SimdLevel::Sse2; // x86_64 baseline
+        SimdLevel::Sse2 // x86_64 baseline
     }
 
     #[cfg(target_arch = "aarch64")]

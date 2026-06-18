@@ -25,4 +25,12 @@ pub enum OmsError {
 
     #[error("recovery failed: {0}")]
     RecoveryFailed(String),
+
+    /// Stage B-MVP 新增 — Portfolio 错误
+    ///
+    /// **为何不把 PortfolioError 变体逐个嵌入**:避免 OmsError 随 portfolio
+    /// 复杂度膨胀;OmsError 与 PortfolioError 1:1 映射 + 字符串化,Stage B-TradingBridge
+    /// 时在 axon-llm 侧做精细分类。
+    #[error("portfolio error: {0}")]
+    Portfolio(String),
 }

@@ -17,6 +17,8 @@
 pub mod engine;
 pub mod impact;
 pub mod matching;
+/// 流式回测引擎
+pub mod streaming;
 
 pub use engine::BacktestEngine;
 pub use impact::{ImpactStats, ImpactedEngineConfig, ImpactedMatchingEngine};

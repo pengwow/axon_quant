@@ -119,7 +119,10 @@ impl Explainer for MockExplainer {
         _a: &ActionSnapshot,
         _d: &str,
     ) -> Result<axon_explain::types::ActionAttribution, ExplainabilityError> {
-        unimplemented!()
+        // 测试 mock 不实现此方法,返回明确错误(0 调用点,不会触发)
+        Err(ExplainabilityError::ModelNotLoaded(
+            "test mock: explain_action_dimension not exercised in test scope".into(),
+        ))
     }
     fn get_attention_weights(&self, _o: &HashMap<String, f64>) -> Option<Vec<AttentionWeights>> {
         None
@@ -163,7 +166,10 @@ impl Explainer for SlowExplainer {
         _a: &ActionSnapshot,
         _d: &str,
     ) -> Result<axon_explain::types::ActionAttribution, ExplainabilityError> {
-        unimplemented!()
+        // 测试 mock 不实现此方法,返回明确错误(0 调用点,不会触发)
+        Err(ExplainabilityError::ModelNotLoaded(
+            "test mock: explain_action_dimension not exercised in test scope".into(),
+        ))
     }
     fn get_attention_weights(&self, _o: &HashMap<String, f64>) -> Option<Vec<AttentionWeights>> {
         None
@@ -223,8 +229,10 @@ async fn test_async_record_does_not_block_main_loop_with_slow_explainer() {
     agent.add_tool(Box::new(MockSubmitOrderTool));
 
     // 把 max_iterations 设为 1 减少循环开销
-    let mut config = AgentConfig::default();
-    config.max_iterations = 1;
+    let config = AgentConfig {
+        max_iterations: 1,
+        ..Default::default()
+    };
     // 重新构造（因为 AgentConfig 不可变字段）
     let backend: Box<dyn LLMBackend> = Box::new(MockSubmitOrderBackend);
     let explainer: Arc<dyn Explainer> = Arc::new(SlowExplainer);
@@ -258,10 +266,13 @@ async fn test_store_contains_explanation_after_reason() {
     agent.add_tool(Box::new(MockSubmitOrderTool));
 
     let store = agent.explanation_store().unwrap();
+    let _ = store; // 抑制 unused 警告:store 句柄用于后续构造新 agent 前的句柄可达性验证
 
     // 触发 1 次工具调用 → 1 条 record
-    let mut config = AgentConfig::default();
-    config.max_iterations = 2;
+    let config = AgentConfig {
+        max_iterations: 2,
+        ..Default::default()
+    };
     let backend: Box<dyn LLMBackend> = Box::new(MockSubmitOrderBackend);
     let explainer: Arc<dyn Explainer> = Arc::new(MockExplainer);
     let mut agent = ReActAgent::with_explainer(backend, config, explainer);

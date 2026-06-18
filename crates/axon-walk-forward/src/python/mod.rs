@@ -35,7 +35,7 @@ impl WalkForwardRunner {
         let cfg: WalkForwardConfig = serde_json::from_str(&json_str)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid config: {e}")))?;
         cfg.validate()
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(Self { config: cfg })
     }
 

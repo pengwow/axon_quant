@@ -124,11 +124,14 @@ impl InferenceEngine for OnnxBackend {
         Ok(actions)
     }
 
-    fn replace_session(&mut self, new_session: Box<dyn Any>) -> Result<(), InferenceError> {
+    fn replace_session(
+        &mut self,
+        new_session: Box<dyn Any + Send + Sync>,
+    ) -> Result<(), InferenceError> {
         let session = new_session
             .downcast::<ort::session::Session>()
-            .map_err(|_| InferenceError::HotReloadFailed {
-                reason: "invalid session type".into(),
+            .map_err(|_| {
+                InferenceError::Onnx("replace_session: expected Box<ort::session::Session>".into())
             })?;
         self.session = Some(Arc::new(RwLock::new(*session)));
         Ok(())

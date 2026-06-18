@@ -1,0 +1,164 @@
+# mkdocs 文档站配置
+# 部署:GitHub Pages(https://pengwow.github.io/axon_quant/)
+# 本地预览:make docs-serve
+# 构建:make docs-build
+
+site_name: AXON
+site_description: 高性能量化交易与强化学习框架 — Rust 核心 + Python 接口
+site_url: https://pengwow.github.io/axon_quant/
+repo_url: https://github.com/pengwow/axon_quant
+repo_name: pengwow/axon_quant
+edit_uri: edit/main/docs/
+
+# 不在 GitHub Pages 仓库根下,使用 project page
+docs_dir: docs
+site_dir: site
+
+# 主题:Material(业内主流)
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.tracking
+    - navigation.instant
+    - navigation.instant.progress
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - toc.integrate
+  palette:
+    # 亮色模式
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色模式
+    # 暗色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色模式
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+# 插件
+plugins:
+  - search:
+      lang:
+        - en
+        - zh
+  - git-revision-date-localized:
+      enabled: true
+      type: date
+      strict: false
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+  - autolinks
+  - tags
+
+# Markdown 扩展
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - meta
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.arithmatex:
+      generic: true
+
+# 导航
+nav:
+  - 首页: index.md
+  - 了解 AXON:
+      - AXON 是什么: user-guide/what-is-axon.md
+      - 安装与快速入门: getting-started/installation.md
+      - 5 分钟跑通: getting-started/quickstart.md
+      - AI 原生核心设计: user-guide/ai-native-design.md
+  - 使用场景:
+      - 策略研发全流程: user-guide/strategy-development.md
+      - LLM 智能体驱动交易: user-guide/llm-trading/oader.md
+      - 生产部署与监控: user-guide/production.md
+      - 传统策略迁移: user-guide/traditional-strategy.md
+  - 用户指南:
+      - 架构总览: user-guide/architecture.md
+      - LLM 交易:
+          - 架构总览: user-guide/llm-trading/overview.md
+          - 风控与安全: user-guide/llm-trading/risk-safety.md
+          - 指标与告警: user-guide/llm-trading/metrics-alerting.md
+          - 运维手册: user-guide/llm-trading/operations-runbook.md
+  - 参考:
+      - API 参考: reference/api-reference.md
+      - API 文档: reference/api.md
+      - CLI 命令: reference/cli.md
+      - Python 绑定: reference/python-bindings.md
+      - 配置参考: reference/configuration.md
+  - 架构决策:
+      - 索引: adr/index.md
+      - 0001 Rust 作为核心语言: adr/0001-rust-as-core-language.md
+      - 0002 Cargo Workspace 布局: adr/0002-cargo-workspace-layout.md
+      - 0003 Apache-2.0 单许可: adr/0003-license-dual-mit-apache.md
+  - 关于:
+      - 贡献指南: about/contributing.md
+      - 更新日志: about/changelog.md
+      - 许可证: about/license.md
+      - 测试计划: about/testing-plan.md
+      - PyPI 发布: about/pypi-publishing.md
+      - 常见问题: about/faq.md
+
+# 版权
+copyright: Copyright &copy; 2026 AXON Authors. Apache-2.0 License.
+
+# 排除内部 spec/plan(已移到 .axon-internal/)
+exclude_docs: |
+  .axon-internal/
+  superpowers/

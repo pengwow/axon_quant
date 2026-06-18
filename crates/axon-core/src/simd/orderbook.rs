@@ -48,15 +48,17 @@ unsafe fn sum_depth_avx2(prices: &[f64], quantities: &[f64]) -> (f64, f64) {
 
     for i in 0..chunks {
         let offset = i * 4;
-        let p = _mm256_loadu_pd(p_ptr.add(offset));
-        let q = _mm256_loadu_pd(q_ptr.add(offset));
+        // SAFETY: offset 在 prices/quantities 范围内（chunks = len / 4）
+        let p = unsafe { _mm256_loadu_pd(p_ptr.add(offset)) };
+        let q = unsafe { _mm256_loadu_pd(q_ptr.add(offset)) };
         sum_value = _mm256_add_pd(sum_value, _mm256_mul_pd(p, q));
         sum_qty = _mm256_add_pd(sum_qty, q);
     }
 
     // 水平求和
-    let value_arr: [f64; 4] = std::mem::transmute(sum_value);
-    let qty_arr: [f64; 4] = std::mem::transmute(sum_qty);
+    // SAFETY: sum_value/sum_qty 是 __m256d，与 [f64; 4] 布局相同
+    let value_arr: [f64; 4] = unsafe { std::mem::transmute(sum_value) };
+    let qty_arr: [f64; 4] = unsafe { std::mem::transmute(sum_qty) };
 
     let mut total_value = value_arr.iter().sum::<f64>();
     let mut total_qty = qty_arr.iter().sum::<f64>();

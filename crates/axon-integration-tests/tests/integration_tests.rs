@@ -5,12 +5,17 @@
 #![allow(clippy::needless_range_loop)]
 
 use axon_integration_tests::contract;
+use axon_integration_tests::distributed_flow;
 use axon_integration_tests::e2e_pipeline;
 use axon_integration_tests::error_recovery_and_concurrency;
+use axon_integration_tests::hpo_flow;
 use axon_integration_tests::hpo_tracker;
+use axon_integration_tests::matching_flow;
 use axon_integration_tests::multi_objective;
 use axon_integration_tests::phase4_e2e;
 use axon_integration_tests::tracker_registry;
+use axon_integration_tests::tracker_registry_flow;
+use axon_integration_tests::walkforward_flow;
 use axon_integration_tests::walkforward_registry;
 
 // HPO + Tracker 集成测试
@@ -235,4 +240,164 @@ fn phase4_e2e_circuit_breaker_flow() {
 #[test]
 fn phase4_e2e_batch_trading_stats() {
     phase4_e2e::run_batch_trading_stats();
+}
+
+// ── 场景 1：回测引擎撮合全流程 ──
+
+#[test]
+fn matching_flow_ohlcv_data() {
+    matching_flow::run_ohlcv_data_construction();
+}
+
+#[test]
+fn matching_flow_engine_with_strategy() {
+    matching_flow::run_engine_with_strategy_orders();
+}
+
+#[test]
+fn matching_flow_fills_verification() {
+    matching_flow::run_matching_and_verify_fills();
+}
+
+#[test]
+fn matching_flow_order_state_machine() {
+    matching_flow::run_order_state_machine();
+}
+
+#[test]
+fn matching_flow_fee_verification() {
+    matching_flow::run_fee_verification();
+}
+
+#[test]
+fn matching_flow_market_impact() {
+    matching_flow::run_market_impact_verification();
+}
+
+#[test]
+fn matching_flow_l2_depth() {
+    matching_flow::run_l2_depth_matching();
+}
+
+#[test]
+fn matching_flow_l2_snapshot() {
+    matching_flow::run_l2_depth_snapshot();
+}
+
+// ── 场景 3：HPO 超参数优化全流程 ──
+
+#[test]
+fn hpo_flow_mock_trials() {
+    hpo_flow::run_hpo_with_mock_trials();
+}
+
+#[test]
+fn hpo_flow_pareto_front() {
+    hpo_flow::run_pareto_front_single_objective();
+}
+
+#[test]
+fn hpo_flow_hypervolume() {
+    hpo_flow::run_hypervolume_verification();
+}
+
+#[test]
+fn hpo_flow_multi_objective() {
+    hpo_flow::run_multi_objective_pareto();
+}
+
+#[test]
+fn hpo_flow_empty_trials() {
+    hpo_flow::run_empty_trials();
+}
+
+// ── 场景 4：Walk-Forward 验证全流程 ──
+
+#[test]
+fn walkforward_flow_config_creation() {
+    walkforward_flow::run_walkforward_config_creation();
+}
+
+#[test]
+fn walkforward_flow_splits_config() {
+    walkforward_flow::run_splits_purge_embargo_config();
+}
+
+#[test]
+fn walkforward_flow_folds() {
+    walkforward_flow::run_forward_validation_folds();
+}
+
+#[test]
+fn walkforward_flow_leakage() {
+    walkforward_flow::run_leakage_detection();
+}
+
+#[test]
+fn walkforward_flow_embargo() {
+    walkforward_flow::run_embargo_exclusion();
+}
+
+#[test]
+fn walkforward_flow_purge() {
+    walkforward_flow::run_purge_overlapping_labels();
+}
+
+#[test]
+fn walkforward_flow_deflated_sharpe() {
+    walkforward_flow::run_deflated_sharpe();
+}
+
+#[test]
+fn walkforward_flow_window_types() {
+    walkforward_flow::run_window_type_difference();
+}
+
+// ── 场景 5：实验追踪全流程 ──
+
+#[test]
+fn tracker_registry_flow_creation() {
+    tracker_registry_flow::run_tracker_creation();
+}
+
+#[test]
+fn tracker_registry_flow_logging() {
+    tracker_registry_flow::run_param_metric_logging();
+}
+
+#[test]
+fn tracker_registry_flow_query() {
+    tracker_registry_flow::run_metrics_query();
+}
+
+#[test]
+fn tracker_registry_flow_multi_param() {
+    tracker_registry_flow::run_multi_param_logging();
+}
+
+#[test]
+fn tracker_registry_flow_status() {
+    tracker_registry_flow::run_status_management();
+}
+
+// ── 场景 6：分布式训练全流程 ──
+
+#[test]
+fn distributed_flow_metrics() {
+    distributed_flow::run_metrics_serialization();
+}
+
+#[test]
+fn distributed_flow_checkpoint() {
+    distributed_flow::run_checkpoint_save_load();
+}
+
+#[test]
+fn distributed_flow_config() {
+    distributed_flow::run_config_validation();
+}
+
+#[test]
+fn distributed_flow_invalid_config() {
+    distributed_flow::run_invalid_config_rejected();
 }

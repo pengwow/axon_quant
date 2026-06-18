@@ -121,11 +121,12 @@ impl InferenceEngine for TchBackend {
         Ok(actions)
     }
 
-    fn replace_session(&mut self, new_session: Box<dyn Any>) -> Result<(), InferenceError> {
+    fn replace_session(
+        &mut self,
+        new_session: Box<dyn Any + Send + Sync>,
+    ) -> Result<(), InferenceError> {
         let model = new_session.downcast::<tch::CModule>().map_err(|_| {
-            InferenceError::HotReloadFailed {
-                reason: "invalid session type".into(),
-            }
+            InferenceError::Tch("replace_session: expected Box<tch::CModule>".into())
         })?;
         self.model = Some(Arc::new(RwLock::new(*model)));
         Ok(())
