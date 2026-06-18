@@ -1,0 +1,142 @@
+name: e2e-real-llm
+
+# 真实 LLM 端到端集成 CI 工作流
+#
+# 触发条件:
+#   - push / pull_request 到 main(改动 axon-llm)
+#   - workflow_dispatch 手动触发
+#   - 每天 UTC 0 点 schedule(防 fixture 过期)
+#   - fixtures 目录变化时自动重跑
+#
+# Jobs:
+#   1. replay-tests: 跑 e2e tests(需 DEEPSEEK_API_KEY,无则 skip)
+#   2. validate-fixtures: 校验已落盘的 fixtures
+#   3. record-freshness: 检查 fixture 是否过期(>30 天)
+#
+# DEEPSEEK_API_KEY 必须在 repo secrets 中配置;无 key 时 replay-tests 自动 skip。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/axon-llm/**"
+      - ".github/workflows/e2e-real-llm.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/axon-llm/**"
+  workflow_dispatch:
+  schedule:
+    # 每天 UTC 00:00
+    - cron: "0 0 * * *"
+
+defaults:
+  run:
+    working-directory: .
+
+concurrency:
+  group: e2e-real-llm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── 1. Replay 模式跑 e2e(需 API key)─────────────────
+  replay-tests:
+    name: replay e2e tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # 用 raykrueger/deepseek-test-key 这种占位也行,只要非空即可
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1' }}
+      DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-chat' }}
+      E2E_MODE: replay
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run e2e tests (replay)
+        if: env.DEEPSEEK_API_KEY != ''
+        run: |
+          cargo test \
+            -p axon-llm \
+            --features "backends e2e" \
+            --test e2e_simple_chat_test \
+            --test e2e_tool_calling_test \
+            --test e2e_react_loop_test \
+            --test e2e_explain_e2e_test \
+            -- --nocapture --test-threads=1
+
+      - name: Skip notice (no API key)
+        if: env.DEEPSEEK_API_KEY == ''
+        run: |
+          echo "::warning::DEEPSEEK_API_KEY not set, skipping replay tests"
+          echo "Configure repo secret DEEPSEEK_API_KEY to enable this job"
+
+  # ─── 2. 校验 fixtures(总跑,不需 API key)───────────────
+  validate-fixtures:
+    name: validate fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate basic structure
+        run: |
+          python3 scripts/validate-fixtures.py \
+            crates/axon-llm/tests/e2e/common/fixtures
+
+      - name: Validate strict (sanitization + key consistency)
+        run: |
+          python3 scripts/validate-fixtures.py --strict \
+            crates/axon-llm/tests/e2e/common/fixtures
+
+  # ─── 3. Fixture 新鲜度检查(>30 天报警)────────────────
+  record-freshness:
+    name: fixture freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check fixture age
+        run: |
+          python3 - <<'PY'
+          import json, time
+          from pathlib import Path
+          root = Path("crates/axon-llm/tests/e2e/common/fixtures")
+          if not root.exists():
+              print("::warning::no fixtures dir, skipping freshness check")
+              raise SystemExit(0)
+          now = time.time()
+          MAX_AGE_DAYS = 30
+          stale = []
+          for p in root.rglob("*.json"):
+              data = json.loads(p.read_text())
+              ra = data.get("recorded_at", "")
+              if not ra.startswith("epoch:"):
+                  continue
+              ts = int(ra[len("epoch:"):])
+              age_days = (now - ts) / 86400
+              if age_days > MAX_AGE_DAYS:
+                  stale.append((p, age_days))
+          if stale:
+              for p, age in stale:
+                  print(f"::warning file={p}::stale ({age:.1f} days > {MAX_AGE_DAYS})")
+              print(f"::warning::{len(stale)} stale fixtures; rerun scripts/record-fixtures.sh")
+          else:
+              print(f"all fixtures fresh (< {MAX_AGE_DAYS} days)")
+          PY
