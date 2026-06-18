@@ -341,6 +341,9 @@ use crate::trading::backend::TradingBackend;
 #[cfg(feature = "trading-exchange")]
 #[async_trait]
 impl TradingBackend for ExchangeTradingBackend {
+    fn name(&self) -> &str {
+        "exchange"
+    }
     async fn place_order(&self, req: &PlaceOrderArgs) -> Result<OrderAck, TradingError> {
         // 1. 标准化 symbol(LLM `BTC-USDT` → 交易所原生 `BTCUSDT` 等)
         let ex_symbol = self.symbol_map.to_exchange(&req.symbol).ok_or_else(|| {

@@ -178,6 +178,9 @@ impl MockTradingBackend {
 
 #[async_trait]
 impl TradingBackend for MockTradingBackend {
+    fn name(&self) -> &str {
+        "mock"
+    }
     async fn place_order(&self, req: &PlaceOrderArgs) -> Result<OrderAck, TradingError> {
         if let Some(e) = self
             .failure_injector
@@ -236,6 +239,83 @@ impl TradingBackend for MockTradingBackend {
         }
         Ok(self.positions.lock().expect("poisoned").clone())
     }
+
+    async fn cancel_order(&self, order_id: &str) -> Result<OrderAck, TradingError> {
+        // 1. 检查 order_id 是否存在
+        let mut orders = self.orders.lock().expect("poisoned");
+        let order = orders
+            .iter_mut()
+            .find(|o| o.order_id == order_id)
+            .ok_or_else(|| TradingError::Backend(format!("order {} not found", order_id)))?;
+        // 2. 检查是否已取消
+        if self
+            .cancelled_ids
+            .lock()
+            .expect("poisoned")
+            .contains(order_id)
+        {
+            return Err(TradingError::Backend(format!(
+                "order {} already cancelled",
+                order_id
+            )));
+        }
+        // 3. 修改状态
+        order.status = OrderStatus("Cancelled".into());
+        order.timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let ack = order.clone();
+        // 4. 加入取消集合
+        drop(orders);
+        self.cancelled_ids
+            .lock()
+            .expect("poisoned")
+            .insert(order_id.to_string());
+        *self.cancel_count.lock().expect("poisoned") += 1;
+        Ok(ack)
+    }
+
+    async fn replace_order(
+        &self,
+        order_id: &str,
+        new_req: &PlaceOrderArgs,
+    ) -> Result<OrderAck, TradingError> {
+        // 1. 查找订单
+        let mut orders = self.orders.lock().expect("poisoned");
+        let order = orders
+            .iter_mut()
+            .find(|o| o.order_id == order_id)
+            .ok_or_else(|| TradingError::Backend(format!("order {} not found", order_id)))?;
+        // 2. symbol / side 必须匹配(防 LLM 误传)
+        if order.symbol != new_req.symbol {
+            return Err(TradingError::Backend(format!(
+                "replace symbol mismatch: expected {}, got {}",
+                order.symbol, new_req.symbol
+            )));
+        }
+        if order.side != new_req.side {
+            return Err(TradingError::Backend(format!(
+                "replace side mismatch: expected {:?}, got {:?}",
+                order.side, new_req.side
+            )));
+        }
+        // 3. 更新可改字段
+        order.quantity = new_req.quantity;
+        order.status = OrderStatus("Replaced".into());
+        order.timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let ack = order.clone();
+        drop(orders);
+        // 4. 加入改单集合
+        self.replaced_ids
+            .lock()
+            .expect("poisoned")
+            .insert(order_id.to_string());
+        Ok(ack)
+    }
 }
 
 // 避免未使用导入告警
@@ -267,6 +347,17 @@ mod tests {
     fn with_failure_injector(m: MockTradingBackend, fi: FailureInjector) -> MockTradingBackend {
         *m.failure_injector.lock().expect("poisoned") = fi;
         m
+    }
+
+    /// Stage H:Mock 后端 name() 标签
+    #[tokio::test]
+    async fn mock_backend_name_is_mock() {
+        use std::sync::Arc as StdArc;
+        let m = MockTradingBackend::new();
+        assert_eq!(m.name(), "mock");
+        // 通过 trait 调
+        let backend: StdArc<dyn TradingBackend> = StdArc::new(m);
+        assert_eq!(backend.name(), "mock");
     }
 
     #[tokio::test]
@@ -411,5 +502,65 @@ mod tests {
         assert!(m.cancelled_ids.lock().unwrap().is_empty());
         assert!(m.replaced_ids.lock().unwrap().is_empty());
         assert_eq!(*m.cancel_count.lock().unwrap(), 0);
+    }
+
+    /// cancel 后订单状态变为 Cancelled + 加入 cancelled_ids
+    #[tokio::test]
+    async fn cancel_marks_status_cancelled() {
+        let m = MockTradingBackend::new();
+        let ack = m.place_order(&mk_args()).await.unwrap();
+        m.cancel_order(&ack.order_id).await.unwrap();
+
+        let orders = m.orders.lock().unwrap();
+        let cancelled = orders.iter().find(|o| o.order_id == ack.order_id).unwrap();
+        assert_eq!(cancelled.status.0, "Cancelled");
+        assert!(m.cancelled_ids.lock().unwrap().contains(&ack.order_id));
+        assert_eq!(*m.cancel_count.lock().unwrap(), 1);
+    }
+
+    /// 同一 ID 二次 cancel 返回错误
+    #[tokio::test]
+    async fn cancel_duplicate_id_returns_error() {
+        let m = MockTradingBackend::new();
+        let ack = m.place_order(&mk_args()).await.unwrap();
+        m.cancel_order(&ack.order_id).await.unwrap();
+        let e = m.cancel_order(&ack.order_id).await.unwrap_err();
+        assert!(matches!(e, TradingError::Backend(_)));
+        assert!(format!("{}", e).contains("already cancelled"));
+    }
+
+    /// 不存在的 ID cancel 返回错误
+    #[tokio::test]
+    async fn cancel_unknown_id_returns_error() {
+        let m = MockTradingBackend::new();
+        let e = m.cancel_order("DOES-NOT-EXIST").await.unwrap_err();
+        assert!(matches!(e, TradingError::Backend(_)));
+        assert!(format!("{}", e).contains("not found"));
+    }
+
+    /// replace 更新价格/数量 + 加入 replaced_ids
+    #[tokio::test]
+    async fn replace_updates_price_quantity() {
+        let m = MockTradingBackend::new();
+        let ack = m.place_order(&mk_args()).await.unwrap();
+        let new_args = PlaceOrderArgs {
+            symbol: "BTC-USDT".into(),
+            side: OrderSide::Buy,
+            quantity: 0.2,
+            order_type: OrderKind::Limit,
+            price: Some(51_000.0),
+            stop_loss: None,
+            take_profit: None,
+            time_in_force: TimeInForce::GTC,
+            extras: serde_json::Value::Null,
+        };
+        let new_ack = m.replace_order(&ack.order_id, &new_args).await.unwrap();
+        assert_eq!(new_ack.order_id, ack.order_id);
+        assert_eq!(new_ack.quantity, 0.2);
+        assert!(m.replaced_ids.lock().unwrap().contains(&ack.order_id));
+
+        let orders = m.orders.lock().unwrap();
+        let replaced = orders.iter().find(|o| o.order_id == ack.order_id).unwrap();
+        assert_eq!(replaced.status.0, "Replaced");
     }
 }

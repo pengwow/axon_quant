@@ -272,6 +272,9 @@ impl OmsTradingBackend {
 #[cfg(feature = "trading-oms")]
 #[async_trait]
 impl TradingBackend for OmsTradingBackend {
+    fn name(&self) -> &str {
+        "oms"
+    }
     async fn place_order(&self, req: &PlaceOrderArgs) -> Result<OrderAck, TradingError> {
         // 1. PlaceOrderArgs -> OMS Order
         let oms_order = args_to_oms_order(req).map_err(map_oms_error)?;

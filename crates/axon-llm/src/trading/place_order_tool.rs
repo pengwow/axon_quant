@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -17,10 +18,11 @@ use tracing::info;
 
 use crate::tools::{Tool, ToolError};
 use crate::trading::backend::{TradingBackend, TradingError};
+use crate::trading::metrics::{RiskRule, TradingMetrics};
 use crate::trading::safety::{
     AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode,
 };
-use crate::trading::types::{OrderAck, OrderStatus, PlaceOrderArgs};
+use crate::trading::types::{OrderAck, OrderSide, OrderStatus, PlaceOrderArgs};
 
 /// Place order 工具
 pub struct PlaceOrderTool {
@@ -41,6 +43,8 @@ pub struct PlaceOrderTool {
     gate: Arc<dyn RiskGate>,
     /// TwoPhase 模式下的待确认订单表(token → PendingOrder)
     pub(super) pending: Mutex<HashMap<String, PendingOrder>>,
+    /// Stage H:metrics 收集器(默认 `None`,零运行时开销)
+    metrics: Option<Arc<TradingMetrics>>,
 }
 
 impl PlaceOrderTool {
@@ -64,6 +68,7 @@ impl PlaceOrderTool {
             daily,
             gate: Arc::new(AlwaysOpenGate),
             pending: Mutex::new(HashMap::new()),
+            metrics: None, // Stage H:默认无 metrics
         }
     }
 
@@ -85,6 +90,67 @@ impl PlaceOrderTool {
             daily,
             gate,
             pending: Mutex::new(HashMap::new()),
+            metrics: None, // Stage H:默认无 metrics
+        }
+    }
+
+    /// 启用 metrics 收集(Stage H)
+    ///
+    /// 链式构造。`metrics = None`(默认)时所有 `record_*` 调用跳过,
+    /// 运行时单分支预测开销近零。
+    pub fn with_metrics(mut self, metrics: Arc<TradingMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// 当前安全模式 → 静态字符串 label(用于 metrics tag)
+    fn mode_str(&self) -> &'static str {
+        match self.mode {
+            SafetyMode::DryRun => "dry_run",
+            SafetyMode::Direct => "direct",
+            SafetyMode::TwoPhase => "two_phase",
+        }
+    }
+
+    /// OrderSide → 静态字符串 label
+    fn side_str(side: OrderSide) -> &'static str {
+        match side {
+            OrderSide::Buy => "Buy",
+            OrderSide::Sell => "Sell",
+        }
+    }
+
+    /// 镜像 DailyCounter 当前计数(Stage H metrics 用)
+    fn set_daily_metric(&self) {
+        if let Some(m) = &self.metrics {
+            m.set_daily_orders_count(self.daily.today_count() as f64);
+        }
+    }
+
+    /// 埋点:风控拒绝
+    fn record_risk_block_metric(&self, err: &TradingError) {
+        if let Some(m) = &self.metrics {
+            m.record_risk_block(RiskRule::from_err_msg(&err.to_string()), self.mode_str());
+        }
+    }
+
+    /// 埋点:风控闸门阻断
+    fn record_gate_block_metric(&self) {
+        if let Some(m) = &self.metrics {
+            m.record_gate_block(self.mode_str());
+        }
+    }
+
+    /// 埋点:下单结果(成功 / 失败统一入口)
+    fn record_order_metric(&self, symbol: &str, side: OrderSide, status: &str, latency_ns: u64) {
+        if let Some(m) = &self.metrics {
+            m.record_order(
+                symbol,
+                Self::side_str(side),
+                status,
+                self.mode_str(),
+                latency_ns,
+            );
         }
     }
 
@@ -153,48 +219,90 @@ impl Tool for PlaceOrderTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, ToolError> {
+        let start = Instant::now();
         let args: PlaceOrderArgs = serde_json::from_str(arguments)
             .map_err(|e| ToolError::InvalidArguments(format!("JSON 解析失败: {}", e)))?;
 
-        // 1. 风控预检(同步,例如白名单 / 单笔金额)
-        self.risk
-            .check(&args)
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        // 1. 取当前持仓(fail-closed:get_positions 错误时拒单)
+        //    与 Stage F 一致:三模式 DryRun/Direct/TwoPhase 统一加位置预检,
+        //    LLM agent 在 dry-run 阶段就感知"超过持仓上限"信号。
+        let positions = self
+            .backend
+            .get_positions()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("position fetch failed: {}", e)))?;
 
-        // 2. 按模式分支
+        // 2. 风控预检(白名单 / 单笔金额 / max_position_abs)
+        if let Err(e) = self.risk.check(&args, &positions) {
+            // Stage H:埋点风控拒绝
+            self.record_risk_block_metric(&e);
+            return Err(ToolError::ExecutionFailed(e.to_string()));
+        }
+
+        // 3. 按模式分支
         match self.mode {
             SafetyMode::DryRun => {
                 info!(?args, "[DRY-RUN] place_order would be sent");
                 let ack = OrderAck {
                     order_id: "DRY-RUN".into(),
-                    symbol: args.symbol,
+                    symbol: args.symbol.clone(),
                     side: args.side,
                     quantity: args.quantity,
                     status: OrderStatus("DryRun".into()),
                     timestamp_ms: Self::now_ms(),
                     confirm_token: None,
                 };
+                // Stage H:DryRun 也埋点(status="DryRun"),便于观测 dry-run 比例
+                self.record_order_metric(
+                    &ack.symbol,
+                    ack.side,
+                    "DryRun",
+                    start.elapsed().as_nanos() as u64,
+                );
                 serde_json::to_string(&ack)
                     .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
             }
             SafetyMode::Direct => {
                 // 真发前做单日计数检查
-                self.check_daily()?;
+                if let Err(e) = self.check_daily() {
+                    // Stage H:单日超限属风控
+                    self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
+                    return Err(e);
+                }
+                // Stage H:镜像当日计数
+                self.set_daily_metric();
                 // Stage D:闸门检查(DryRun 不检查,Direct / TwoPhase 真发前检查)
                 if let Some(reason) = self.gate.is_blocked() {
+                    self.record_gate_block_metric();
                     return Err(ToolError::ExecutionFailed(format!(
                         "gate blocked: {}",
                         reason
                     )));
                 }
-                self.backend
-                    .place_order(&args)
-                    .await
-                    .and_then(|a| {
-                        serde_json::to_string(&a)
-                            .map_err(|e| TradingError::Backend(format!("序列化失败: {}", e)))
-                    })
-                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+                match self.backend.place_order(&args).await {
+                    Ok(ack) => {
+                        let status = ack.status.0.clone();
+                        let out = serde_json::to_string(&ack).map_err(|e| {
+                            ToolError::ExecutionFailed(format!("序列化失败: {}", e))
+                        })?;
+                        self.record_order_metric(
+                            &ack.symbol,
+                            ack.side,
+                            &status,
+                            start.elapsed().as_nanos() as u64,
+                        );
+                        Ok(out)
+                    }
+                    Err(e) => {
+                        self.record_order_metric(
+                            &args.symbol,
+                            args.side,
+                            "Error",
+                            start.elapsed().as_nanos() as u64,
+                        );
+                        Err(ToolError::ExecutionFailed(e.to_string()))
+                    }
+                }
             }
             SafetyMode::TwoPhase => {
                 let supplied_token = args
@@ -205,9 +313,14 @@ impl Tool for PlaceOrderTool {
 
                 if let Some(t) = supplied_token {
                     // 第二次提交:真发前做单日计数检查
-                    self.check_daily()?;
+                    if let Err(e) = self.check_daily() {
+                        self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
+                        return Err(e);
+                    }
+                    self.set_daily_metric();
                     // Stage D:闸门检查(仅真发路径)
                     if let Some(reason) = self.gate.is_blocked() {
+                        self.record_gate_block_metric();
                         return Err(ToolError::ExecutionFailed(format!(
                             "gate blocked: {}",
                             reason
@@ -221,14 +334,30 @@ impl Tool for PlaceOrderTool {
                         .ok_or_else(|| {
                             ToolError::ExecutionFailed(format!("未找到待确认订单: {}", t))
                         })?;
-                    self.backend
-                        .place_order(&pending.args)
-                        .await
-                        .and_then(|a| {
-                            serde_json::to_string(&a)
-                                .map_err(|e| TradingError::Backend(format!("序列化失败: {}", e)))
-                        })
-                        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
+                    match self.backend.place_order(&pending.args).await {
+                        Ok(ack) => {
+                            let status = ack.status.0.clone();
+                            let out = serde_json::to_string(&ack).map_err(|e| {
+                                ToolError::ExecutionFailed(format!("序列化失败: {}", e))
+                            })?;
+                            self.record_order_metric(
+                                &ack.symbol,
+                                ack.side,
+                                &status,
+                                start.elapsed().as_nanos() as u64,
+                            );
+                            Ok(out)
+                        }
+                        Err(e) => {
+                            self.record_order_metric(
+                                &pending.args.symbol,
+                                pending.args.side,
+                                "Error",
+                                start.elapsed().as_nanos() as u64,
+                            );
+                            Err(ToolError::ExecutionFailed(e.to_string()))
+                        }
+                    }
                 } else {
                     // 第一次提交:仅暂存,不计数(尚未真发)
                     // 注意:第一次提交也不检查闸门,允许 LLM 发起 confirm 流程
@@ -242,7 +371,7 @@ impl Tool for PlaceOrderTool {
                     );
                     let ack = OrderAck {
                         order_id: "PENDING".into(),
-                        symbol: args.symbol,
+                        symbol: args.symbol.clone(),
                         side: args.side,
                         quantity: args.quantity,
                         status: OrderStatus("Pending".into()),
@@ -645,5 +774,116 @@ mod tests {
         let e = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap_err();
         assert!(matches!(e, ToolError::ExecutionFailed(_)));
         assert_eq!(m.order_count(), 1); // backend 仅被调一次
+    }
+
+    // ── max_position_abs 测试(Stage F)─────────────────────
+
+    /// max_position_abs:Buy 后持仓超过上限 → ToolError,backend 不被调
+    #[tokio::test]
+    async fn place_order_blocks_when_projected_position_exceeds_max() {
+        let m = Arc::new(MockTradingBackend::new());
+        // mock 默认持仓 BTC-USDT 0.1,max_position_abs=0.5
+        // Buy 0.5 → projected = 0.1 + 0.5 = 0.6 > 0.5 → 拒
+        let risk = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily());
+        let e = tool.execute(&args_json("BTC-USDT", 0.5)).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        // backend 未被调
+        assert_eq!(m.order_count(), 0);
+    }
+
+    /// max_position_abs:Sell 减少持仓 → 正常下单
+    #[tokio::test]
+    async fn place_order_allows_sell_when_reduces_position() {
+        let m = Arc::new(MockTradingBackend::new());
+        // mock 默认持仓 BTC-USDT 0.1,max_position_abs=0.5
+        // Sell 0.05 → projected = 0.1 - 0.05 = 0.05 < 0.5 → 放行
+        let risk = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily());
+        let args_sell = serde_json::json!({
+            "symbol": "BTC-USDT", "side": "Sell", "quantity": 0.05,
+            "order_type": "Limit", "price": 50_000.0
+        })
+        .to_string();
+        let s = tool.execute(&args_sell).await.unwrap();
+        let ack: OrderAck = serde_json::from_str(&s).unwrap();
+        assert_eq!(ack.order_id, "MOCK-1");
+        assert_eq!(m.order_count(), 1);
+    }
+
+    /// max_position_abs:DryRun 也走位置预检(LLM 早感知超过持仓上限)
+    #[tokio::test]
+    async fn place_order_dry_run_still_respects_max_position_abs() {
+        let m = Arc::new(MockTradingBackend::new());
+        let risk = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::DryRun, risk, daily());
+        let e = tool.execute(&args_json("BTC-USDT", 0.5)).await.unwrap_err();
+        assert!(matches!(e, ToolError::ExecutionFailed(_)));
+        // DryRun backend 也不被调(预检阶段就拒)
+        assert_eq!(m.order_count(), 0);
+    }
+
+    // ── Stage H: metrics 集成测试 ──
+
+    #[tokio::test]
+    async fn place_order_records_metrics_on_success() {
+        use crate::trading::metrics::TradingMetrics;
+        let m = Arc::new(MockTradingBackend::new());
+        let metrics = Arc::new(TradingMetrics::new());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+        )
+        .with_metrics(metrics.clone());
+        tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        let snap = metrics.snapshot_filtered("trading_orders_total");
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].value, 1.0);
+        assert_eq!(snap[0].labels.get("side"), Some(&"Buy".to_string()));
+    }
+
+    #[tokio::test]
+    async fn place_order_records_risk_block_metric() {
+        use crate::trading::metrics::TradingMetrics;
+        let m = Arc::new(MockTradingBackend::new());
+        let metrics = Arc::new(TradingMetrics::new());
+        let risk = RiskLimits {
+            allowed_symbols: Some(vec!["ETH-USDT".into()]),
+            ..Default::default()
+        };
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily())
+            .with_metrics(metrics.clone());
+        let _ = tool.execute(&args_json("BTC-USDT", 0.1)).await;
+        let snap = metrics.snapshot_filtered("trading_risk_blocks_total");
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].labels.get("rule"),
+            Some(&"allowed_symbols".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn place_order_without_metrics_does_not_panic() {
+        // 默认 None 行为:不埋点,执行成功
+        let m = Arc::new(MockTradingBackend::new());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+        );
+        let out = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        assert!(out.contains("order_id"));
     }
 }

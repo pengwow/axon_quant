@@ -36,6 +36,14 @@ pub enum TradingError {
 /// 真实交易所 / OMS / 回测引擎 / Mock。使用方按需在自己的 crate 实现本 trait。
 #[async_trait]
 pub trait TradingBackend: Send + Sync {
+    /// 后端标签(metrics 维度用),默认 "unknown" 表示未分类
+    ///
+    /// Stage H 新增:`TradingMetrics` 通过此标签区分 mock / oms / exchange /
+    /// backtest。后端可 override 提供更精确的标签;不 override 也不破坏行为
+    /// (只是 metrics 标签不精确)。
+    fn name(&self) -> &str {
+        "unknown"
+    }
     /// 下单
     async fn place_order(&self, req: &PlaceOrderArgs) -> Result<OrderAck, TradingError>;
     /// 查询余额
@@ -70,7 +78,7 @@ pub trait TradingBackend: Send + Sync {
     async fn replace_order(
         &self,
         order_id: &str,
-        new_req: &PlaceOrderArgs,
+        #[allow(unused_variables)] new_req: &PlaceOrderArgs,
     ) -> Result<OrderAck, TradingError> {
         Err(TradingError::Backend(format!(
             "replace_order not implemented for {}",

@@ -8,9 +8,12 @@
 //! - `trading-backtest`:`BacktestTradingBackend`(2026-06-17)
 
 pub mod backend;
+pub mod cancel_order_tool;
+pub mod metrics;
 pub mod mock;
 pub mod place_order_tool;
 pub mod query_portfolio_tool;
+pub mod replace_order_tool;
 pub mod safety;
 pub mod types;
 
@@ -24,13 +27,20 @@ pub mod oms;
 pub mod backtest;
 
 pub use backend::{TradingBackend, TradingError};
+pub use cancel_order_tool::CancelOrderTool;
+pub use metrics::{
+    LabelSet, LabeledCounter, LatencyHistogram, LatencySample, MetricKind, MetricSample, RiskRule,
+    TradingMetrics,
+};
 pub use mock::{FailureInjector, MockTradingBackend};
 pub use place_order_tool::PlaceOrderTool;
 pub use query_portfolio_tool::QueryPortfolioTool;
+pub use replace_order_tool::ReplaceOrderTool;
 pub use safety::{AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode};
 pub use types::{
-    BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
-    PortfolioSnapshot, PositionSnapshot, QueryPortfolioArgs, TimeInForce,
+    BalanceSnapshot, CancelOrderArgs, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus,
+    PlaceOrderArgs, PortfolioSnapshot, PositionSnapshot, QueryPortfolioArgs, ReplaceOrderArgs,
+    TimeInForce,
 };
 
 #[cfg(feature = "trading-exchange")]

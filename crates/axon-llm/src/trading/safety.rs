@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::trading::backend::TradingError;
-use crate::trading::types::PlaceOrderArgs;
+use crate::trading::types::{OrderSide, PlaceOrderArgs, PositionSnapshot};
 
 /// 安全模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -62,11 +62,15 @@ impl RiskLimits {
     /// - allowed_symbols:None = 不限制;Some([]) = 拒绝所有
     /// - max_order_notional:None = 不限制;Some(x) = quantity * price <= x
     ///   (price 为 None 的 Market 单本规则不触发,避免误拒市价单)
-    /// - max_position_abs:本期不实现(避免 mock 中维护额外状态,留待 OMS 适配 spec 引入)
-    ///   注释:位置绝对值检查需要实时持仓上下文,放到具体后端适配 crate 处理
-    ///   (见 spec 第 12 节"后续工作")
+    /// - max_position_abs:None = 不限制;Some(x) = |current_qty + side_delta| <= x
+    ///   (仅对 args.symbol 求和,其他 symbol 持仓不参与;Buy=+qty, Sell=-qty 允许做空到上限)
+    ///   (Market 单同样检查,使用 args.quantity 直接)
     /// - max_daily_orders:由调用方在使用 DailyCounter 时检查
-    pub fn check(&self, args: &PlaceOrderArgs) -> Result<(), TradingError> {
+    pub fn check(
+        &self,
+        args: &PlaceOrderArgs,
+        current_positions: &[PositionSnapshot],
+    ) -> Result<(), TradingError> {
         // 1. 白名单
         if let Some(allowed) = &self.allowed_symbols
             && !allowed.iter().any(|s| s == &args.symbol)
@@ -83,6 +87,29 @@ impl RiskLimits {
                 return Err(TradingError::RiskRejected(format!(
                     "单笔金额 {:.2} 超过限额 {:.2}",
                     notional, max
+                )));
+            }
+        }
+        // 3. 单 symbol 最大持仓绝对值(Stage F 新增)
+        if let Some(max_abs) = self.max_position_abs {
+            // 只对 args.symbol 求和,其他 symbol 持仓不参与该单检查
+            let current_qty: f64 = current_positions
+                .iter()
+                .filter(|p| p.symbol == args.symbol)
+                .map(|p| p.quantity)
+                .sum();
+            // Buy 增加持仓,Sell 减少持仓(允许做空 → projected 可能为负)
+            let delta = match args.side {
+                OrderSide::Buy => args.quantity,
+                OrderSide::Sell => -args.quantity,
+            };
+            let projected = current_qty + delta;
+            // |projected| 超过 max_abs 拦截(支持做空到上限边界)
+            if projected.abs() > max_abs {
+                return Err(TradingError::RiskRejected(format!(
+                    "下单后持仓 {:.4} 超过限额 {:.4}",
+                    projected.abs(),
+                    max_abs
                 )));
             }
         }
@@ -111,6 +138,17 @@ impl DailyCounter {
             )));
         }
         Ok(())
+    }
+
+    /// 当前单日累计订单数(只读,Stage H metrics 镜像用)
+    pub fn today_count(&self) -> u32 {
+        let today = today_key();
+        self.inner
+            .lock()
+            .expect("poisoned")
+            .get(&today)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -177,7 +215,7 @@ mod tests {
     #[test]
     fn risk_permits_when_no_limits() {
         let l = RiskLimits::permissive();
-        assert!(l.check(&args("BTC-USDT", 0.1, Some(50_000.0))).is_ok());
+        assert!(l.check(&args("BTC-USDT", 0.1, Some(50_000.0)), &[]).is_ok());
     }
 
     #[test]
@@ -186,7 +224,9 @@ mod tests {
             allowed_symbols: Some(vec!["ETH-USDT".into()]),
             ..Default::default()
         };
-        let e = l.check(&args("BTC-USDT", 0.1, Some(50_000.0))).unwrap_err();
+        let e = l
+            .check(&args("BTC-USDT", 0.1, Some(50_000.0)), &[])
+            .unwrap_err();
         assert!(matches!(e, TradingError::RiskRejected(_)));
     }
 
@@ -197,7 +237,9 @@ mod tests {
             ..Default::default()
         };
         // 0.1 * 50_000 = 5_000 > 1_000
-        let e = l.check(&args("BTC-USDT", 0.1, Some(50_000.0))).unwrap_err();
+        let e = l
+            .check(&args("BTC-USDT", 0.1, Some(50_000.0)), &[])
+            .unwrap_err();
         assert!(matches!(e, TradingError::RiskRejected(_)));
     }
 
@@ -207,7 +249,7 @@ mod tests {
             max_order_notional: Some(10_000.0),
             ..Default::default()
         };
-        assert!(l.check(&args("BTC-USDT", 0.1, Some(50_000.0))).is_ok());
+        assert!(l.check(&args("BTC-USDT", 0.1, Some(50_000.0)), &[]).is_ok());
     }
 
     #[test]
@@ -219,7 +261,7 @@ mod tests {
         // Market 单 price=None → 名义金额检查不触发
         let mut a = args("BTC-USDT", 100.0, None);
         a.order_type = OrderKind::Market;
-        assert!(l.check(&a).is_ok());
+        assert!(l.check(&a, &[]).is_ok());
     }
 
     #[test]
@@ -306,5 +348,74 @@ mod tests {
         assert!(s.contains("\"max_daily_cancels\":5"), "got: {}", s);
         let back: RiskLimits = serde_json::from_str(&s).unwrap();
         assert_eq!(back.max_daily_cancels, Some(5));
+    }
+
+    // ── max_position_abs 字段(Stage F)─────────────────────
+
+    /// 构造单 symbol 持仓辅助函数
+    fn pos(symbol: &str, qty: f64) -> crate::trading::types::PositionSnapshot {
+        crate::trading::types::PositionSnapshot {
+            symbol: symbol.into(),
+            quantity: qty,
+            entry_price: 50_000.0,
+            unrealized_pnl: 0.0,
+            as_of_ms: 0,
+        }
+    }
+
+    /// max_position_abs:Buy 后持仓超过上限 → 拒
+    #[test]
+    fn max_position_abs_blocks_buy_above_limit() {
+        let l = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        let positions = vec![pos("BTC-USDT", 0.5)];
+        let a = args("BTC-USDT", 0.1, Some(50_000.0));
+        let e = l.check(&a, &positions).unwrap_err();
+        assert!(matches!(e, TradingError::RiskRejected(_)));
+    }
+
+    /// max_position_abs:Sell 减少持仓 → 放行
+    #[test]
+    fn max_position_abs_allows_sell_to_reduce() {
+        let l = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        let positions = vec![pos("BTC-USDT", 0.5)];
+        let mut a = args("BTC-USDT", 0.3, Some(50_000.0));
+        a.side = OrderSide::Sell;
+        assert!(l.check(&a, &positions).is_ok());
+    }
+
+    /// max_position_abs:其他 symbol 持仓不参与该单检查
+    #[test]
+    fn max_position_abs_ignores_unrelated_symbols() {
+        let l = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        // 持仓只有 ETH-USDT 1.0
+        let positions = vec![pos("ETH-USDT", 1.0)];
+        // 下 BTC-USDT 单 0.1
+        let a = args("BTC-USDT", 0.1, Some(50_000.0));
+        // BTC-USDT 当前持仓 0,projected=0.1,放行
+        assert!(l.check(&a, &positions).is_ok());
+    }
+
+    /// max_position_abs:做空到上限边界(|projected| == max_abs)放行
+    #[test]
+    fn max_position_abs_handles_short_via_negative_quantity() {
+        let l = RiskLimits {
+            max_position_abs: Some(0.5),
+            ..Default::default()
+        };
+        // 持仓 0.2 BTC,Sell 0.7 → projected = 0.2 - 0.7 = -0.5
+        let positions = vec![pos("BTC-USDT", 0.2)];
+        let mut a = args("BTC-USDT", 0.7, Some(50_000.0));
+        a.side = OrderSide::Sell;
+        // |projected| = 0.5 不超过 max_abs=0.5,放行(允许做空到上限)
+        assert!(l.check(&a, &positions).is_ok());
     }
 }

@@ -257,6 +257,9 @@ impl BacktestTradingBackend {
 
 #[async_trait]
 impl TradingBackend for BacktestTradingBackend {
+    fn name(&self) -> &str {
+        "backtest"
+    }
     async fn place_order(&self, req: &PlaceOrderArgs) -> Result<OrderAck, TradingError> {
         // 1. 校验 symbol 匹配(L1MatchingEngine::validate 会拒,但这里提前 fail-fast)
         let symbol = Symbol::from(req.symbol.clone());
