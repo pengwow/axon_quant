@@ -24,6 +24,8 @@ theme:
     - navigation.expand
     - navigation.top
     - navigation.tracking
+    - navigation.instant
+    - navigation.instant.progress
     - toc.follow
     - search.suggest
     - search.highlight
@@ -32,6 +34,10 @@ theme:
     - content.code.annotate
     - content.tabs.link
     - content.action.edit
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - toc.integrate
   palette:
     # 亮色模式
     - media: "(prefers-color-scheme: light)"
@@ -53,6 +59,9 @@ theme:
     repo: fontawesome/brands/github
     edit: material/pencil
     view: material/eye
+  font:
+    text: Roboto
+    code: Roboto Mono
 
 # 插件
 plugins:
@@ -69,6 +78,7 @@ plugins:
       minify_js: true
       minify_css: true
   - autolinks
+  - tags
 
 # Markdown 扩展
 markdown_extensions:
@@ -109,9 +119,16 @@ markdown_extensions:
 # 导航
 nav:
   - 首页: index.md
-  - 快速开始:
-      - 安装: getting-started/installation.md
+  - 了解 AXON:
+      - AXON 是什么: user-guide/what-is-axon.md
+      - 安装与快速入门: getting-started/installation.md
       - 5 分钟跑通: getting-started/quickstart.md
+      - AI 原生核心设计: user-guide/ai-native-design.md
+  - 使用场景:
+      - 策略研发全流程: user-guide/strategy-development.md
+      - LLM 智能体驱动交易: user-guide/llm-trading/oader.md
+      - 生产部署与监控: user-guide/production.md
+      - 传统策略迁移: user-guide/traditional-strategy.md
   - 用户指南:
       - 架构总览: user-guide/architecture.md
       - LLM 交易:
@@ -120,6 +137,7 @@ nav:
           - 指标与告警: user-guide/llm-trading/metrics-alerting.md
           - 运维手册: user-guide/llm-trading/operations-runbook.md
   - 参考:
+      - API 参考: reference/api-reference.md
       - API 文档: reference/api.md
       - CLI 命令: reference/cli.md
       - Python 绑定: reference/python-bindings.md
@@ -135,6 +153,7 @@ nav:
       - 许可证: about/license.md
       - 测试计划: about/testing-plan.md
       - PyPI 发布: about/pypi-publishing.md
+      - 常见问题: about/faq.md
 
 # 版权
 copyright: Copyright &copy; 2026 AXON Authors. Apache-2.0 License.

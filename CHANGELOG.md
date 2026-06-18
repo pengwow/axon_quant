@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **存量迁移**:`docs/guide/` → `docs/user-guide/`,`docs/TESTING-PLAN.md` → `docs/about/testing-plan.md`,`docs/pypi-publishing-guide.md` → `docs/about/pypi-publishing.md`,`docs/adr/README.md` → `docs/adr/index.md`。
   - **ADR 内链修复**:3 份 ADR(`0001` / `0002` / `0003`)移除失效的 `../../../axon-design/...` 内部设计文档链接(axon-design 是内部仓库,已不在用户文档范围),改为指向 docs/ 内对应页面。
   - **导航冲突修复**:`docs/user-guide/llm-trading/architecture.md` 重命名为 `docs/user-guide/llm-trading/overview.md`,解决与 `docs/user-guide/architecture.md` 在 mkdocs autolinks 插件下的同名冲突(其他 3 份 LLM 文档交叉引用同步更新)。
+- **axon-quant-docs 合并到 docs/**:将 `axon-quant-docs/` 中的 10 个文档按主题分类合并到 `docs/` 对应子目录,冲突时以 axon-quant-doc 为主。
+  - `axon-quant-docs/index.md` → `docs/index.md`(覆盖)
+  - `axon-quant-docs/01-what-is-axon.md` → `docs/user-guide/what-is-axon.md`
+  - `axon-quant-docs/02-installation.md` → `docs/getting-started/installation.md`(覆盖)
+  - `axon-quant-docs/03-ai-native-design.md` → `docs/user-guide/ai-native-design.md`
+  - `axon-quant-docs/04-scenario-strategy-development.md` → `docs/user-guide/strategy-development.md`
+  - `axon-quant-docs/05-scenario-llm-oader.md` → `docs/user-guide/llm-trading/oader.md`
+  - `axon-quant-docs/06-scenario-production.md` → `docs/user-guide/production.md`
+  - `axon-quant-docs/07-scenario-traditional-strategy.md` → `docs/user-guide/traditional-strategy.md`
+  - `axon-quant-docs/08-api-reference.md` → `docs/reference/api-reference.md`
+  - `axon-quant-docs/09-faq.md` → `docs/about/faq.md`
+  - **mkdocs.yml 导航更新**:新增"了解 AXON"和"使用场景"导航组,包含合并后的文档
+  - **主题增强**:添加更多 Material 主题特性(navigation.instant, content.tooltips, navigation.footer 等)
+  - **插件增强**:添加 tags 插件支持标签功能
+  - **链接修复**:修复合并后文档中的相对链接,确保 mkdocs build --strict 通过
+- **GitHub Actions TestPyPI 发布 workflow**(`.github/workflows/publish-test.yml`):触发条件 — push 到 main/develop 分支改动 `crates/**` / `python/**` / `pyproject.toml` / `Cargo.toml` / `.github/workflows/publish-test.yml`,或手动 `workflow_dispatch`。三阶段:build(ubuntu-latest/macos-latest/windows-latest × Python 3.12/3.13/3.14 + maturin build)→ collect-artifacts(汇总所有平台的 wheels)→ publish-testpypi(`pypa/gh-action-pypi-publish` 推送到 TestPyPI,使用 `TESTPYPI_API_TOKEN` secret)。支持 `skip-existing` 避免重复版本报错。
 - **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
   - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
   - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。
