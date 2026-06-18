@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **插件增强**:添加 tags 插件支持标签功能
   - **链接修复**:修复合并后文档中的相对链接,确保 mkdocs build --strict 通过
 - **GitHub Actions TestPyPI 发布 workflow**(`.github/workflows/publish-test.yml`):触发条件 — push 到 main/develop 分支改动 `crates/**` / `python/**` / `pyproject.toml` / `Cargo.toml` / `.github/workflows/publish-test.yml`,或手动 `workflow_dispatch`。三阶段:build(ubuntu-latest/macos-latest/windows-latest × Python 3.12/3.13/3.14 + maturin build)→ collect-artifacts(汇总所有平台的 wheels)→ publish-testpypi(`pypa/gh-action-pypi-publish` 推送到 TestPyPI,使用 `TESTPYPI_API_TOKEN` secret)。支持 `skip-existing` 避免重复版本报错。
+- **GitHub Actions 文档部署 workflow 更新**(`.github/workflows/docs.yml`):新增 PR 到 main 分支的构建检查(pull_request 触发,仅构建不部署),develop 分支 push 也会触发构建。deploy 作业增加条件判断,仅在 push 到 main 分支时才部署到 GitHub Pages。
+- **rustdoc 链接修复**(`crates/axon-llm/src/config.rs`):修复 `backends[0]` 在 rustdoc 中被误解析为链接的问题,用反引号包裹为 `backends[0]`。
+- **Windows 编译兼容性修复**(`crates/axon-inference/src/affinity.rs`):将 Windows 平台的 CPU 亲和性从编译期拒绝(`compile_error!`)改为运行时拒绝(返回 `Err(AffinityError::NotAvailable)`),解决 Windows 环境下 `axon-inference` 无法编译的问题。更新模块文档说明 Windows 现在是运行时拒绝。
 - **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
   - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
   - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。

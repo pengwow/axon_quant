@@ -21,7 +21,7 @@
 //!
 //! - **Linux**: 完整支持,基于 `sched_setaffinity`
 //! - **macOS**: 完整支持,基于 `thread_policy_set`(MPS-aware)
-//! - **Windows**: **编译期拒绝**(`compile_error!`),用户用 WSL2 / numactl
+//! - **Windows**: **运行时拒绝**(返回 `Err(AffinityError::NotAvailable)`),用户用 WSL2 / numactl
 //!
 //! # Metal 半成品
 //!
@@ -118,7 +118,7 @@ impl AffinityPlan {
 /// # 行为
 /// - 空数组 → 不绑核,返回 `Ok(())`
 /// - Linux/macOS → 用 `core_affinity::set_for_current` 实际绑核
-/// - Windows → **编译期错误**(`compile_error!`)
+/// - Windows → 返回 `Err(AffinityError::NotAvailable)`(运行时拒绝)
 /// - 其他平台 → 返回 `Err(AffinityError::NotAvailable)`
 pub fn pin_current_thread_to_cpus(cores: &[u32]) -> Result<(), AffinityError> {
     if cores.is_empty() {
@@ -141,10 +141,11 @@ pub fn pin_current_thread_to_cpus(cores: &[u32]) -> Result<(), AffinityError> {
     }
 
     #[cfg(target_os = "windows")]
-    compile_error!(
-        "CPU affinity via core_affinity is not supported on Windows. \
-         Use numactl / Start-Process with -ProcessorAffinity / WSL2 instead."
-    );
+    {
+        // Windows 不支持 core_affinity,返回运行时错误
+        let _ = cores; // 消除 unused warning
+        Err(AffinityError::NotAvailable)
+    }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {

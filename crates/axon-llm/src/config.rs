@@ -96,7 +96,7 @@ pub struct LLMConfig {
     /// backend 列表(单 demo 时通常 length=1, ensemble 时 length=2..3)
     #[serde(default)]
     pub backends: Vec<BackendConfig>,
-    /// 兼容字段:若使用单 backend 形式 `[backend]`,自动转为 backends[0]
+    /// 兼容字段:若使用单 backend 形式 `[backend]`,自动转为 `backends[0]`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendConfig>,
     /// 重试配置
