@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows 编译兼容性修复**(`crates/axon-inference/src/affinity.rs`):将 Windows 平台的 CPU 亲和性从编译期拒绝(`compile_error!`)改为运行时拒绝(返回 `Err(AffinityError::NotAvailable)`),解决 Windows 环境下 `axon-inference` 无法编译的问题。更新模块文档说明 Windows 现在是运行时拒绝。
 - **GitHub Actions 构建重试**(`.github/workflows/publish-test.yml`):为 `maturin build` 添加 3 次重试机制(使用 `if: failure()` 条件步骤),应对临时网络问题(crate 下载失败)。修复 Windows PowerShell 不支持 bash `for` 循环的兼容性问题。
 - **PyPI 许可证文件修复**(`pyproject.toml`):添加 `license-files = ["LICENSE"]` 字段,解决 TestPyPI 上传时报错 "License-File LICENSE does not exist in distribution file" 的问题。
-- **版本号统一**:`Cargo.toml`、`pyproject.toml`、`axon-python` 的版本号从 `0.1.0a1`/`0.1.0-alpha.1` 统一为 `0.1.0`。同步更新文档中的版本引用。
+- **版本号更新**:将所有版本号从 `0.1.0` 更新为 `0.1.0b1`（beta 版本）。涉及 `Cargo.toml`、`pyproject.toml`、`crates/axon-python/src/lib.rs`。
 - **TestPyPI 发布改为手动触发**(`.github/workflows/publish-test.yml`):移除 push 自动触发条件,仅保留 `workflow_dispatch` 手动触发。
 - **TestPyPI 发布恢复自动触发(版本变更时)**(`.github/workflows/publish-test.yml`):新增 `check-version` job 检测 `Cargo.toml` 版本号是否变更,仅在版本号变更时才触发构建和发布。支持 `workflow_dispatch` 手动触发。
 - **Examples 目录重构**:移除 `sys.path` 操作,改为使用 `axon_examples` 包。将 `_common.py` 和 `_vec_env.py` 移动到 `examples/axon_examples/` 包中,所有示例文件改为 `from axon_examples import common as _common` 导入。
