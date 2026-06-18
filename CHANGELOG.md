@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions 文档部署 workflow 更新**(`.github/workflows/docs.yml`):新增 PR 到 main 分支的构建检查(pull_request 触发,仅构建不部署),develop 分支 push 也会触发构建。deploy 作业增加条件判断,仅在 push 到 main 分支时才部署到 GitHub Pages。
 - **rustdoc 链接修复**(`crates/axon-llm/src/config.rs`):修复 `backends[0]` 在 rustdoc 中被误解析为链接的问题,用反引号包裹为 `backends[0]`。
 - **Windows 编译兼容性修复**(`crates/axon-inference/src/affinity.rs`):将 Windows 平台的 CPU 亲和性从编译期拒绝(`compile_error!`)改为运行时拒绝(返回 `Err(AffinityError::NotAvailable)`),解决 Windows 环境下 `axon-inference` 无法编译的问题。更新模块文档说明 Windows 现在是运行时拒绝。
+- **GitHub Actions 构建重试**(`.github/workflows/publish-test.yml`):为 `maturin build` 添加 3 次重试机制,应对临时网络问题(crate 下载失败)。
 - **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
   - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
   - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。
