@@ -78,7 +78,12 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 
 # Python 绑定
-pyo3 = { version = "0.28", optional = true }
+# `extension-module` 启用时禁止 Rust 自带 main(避免重复初始化);
+# 本 crate 既有 cdylib(供 Python 加载)又有 rlib(供 Rust crate 引用),
+# **不**在 pyo3 自身开 `extension-module`,改在 `python` feature 显式开
+# `auto-initialize`(让 `cargo test --features python` 自动初始化 Python
+# 解释器,无需 Python 进程加载)。
+pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 # 可解释性集成(feature-gated)
 axon-explain = { workspace = true, optional = true }

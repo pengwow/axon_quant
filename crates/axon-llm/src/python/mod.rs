@@ -14,7 +14,7 @@
 #![allow(clippy::useless_conversion)]
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyDict;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,6 +23,11 @@ use crate::config::LLMConfig;
 
 mod backend;
 use backend::{PyLLMBackend, PyMessage};
+
+pub mod trading;
+
+mod helpers;
+use helpers::{pythonize, type_name};
 
 /// Python 端 `LLMBackend` 的构造函数
 ///
@@ -67,63 +72,6 @@ fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLLMBac
     })
 }
 
-/// 把 Python 对象转 `serde_json::Value`(支持 str/int/float/bool/list/dict/None)
-#[allow(clippy::only_used_in_recursion)] // `py` 在递归调用中是必要的 Python token
-fn pythonize(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    if obj.is_none() {
-        return Ok(serde_json::Value::Null);
-    }
-    if let Ok(s) = obj.extract::<String>() {
-        return Ok(serde_json::Value::String(s));
-    }
-    if let Ok(i) = obj.extract::<i64>() {
-        return Ok(serde_json::Value::Number(i.into()));
-    }
-    if let Ok(u) = obj.extract::<u64>()
-        && let Some(n) = serde_json::Number::from_u128(u as u128)
-    {
-        return Ok(serde_json::Value::Number(n));
-    }
-    if let Ok(f) = obj.extract::<f64>() {
-        return serde_json::Number::from_f64(f)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("NaN/Inf not allowed"));
-    }
-    if let Ok(b) = obj.extract::<bool>() {
-        return Ok(serde_json::Value::Bool(b));
-    }
-    if let Ok(list) = obj.cast::<PyList>() {
-        let mut arr = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            arr.push(pythonize(py, &item)?);
-        }
-        return Ok(serde_json::Value::Array(arr));
-    }
-    if let Ok(d) = obj.cast::<PyDict>() {
-        let mut map = serde_json::Map::new();
-        for (k, v) in d.iter() {
-            let key: String = k.extract()?;
-            map.insert(key, pythonize(py, &v)?);
-        }
-        return Ok(serde_json::Value::Object(map));
-    }
-    Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "unsupported type: {}",
-        obj.get_type().name()?
-    )))
-}
-
-fn type_name(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    }
-}
-
 /// `axon_llm` pymodule 入口
 ///
 /// 由 `#[pymodule]` 宏标记,可被 Python 直接 `import axon_llm` 加载
@@ -136,22 +84,11 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_backend, m)?)?;
     m.add_class::<PyLLMBackend>()?;
     m.add_class::<PyMessage>()?;
+    // trading 子模块挂载(Stage K):
+    //   - `trading` 子模块包含 7 个核心 pyclass
+    //   - Python 端可用 `axon_llm.trading.PlaceOrderTool` 等
+    let trading_submodule = PyModule::new(m.py(), "trading")?;
+    trading::register_trading_module(&trading_submodule)?;
+    m.add_submodule(&trading_submodule)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `type_name` 覆盖所有 serde_json 变体的中文路径
-    #[test]
-    fn type_name_covers_all_variants() {
-        // 覆盖每个 variant,确保未来加新 variant 时必须显式更新
-        assert_eq!(type_name(&serde_json::Value::Null), "null");
-        assert_eq!(type_name(&serde_json::Value::Bool(true)), "bool");
-        assert_eq!(type_name(&serde_json::json!(1)), "number");
-        assert_eq!(type_name(&serde_json::Value::String("x".into())), "string");
-        assert_eq!(type_name(&serde_json::json!([])), "array");
-        assert_eq!(type_name(&serde_json::json!({})), "object");
-    }
 }

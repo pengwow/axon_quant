@@ -50,5 +50,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_llm::python::axon_llm(&llm_module)?;
     m.add_submodule(&llm_module)?;
 
+    // axon-llm trading 子模块（Stage K:trading 工具的 PyO3 绑定）
+    // 注:trading 是 llm 模块的子模块(由 `register_trading_module` 单独注册),
+    //    在 `_native` 下单独暴露 trading,便于 Python 端 `from _native import trading`。
+    let trading_module = PyModule::new(m.py(), "trading")?;
+    axon_llm::python::trading::register_trading_module(&trading_module)?;
+    m.add_submodule(&trading_module)?;
+
     Ok(())
 }

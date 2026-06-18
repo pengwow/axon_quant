@@ -2,10 +2,10 @@
 //!
 //! 提供两个 `RiskGate` 实现,均为 `PlaceOrderTool` 真发订单前的最后闸门:
 //!
-//! - [`RejectionCircuitBreaker`]:核心 lib,基于"连续 N 次风控拒绝"开闸,
+//! - `RejectionCircuitBreaker`:核心 lib,基于"连续 N 次风控拒绝"开闸,
 //!   **零新增依赖**(只依赖 `std::sync::atomic`)。LLM agent 场景下使用,
 //!   防止 LLM 重复触发同类违规订单。
-//! - [`RiskPnLCircuitBreaker`]:feature-gated(`trading-risk-extra`),
+//! - `RiskPnLCircuitBreaker`:feature-gated(`trading-risk-extra`),
 //!   包装 `axon_risk::circuit_breaker::CircuitBreaker`,基于日 PnL 触发。
 //!   实盘 / testnet 场景下使用,日亏损达到上限时自动暂停下单。
 //!

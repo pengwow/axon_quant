@@ -51,5 +51,6 @@ AXON 定位为 100% 开源项目，需要选择合适的开源协议。
 
 ## 参考
 
-- [`axon-design/00-meta/00-project-overview.md`](../../../axon-design/00-meta/00-project-overview.md) — 项目状态与许可声明
+- [首页](../index.md)
+- [许可证](../about/license.md) — 项目状态与许可声明
 - https://www.apache.org/licenses/LICENSE-2.0

@@ -10,6 +10,7 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 - ``registry`` — 模型注册表（版本管理 / 生命周期 / 本地存储）
 - ``distributed`` — 分布式训练（Ray / 参数服务器 / 检查点）
 - ``llm`` — LLM 后端（OpenAI 兼容协议，多厂商主备，PyO3 绑定）
+- ``trading`` — Trading 工具（PyO3 绑定:MockTradingBackend / 下单/撤单/改单/查询/指标）
 
 用法::
 
@@ -28,6 +29,22 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         "model": "model-name",
     }]))
     print(backend.chat([LLMMessage("user", "Hi!")])["content"])
+
+    # Trading 工具(Stage K):mock 闭环
+    from axon_quant.trading import (
+        RiskLimits, MockTradingBackend,
+        PlaceOrderTool, QueryPortfolioTool,
+    )
+    backend = MockTradingBackend()
+    risk = RiskLimits(allowed_symbols=["BTC-USDT"])
+    place = PlaceOrderTool(backend=backend, mode="dry_run", risk=risk)
+    ack = place.execute({
+        "symbol": "BTC-USDT",
+        "side": "Buy",
+        "quantity": 0.1,
+        "price": 50000.0,
+    })
+    print(ack["status"])  # "DryRun"
 """
 
 from __future__ import annotations
@@ -36,9 +53,9 @@ from __future__ import annotations
 from ._native import *  # noqa: F401, F403
 
 # 重新导出原生子模块（由 Rust PyO3 注册）
-# 注意:`llm` 是从纯 Python `axon_quant.llm` 模块导出(见下方),
-# 因为我们对它做了 Python 端的封装(LLMConfig / make_backend / load_config_from_toml),
-# 不直接 re-export 原生的 `_native.llm`。
+# 注意:`llm` 和 `trading` 是从纯 Python `axon_quant.{llm,trading}` 模块导出(见下方),
+# 因为我们对它们做了 Python 端的封装(类型别名 + dataclass),
+# 不直接 re-export 原生的 `_native.llm` / `_native.trading`。
 from ._native import (  # noqa: F401
     __version__,  # noqa: F401
     distributed,
@@ -61,9 +78,21 @@ from .llm import (  # noqa: F401
     make_backend,
 )
 
-# 让 `axon_quant.llm` 这个子模块也对外可见(给文档 / 静态分析使用)
-# noqa: F405 是因为 ruff 误判 llm 来自 `from ._native import *`,
-# 实际上下方 `from .llm import ...` 并没有显式 import `llm` 这个模块对象
+# 重新导出 trading 顶层 Python API(包装 _native.trading,Stage K)
+from .trading import (  # noqa: F401
+    CancelOrderTool,
+    MockTradingBackend,
+    PlaceOrderTool,
+    QueryPortfolioTool,
+    ReplaceOrderTool,
+    RiskLimits,
+    TradingMetrics,
+)
+
+# 让 `axon_quant.llm` / `axon_quant.trading` 这些子模块也对外可见(给文档 / 静态分析使用)
+# noqa: F405 是因为 ruff 误判 llm / trading 来自 `from ._native import *`,
+# 实际上下方 `from .llm import ...` / `from .trading import ...` 并没有显式 import
+# `llm` / `trading` 这两个模块对象
 __all__ = [  # noqa: F405
     "__version__",
     "rl",
@@ -73,9 +102,17 @@ __all__ = [  # noqa: F405
     "registry",
     "distributed",
     "llm",
+    "trading",
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",
     "make_backend",
     "load_config_from_toml",
+    "RiskLimits",
+    "MockTradingBackend",
+    "PlaceOrderTool",
+    "QueryPortfolioTool",
+    "CancelOrderTool",
+    "ReplaceOrderTool",
+    "TradingMetrics",
 ]

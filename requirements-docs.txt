@@ -1,0 +1,11 @@
+# mkdocs 文档站依赖
+# 安装:pip install -r requirements-docs.txt
+# 版本锁定:定期 review,不强制每次 bump
+
+mkdocs>=1.6.0,<2.0
+mkdocs-material>=9.5.0,<10.0
+mkdocs-git-revision-date-localized-plugin>=1.2.4
+mkdocs-minify-plugin>=0.8.0
+mkdocs-autolinks-plugin>=0.7.1
+pymdown-extensions>=10.8
+pygments>=2.18

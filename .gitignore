@@ -51,3 +51,7 @@ python/axon_quant/*.so
 python/axon_quant/_native*.so
 python/axon_quant/__pycache__/
 python/axon_quant/*/__pycache__/
+# mkdocs 临时产物(由 `make docs-build` 生成的静态站点与缓存)
+# 部署由 .github/workflows/docs.yml 处理,本地 site/ 不进版本控制
+/site/
+/.cache/

@@ -156,3 +156,30 @@ bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
 .PHONY: verify
 verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
 	@echo "✅ 所有本地检查通过"
+
+# ==================== 文档站(mkdocs + Material) ====================
+# 部署到 GitHub Pages 由 .github/workflows/docs.yml 处理
+# 本地命令:docs-install / docs-serve / docs-build / docs-validate / docs-clean
+
+.PHONY: docs-install
+docs-install: ## 安装 mkdocs 依赖(运行一次或 requirements-docs.txt 变更时)
+	@echo "==> 安装 mkdocs 依赖"
+	@python3 -m pip install -r requirements-docs.txt
+
+.PHONY: docs-serve
+docs-serve: docs-install ## 本地预览文档站(开发时用,自动 reload)
+	@echo "==> 启动 mkdocs 开发服务器,访问 http://localhost:8000"
+	@mkdocs serve
+
+.PHONY: docs-build
+docs-build: docs-install ## 构建静态站点(产出在 site/ 目录)
+	@echo "==> 构建 mkdocs 静态站点"
+	@mkdocs build --strict
+
+.PHONY: docs-validate
+docs-validate: docs-build ## 严格校验 mkdocs 配置 + 链接 + 引用
+	@echo "==> mkdocs 站点构建成功,链接 / 引用校验通过(由 --strict 触发)"
+
+.PHONY: docs-clean
+docs-clean: ## 清理 mkdocs 临时产物
+	@rm -rf site/ .cache/
