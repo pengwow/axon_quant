@@ -22,10 +22,9 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any, Callable, Optional
 
-import _common  # noqa: E402
+from axon_examples import common as _common  # noqa: E402
 
 
 # ──────────────────────────────────────────────

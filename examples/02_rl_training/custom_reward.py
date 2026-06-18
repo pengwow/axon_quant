@@ -14,21 +14,15 @@
 
 运行方式：
     cd axon
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 examples/custom_reward.py
+    PYTHONPATH=examples .venv/bin/python examples/02_rl_training/custom_reward.py
 """
 
 from __future__ import annotations
 
 import statistics
-import sys
 import time
-from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent.parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
-
-import _common  # noqa: E402
+from axon_examples import common as _common
 
 
 def run_with_reward(reward: str, market_data, cfg, n_steps: int = 200) -> dict[str, float]:
