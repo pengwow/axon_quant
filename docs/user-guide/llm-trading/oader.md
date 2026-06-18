@@ -1,6 +1,6 @@
 # 场景二 — LLM 智能体驱动交易（OADER 循环）
 
-本文档深入解析 AXON 量化平台中 LLM 智能体的核心交易循环：**OADER 模型**（Observe-Analyze-Decide-Execute-Record）。OADER 将 ReAct（Reasoning + Acting）推理范式与量化交易的严谨风控相结合，支持实盘与回测两种运行模式。所有代码示例均基于 AXON `0.1.0a1` 分支的真实源代码。
+本文档深入解析 AXON 量化平台中 LLM 智能体的核心交易循环：**OADER 模型**（Observe-Analyze-Decide-Execute-Record）。OADER 将 ReAct（Reasoning + Acting）推理范式与量化交易的严谨风控相结合，支持实盘与回测两种运行模式。所有代码示例均基于 AXON `0.1.0` 版本的真实源代码。
 
 ---
 

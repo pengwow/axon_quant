@@ -1,9 +1,10 @@
 [project]
 name = "axon-quant"
-version = "0.1.0a1"
+version = "0.1.0"
 description = "AXON - 量化交易回测与强化学习框架"
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 classifiers = [
