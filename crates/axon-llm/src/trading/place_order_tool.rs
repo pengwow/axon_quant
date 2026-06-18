@@ -18,6 +18,7 @@ use tracing::info;
 
 use crate::tools::{Tool, ToolError};
 use crate::trading::backend::{TradingBackend, TradingError};
+use crate::trading::circuit_breaker_gate::RejectionCircuitBreaker;
 use crate::trading::metrics::{RiskRule, TradingMetrics};
 use crate::trading::safety::{
     AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode,
@@ -45,6 +46,14 @@ pub struct PlaceOrderTool {
     pub(super) pending: Mutex<HashMap<String, PendingOrder>>,
     /// Stage H:metrics 收集器(默认 `None`,零运行时开销)
     metrics: Option<Arc<TradingMetrics>>,
+    /// Stage J:连续拒绝熔断器(默认 `None`,零运行时开销)
+    ///
+    /// 真发路径前调 `record_rejection`(`RiskLimits::check` 失败时) /
+    /// `record_success`(下单成功时)。`None` 时所有调用跳过。
+    /// **不替代主 `gate` 字段**:主 `gate` 仍可由 `with_gate` 设
+    /// `RejectionCircuitBreaker` / `RiskPnLCircuitBreaker` 等,本字段
+    /// 仅作为"埋点触发器"使用,避免 LLM 连续产违规订单时打爆后端。
+    rejection_breaker: Option<Arc<RejectionCircuitBreaker>>,
 }
 
 impl PlaceOrderTool {
@@ -68,7 +77,8 @@ impl PlaceOrderTool {
             daily,
             gate: Arc::new(AlwaysOpenGate),
             pending: Mutex::new(HashMap::new()),
-            metrics: None, // Stage H:默认无 metrics
+            metrics: None,           // Stage H:默认无 metrics
+            rejection_breaker: None, // Stage J:默认无 breaker
         }
     }
 
@@ -90,7 +100,8 @@ impl PlaceOrderTool {
             daily,
             gate,
             pending: Mutex::new(HashMap::new()),
-            metrics: None, // Stage H:默认无 metrics
+            metrics: None,           // Stage H:默认无 metrics
+            rejection_breaker: None, // Stage J:默认无 breaker
         }
     }
 
@@ -100,6 +111,20 @@ impl PlaceOrderTool {
     /// 运行时单分支预测开销近零。
     pub fn with_metrics(mut self, metrics: Arc<TradingMetrics>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// 启用连续拒绝熔断器(Stage J)
+    ///
+    /// 链式构造。`rejection_breaker = None`(默认)时所有 `record_*`
+    /// 调用跳过,运行时单分支预测开销近零。
+    ///
+    /// **埋点触发**:
+    /// - `RiskLimits::check` 失败时 → `breaker.record_rejection()`
+    /// - 真发订单成功后 → `breaker.record_success()`
+    /// - 后端错误不触发(避免被错误地清零)
+    pub fn with_rejection_breaker(mut self, breaker: Arc<RejectionCircuitBreaker>) -> Self {
+        self.rejection_breaker = Some(breaker);
         self
     }
 
@@ -151,6 +176,20 @@ impl PlaceOrderTool {
                 self.mode_str(),
                 latency_ns,
             );
+        }
+    }
+
+    /// Stage J:连续拒绝熔断器计数(`RiskLimits::check` 失败时调)
+    fn record_breaker_rejection(&self) {
+        if let Some(b) = &self.rejection_breaker {
+            b.record_rejection();
+        }
+    }
+
+    /// Stage J:连续拒绝熔断器清零(下单成功 / 预检通过时调)
+    fn record_breaker_success(&self) {
+        if let Some(b) = &self.rejection_breaker {
+            b.record_success();
         }
     }
 
@@ -236,6 +275,8 @@ impl Tool for PlaceOrderTool {
         if let Err(e) = self.risk.check(&args, &positions) {
             // Stage H:埋点风控拒绝
             self.record_risk_block_metric(&e);
+            // Stage J:连续拒绝熔断器计数
+            self.record_breaker_rejection();
             return Err(ToolError::ExecutionFailed(e.to_string()));
         }
 
@@ -259,6 +300,8 @@ impl Tool for PlaceOrderTool {
                     "DryRun",
                     start.elapsed().as_nanos() as u64,
                 );
+                // Stage J:DryRun 预检通过 → 视为"健康行为",清零拒绝计数
+                self.record_breaker_success();
                 serde_json::to_string(&ack)
                     .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
             }
@@ -267,6 +310,9 @@ impl Tool for PlaceOrderTool {
                 if let Err(e) = self.check_daily() {
                     // Stage H:单日超限属风控
                     self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
+                    // Stage J:单日超限也计为拒绝(实际是风控规则,不是"LLM 产违规订单",
+                    //   但熔断器开闸可让 LLM 立即感知系统压力,主动调整节奏)
+                    self.record_breaker_rejection();
                     return Err(e);
                 }
                 // Stage H:镜像当日计数
@@ -291,6 +337,8 @@ impl Tool for PlaceOrderTool {
                             &status,
                             start.elapsed().as_nanos() as u64,
                         );
+                        // Stage J:下单成功 → 清零拒绝计数
+                        self.record_breaker_success();
                         Ok(out)
                     }
                     Err(e) => {
@@ -300,6 +348,7 @@ impl Tool for PlaceOrderTool {
                             "Error",
                             start.elapsed().as_nanos() as u64,
                         );
+                        // Stage J:后端错误不调 record_success(保持计数,等 cooldown)
                         Err(ToolError::ExecutionFailed(e.to_string()))
                     }
                 }
@@ -315,6 +364,7 @@ impl Tool for PlaceOrderTool {
                     // 第二次提交:真发前做单日计数检查
                     if let Err(e) = self.check_daily() {
                         self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
+                        self.record_breaker_rejection();
                         return Err(e);
                     }
                     self.set_daily_metric();
@@ -346,6 +396,8 @@ impl Tool for PlaceOrderTool {
                                 &status,
                                 start.elapsed().as_nanos() as u64,
                             );
+                            // Stage J:下单成功 → 清零拒绝计数
+                            self.record_breaker_success();
                             Ok(out)
                         }
                         Err(e) => {
@@ -355,6 +407,7 @@ impl Tool for PlaceOrderTool {
                                 "Error",
                                 start.elapsed().as_nanos() as u64,
                             );
+                            // Stage J:后端错误不调 record_success
                             Err(ToolError::ExecutionFailed(e.to_string()))
                         }
                     }
@@ -378,6 +431,8 @@ impl Tool for PlaceOrderTool {
                         timestamp_ms: Self::now_ms(),
                         confirm_token: Some(token),
                     };
+                    // Stage J:TwoPhase 第一次预检通过 → 视为"健康行为",清零拒绝计数
+                    self.record_breaker_success();
                     serde_json::to_string(&ack)
                         .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
                 }
@@ -876,6 +931,87 @@ mod tests {
     #[tokio::test]
     async fn place_order_without_metrics_does_not_panic() {
         // 默认 None 行为:不埋点,执行成功
+        let m = Arc::new(MockTradingBackend::new());
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+        );
+        let out = tool.execute(&args_json("BTC-USDT", 0.1)).await.unwrap();
+        assert!(out.contains("order_id"));
+    }
+
+    // ── Stage J: rejection_breaker 集成测试 ──
+
+    /// 风控拒绝时 rejection_breaker 计数 +1;达到阈值后 is_active()=true
+    #[tokio::test]
+    async fn place_order_records_rejection_on_risk_block() {
+        use std::time::Duration;
+        let m = Arc::new(MockTradingBackend::new());
+        let risk = RiskLimits {
+            allowed_symbols: Some(vec!["ETH-USDT".into()]),
+            ..Default::default()
+        };
+        let breaker = Arc::new(RejectionCircuitBreaker::new(2, Duration::from_secs(60)));
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily())
+            .with_rejection_breaker(breaker.clone());
+        // 第 1 次违规:计数=1,未达阈值
+        let _ = tool.execute(&args_json("BTC-USDT", 0.1)).await;
+        assert_eq!(breaker.rejection_count(), 1);
+        assert!(!breaker.is_active());
+        // 第 2 次违规:计数=2,达到阈值,breaker 开闸
+        let _ = tool.execute(&args_json("BTC-USDT", 0.1)).await;
+        assert_eq!(breaker.rejection_count(), 2);
+        assert!(breaker.is_active());
+    }
+
+    /// 下单成功时 rejection_breaker 计数清零
+    #[tokio::test]
+    async fn place_order_records_success_resets_breaker() {
+        use std::time::Duration;
+        let m = Arc::new(MockTradingBackend::new());
+        let risk = RiskLimits {
+            allowed_symbols: Some(vec!["ETH-USDT".into()]),
+            ..Default::default()
+        };
+        let breaker = Arc::new(RejectionCircuitBreaker::new(2, Duration::from_secs(60)));
+        let tool = PlaceOrderTool::new(m.clone(), SafetyMode::Direct, risk, daily())
+            .with_rejection_breaker(breaker.clone());
+        // 1 次违规(计数=1)+ 1 次成功(白名单内)→ record_success 清零
+        let _ = tool.execute(&args_json("BTC-USDT", 0.1)).await;
+        assert_eq!(breaker.rejection_count(), 1);
+        let _ = tool.execute(&args_json("ETH-USDT", 0.1)).await;
+        assert_eq!(breaker.rejection_count(), 0, "成功应清零");
+    }
+
+    /// 后端错误不触发 record_rejection(breaker 仍为 0)
+    #[tokio::test]
+    async fn place_order_backend_error_does_not_count_as_rejection() {
+        use std::time::Duration;
+        let m = Arc::new(mock_with_failure(
+            MockTradingBackend::new(),
+            FailureInjector::new().with_place_order_error("outage"),
+        ));
+        let breaker = Arc::new(RejectionCircuitBreaker::new(2, Duration::from_secs(60)));
+        let tool = PlaceOrderTool::new(
+            m.clone(),
+            SafetyMode::Direct,
+            RiskLimits::permissive(),
+            daily(),
+        )
+        .with_rejection_breaker(breaker.clone());
+        // 多次后端错误:breaker 计数应保持 0(后端错误不触发 record_rejection)
+        for _ in 0..3 {
+            let _ = tool.execute(&args_json("BTC-USDT", 0.1)).await;
+        }
+        assert_eq!(breaker.rejection_count(), 0);
+        assert!(!breaker.is_active());
+    }
+
+    /// 默认不调 with_rejection_breaker 时,执行不 panic
+    #[tokio::test]
+    async fn place_order_without_breaker_does_not_panic() {
         let m = Arc::new(MockTradingBackend::new());
         let tool = PlaceOrderTool::new(
             m.clone(),

@@ -9,6 +9,7 @@
 
 pub mod backend;
 pub mod cancel_order_tool;
+pub mod circuit_breaker_gate;
 pub mod metrics;
 pub mod mock;
 pub mod place_order_tool;
@@ -28,6 +29,7 @@ pub mod backtest;
 
 pub use backend::{TradingBackend, TradingError};
 pub use cancel_order_tool::CancelOrderTool;
+pub use circuit_breaker_gate::RejectionCircuitBreaker;
 pub use metrics::{
     LabelSet, LabeledCounter, LatencyHistogram, LatencySample, MetricKind, MetricSample, RiskRule,
     TradingMetrics,
@@ -51,3 +53,6 @@ pub use oms::OmsTradingBackend;
 
 #[cfg(feature = "trading-backtest")]
 pub use backtest::BacktestTradingBackend;
+
+#[cfg(feature = "trading-risk-extra")]
+pub use circuit_breaker_gate::RiskPnLCircuitBreaker;

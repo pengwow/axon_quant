@@ -54,6 +54,12 @@ trading-backtest = ["dep:axon-backtest", "dep:axon-core"]
 # meta feature:启用所有 trading-* 适配器。CI 默认跑这个组合,使用方按需单选。
 # Stage A (Exchange) + Stage B (OMS) + Stage C (Backtest) 已交付。
 trading-all = ["trading-exchange", "trading-oms", "trading-backtest"]
+# Stage J:axon-risk 桥接适配器(包装 `axon_risk::circuit_breaker::CircuitBreaker`
+# 为 `RiskGate`)。默认禁用,使用方按需启用
+# `cargo build -p axon-llm --features trading-risk-extra`。
+# 启用时拉入 axon-risk(轻量级,无重传递依赖)。
+# 核心 lib 内的 `RejectionCircuitBreaker` 不依赖此 feature(零新增依赖)。
+trading-risk-extra = ["dep:axon-risk"]
 
 [dependencies]
 # 序列化
@@ -111,6 +117,9 @@ axon-core = { workspace = true, optional = true }
 # rust_decimal 是 axon-exchange / axon-oms 传递依赖,lib 的 f64 <-> Decimal 转换需直接访问
 # 显式声明保持类型稳定(避免传递依赖重命名时编译失败)。
 rust_decimal = { version = "1", features = ["serde-with-str"], optional = true }
+# Stage J:axon-risk 桥接(默认禁用,trading-risk-extra feature 启用时激活)
+# 包装 `axon_risk::circuit_breaker::CircuitBreaker` 为 `RiskGate`。
+axon-risk = { workspace = true, optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
@@ -139,8 +148,9 @@ name = "integrated_trading_demo"
 required-features = ["demo"]
 
 # Stage D 端到端 demo:LLM 工具 → RiskGate(CircuitBreaker 桥接)→ ExchangeTradingBackend → testnet。
-# 依赖 demo(trading LLM backend) + trading-exchange(ExchangeTradingBackend 适配 + BinanceAdapter)。
+# 依赖 demo(trading LLM backend) + trading-exchange(ExchangeTradingBackend 适配 + BinanceAdapter)
+# + trading-risk-extra(Stage J `RiskPnLCircuitBreaker`,包装 `axon_risk::CircuitBreaker` 为 `RiskGate`)。
 # 故意不依赖 trading-oms / trading-backtest,演示"真实交易所"主路径。
 [[example]]
 name = "live_trading_e2e"
-required-features = ["demo", "trading-exchange"]
+required-features = ["demo", "trading-exchange", "trading-risk-extra"]

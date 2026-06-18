@@ -39,8 +39,8 @@ use axon_llm::react_agent::ReActAgent;
 use axon_llm::trading::exchange::{ExchangeTradingBackend, SymbolMap};
 use axon_llm::trading::mock::MockTradingBackend;
 use axon_llm::trading::{
-    DailyCounter, PlaceOrderTool, QueryPortfolioTool, RiskGate, RiskLimits, SafetyMode,
-    TradingBackend,
+    DailyCounter, PlaceOrderTool, QueryPortfolioTool, RiskGate, RiskLimits, RiskPnLCircuitBreaker,
+    SafetyMode, TradingBackend,
 };
 use tracing::{info, warn};
 
@@ -166,25 +166,12 @@ fn backend_label() -> &'static str {
     }
 }
 
-// ── CircuitBreaker 桥接(Stage J 简化版)───────────────────
+// ── CircuitBreaker 桥接(Stage J)──────────────────────
 
-/// `RiskGate` 实现:桥接 `axon_risk::CircuitBreaker`
-///
-/// **不在 lib 暴露 `CircuitBreaker` 强依赖**:axon-llm 的 `RiskGate` 是
-/// 内部 trait,demo 侧把 `axon_risk::CircuitBreaker` 适配进来。
-struct CircuitBreakerGate {
-    cb: Arc<axon_risk::circuit_breaker::CircuitBreaker>,
-}
-
-impl RiskGate for CircuitBreakerGate {
-    fn is_blocked(&self) -> Option<String> {
-        if self.cb.is_active() {
-            Some("circuit breaker active (cooldown 未结束)".to_string())
-        } else {
-            None
-        }
-    }
-}
+// Stage J:`axon-llm` lib 已内置 `RiskPnLCircuitBreaker`(包装
+// `axon_risk::CircuitBreaker` 为 `RiskGate`),本 demo 直接用 lib 提供的
+// 适配器,不再重复实现。`trading-risk-extra` feature 必须启用,见
+// `Cargo.toml` 的 `required-features`。
 
 // ── 主流程 ────────────────────────────────────────────────
 
@@ -229,7 +216,7 @@ async fn run_demo(
         /* daily_loss_limit = */ 50.0,
         /* cooldown = */ Duration::from_secs(60),
     ));
-    let gate: Arc<dyn RiskGate> = Arc::new(CircuitBreakerGate { cb: cb.clone() });
+    let gate: Arc<dyn RiskGate> = Arc::new(RiskPnLCircuitBreaker::new(cb.clone()));
     info!("▶ 闸门: CircuitBreaker (daily_loss_limit=50, cooldown=60s);DryRun 不触发,真发前检查");
 
     // 2. 风控规则
@@ -295,7 +282,7 @@ async fn run_demo(
     warn!("CircuitBreaker 已被触发(daily_pnl=-100 超过 daily_loss_limit=50)");
 
     // 直接演示闸门被激活(不通过 tool,仅展示效果)
-    let gate_after: Arc<dyn RiskGate> = Arc::new(CircuitBreakerGate { cb: cb.clone() });
+    let gate_after: Arc<dyn RiskGate> = Arc::new(RiskPnLCircuitBreaker::new(cb.clone()));
     match gate_after.is_blocked() {
         Some(reason) => println!("✓ 闸门已激活,后续真发路径会被阻断: {reason}"),
         None => println!("✗ 闸门未激活(异常,应已触发)"),

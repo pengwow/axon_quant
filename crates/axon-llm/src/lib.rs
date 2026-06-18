@@ -33,9 +33,10 @@ pub use prompt::PromptTemplate;
 pub use react_agent::{AgentResponse, ReActAgent, ReasoningStep};
 pub use tools::{Tool, ToolError, ToolResult};
 pub use trading::{
-    BalanceSnapshot, CurrencyBalance, DailyCounter, FailureInjector, MockTradingBackend, OrderAck,
+    BalanceSnapshot, CurrencyBalance, DailyCounter, FailureInjector, LabeledCounter,
+    LatencyHistogram, LatencySample, MetricKind, MetricSample, MockTradingBackend, OrderAck,
     OrderKind, OrderSide, OrderStatus, PlaceOrderArgs, PlaceOrderTool, PortfolioSnapshot,
-    PositionSnapshot, QueryPortfolioArgs, QueryPortfolioTool, RiskLimits, SafetyMode, TimeInForce,
-    TradingBackend, TradingError,
+    PositionSnapshot, QueryPortfolioArgs, QueryPortfolioTool, RiskLimits, RiskRule, SafetyMode,
+    TimeInForce, TradingBackend, TradingError, TradingMetrics,
 };
 pub use types::{FinishReason, LLMResponse, Message, Role, TokenUsage, ToolCall};
