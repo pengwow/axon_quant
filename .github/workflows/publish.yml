@@ -1,0 +1,160 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ==================== 验证版本 ====================
+  verify-version:
+    name: Verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_version: ${{ steps.version.outputs.tag_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract versions
+        id: version
+        run: |
+          # 从 Cargo.toml 获取版本
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          
+          # 从 tag 获取版本
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          
+          echo "cargo_version=$CARGO_VERSION"
+          echo "tag_version=$TAG_VERSION"
+          
+          echo "version=$CARGO_VERSION" >> $GITHUB_OUTPUT
+          echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Verify version match
+        run: |
+          if [ "${{ steps.version.outputs.version }}" != "${{ steps.version.outputs.tag_version }}" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "Cargo.toml version: ${{ steps.version.outputs.version }}"
+            echo "Tag version: ${{ steps.version.outputs.tag_version }}"
+            exit 1
+          fi
+          echo "Version verified: ${{ steps.version.outputs.version }}"
+
+  # ==================== 构建 Wheels ====================
+  build-wheels:
+    name: Build wheels (${{ matrix.os }})
+    needs: verify-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.python-version }}
+
+      - name: Install build tools
+        run: pip install maturin
+
+      - name: Build wheel
+        run: maturin build --release --out dist
+        env:
+          PYO3_PYTHON: ${{ matrix.python-version }}
+        continue-on-error: false
+
+      - name: Build wheel (retry 1)
+        if: failure()
+        run: maturin build --release --out dist
+        env:
+          PYO3_PYTHON: ${{ matrix.python-version }}
+        continue-on-error: false
+
+      - name: Build wheel (retry 2)
+        if: failure()
+        run: maturin build --release --out dist
+        env:
+          PYO3_PYTHON: ${{ matrix.python-version }}
+
+      - name: Build source distribution
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: maturin sdist --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
+          path: dist/*
+
+  # ==================== 汇总 Artifacts ====================
+  collect-artifacts:
+    name: Collect artifacts
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ==================== 发布到 PyPI ====================
+  publish-pypi:
+    name: Publish to PyPI
+    needs: collect-artifacts
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  # ==================== 创建 GitHub Release ====================
+  create-release:
+    name: Create GitHub Release
+    needs: [verify-version, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.verify-version.outputs.version, 'alpha') || contains(needs.verify-version.outputs.version, 'beta') || contains(needs.verify-version.outputs.version, 'rc') }}
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}

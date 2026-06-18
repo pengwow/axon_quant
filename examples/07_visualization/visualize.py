@@ -7,7 +7,7 @@
 
 运行方式：
     cd axon
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 examples/visualize.py
+    PYTHONPATH=examples .venv/bin/python examples/07_visualization/visualize.py
 
 设计要点：
 - **零外部数据**：使用合成数据运行 PPO 模型，生成可视化结果
@@ -20,14 +20,9 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent.parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
-
-import _common  # noqa: E402
-import _vec_env  # noqa: E402
+from axon_examples import common as _common
+from axon_examples import vec_env as _vec_env
 
 
 def _try_import_matplotlib():

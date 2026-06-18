@@ -132,6 +132,18 @@ python-publish: python-build ## 发布到 PyPI（正式）
 	$(VENV_PIP) install twine
 	$(VENV_PIP) run twine upload target/wheels/*
 
+# ==================== 示例 ====================
+.PHONY: example example-quick example-ppo example-sac
+
+example-quick: ## 运行快速入门示例
+	PYTHONPATH=examples $(VENV_PYTHON) examples/01_getting_started/01_quick_start.py
+
+example-ppo: ## 运行 PPO 训练示例
+	PYTHONPATH=examples $(VENV_PYTHON) examples/02_rl_training/train_ppo.py --timesteps 5000
+
+example-sac: ## 运行 SAC 训练示例
+	PYTHONPATH=examples $(VENV_PYTHON) examples/02_rl_training/train_sac.py --timesteps 5000
+
 # ==================== 性能基准 ====================
 .PHONY: bench bench-cmp bench-one
 
@@ -167,14 +179,30 @@ docs-install: ## 安装 mkdocs 依赖(运行一次或 requirements-docs.txt 变�
 	@python3 -m pip install -r requirements-docs.txt
 
 .PHONY: docs-serve
-docs-serve: docs-install ## 本地预览文档站(开发时用,自动 reload)
+docs-serve: docs-install ## 本地预览中文文档站(开发时用,自动 reload)
 	@echo "==> 启动 mkdocs 开发服务器,访问 http://localhost:8000"
 	@mkdocs serve
 
+.PHONY: docs-serve-en
+docs-serve-en: docs-install ## 本地预览英文文档站
+	@echo "==> 启动英文文档开发服务器,访问 http://localhost:8001"
+	@mkdocs serve -f mkdocs-en.yml -a 127.0.0.1:8001
+
 .PHONY: docs-build
-docs-build: docs-install ## 构建静态站点(产出在 site/ 目录)
+docs-build: docs-install ## 构建中文静态站点(产出在 site/ 目录)
 	@echo "==> 构建 mkdocs 静态站点"
 	@mkdocs build --strict
+
+.PHONY: docs-build-en
+docs-build-en: docs-install ## 构建英文静态站点(产出在 site/en/ 目录)
+	@echo "==> 构建英文 mkdocs 静态站点"
+	@mkdocs build -f mkdocs-en.yml --strict
+
+.PHONY: docs-build-all
+docs-build-all: docs-install ## 构建所有语言文档
+	@echo "==> 构建所有语言文档"
+	@mkdocs build --strict
+	@mkdocs build -f mkdocs-en.yml --strict
 
 .PHONY: docs-validate
 docs-validate: docs-build ## 严格校验 mkdocs 配置 + 链接 + 引用

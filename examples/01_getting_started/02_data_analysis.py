@@ -10,22 +10,15 @@ AXON 数据分析示例
 
 运行方式：
     cd axon
-    python examples/01_getting_started/02_data_analysis.py
+    PYTHONPATH=examples python examples/01_getting_started/02_data_analysis.py
 """
 
 from __future__ import annotations
 
 import random
-import sys
 import time
-from pathlib import Path
 
-# 设置路径
-_HERE = Path(__file__).resolve().parent.parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
-
-import _common  # noqa: E402
+from axon_examples import common as _common
 
 
 def run_fixed_action(env, action: float, max_steps: int = 500, seed: int = 42) -> dict:

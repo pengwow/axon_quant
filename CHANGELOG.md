@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **版本号统一**:`Cargo.toml`、`pyproject.toml`、`axon-python` 的版本号从 `0.1.0a1`/`0.1.0-alpha.1` 统一为 `0.1.0`。同步更新文档中的版本引用。
 - **TestPyPI 发布改为手动触发**(`.github/workflows/publish-test.yml`):移除 push 自动触发条件,仅保留 `workflow_dispatch` 手动触发。
 - **TestPyPI 发布恢复自动触发(版本变更时)**(`.github/workflows/publish-test.yml`):新增 `check-version` job 检测 `Cargo.toml` 版本号是否变更,仅在版本号变更时才触发构建和发布。支持 `workflow_dispatch` 手动触发。
+- **Examples 目录重构**:移除 `sys.path` 操作,改为使用 `axon_examples` 包。将 `_common.py` 和 `_vec_env.py` 移动到 `examples/axon_examples/` 包中,所有示例文件改为 `from axon_examples import common as _common` 导入。
+- **文档导航重构**:合并"了解 AXON"和"首页"内容。将 `what-is-axon.md` 的核心内容(核心特性、设计哲学、架构总览、性能指标)合并到 `index.md` 首页。移除"了解 AXON"导航分组,"安装与快速入门"和"5 分钟跑通"移至"快速开始"分组,"AI 原生核心设计"移至"用户指南"分组。删除 `user-guide/what-is-axon.md` 文件。Makefile 新增 `example-quick`、`example-ppo`、`example-sac` 示例运行目标。
+- **多语言支持**:新增英文文档目录 `docs/en/`，包含所有文档的完整英文翻译（包括代码注释）。中文文档目录改为 `docs/zh/`，与 `docs/en/` 同级。创建 `mkdocs-en.yml` 英文文档配置文件，包含完整的英文导航菜单（与中文版本一致）。`mkdocs.yml` 和 `mkdocs-en.yml` 都添加 `extra.alternate` 语言切换配置。Makefile 新增 `docs-serve-en`、`docs-build-en`、`docs-build-all` 多语言构建目标。GitHub Actions workflow 更新为支持多语言文档构建。所有英文文档已翻译完成，包括：首页、安装指南、快速开始、架构总览、AI 原生设计、策略研发全流程、LLM 智能体交易（OADER）、生产部署、传统策略迁移、API 参考、CLI 命令、配置参考、Python 绑定、常见问题、贡献指南、许可证、更新日志、测试计划、PyPI 发布指南、架构决策记录等。
+- **README 优化**:删除"为什么选择 AXON"对比表格，添加设计哲学、架构层级说明、层级详细说明、文档导航等章节，参考 `docs/zh/index.md` 优化内容结构。更新 Windows 平台支持描述（从"编译期拒绝"改为"运行时拒绝"）。新增英文版 README (`README_EN.md`)，在中英文 README 顶部添加语言切换链接。添加在线文档链接指向 `https://pengwow.github.io/axon_quant/`。
 - **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
   - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
   - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。

@@ -1,18 +1,15 @@
-# mkdocs 文档站配置
-# 部署:GitHub Pages(https://pengwow.github.io/axon_quant/)
-# 本地预览:make docs-serve
-# 构建:make docs-build
+# mkdocs English documentation configuration
+# Build: mkdocs build -f mkdocs-en.yml
 
 site_name: AXON
-site_description: 高性能量化交易与强化学习框架 — Rust 核心 + Python 接口
-site_url: https://pengwow.github.io/axon_quant/zh/
+site_description: AI-Native Quantitative Trading Framework — Rust Core + Python Interface
+site_url: https://pengwow.github.io/axon_quant/en/
 repo_url: https://github.com/pengwow/axon_quant
 repo_name: pengwow/axon_quant
-edit_uri: edit/main/docs/zh/
+edit_uri: edit/main/docs/en/
 
-# 不在 GitHub Pages 仓库根下,使用 project page
-docs_dir: docs/zh
-site_dir: site
+docs_dir: docs/en
+site_dir: site/en
 
 # 多语言支持
 extra:
@@ -23,10 +20,8 @@ extra:
     - name: English
       link: /axon_quant/en/
       lang: en
-  version:
-    provider: mike
 
-# 主题:Material(业内主流)
+# Theme: Material
 theme:
   name: material
   features:
@@ -51,22 +46,22 @@ theme:
     - navigation.indexes
     - toc.integrate
   palette:
-    # 亮色模式
+    # Light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: indigo
       accent: indigo
       toggle:
         icon: material/brightness-7
-        name: 切换到暗色模式
-    # 暗色模式
+        name: Switch to dark mode
+    # Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: indigo
       accent: indigo
       toggle:
         icon: material/brightness-4
-        name: 切换到亮色模式
+        name: Switch to light mode
   icon:
     repo: fontawesome/brands/github
     edit: material/pencil
@@ -75,12 +70,11 @@ theme:
     text: Roboto
     code: Roboto Mono
 
-# 插件
+# Plugins
 plugins:
   - search:
       lang:
         - en
-        - zh
   - git-revision-date-localized:
       enabled: true
       type: date
@@ -92,7 +86,7 @@ plugins:
   - autolinks
   - tags
 
-# Markdown 扩展
+# Markdown extensions
 markdown_extensions:
   - admonition
   - attr_list
@@ -131,48 +125,48 @@ markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
 
-# 导航
+# Navigation
 nav:
-  - 首页: index.md
-  - 快速开始:
-      - 安装与快速入门: getting-started/installation.md
-      - 5 分钟跑通: getting-started/quickstart.md
-  - 使用场景:
-      - 策略研发全流程: user-guide/strategy-development.md
-      - LLM 智能体驱动交易: user-guide/llm-trading/oader.md
-      - 生产部署与监控: user-guide/production.md
-      - 传统策略迁移: user-guide/traditional-strategy.md
-  - 用户指南:
-      - 架构总览: user-guide/architecture.md
-      - AI 原生核心设计: user-guide/ai-native-design.md
-      - LLM 交易:
-          - 架构总览: user-guide/llm-trading/overview.md
-          - 风控与安全: user-guide/llm-trading/risk-safety.md
-          - 指标与告警: user-guide/llm-trading/metrics-alerting.md
-          - 运维手册: user-guide/llm-trading/operations-runbook.md
-  - 参考:
-      - API 参考: reference/api-reference.md
-      - API 文档: reference/api.md
-      - CLI 命令: reference/cli.md
-      - Python 绑定: reference/python-bindings.md
-      - 配置参考: reference/configuration.md
-  - 架构决策:
-      - 索引: adr/index.md
-      - 0001 Rust 作为核心语言: adr/0001-rust-as-core-language.md
-      - 0002 Cargo Workspace 布局: adr/0002-cargo-workspace-layout.md
-      - 0003 Apache-2.0 单许可: adr/0003-license-dual-mit-apache.md
-  - 关于:
-      - 贡献指南: about/contributing.md
-      - 更新日志: about/changelog.md
-      - 许可证: about/license.md
-      - 测试计划: about/testing-plan.md
-      - PyPI 发布: about/pypi-publishing.md
-      - 常见问题: about/faq.md
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+  - Use Cases:
+      - Strategy Development: user-guide/strategy-development.md
+      - LLM Agent Trading: user-guide/llm-trading/oader.md
+      - Production Deployment: user-guide/production.md
+      - Traditional Strategy: user-guide/traditional-strategy.md
+  - User Guide:
+      - Architecture Overview: user-guide/architecture.md
+      - AI-Native Design: user-guide/ai-native-design.md
+      - LLM Trading:
+          - Overview: user-guide/llm-trading/overview.md
+          - Risk & Safety: user-guide/llm-trading/risk-safety.md
+          - Metrics & Alerting: user-guide/llm-trading/metrics-alerting.md
+          - Operations: user-guide/llm-trading/operations-runbook.md
+  - Reference:
+      - API Reference: reference/api-reference.md
+      - API Docs: reference/api.md
+      - CLI Commands: reference/cli.md
+      - Python Bindings: reference/python-bindings.md
+      - Configuration: reference/configuration.md
+  - Architecture Decisions:
+      - Index: adr/index.md
+      - 0001 Rust as Core Language: adr/0001-rust-as-core-language.md
+      - 0002 Cargo Workspace Layout: adr/0002-cargo-workspace-layout.md
+      - 0003 Apache-2.0 License: adr/0003-license-dual-mit-apache.md
+  - About:
+      - Contributing: about/contributing.md
+      - Changelog: about/changelog.md
+      - License: about/license.md
+      - Testing Plan: about/testing-plan.md
+      - PyPI Publishing: about/pypi-publishing.md
+      - FAQ: about/faq.md
 
-# 版权
+# Copyright
 copyright: Copyright &copy; 2026 AXON Authors. Apache-2.0 License.
 
-# 排除内部 spec/plan(已移到 .axon-internal/)
+# Exclude internal spec/plan
 exclude_docs: |
   .axon-internal/
   superpowers/

@@ -10,21 +10,14 @@ AXON 快速入门示例
 
 运行方式：
     cd axon
-    python examples/01_getting_started/01_quick_start.py
+    PYTHONPATH=examples python examples/01_getting_started/01_quick_start.py
 """
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
 
-# 设置路径，让 Python 找到 axon_rl 扩展和 _common 工具
-_HERE = Path(__file__).resolve().parent.parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
-
-import _common  # noqa: E402
+from axon_examples import common as _common
 
 
 def main() -> int:

@@ -8,21 +8,14 @@
 
 运行方式：
     cd axon
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 examples/random_agent.py
+    PYTHONPATH=examples .venv/bin/python examples/02_rl_training/random_agent.py
 """
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
 
-# ── 路径设置：让 `import _common` 走 examples 目录 ──
-_HERE = Path(__file__).resolve().parent.parent
-if str(_HERE) not in sys.path:
-    sys.path.insert(0, str(_HERE))
-
-import _common  # noqa: E402
+from axon_examples import common as _common
 
 
 def main() -> int:
