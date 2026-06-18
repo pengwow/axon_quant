@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 /// AXON Quant Python 模块(原生扩展,由 __init__.py 导入并重新导出)
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__version__", "0.1.0a1")?;
+    m.add("__version__", "0.1.0")?;
 
     // axon-rl 子模块（使用 #[pymodule] 函数）
     let rl_module = PyModule::new(m.py(), "rl")?;

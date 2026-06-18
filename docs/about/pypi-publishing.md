@@ -20,7 +20,7 @@ PYO3_PYTHON=.venv/bin/python .venv/bin/maturin build --release
 
 wheel 文件会生成在 `target/wheels/` 目录下，文件名格式：
 ```
-axon_quant-0.1.0a1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+axon_quant-0.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 ```
 
 ## 发布到 PyPI
@@ -55,8 +55,8 @@ twine upload target/wheels/*
 
 ```bash
 # 创建标签
-git tag v0.1.0a1
-git push origin v0.1.0a1
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 **注意**：当前的 release.yml 需要更新以正确使用 maturin。
@@ -66,17 +66,14 @@ git push origin v0.1.0a1
 ### 版本号格式
 
 项目使用语义化版本：
-- `0.1.0a1`：Alpha 版本
-- `0.1.0b1`：Beta 版本
-- `0.1.0rc1`：Release Candidate
 - `0.1.0`：正式版本
+- `0.1.1`：补丁版本
+- `0.2.0`：次版本
 
 ### 更新版本
 
-1. **Cargo.toml**：`version = "0.1.0-alpha.1"`
-2. **pyproject.toml**：`version = "0.1.0a1"`
-
-**注意**：Python 使用 `a1` 格式，Rust 使用 `0.1.0-alpha.1` 格式。
+1. **Cargo.toml**：`version = "0.1.0"`
+2. **pyproject.toml**：`version = "0.1.0"`
 
 ## 平台支持
 

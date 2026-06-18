@@ -681,21 +681,21 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. 版本兼容性
 
-AXON 当前版本为 `0.1.0a1`，各 crate 版本统一：
+AXON 当前版本为 `0.1.0`，各 crate 版本统一：
 
 | Crate | 版本 | 最低 Rust 版本 |
 |-------|------|---------------|
-| axon-core | 0.1.0a1 | 1.75 |
-| axon-rl | 0.1.0a1 | 1.75 |
-| axon-llm | 0.1.0a1 | 1.75 |
-| axon-inference | 0.1.0a1 | 1.75 |
-| axon-exchange | 0.1.0a1 | 1.75 |
-| axon-ensemble | 0.1.0a1 | 1.75 |
-| axon-explain | 0.1.0a1 | 1.75 |
-| axon-backtest | 0.1.0a1 | 1.75 |
-| axon-hpo | 0.1.0a1 | 1.75 |
-| axon-walk-forward | 0.1.0a1 | 1.75 |
-| axon-tracker | 0.1.0a1 | 1.75 |
+| axon-core | 0.1.0 | 1.75 |
+| axon-rl | 0.1.0 | 1.75 |
+| axon-llm | 0.1.0 | 1.75 |
+| axon-inference | 0.1.0 | 1.75 |
+| axon-exchange | 0.1.0 | 1.75 |
+| axon-ensemble | 0.1.0 | 1.75 |
+| axon-explain | 0.1.0 | 1.75 |
+| axon-backtest | 0.1.0 | 1.75 |
+| axon-hpo | 0.1.0 | 1.75 |
+| axon-walk-forward | 0.1.0 | 1.75 |
+| axon-tracker | 0.1.0 | 1.75 |
 | axon-registry | 0.1.0a1 | 1.75 |
 | axon-distributed | 0.1.0a1 | 1.75 |
 | axon-monitor | 0.1.0a1 | 1.75 |

@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rustdoc 链接修复**(`crates/axon-llm/src/config.rs`):修复 `backends[0]` 在 rustdoc 中被误解析为链接的问题,用反引号包裹为 `backends[0]`。
 - **Windows 编译兼容性修复**(`crates/axon-inference/src/affinity.rs`):将 Windows 平台的 CPU 亲和性从编译期拒绝(`compile_error!`)改为运行时拒绝(返回 `Err(AffinityError::NotAvailable)`),解决 Windows 环境下 `axon-inference` 无法编译的问题。更新模块文档说明 Windows 现在是运行时拒绝。
 - **GitHub Actions 构建重试**(`.github/workflows/publish-test.yml`):为 `maturin build` 添加 3 次重试机制(使用 `if: failure()` 条件步骤),应对临时网络问题(crate 下载失败)。修复 Windows PowerShell 不支持 bash `for` 循环的兼容性问题。
+- **PyPI 许可证文件修复**(`pyproject.toml`):添加 `license-files = ["LICENSE"]` 字段,解决 TestPyPI 上传时报错 "License-File LICENSE does not exist in distribution file" 的问题。
+- **版本号统一**:`Cargo.toml`、`pyproject.toml`、`axon-python` 的版本号从 `0.1.0a1`/`0.1.0-alpha.1` 统一为 `0.1.0`。同步更新文档中的版本引用。
+- **TestPyPI 发布改为手动触发**(`.github/workflows/publish-test.yml`):移除 push 自动触发条件,仅保留 `workflow_dispatch` 手动触发。
+- **TestPyPI 发布恢复自动触发(版本变更时)**(`.github/workflows/publish-test.yml`):新增 `check-version` job 检测 `Cargo.toml` 版本号是否变更,仅在版本号变更时才触发构建和发布。支持 `workflow_dispatch` 手动触发。
 - **`Llm*` → `LLM*` 重命名(breaking)**:全项目把 CamelCase `Llm` 前缀统一改为大写 `LLM`,与 LLM 行业惯例(LLM/Llama/LLaMA 一致使用全大写)对齐。涉及 12 个文件 243 处替换:
   - Rust 结构体:`LlmConfig` → `LLMConfig`(crates/axon-llm/src/config.rs),`LlmConfigOverride` → `LLMConfigOverride`,`PyLlmBackend` → `PyLLMBackend`(src/python/{mod,backend}.rs)。
   - PyO3 `pyclass(name = ...)` 暴露给 Python 的类名同步更新:`name = "LlmBackend"` → `"LLMBackend"`,`name = "LlmMessage"` → `"LLMMessage"`(src/python/backend.rs),所以 `repr(backend)` 现在是 `LLMBackend(OpenAICompatBackend)`,`repr(message)` 是 `LLMMessage(role=..., content=...)`。
