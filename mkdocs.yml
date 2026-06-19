@@ -12,7 +12,7 @@ edit_uri: edit/main/docs/zh/
 
 # 不在 GitHub Pages 仓库根下,使用 project page
 docs_dir: docs/zh
-site_dir: site
+site_dir: site/zh
 
 # 多语言支持
 extra:

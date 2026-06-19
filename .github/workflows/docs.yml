@@ -1,17 +1,30 @@
 name: Documentation
 
 # 触发条件:
-# 1. push 到 main 且改动 docs/ 或 mkdocs.yml → 自动部署
-# 2. 手动触发(workflow_dispatch)
+# 1. push 到 main/develop 且改动 docs/ 或 mkdocs.yml → 自动部署
+# 2. PR 到 main → 构建检查(不部署)
+# 3. 手动触发(workflow_dispatch)
 on:
   push:
     branches:
       - main
+      - develop
     paths:
-      - 'docs/**'
+      - 'docs/zh/**'
+      - 'docs/en/**'
       - 'mkdocs.yml'
+      - 'mkdocs-en.yml'
       - 'requirements-docs.txt'
       - '.github/workflows/docs.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docs/zh/**'
+      - 'docs/en/**'
+      - 'mkdocs.yml'
+      - 'mkdocs-en.yml'
+      - 'requirements-docs.txt'
   workflow_dispatch:
 
 # 权限:允许写 GitHub Pages
@@ -53,9 +66,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-docs.txt
 
+      - name: Clean site directory
+        run: rm -rf site
+
       - name: Build site
         run: |
           mkdocs build --strict
+          mkdocs build -f mkdocs-en.yml --strict
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -68,6 +85,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
