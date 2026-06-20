@@ -5,12 +5,32 @@ edition.workspace = true
 rust-version.workspace = true
 description = "风控引擎：预交易检查、熔断器、仓位限制、VaR"
 
+[features]
+default = []
+# Stage 3:PyO3 Python 绑定(`axon_quant.risk` 子模块)
+#
+# 注:risk 是纯计算(无 Arrow/Parquet),只需 pyo3。
+# 不需要 `pyo3-arrow` / `arrow-pyarrow`(参照 axon-data 注释)。
+#
+# 注:**不**启用 `extension-module` feature(与 axon-data 一致),
+# 它会让 `cargo test` 找不到 Python lib 符号。`extension-module`
+# 只在 maturin 构建 cdylib 时由 `axon-python` crate 统一开启。
+#
+# 注:启用 `auto-initialize` 让 `cargo test` 内部的 `#[test]` 调
+# `Python::attach(...)` 时自动初始化解释器(否则需手工 `Python::initialize()`)。
+# 在 cdylib 模式下,axon-python 加载 `_native.so` 时 Python 解释器已就绪,
+# `auto-initialize` 是 no-op 不会重复 init,所以不冲突。
+python = ["dep:pyo3"]
+
 [dependencies]
 axon-core = { path = "../axon-core" }
 parking_lot = "0.12"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
+
+# Stage 3:PyO3 绑定(纯计算,无 Arrow/Parquet 依赖)
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

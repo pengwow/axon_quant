@@ -135,6 +135,167 @@ except axon_quant.backtest.BacktestError as e:  # 实际是 Exception 子类
 | `Matching` | L1/L2 撮合错误(订单未找到 / 非法价格 / 非法数量) |
 | `MatchingL3` | L3 多资产撮合错误(资产未注册 / 跨资产参数非法) |
 
+### `axon_quant.risk`(Stage 3 交付)
+
+预交易风控引擎,含 8 项风控阈值 + 独立熔断器 + 风险指标聚合 + 组合监控告警。
+
+| 类 | 说明 |
+|----|------|
+| `DefaultRiskEngine` | 风控主类:`check_order` / `check_portfolio` / `update_daily_pnl` / `reset_daily` / `metrics` |
+| `RiskConfig` | 8 项风控阈值配置(单标持仓 / 总敞口 / 单笔价值 / 杠杆 / 回撤 / 日内亏损 / 集中度 / 熔断冷却) |
+| `CircuitBreaker` | 独立熔断器:`check_and_trigger` / `reset` / `is_active`(不依赖 `DefaultRiskEngine`) |
+| `RiskMetrics` | 风险指标聚合(NAV / 杠杆 / 回撤 / 日内 PnL / VaR(95) / 集中度) |
+| `RiskResult` | 检查结果(Allow / Reject(reason) / Warn(msg)),用 `kind` 标签模式(非 PyO3 enum) |
+| `RiskReason` | 拒绝原因(8 个变体扁平化):`OrderTooLarge` / `PositionLimitExceeded` / `MaxLeverageExceeded` / `MaxDrawdownExceeded` / `DailyPnLLimit` / `CircuitBreakerActive` / `ConcentrationTooHigh` / `InsufficientMargin` |
+| `RiskError` | 风控异常(继承 `Exception`,**不**继承 `AxonError`,避免 cargo 循环) |
+| `make_order(...)` | 工厂函数,返回订单 dict(限价/市价) |
+| `make_portfolio(...)` | 工厂函数,返回最简 portfolio dict(只填 base_currency / commission_rate) |
+| `make_portfolio_with_positions(...)` | 工厂函数,返回含 cash + positions 的 portfolio dict |
+| `make_risk_config(...)` | 工厂函数,返回 `RiskConfig` 实例 |
+| `make_circuit_breaker(...)` | 工厂函数,返回 `CircuitBreaker` 实例 |
+
+#### 示例:预交易风控 + 熔断 + 风险指标
+
+```python
+from axon_quant.risk import (
+    DefaultRiskEngine, RiskConfig, CircuitBreaker,
+    RiskResult, RiskReason, RiskMetrics, RiskError,
+    make_order, make_portfolio, make_portfolio_with_positions,
+    make_risk_config, make_circuit_breaker,
+)
+
+# 1) 构造风控引擎
+engine = DefaultRiskEngine(make_risk_config(
+    max_order_value=10_000.0,     # 单笔订单最大价值
+    max_leverage=2.0,              # 最大杠杆倍数
+    max_daily_loss=5_000.0,        # 日内最大亏损(触发熔断)
+    max_concentration=0.30,        # 单一标的占组合最大比例
+))
+
+# 2) 构造订单 + 组合
+order = make_order(
+    id=1, symbol="BTC-USDT", side="Buy",
+    type="limit", price=100.0, quantity=1.0,
+)
+portfolio = make_portfolio(
+    base_currency="USD",
+    commission_rate=0.001,
+    cash={"USD": 100_000.0},
+)
+
+# 3) 预交易检查
+result = engine.check_order(order, portfolio)
+if result.is_allow:
+    print("Order allowed")
+elif result.is_reject:
+    reason = result.reason
+    print(f"Rejected: {reason.kind}")  # e.g. "OrderTooLarge"
+else:
+    print(f"Warning: {result.message}")
+```
+
+#### 累计日内 PnL 触发熔断
+
+```python
+# 触发日内亏损超阈值 → engine.check_order() 拒绝
+engine.update_daily_pnl(2_000.0)    # 累计盈利
+engine.update_daily_pnl(-7_500.0)   # 累计亏损超 5_000 → 熔断
+r = engine.check_order(order, portfolio)
+assert r.is_reject and r.reason.kind == "CircuitBreakerActive"
+
+# 重置日内状态(不重置 VaR 历史窗口)
+engine.reset_daily()
+```
+
+#### RiskReason 字段访问
+
+```python
+reason = RiskReason.from_dict({
+    "kind": "OrderTooLarge",
+    "max": 10_000.0,
+    "actual": 20_000.0,
+})
+assert reason.kind == "OrderTooLarge"
+assert reason.get("max") == 10_000.0
+assert reason.get("actual") == 20_000.0
+d = reason.to_dict()  # {"kind": "OrderTooLarge", "max": 10000.0, "actual": 20000.0}
+```
+
+#### RiskMetrics 独立类
+
+```python
+# 引擎内部产出
+m_dict = engine.metrics(portfolio)
+# {"total_exposure": 100000.0, "leverage": 1.5, "current_drawdown": 0.05,
+#  "daily_realized_pnl": 500.0, "var_95": 1500.0,
+#  "concentration": {"BTC-USDT": 0.45, "ETH-USDT": 0.20}}
+
+# 独立构造(测试 / 序列化的反序列化场景)
+m = RiskMetrics.from_dict(m_dict)
+assert m.total_exposure == 100_000.0
+assert m.leverage == 1.5
+assert m.concentration["BTC-USDT"] == 0.45
+```
+
+#### 独立 CircuitBreaker(不依赖 engine)
+
+```python
+cb = make_circuit_breaker(daily_loss_limit=10_000.0, cooldown_seconds=3600)
+cb.check_and_trigger(-5_000.0)   # 不到阈值,未激活
+assert cb.is_active is False
+cb.check_and_trigger(-15_000.0)  # 触发
+assert cb.is_active is True
+cb.reset()                       # 强制重置
+assert cb.is_active is False
+```
+
+#### Portfolio dict 协议
+
+```python
+# 最简(只填必填字段)
+make_portfolio(base_currency="USD", commission_rate=0.001)
+
+# 含 cash
+make_portfolio(
+    base_currency="USD",
+    commission_rate=0.001,
+    cash={"USD": 100_000.0, "BTC": 1.5},
+)
+
+# 含 cash + positions
+make_portfolio_with_positions(
+    base_currency="USD",
+    cash={"USD": 50_000.0},
+    positions={
+        "BTC-USDT": {
+            "quantity": 1.0,
+            "avg_cost": 50_000.0,
+            "market_price": 55_000.0,  # 可选
+        },
+    },
+    commission_rate=0.0,
+)
+```
+
+#### `RiskError` 异常体系
+
+`RiskError` **直接**继承 builtin `Exception`(`PyException` 子类),**不**继承 Stage 1 `AxonError` 基类。设计原因:`axon-risk` 反向依赖 `axon-python::AxonError` 会造成 cargo 循环(`axon-python` 依赖 `axon-risk`),所以 Rust 侧不硬依赖。
+
+```python
+try:
+    engine.check_order(bad_order, portfolio)
+except axon_quant.risk.RiskError as e:  # 实际是 Exception 子类
+    code = e.args[0]   # e.g. "OrderRejected" / "CircuitBreakerActive"
+    msg = e.args[1]    # e.g. "[OrderRejected] Order too large: ..."
+```
+
+| 错误码 | 含义 |
+|--------|------|
+| `CircuitBreakerActive` | 熔断器激活,订单被拒 |
+| `OrderRejected` | 订单被风控拒绝 |
+| `ConfigInvalid` | 风控配置非法 |
+| `Overflow` | 数值溢出 |
+
 ### `axon_quant.rl`
 
 - `AxonEnv` —— Gymnasium 兼容环境

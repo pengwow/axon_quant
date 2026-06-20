@@ -83,5 +83,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_backtest::python::register_module(&backtest_module)?;
     m.add_submodule(&backtest_module)?;
 
+    // Stage 3:`axon-risk` 子模块
+    // 注:axon-risk 内部已注册 error/config/engine/circuit_breaker/metrics
+    // 五个 Python 子模块,这里只调 `register_module` 把 `risk` 挂到
+    // `_native` 下。设计约束同 backtest:RiskError 不继承 AxonError,
+    // axon-risk 不依赖 axon-python(避免 cargo 循环)。
+    let risk_module = PyModule::new(m.py(), "risk")?;
+    axon_risk::python::register_module(&risk_module)?;
+    m.add_submodule(&risk_module)?;
+
     Ok(())
 }

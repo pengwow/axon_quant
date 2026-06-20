@@ -34,6 +34,8 @@ python = [
     "dep:axon-data",
     # Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
     "dep:axon-backtest",
+    # Stage 3:`axon-risk` 暴露为 `_native.risk` 子模块
+    "dep:axon-risk",
 ]
 
 [dependencies]
@@ -53,3 +55,7 @@ axon-data = { workspace = true, optional = true, features = ["python"] }
 # Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
 # 注:axon-backtest 的 `python` feature 是必须的,否则其子模块不会编译
 axon-backtest = { workspace = true, optional = true, features = ["python"] }
+# Stage 3:`axon-risk` 暴露为 `_native.risk` 子模块
+# 设计约束:axon-risk 不依赖 axon-python(避免 cargo 循环),
+# RiskError 继承 builtin PyException 而非 AxonError。
+axon-risk = { workspace = true, optional = true, features = ["python"] }

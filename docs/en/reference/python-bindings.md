@@ -273,6 +273,123 @@ except axon_quant.backtest.BacktestError as e:  # Actually an Exception subclass
 | `Matching` | L1/L2 matching error (order not found / invalid price / invalid quantity) |
 | `MatchingL3` | L3 multi-asset matching error (asset not registered / invalid cross-asset params) |
 
+### axon_quant.risk (Stage 3 delivery)
+
+Pre-trade risk engine, with 8 risk thresholds + standalone circuit breaker + risk metrics aggregation + portfolio monitoring alerts.
+
+| Class | Description |
+|-------|-------------|
+| `DefaultRiskEngine` | Main risk engine: `check_order` / `check_portfolio` / `update_daily_pnl` / `reset_daily` / `metrics` |
+| `RiskConfig` | 8 risk threshold configuration (position per instrument / total exposure / order value / leverage / drawdown / daily loss / concentration / circuit breaker cooldown) |
+| `CircuitBreaker` | Standalone circuit breaker: `check_and_trigger` / `reset` / `is_active` (does not depend on `DefaultRiskEngine`) |
+| `RiskMetrics` | Risk metrics aggregation (NAV / leverage / drawdown / daily PnL / VaR(95) / concentration) |
+| `RiskResult` | Check result (Allow / Reject(reason) / Warn(msg)), uses `kind` tag pattern (not PyO3 enum) |
+| `RiskReason` | Reject reason (8 variants flattened): `OrderTooLarge` / `PositionLimitExceeded` / `MaxLeverageExceeded` / `MaxDrawdownExceeded` / `DailyPnLLimit` / `CircuitBreakerActive` / `ConcentrationTooHigh` / `InsufficientMargin` |
+| `RiskError` | Risk exception (inherits `Exception`, **not** `AxonError`, to avoid cargo cycles) |
+| `make_order(...)` | Factory function, returns order dict (limit / market) |
+| `make_portfolio(...)` | Factory function, returns minimal portfolio dict (only base_currency / commission_rate) |
+| `make_portfolio_with_positions(...)` | Factory function, returns portfolio dict with cash + positions |
+| `make_risk_config(...)` | Factory function, returns `RiskConfig` instance |
+| `make_circuit_breaker(...)` | Factory function, returns `CircuitBreaker` instance |
+
+#### Example: pre-trade risk check + circuit breaker + risk metrics
+
+```python
+from axon_quant.risk import (
+    DefaultRiskEngine, RiskConfig, CircuitBreaker,
+    RiskResult, RiskReason, RiskMetrics, RiskError,
+    make_order, make_portfolio, make_portfolio_with_positions,
+    make_risk_config, make_circuit_breaker,
+)
+
+# 1) Create risk engine
+engine = DefaultRiskEngine(make_risk_config(
+    max_order_value=10_000.0,     # max order value
+    max_leverage=2.0,              # max leverage multiplier
+    max_daily_loss=5_000.0,        # max daily loss (triggers circuit breaker)
+    max_concentration=0.30,        # max concentration of single instrument
+))
+
+# 2) Construct order + portfolio
+order = make_order(
+    id=1, symbol="BTC-USDT", side="Buy",
+    type="limit", price=100.0, quantity=1.0,
+)
+portfolio = make_portfolio(
+    base_currency="USD",
+    commission_rate=0.001,
+    cash={"USD": 100_000.0},
+)
+
+# 3) Pre-trade check
+result = engine.check_order(order, portfolio)
+if result.is_allow:
+    print("Order allowed")
+elif result.is_reject:
+    reason = result.reason
+    print(f"Rejected: {reason.kind}")  # e.g. "OrderTooLarge"
+else:
+    print(f"Warning: {result.message}")
+```
+
+#### Cumulative daily PnL triggers circuit breaker
+
+```python
+# Cumulative daily loss exceeds threshold → engine.check_order() rejects
+engine.update_daily_pnl(2_000.0)    # cumulative profit
+engine.update_daily_pnl(-7_500.0)   # cumulative loss exceeds 5_000 → tripped
+r = engine.check_order(order, portfolio)
+assert r.is_reject and r.reason.kind == "CircuitBreakerActive"
+
+# Reset daily state (does not reset VaR history window)
+engine.reset_daily()
+```
+
+#### RiskReason field access
+
+```python
+reason = RiskReason.from_dict({
+    "kind": "OrderTooLarge",
+    "max": 10_000.0,
+    "actual": 20_000.0,
+})
+assert reason.kind == "OrderTooLarge"
+assert reason.get("max") == 10_000.0
+assert reason.get("actual") == 20_000.0
+d = reason.to_dict()  # {"kind": "OrderTooLarge", "max": 10000.0, "actual": 20000.0}
+```
+
+#### Standalone CircuitBreaker (does not depend on engine)
+
+```python
+cb = make_circuit_breaker(daily_loss_limit=10_000.0, cooldown_seconds=3600)
+cb.check_and_trigger(-5_000.0)   # not at threshold, inactive
+assert cb.is_active is False
+cb.check_and_trigger(-15_000.0)  # triggered
+assert cb.is_active is True
+cb.reset()                       # force reset
+assert cb.is_active is False
+```
+
+#### `RiskError` exception system
+
+`RiskError` **directly** inherits builtin `Exception` (a `PyException` subclass), **not** the Stage 1 `AxonError` base class. Reason: `axon-risk` reverse-depending on `axon-python::AxonError` would create a cargo cycle (`axon-python` depends on `axon-risk`), so the Rust side does not hard-depend on it.
+
+```python
+try:
+    engine.check_order(bad_order, portfolio)
+except axon_quant.risk.RiskError as e:  # actually Exception subclass
+    code = e.args[0]   # e.g. "OrderRejected" / "CircuitBreakerActive"
+    msg = e.args[1]    # e.g. "[OrderRejected] Order too large: ..."
+```
+
+| Error Code | Meaning |
+|------------|---------|
+| `CircuitBreakerActive` | Circuit breaker is active, order rejected |
+| `OrderRejected` | Order rejected by risk check |
+| `ConfigInvalid` | Risk config is invalid |
+| `Overflow` | Numeric overflow |
+
 ## Type Mapping
 
 | Python Type | Rust Type | Description |

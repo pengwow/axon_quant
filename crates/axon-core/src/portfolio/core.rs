@@ -209,6 +209,21 @@ impl Portfolio {
         self.positions.retain(|_, p| !p.is_empty());
     }
 
+    /// 添加或替换一个持仓(Stage 3 PyO3 绑定需要,Python 端从 dict 构造 `Portfolio`)。
+    ///
+    /// 注:此方法是 [`Self::apply_trade`] 的"单笔版"——直接写入一个完整 `Position`,
+    /// 不走 `apply_trade` 的加权平均成本/佣金/已实现盈亏逻辑,适用于
+    /// "风控预交易检查"等"读"路径(不修改 `Portfolio`)。
+    /// 真实成交更新应走 `apply_trade`,以保证内部不变量。
+    ///
+    /// 若 `symbol` 已存在则覆盖;空仓(`is_empty() == true`)不会插入。
+    pub fn add_position(&mut self, position: Position) {
+        if position.is_empty() {
+            return;
+        }
+        self.positions.insert(position.symbol.clone(), position);
+    }
+
     /// 获取某个符号的已实现盈亏
     pub fn realized_pnl(&self, symbol: &Symbol) -> i64 {
         self.positions

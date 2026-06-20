@@ -82,6 +82,18 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),
     })
     print(bt.run().final_nav)
+
+    # 风控引擎(Stage 3):预交易检查 + 熔断器 + 风险指标
+    from axon_quant.risk import (
+        DefaultRiskEngine, RiskConfig, CircuitBreaker,
+        make_order, make_portfolio, make_risk_config,
+    )
+    rengine = DefaultRiskEngine(make_risk_config(max_order_value=1000.0))
+    rorder = make_order(id=1, symbol="BTC-USDT", side="Buy",
+                        type="limit", price=100.0, quantity=1.0)
+    rportfolio = make_portfolio(base_currency="USD", cash={"USD": 100_000.0})
+    rresult = rengine.check_order(rorder, rportfolio)
+    print(rresult.is_allow)  # True
 """
 
 from __future__ import annotations
@@ -172,6 +184,7 @@ __all__ = [  # noqa: F405
     "__version__",
     "data",        # Stage 1
     "backtest",    # Stage 2
+    "risk",        # Stage 3
     "rl",
     "hpo",
     "walk_forward",
@@ -209,6 +222,19 @@ __all__ = [  # noqa: F405
     "SchemaField", # Stage 1
     "CacheStats",  # Stage 1
     "CacheControl",# Stage 1
+    # Stage 3:risk 顶层 API
+    "DefaultRiskEngine",
+    "RiskConfig",
+    "CircuitBreaker",
+    "RiskMetrics",
+    "RiskResult",
+    "RiskReason",
+    "RiskError",
+    "make_order",
+    "make_portfolio",
+    "make_portfolio_with_positions",
+    "make_risk_config",
+    "make_circuit_breaker",
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",
