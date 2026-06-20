@@ -3,6 +3,8 @@
 Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 
 子模块：
+- ``data`` — 数据服务（多源接入、L1/L2 缓存、PyArrow zero-copy，Stage 1）
+- ``backtest`` — 回测引擎（L1/L2/L3 撮合 + impact + BacktestEngine，Stage 2）
 - ``rl`` — Gymnasium 兼容的 RL 交易环境（TradingEnv / VecEnv）
 - ``hpo`` — 超参数优化（Optuna 集成 / 多目标 / 剪枝）
 - ``walk_forward`` — 滚动前向验证（purge / embargo / 泄漏检测）
@@ -20,6 +22,24 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         config={"initial_capital": 100_000.0, "max_steps": 1000},
         action_space={"type": "continuous", "min": -1.0, "max": 1.0},
     )
+
+    # 数据服务（Stage 1）:L1/L2 缓存 + PyArrow zero-copy
+    import datetime
+    from axon_quant.data import DataService, MockSource, Frequency, DataRequest
+    svc = (
+        DataService.new()
+        .register_source(MockSource.with_tick_series("btc", 1000, 1_000_000, lambda i: 100.0 + i))
+        .with_cache_capacity(64)
+    )
+    req = DataRequest(
+        "BTCUSDT",
+        datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc),
+        Frequency.Tick,
+    )
+    ds = svc.load(req)
+    print(ds.len, ds.checksum[:8])
+    batch = ds.to_arrow(0)  # zero-copy pyarrow.RecordBatch
 
     # LLM 后端:主动传参,避免依赖环境变量
     from axon_quant.llm import LLMConfig, make_backend, LLMMessage
@@ -45,6 +65,23 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         "price": 50000.0,
     })
     print(ack["status"])  # "DryRun"
+
+    # 回测引擎(Stage 2):L1 撮合 + 事件驱动回测
+    from axon_quant.backtest import (
+        L1MatchingEngine, BacktestEngine, limit_order, BacktestError,
+    )
+    engine = L1MatchingEngine()
+    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0))
+    result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    print(result["is_filled"], len(result["fills"]))  # True 1
+
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),
+    })
+    print(bt.run().final_nav)
 """
 
 from __future__ import annotations
@@ -58,12 +95,50 @@ from ._native import *  # noqa: F401, F403
 # 不直接 re-export 原生的 `_native.llm` / `_native.trading`。
 from ._native import (  # noqa: F401
     __version__,  # noqa: F401
+    backtest,      # Stage 2:axon-backtest 暴露
+    data,           # Stage 1:axon-data 暴露
     distributed,
     hpo,
     registry,
     rl,
     tracker,
     walk_forward,
+)
+
+# 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
+from .backtest import (  # noqa: F401
+    ArbitrageOpportunity,
+    AuctionResult,
+    BacktestEngine,
+    BacktestError,
+    CrossPair,
+    DarkOrder,
+    ImpactedMatchingEngine,
+    ImpactedMatchingEngineBuilder,
+    L1MatchingEngine,
+    L2MatchingEngine,
+    MultiAssetMatchingEngine,
+    OrderBookEntry,
+    RunResult,
+    RunStats,
+    limit_order,
+    market_order,
+)
+
+# 重新导出 data 顶层 Python API(包装 _native.data,Stage 1)
+from .data import (  # noqa: F401
+    AxonError,
+    CacheControl,
+    CacheStats,
+    DataError,
+    DataRequest,
+    DataService,
+    Dataset,
+    DataType,
+    Frequency,
+    MockSource,
+    SchemaField,
+    Tick,
 )
 
 # 重新导出 LLM 顶层 Python API(包装 _native.llm)
@@ -95,6 +170,8 @@ from .trading import (  # noqa: F401
 # `llm` / `trading` 这两个模块对象
 __all__ = [  # noqa: F405
     "__version__",
+    "data",        # Stage 1
+    "backtest",    # Stage 2
     "rl",
     "hpo",
     "walk_forward",
@@ -103,6 +180,35 @@ __all__ = [  # noqa: F405
     "distributed",
     "llm",
     "trading",
+    "AxonError",   # Stage 1:异常基类
+    "DataError",   # Stage 1:数据服务异常
+    # Stage 2:backtest 顶层 API
+    "L1MatchingEngine",
+    "L2MatchingEngine",
+    "MultiAssetMatchingEngine",
+    "ImpactedMatchingEngine",
+    "ImpactedMatchingEngineBuilder",
+    "OrderBookEntry",
+    "DarkOrder",
+    "CrossPair",
+    "AuctionResult",
+    "ArbitrageOpportunity",
+    "BacktestEngine",
+    "RunResult",
+    "RunStats",
+    "BacktestError",
+    "limit_order",
+    "market_order",
+    "DataService", # Stage 1
+    "DataRequest", # Stage 1
+    "DataType",    # Stage 1
+    "Frequency",   # Stage 1
+    "MockSource",  # Stage 1
+    "Tick",        # Stage 1
+    "Dataset",     # Stage 1
+    "SchemaField", # Stage 1
+    "CacheStats",  # Stage 1
+    "CacheControl",# Stage 1
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",

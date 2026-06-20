@@ -31,6 +31,9 @@ python = [
     "dep:axon-walk-forward",
     "dep:axon-distributed",
     "dep:axon-llm",
+    "dep:axon-data",
+    # Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
+    "dep:axon-backtest",
 ]
 
 [dependencies]
@@ -45,3 +48,8 @@ axon-hpo = { workspace = true, optional = true, features = ["python"] }
 axon-walk-forward = { workspace = true, optional = true, features = ["python"] }
 axon-distributed = { workspace = true, optional = true, features = ["python"] }
 axon-llm = { workspace = true, optional = true, features = ["python", "backends"] }
+# Stage 1:`axon-data` 暴露为 `_native.data` 子模块
+axon-data = { workspace = true, optional = true, features = ["python"] }
+# Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
+# 注:axon-backtest 的 `python` feature 是必须的,否则其子模块不会编译
+axon-backtest = { workspace = true, optional = true, features = ["python"] }

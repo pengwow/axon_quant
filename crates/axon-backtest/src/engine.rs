@@ -174,6 +174,16 @@ impl BacktestEngine {
         self.event_queue.len()
     }
 
+    /// 推入单个事件到事件队列
+    ///
+    /// 给 Python 绑定 / 外部调用方使用 —— 构造完整 `Event` 后追加到内部队列。
+    /// 时序由 `EventQueue` 保证:同一时间戳按 `seq` 升序出队(FIFO 语义)。
+    ///
+    /// 用途:Python 端可逐条 push 订单事件、成交事件等,而非一次性 `EventQueue::new()` + `push`。
+    pub fn push_event(&mut self, event: Event) {
+        self.event_queue.push(event);
+    }
+
     /// 当前统计快照
     pub fn stats(&self) -> &RunStats {
         &self.stats
@@ -673,5 +683,41 @@ mod tests {
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("BacktestEngineConfig"));
         assert!(dbg.contains("matching_engine"));
+    }
+
+    /// `push_event` 公开 API:逐条推入后 `pending_events` 单调递增
+    /// 用于 Python 绑定(`PyBacktestEngine::push_event`)的对外契约。
+    #[test]
+    fn test_push_event_increases_pending() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        assert_eq!(engine.pending_events(), 0);
+
+        let mut b = EventBuilder::new(0);
+        engine.push_event(b.order(Timestamp::from_nanos(1_000), 1, OrderAction::Cancelled(1)));
+        assert_eq!(engine.pending_events(), 1);
+
+        engine.push_event(b.order(Timestamp::from_nanos(2_000), 2, OrderAction::Cancelled(2)));
+        assert_eq!(engine.pending_events(), 2);
+    }
+
+    /// `push_event` 推入的事件能被 `run()` 正常消费
+    #[test]
+    fn test_push_event_consumed_by_run() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        let mut b = EventBuilder::new(0);
+        engine.push_event(b.order(Timestamp::from_nanos(1_000), 1, OrderAction::Cancelled(1)));
+        engine.push_event(b.order(
+            Timestamp::from_nanos(2_000),
+            2,
+            OrderAction::Modified {
+                order_id: 2,
+                new_quantity: Quantity::from_f64(5.0),
+            },
+        ));
+
+        let result = engine.run();
+        assert_eq!(result.events_processed, 2);
+        assert_eq!(result.orders_cancelled, 1);
+        assert_eq!(result.orders_modified, 1);
     }
 }

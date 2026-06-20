@@ -150,6 +150,7 @@ nav:
       - CLI Commands: reference/cli.md
       - Python Bindings: reference/python-bindings.md
       - Configuration: reference/configuration.md
+  - Benchmark: benchmark.md
   - Architecture Decisions:
       - Index: adr/index.md
       - 0001 Rust as Core Language: adr/0001-rust-as-core-language.md

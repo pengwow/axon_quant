@@ -145,7 +145,7 @@ example-sac: ## 运行 SAC 训练示例
 	PYTHONPATH=examples $(VENV_PYTHON) examples/02_rl_training/train_sac.py --timesteps 5000
 
 # ==================== 性能基准 ====================
-.PHONY: bench bench-cmp bench-one
+.PHONY: bench bench-cmp bench-one bench-report
 
 bench: ## 跑全 workspace bench(本地,不进 CI)
 	cargo bench --workspace --no-fail-fast -- --output-format bencher
@@ -153,6 +153,17 @@ bench: ## 跑全 workspace bench(本地,不进 CI)
 bench-cmp: ## 存 main baseline,用于 PR 对比
 	@echo "Saving baseline 'main'..."
 	cargo bench --workspace --no-fail-fast -- --save-baseline main
+
+bench-report: ## 跑基准测试并生成报告到 docs
+	@echo "Running benchmarks and generating reports..."
+	cargo bench --workspace --no-fail-fast
+	@echo "Copying reports to docs/zh/report and docs/en/report..."
+	@rm -rf docs/zh/report docs/en/report
+	@mkdir -p docs/zh/report docs/en/report
+	@cp -r target/criterion/* docs/zh/report/
+	@cp -r target/criterion/* docs/en/report/
+	@echo "Benchmark reports saved to docs/zh/report/ and docs/en/report/"
+	@echo "Report index: docs/zh/report/report/index.html"
 
 # 跑单个 bench(用法:make bench-one CRATE=axon-core BENCH=event_builder_tick)
 bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)

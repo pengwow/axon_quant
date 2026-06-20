@@ -30,7 +30,19 @@ use super::error::{MatchingError, MatchingResult};
 use super::types::{MatchFill, OrderBookLevel, SubmitResult};
 
 /// 撮合引擎 trait
-pub trait MatchingEngine {
+///
+/// # 自动 trait 约束
+///
+/// `Send + Sync` 是必要的:
+/// - Python 绑定(Stage 2 Task 8)中 [`crate::python::engine::PyBacktestEngine`]
+///   需要把 [`crate::engine::BacktestEngine`] 包在 `#[pyclass]` 中,
+///   pyo3 0.28 要求 `#[pyclass]` 自动派生 `Send + Sync`。
+/// - Box<dyn MatchingEngine> 是 BacktestEngineConfig 的字段,
+///   必须 Send + Sync 才能放进 PyBacktestEngine。
+///
+/// 由于所有已知实现(`L1MatchingEngine`)的字段都是 `Send + Sync`,
+/// 该约束对当前实现是"零成本"的;后续添加新实现时需保持线程安全语义。
+pub trait MatchingEngine: Send + Sync {
     /// 提交订单并执行撮合
     fn submit(&mut self, order: Order) -> SubmitResult;
 

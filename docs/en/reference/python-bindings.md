@@ -166,6 +166,113 @@ order_id = await adapter.send_order(
 )
 ```
 
+### axon_quant.backtest (Stage 2) — Event-Driven Backtest
+
+Backtest engine with L1/L2/L3 matching engines, market impact modeling, and event-driven replay loop.
+
+| Class | Description |
+|-------|-------------|
+| `L1MatchingEngine` | Price-time priority matching (basic) |
+| `L2MatchingEngine` | Advanced: `modify` / `from_entries` / `export_entries` / `volume_at_price` / `stats` / `location` |
+| `MultiAssetMatchingEngine` | Multi-asset routing + dark pool + batch auction + arbitrage detection |
+| `ImpactedMatchingEngine` | Impact-aware matching (linear / power_law models + Python custom models) |
+| `ImpactedMatchingEngineBuilder` | Builder-style construction of impact-aware engine |
+| `BacktestEngine` | Event-driven backtest main loop (`order_submitted` / `order_cancelled` / `order_modified` / `fill`) |
+| `RunResult` / `RunStats` | Backtest results (events_processed / fills / PnL / drawdown / final_nav) |
+| `BacktestError` | Matching exception (inherits `Exception`, **not** `AxonError`, to avoid cargo cycle) |
+| `OrderBookEntry` | L2 order book entry (for `from_entries` import) |
+| `DarkOrder` / `CrossPair` / `AuctionResult` / `ArbitrageOpportunity` | L3 dark pool / cross-asset / auction / arbitrage data types |
+| `limit_order(id, symbol, side, price, quantity, tif="GTC")` | Factory returning a limit order dict |
+| `market_order(id, symbol, side, quantity)` | Factory returning a market order dict (tif forced to IOC) |
+
+#### Example: Basic matching + impact
+
+```python
+from axon_quant.backtest import (
+    L1MatchingEngine, ImpactedMatchingEngineBuilder,
+    BacktestEngine, limit_order,
+)
+
+# 1) Basic matching
+engine = L1MatchingEngine()
+engine.submit(limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0))
+result = engine.submit(limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0))
+print(result["is_filled"], len(result["fills"]))  # True, 1
+
+# 2) Impact-aware (builder chain)
+ie = (ImpactedMatchingEngineBuilder()
+      .model_type("linear")
+      .coefficient(0.1)
+      .depth_levels(5)
+      .build())
+ie.submit(limit_order(3, "BTC-USDT", "Buy", 100.0, 1.0))
+print(ie.permanent_offset())  # Cumulative permanent impact offset
+
+# 3) Event-driven backtest
+bt = BacktestEngine(initial_cash=100_000.0)
+bt.push_event({
+    "type": "order_submitted",
+    "timestamp_ns": 1_000,
+    "order": limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0),
+})
+bt.push_event({
+    "type": "order_submitted",
+    "timestamp_ns": 2_000,
+    "order": limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0),
+})
+result = bt.run()
+print(result.events_processed, result.fills, result.final_nav)
+```
+
+#### Submit Order Return Protocol
+
+All `submit` calls uniformly return:
+
+```python
+{
+    "is_filled": bool,              # Fully filled
+    "is_partially_filled": bool,    # Partially filled
+    "remaining_quantity": float,    # Unfilled quantity
+    "fills": [                      # List of fills
+        {
+            "fill_id": int,
+            "taker_order_id": int,
+            "maker_order_id": int,
+            "price": float,
+            "quantity": float,
+            "taker_side": "BUY" | "SELL",  # Uppercase
+        },
+        ...
+    ],
+}
+```
+
+#### BacktestEngine Event Types
+
+| `type` field | Required fields | Meaning |
+|--------------|-----------------|---------|
+| `order_submitted` | `order: dict` | Submit an order |
+| `order_cancelled` | `order_id: int` | Cancel an order |
+| `order_modified` | `order_id: int` + `new_price` / `new_quantity` | Modify an order |
+| `fill` | `price` / `quantity` / `buyer_order_id` / `seller_order_id` | External fill (bypass matching) |
+
+#### `BacktestError` Exception System
+
+`BacktestError` inherits directly from builtin `Exception` (a `PyException` subclass) and **does not** inherit from the Stage 1 `AxonError` base class. Design rationale: having `axon-backtest` depend on `axon-python::AxonError` would create a cargo cycle (since `axon-python` depends on `axon-backtest`), so the Rust side keeps no hard dependency. The Python thin wrapper injects a pseudo-inheritance via `__bases__` as a fallback:
+
+```python
+try:
+    axon_quant.backtest.L1MatchingEngine().submit(bad_order)
+except axon_quant.backtest.BacktestError as e:  # Actually an Exception subclass
+    code = e.args[0]    # e.g. "Matching"
+    msg = e.args[1]     # e.g. "[Matching] invalid side: xxx"
+```
+
+| Error Code | Meaning |
+|------------|---------|
+| `Matching` | L1/L2 matching error (order not found / invalid price / invalid quantity) |
+| `MatchingL3` | L3 multi-asset matching error (asset not registered / invalid cross-asset params) |
+
 ## Type Mapping
 
 | Python Type | Rust Type | Description |
