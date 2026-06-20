@@ -1,11 +1,18 @@
 //! PlaceOrderTool:LLM 下单工具
 //!
-//! 行为按 `SafetyMode` 分支:
+//! 行为按 `SafetyMode` 分支(由 [`place_order_strategy`] 子模块的策略实现):
 //! - `DryRun`(默认):tracing 日志 + 返回 `status="DryRun"` 的 OrderAck,backend 不被调
 //! - `TwoPhase`:第一次返回 confirm_token,第二次带相同 token 才真发
 //! - `Direct`:直接调 backend,无任何拦截
 //!
 //! 三种模式都先经过 `RiskLimits` 预检。
+//!
+//! ## 模块结构
+//! - `place_order_tool`:本文件,持有共享状态(backend / risk / gate / metrics /
+//!   pending),并提供 `pub(crate)` 访问器给策略模块使用。
+//! - `place_order_strategy`:策略实现(DryRun / Direct / TwoPhase),
+//!   通过 `OrderExecutionStrategy` trait 抽象,消除原 `execute` 方法中
+//!   三大分支的重复代码。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,16 +21,16 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::json;
-use tracing::info;
 
 use crate::tools::{Tool, ToolError};
 use crate::trading::backend::{TradingBackend, TradingError};
 use crate::trading::circuit_breaker_gate::RejectionCircuitBreaker;
 use crate::trading::metrics::{RiskRule, TradingMetrics};
+use crate::trading::place_order_strategy;
 use crate::trading::safety::{
     AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode,
 };
-use crate::trading::types::{OrderAck, OrderSide, OrderStatus, PlaceOrderArgs};
+use crate::trading::types::{OrderAck, OrderSide, PlaceOrderArgs, PositionSnapshot};
 
 /// Place order 工具
 pub struct PlaceOrderTool {
@@ -146,28 +153,34 @@ impl PlaceOrderTool {
     }
 
     /// 镜像 DailyCounter 当前计数(Stage H metrics 用)
-    fn set_daily_metric(&self) {
+    pub(crate) fn set_daily_metric(&self) {
         if let Some(m) = &self.metrics {
             m.set_daily_orders_count(self.daily.today_count() as f64);
         }
     }
 
     /// 埋点:风控拒绝
-    fn record_risk_block_metric(&self, err: &TradingError) {
+    pub(crate) fn record_risk_block_metric(&self, err: &TradingError) {
         if let Some(m) = &self.metrics {
             m.record_risk_block(RiskRule::from_err_msg(&err.to_string()), self.mode_str());
         }
     }
 
     /// 埋点:风控闸门阻断
-    fn record_gate_block_metric(&self) {
+    pub(crate) fn record_gate_block_metric(&self) {
         if let Some(m) = &self.metrics {
             m.record_gate_block(self.mode_str());
         }
     }
 
     /// 埋点:下单结果(成功 / 失败统一入口)
-    fn record_order_metric(&self, symbol: &str, side: OrderSide, status: &str, latency_ns: u64) {
+    pub(crate) fn record_order_metric(
+        &self,
+        symbol: &str,
+        side: OrderSide,
+        status: &str,
+        latency_ns: u64,
+    ) {
         if let Some(m) = &self.metrics {
             m.record_order(
                 symbol,
@@ -180,14 +193,14 @@ impl PlaceOrderTool {
     }
 
     /// Stage J:连续拒绝熔断器计数(`RiskLimits::check` 失败时调)
-    fn record_breaker_rejection(&self) {
+    pub(crate) fn record_breaker_rejection(&self) {
         if let Some(b) = &self.rejection_breaker {
             b.record_rejection();
         }
     }
 
     /// Stage J:连续拒绝熔断器清零(下单成功 / 预检通过时调)
-    fn record_breaker_success(&self) {
+    pub(crate) fn record_breaker_success(&self) {
         if let Some(b) = &self.rejection_breaker {
             b.record_success();
         }
@@ -211,7 +224,7 @@ impl PlaceOrderTool {
         self.gate = gate;
     }
 
-    fn now_ms() -> i64 {
+    pub(crate) fn now_ms() -> i64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -226,6 +239,45 @@ impl PlaceOrderTool {
                 .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         }
         Ok(())
+    }
+
+    /// 单日计数检查 + 失败时埋点(供策略调用)
+    ///
+    /// 失败时:
+    /// - 记录 `record_risk_block_metric`(单日超限视作风控)
+    /// - `record_breaker_rejection`(单日超限也计为拒绝,
+    ///   熔断器开闸可让 LLM 立即感知系统压力)
+    pub(crate) fn check_daily_or_record(&self) -> Result<(), ToolError> {
+        if let Err(e) = self.check_daily() {
+            self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
+            self.record_breaker_rejection();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// 闸门检查 + 失败时埋点(供策略调用)
+    pub(crate) fn check_gate_or_record(&self) -> Result<(), ToolError> {
+        if let Some(reason) = self.gate.is_blocked() {
+            self.record_gate_block_metric();
+            return Err(ToolError::ExecutionFailed(format!(
+                "gate blocked: {}",
+                reason
+            )));
+        }
+        Ok(())
+    }
+
+    // ── 内部访问器(供 strategy 子模块使用)────────────
+
+    /// 返回 backend 引用(供策略调用 `place_order`)
+    pub(crate) fn backend(&self) -> &Arc<dyn TradingBackend> {
+        &self.backend
+    }
+
+    /// 返回 pending map 引用(供 TwoPhase 策略管理待确认订单)
+    pub(crate) fn pending_map(&self) -> &Mutex<HashMap<String, PendingOrder>> {
+        &self.pending
     }
 }
 
@@ -259,185 +311,58 @@ impl Tool for PlaceOrderTool {
 
     async fn execute(&self, arguments: &str) -> Result<String, ToolError> {
         let start = Instant::now();
-        let args: PlaceOrderArgs = serde_json::from_str(arguments)
-            .map_err(|e| ToolError::InvalidArguments(format!("JSON 解析失败: {}", e)))?;
+        let args = self.parse_arguments(arguments)?;
+        let positions = self.fetch_positions().await?;
+        self.pre_check_risk(&args, &positions)?;
 
-        // 1. 取当前持仓(fail-closed:get_positions 错误时拒单)
-        //    与 Stage F 一致:三模式 DryRun/Direct/TwoPhase 统一加位置预检,
-        //    LLM agent 在 dry-run 阶段就感知"超过持仓上限"信号。
-        let positions = self
-            .backend
+        // 策略分发:每种 SafetyMode 对应一个 OrderExecutionStrategy 实现
+        let strategy = place_order_strategy::select_strategy(self.mode);
+        let ack = strategy.execute(self, &args, start).await?;
+
+        self.serialize_ack(&ack)
+    }
+}
+
+impl PlaceOrderTool {
+    /// 解析 JSON 参数(参数错误 → `InvalidArguments`)
+    fn parse_arguments(&self, arguments: &str) -> Result<PlaceOrderArgs, ToolError> {
+        serde_json::from_str(arguments)
+            .map_err(|e| ToolError::InvalidArguments(format!("JSON 解析失败: {}", e)))
+    }
+
+    /// 获取当前持仓(fail-closed:后端错误时拒单)
+    ///
+    /// 与 Stage F 一致:三模式 DryRun/Direct/TwoPhase 统一加位置预检,
+    /// LLM agent 在 dry-run 阶段就感知"超过持仓上限"信号。
+    async fn fetch_positions(&self) -> Result<Vec<PositionSnapshot>, ToolError> {
+        self.backend
             .get_positions()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("position fetch failed: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("position fetch failed: {}", e)))
+    }
 
-        // 2. 风控预检(白名单 / 单笔金额 / max_position_abs)
-        if let Err(e) = self.risk.check(&args, &positions) {
+    /// 风控预检(白名单 / 单笔金额 / max_position_abs)
+    ///
+    /// 失败时记录埋点 + 熔断器拒绝计数,返回 `ToolError::ExecutionFailed`。
+    fn pre_check_risk(
+        &self,
+        args: &PlaceOrderArgs,
+        positions: &[PositionSnapshot],
+    ) -> Result<(), ToolError> {
+        if let Err(e) = self.risk.check(args, positions) {
             // Stage H:埋点风控拒绝
             self.record_risk_block_metric(&e);
             // Stage J:连续拒绝熔断器计数
             self.record_breaker_rejection();
             return Err(ToolError::ExecutionFailed(e.to_string()));
         }
+        Ok(())
+    }
 
-        // 3. 按模式分支
-        match self.mode {
-            SafetyMode::DryRun => {
-                info!(?args, "[DRY-RUN] place_order would be sent");
-                let ack = OrderAck {
-                    order_id: "DRY-RUN".into(),
-                    symbol: args.symbol.clone(),
-                    side: args.side,
-                    quantity: args.quantity,
-                    status: OrderStatus("DryRun".into()),
-                    timestamp_ms: Self::now_ms(),
-                    confirm_token: None,
-                };
-                // Stage H:DryRun 也埋点(status="DryRun"),便于观测 dry-run 比例
-                self.record_order_metric(
-                    &ack.symbol,
-                    ack.side,
-                    "DryRun",
-                    start.elapsed().as_nanos() as u64,
-                );
-                // Stage J:DryRun 预检通过 → 视为"健康行为",清零拒绝计数
-                self.record_breaker_success();
-                serde_json::to_string(&ack)
-                    .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
-            }
-            SafetyMode::Direct => {
-                // 真发前做单日计数检查
-                if let Err(e) = self.check_daily() {
-                    // Stage H:单日超限属风控
-                    self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
-                    // Stage J:单日超限也计为拒绝(实际是风控规则,不是"LLM 产违规订单",
-                    //   但熔断器开闸可让 LLM 立即感知系统压力,主动调整节奏)
-                    self.record_breaker_rejection();
-                    return Err(e);
-                }
-                // Stage H:镜像当日计数
-                self.set_daily_metric();
-                // Stage D:闸门检查(DryRun 不检查,Direct / TwoPhase 真发前检查)
-                if let Some(reason) = self.gate.is_blocked() {
-                    self.record_gate_block_metric();
-                    return Err(ToolError::ExecutionFailed(format!(
-                        "gate blocked: {}",
-                        reason
-                    )));
-                }
-                match self.backend.place_order(&args).await {
-                    Ok(ack) => {
-                        let status = ack.status.0.clone();
-                        let out = serde_json::to_string(&ack).map_err(|e| {
-                            ToolError::ExecutionFailed(format!("序列化失败: {}", e))
-                        })?;
-                        self.record_order_metric(
-                            &ack.symbol,
-                            ack.side,
-                            &status,
-                            start.elapsed().as_nanos() as u64,
-                        );
-                        // Stage J:下单成功 → 清零拒绝计数
-                        self.record_breaker_success();
-                        Ok(out)
-                    }
-                    Err(e) => {
-                        self.record_order_metric(
-                            &args.symbol,
-                            args.side,
-                            "Error",
-                            start.elapsed().as_nanos() as u64,
-                        );
-                        // Stage J:后端错误不调 record_success(保持计数,等 cooldown)
-                        Err(ToolError::ExecutionFailed(e.to_string()))
-                    }
-                }
-            }
-            SafetyMode::TwoPhase => {
-                let supplied_token = args
-                    .extras
-                    .get("confirm_token")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                if let Some(t) = supplied_token {
-                    // 第二次提交:真发前做单日计数检查
-                    if let Err(e) = self.check_daily() {
-                        self.record_risk_block_metric(&TradingError::RiskRejected(e.to_string()));
-                        self.record_breaker_rejection();
-                        return Err(e);
-                    }
-                    self.set_daily_metric();
-                    // Stage D:闸门检查(仅真发路径)
-                    if let Some(reason) = self.gate.is_blocked() {
-                        self.record_gate_block_metric();
-                        return Err(ToolError::ExecutionFailed(format!(
-                            "gate blocked: {}",
-                            reason
-                        )));
-                    }
-                    let pending = self
-                        .pending
-                        .lock()
-                        .expect("poisoned")
-                        .remove(&t)
-                        .ok_or_else(|| {
-                            ToolError::ExecutionFailed(format!("未找到待确认订单: {}", t))
-                        })?;
-                    match self.backend.place_order(&pending.args).await {
-                        Ok(ack) => {
-                            let status = ack.status.0.clone();
-                            let out = serde_json::to_string(&ack).map_err(|e| {
-                                ToolError::ExecutionFailed(format!("序列化失败: {}", e))
-                            })?;
-                            self.record_order_metric(
-                                &ack.symbol,
-                                ack.side,
-                                &status,
-                                start.elapsed().as_nanos() as u64,
-                            );
-                            // Stage J:下单成功 → 清零拒绝计数
-                            self.record_breaker_success();
-                            Ok(out)
-                        }
-                        Err(e) => {
-                            self.record_order_metric(
-                                &pending.args.symbol,
-                                pending.args.side,
-                                "Error",
-                                start.elapsed().as_nanos() as u64,
-                            );
-                            // Stage J:后端错误不调 record_success
-                            Err(ToolError::ExecutionFailed(e.to_string()))
-                        }
-                    }
-                } else {
-                    // 第一次提交:仅暂存,不计数(尚未真发)
-                    // 注意:第一次提交也不检查闸门,允许 LLM 发起 confirm 流程
-                    let token = uuid::Uuid::new_v4().to_string();
-                    self.pending.lock().expect("poisoned").insert(
-                        token.clone(),
-                        PendingOrder {
-                            args: args.clone(),
-                            token: token.clone(),
-                        },
-                    );
-                    let ack = OrderAck {
-                        order_id: "PENDING".into(),
-                        symbol: args.symbol.clone(),
-                        side: args.side,
-                        quantity: args.quantity,
-                        status: OrderStatus("Pending".into()),
-                        timestamp_ms: Self::now_ms(),
-                        confirm_token: Some(token),
-                    };
-                    // Stage J:TwoPhase 第一次预检通过 → 视为"健康行为",清零拒绝计数
-                    self.record_breaker_success();
-                    serde_json::to_string(&ack)
-                        .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
-                }
-            }
-        }
+    /// 序列化 OrderAck 为 JSON 返回字符串
+    fn serialize_ack(&self, ack: &OrderAck) -> Result<String, ToolError> {
+        serde_json::to_string(ack)
+            .map_err(|e| ToolError::ExecutionFailed(format!("序列化失败: {}", e)))
     }
 }
 

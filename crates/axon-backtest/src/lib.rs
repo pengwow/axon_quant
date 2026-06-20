@@ -19,6 +19,12 @@ pub mod impact;
 pub mod matching;
 /// 流式回测引擎
 pub mod streaming;
+// Stage 2: PyO3 Python 绑定(`axon_quant.backtest` 子模块入口)
+// 注:axon-backtest 不依赖 axon-python(避免 cargo 循环依赖),
+// 异常基类使用 builtin `PyException`,Python 端 `except Exception` 统一捕获,
+// 设计见 `.axon-internal/specs/2026-06-19-python-bindings-expansion-design.md` §3.1.6。
+#[cfg(feature = "python")]
+pub mod python;
 
 pub use engine::BacktestEngine;
 pub use impact::{ImpactStats, ImpactedEngineConfig, ImpactedMatchingEngine};

@@ -3,6 +3,12 @@
 Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 
 子模块：
+- ``data`` — 数据服务（多源接入、L1/L2 缓存、PyArrow zero-copy，Stage 1）
+- ``backtest`` — 回测引擎（L1/L2/L3 撮合 + impact + BacktestEngine，Stage 2）
+- ``risk`` — 风控引擎（预交易检查 + 熔断器 + 风险指标，Stage 3）
+- ``oms`` — 订单管理（OrderManager + Portfolio + 状态机，Stage 4）
+- ``exchange`` — 交易所适配器（Binance/OKX REST + WebSocket + 限流 + 状态机，Stage 5）
+- ``inference`` — 推理引擎（ONNX/Candle 后端 + 批推理管线 + 模型热更新，Stage 6）
 - ``rl`` — Gymnasium 兼容的 RL 交易环境（TradingEnv / VecEnv）
 - ``hpo`` — 超参数优化（Optuna 集成 / 多目标 / 剪枝）
 - ``walk_forward`` — 滚动前向验证（purge / embargo / 泄漏检测）
@@ -20,6 +26,24 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         config={"initial_capital": 100_000.0, "max_steps": 1000},
         action_space={"type": "continuous", "min": -1.0, "max": 1.0},
     )
+
+    # 数据服务（Stage 1）:L1/L2 缓存 + PyArrow zero-copy
+    import datetime
+    from axon_quant.data import DataService, MockSource, Frequency, DataRequest
+    svc = (
+        DataService.new()
+        .register_source(MockSource.with_tick_series("btc", 1000, 1_000_000, lambda i: 100.0 + i))
+        .with_cache_capacity(64)
+    )
+    req = DataRequest(
+        "BTCUSDT",
+        datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc),
+        Frequency.Tick,
+    )
+    ds = svc.load(req)
+    print(ds.len, ds.checksum[:8])
+    batch = ds.to_arrow(0)  # zero-copy pyarrow.RecordBatch
 
     # LLM 后端:主动传参,避免依赖环境变量
     from axon_quant.llm import LLMConfig, make_backend, LLMMessage
@@ -45,6 +69,35 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
         "price": 50000.0,
     })
     print(ack["status"])  # "DryRun"
+
+    # 回测引擎(Stage 2):L1 撮合 + 事件驱动回测
+    from axon_quant.backtest import (
+        L1MatchingEngine, BacktestEngine, limit_order, BacktestError,
+    )
+    engine = L1MatchingEngine()
+    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0))
+    result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    print(result["is_filled"], len(result["fills"]))  # True 1
+
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),
+    })
+    print(bt.run().final_nav)
+
+    # 风控引擎(Stage 3):预交易检查 + 熔断器 + 风险指标
+    from axon_quant.risk import (
+        DefaultRiskEngine, RiskConfig, CircuitBreaker,
+        make_order, make_portfolio, make_risk_config,
+    )
+    rengine = DefaultRiskEngine(make_risk_config(max_order_value=1000.0))
+    rorder = make_order(id=1, symbol="BTC-USDT", side="Buy",
+                        type="limit", price=100.0, quantity=1.0)
+    rportfolio = make_portfolio(base_currency="USD", cash={"USD": 100_000.0})
+    rresult = rengine.check_order(rorder, rportfolio)
+    print(rresult.is_allow)  # True
 """
 
 from __future__ import annotations
@@ -58,12 +111,105 @@ from ._native import *  # noqa: F401, F403
 # 不直接 re-export 原生的 `_native.llm` / `_native.trading`。
 from ._native import (  # noqa: F401
     __version__,  # noqa: F401
+    backtest,      # Stage 2:axon-backtest 暴露
+    data,           # Stage 1:axon-data 暴露
     distributed,
+    exchange,       # Stage 5:axon-exchange 暴露
     hpo,
+    inference,      # Stage 6:axon-inference 暴露
+    oms,            # Stage 4:axon-oms 暴露
     registry,
     rl,
+    risk,           # Stage 3:axon-risk 暴露
     tracker,
     walk_forward,
+)
+
+# 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
+from .backtest import (  # noqa: F401
+    ArbitrageOpportunity,
+    AuctionResult,
+    BacktestEngine,
+    BacktestError,
+    CrossPair,
+    DarkOrder,
+    ImpactedMatchingEngine,
+    ImpactedMatchingEngineBuilder,
+    L1MatchingEngine,
+    L2MatchingEngine,
+    MultiAssetMatchingEngine,
+    OrderBookEntry,
+    RunResult,
+    RunStats,
+    limit_order,
+    market_order,
+)
+
+# 重新导出 data 顶层 Python API(包装 _native.data,Stage 1)
+from .data import (  # noqa: F401
+    AxonError,
+    CacheControl,
+    CacheStats,
+    DataError,
+    DataRequest,
+    DataService,
+    Dataset,
+    DataType,
+    Frequency,
+    MockSource,
+    SchemaField,
+    Tick,
+)
+
+# 重新导出 oms 顶层 Python API(包装 _native.oms,Stage 4)
+from .oms import (  # noqa: F401
+    OmsError,
+    Order,
+    OrderDict,
+    OrderManager,
+    OrderStatus,
+    OrderType,
+    Portfolio,
+    Position,
+    Side,
+    limit_order,
+    market_order,
+)
+
+# 重新导出 exchange 顶层 Python API(包装 _native.exchange,Stage 5)
+from .exchange import (  # noqa: F401
+    AxonError,
+    BinanceAdapter,
+    ExchangeConfig,
+    ExchangeError,
+    ExchangeId,
+    OkxAdapter,
+    OrderLifecycleManager,
+    RateLimitConfig,
+    ReconnectConfig,
+    TokenBucketRateLimiter,
+    binance_testnet_config,
+    okx_testnet_config,
+)
+
+# 重新导出 inference 顶层 Python API(包装 _native.inference,Stage 6)
+from .inference import (  # noqa: F401
+    Action,
+    ActionType,
+    AxonError,
+    BatchConfig,
+    BatchInferencePipeline,
+    Device,
+    InferenceBackend,
+    InferenceEngine,
+    InferenceError,
+    InferenceStats,
+    ModelConfig,
+    ModelHotReloader,
+    Observation,
+    create_candle_engine,
+    create_inference_engine,
+    create_onnx_engine,
 )
 
 # 重新导出 LLM 顶层 Python API(包装 _native.llm)
@@ -95,6 +241,12 @@ from .trading import (  # noqa: F401
 # `llm` / `trading` 这两个模块对象
 __all__ = [  # noqa: F405
     "__version__",
+    "data",        # Stage 1
+    "backtest",    # Stage 2
+    "risk",        # Stage 3
+    "oms",         # Stage 4
+    "exchange",    # Stage 5
+    "inference",   # Stage 6
     "rl",
     "hpo",
     "walk_forward",
@@ -103,6 +255,70 @@ __all__ = [  # noqa: F405
     "distributed",
     "llm",
     "trading",
+    "AxonError",   # Stage 1:异常基类
+    "DataError",   # Stage 1:数据服务异常
+    # Stage 2:backtest 顶层 API
+    "L1MatchingEngine",
+    "L2MatchingEngine",
+    "MultiAssetMatchingEngine",
+    "ImpactedMatchingEngine",
+    "ImpactedMatchingEngineBuilder",
+    "OrderBookEntry",
+    "DarkOrder",
+    "CrossPair",
+    "AuctionResult",
+    "ArbitrageOpportunity",
+    "BacktestEngine",
+    "RunResult",
+    "RunStats",
+    "BacktestError",
+    "limit_order",
+    "market_order",
+    "DataService", # Stage 1
+    "DataRequest", # Stage 1
+    "DataType",    # Stage 1
+    "Frequency",   # Stage 1
+    "MockSource",  # Stage 1
+    "Tick",        # Stage 1
+    "Dataset",     # Stage 1
+    "SchemaField", # Stage 1
+    "CacheStats",  # Stage 1
+    "CacheControl",# Stage 1
+    # Stage 3:risk 顶层 API
+    "DefaultRiskEngine",
+    "RiskConfig",
+    "CircuitBreaker",
+    "RiskMetrics",
+    "RiskResult",
+    "RiskReason",
+    "RiskError",
+    "make_order",
+    "make_portfolio",
+    "make_portfolio_with_positions",
+    "make_risk_config",
+    "make_circuit_breaker",
+    # Stage 4:oms 顶层 API
+    "OrderManager",
+    "Order",
+    "OrderStatus",
+    "Side",
+    "OrderType",
+    "Portfolio",
+    "Position",
+    "OmsError",
+    "OrderDict",
+    # Stage 5:exchange 顶层 API
+    "BinanceAdapter",
+    "OkxAdapter",
+    "ExchangeConfig",
+    "ExchangeId",
+    "RateLimitConfig",
+    "ReconnectConfig",
+    "OrderLifecycleManager",
+    "TokenBucketRateLimiter",
+    "ExchangeError",
+    "binance_testnet_config",
+    "okx_testnet_config",
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",
@@ -115,4 +331,20 @@ __all__ = [  # noqa: F405
     "CancelOrderTool",
     "ReplaceOrderTool",
     "TradingMetrics",
+    # Stage 6:inference 顶层 API
+    "InferenceBackend",
+    "Device",
+    "ModelConfig",
+    "BatchConfig",
+    "InferenceStats",
+    "Observation",
+    "Action",
+    "ActionType",
+    "InferenceEngine",
+    "BatchInferencePipeline",
+    "ModelHotReloader",
+    "InferenceError",
+    "create_inference_engine",
+    "create_onnx_engine",
+    "create_candle_engine",
 ]

@@ -55,6 +55,15 @@ pub mod handler;
 pub mod metrics;
 pub mod utils;
 
+// Stage 3:`axon-risk` 的 PyO3 Python 绑定(`axon_quant.risk` 子模块)。
+//
+// 设计:`RiskError` 继承 builtin `PyException`(不引 `axon_python::AxonError`),
+// 避免 `axon-risk` 反向依赖 `axon-python` 造成 cargo 循环(Stage 1/2 实战发现)。
+// 详见 `crates/axon-risk/src/python/mod.rs` 注释 + `.axon-internal/plans/
+// 2026-06-19-python-bindings-expansion-s3-axon-risk.md`。
+#[cfg(feature = "python")]
+pub mod python;
+
 pub use config::RiskConfig;
 pub use engine::{DefaultRiskEngine, RiskEngine};
 pub use error::{AlertSeverity, RiskAlert, RiskError, RiskReason, RiskResult};

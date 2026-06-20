@@ -20,6 +20,24 @@ ws-source = ["dep:tokio-tungstenite"]
 parquet-source = ["dep:parquet"]
 # 启用 L2 mmap 共享缓存(PR7:跨进程共享的 Arrow IPC 缓存)
 mmap-cache = ["dep:memmap2", "dep:fs2"]
+# Stage 1:启用 PyO3 Python 绑定(`axon_quant.data` 子模块)
+#
+# 已知限制(spike 阶段发现):**不能**加 `arrow/pyarrow` 到 `python` feature
+# 列表里,因为 arrow 57 的 `pyarrow` feature 传递依赖 `arrow-pyarrow 57`,
+# 而 `arrow-pyarrow 57` 内部把 `pyo3` 锁到 `^0.26`(见 crates.io arrow-pyarrow
+# 57.3.1 dependencies),与 workspace pyo3 0.28 在 `pyo3-ffi links=python` 上
+# 产生 link 冲突。
+#
+# 解决:`pyo3-arrow` 0.16 在 `into_pyarrow()` 内部走
+# `py.import("pyarrow").record_batch()` 路径,**不依赖** Rust 端
+# `arrow::pyarrow::*` API;所以 spike 验证中只要在 Python 端把 `pyarrow`
+# Python 包的 site-packages 加入 `sys.path` 即可(见 tests/python_spike.rs
+# 的 `init_python_with_venv()` helper)。axon-data 的 Cargo.toml 不需要
+# `arrow/pyarrow` feature。
+#
+# 如未来要直接用 `arrow::pyarrow::PyArrowType<T>`,需等 arrow-rs 升级
+# `arrow-pyarrow` 依赖到 pyo3 0.28+。
+python = ["dep:pyo3", "dep:pyo3-arrow"]
 
 [dependencies]
 # 序列化
@@ -58,6 +76,23 @@ parquet = { workspace = true, optional = true }
 memmap2 = { version = "0.9", optional = true }
 # 文件锁(PR7:多进程写保护)
 fs2 = { version = "0.4", optional = true }
+
+# Stage 1:PyO3 绑定相关依赖
+# pyo3-arrow 0.16(2026 年发布)支持 pyo3 0.28 + arrow 57。
+# 早期 v1.1 计划选 0.14(pyo3 0.26),与 workspace pyo3 0.28 冲突(spike 阶段发现),
+# 故升级到 0.16 + arrow 57(arrow 53→57 字段 schema / RecordBatch API 几乎无破坏变更)。
+#
+# 注:不在此处启用 `extension-module` feature——它会让 `cargo test` 找不到
+# Python lib 符号。`extension-module` 只在 maturin 构建 cdylib 时由 `axon-python`
+# crate 统一开启。
+#
+# 注:启用 `auto-initialize` feature 以让 `cargo test` 内部的 `#[test]` 调
+# `Python::attach(...)` 时自动初始化解释器(否则 `cargo test` 嵌入式
+# Python 不会自动 init,需每个测试手工调 `Python::initialize()`,体验差)。
+# 在 cdylib 模式下,axon-python 加载 `_native.so` 时 Python 解释器已就绪,
+# `auto-initialize` 是 no-op 不会重复 init,所以不冲突。
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
+pyo3-arrow = { version = "0.16", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

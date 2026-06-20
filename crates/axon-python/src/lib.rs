@@ -10,10 +10,19 @@
 
 use pyo3::prelude::*;
 
+// 公共异常基类 + 6 个子类的工厂入口(Stage 1-6 共享)。
+// 必须在 `#[pymodule] _native` 顶部先调 `register_exceptions`,
+// 确保 `axon-data::python::error::DataError` 等子类的 `create_exception!`
+// 拿到已经存在的 `AxonError` 引用建立继承链。
+mod error;
+
 /// AXON Quant Python 模块(原生扩展,由 __init__.py 导入并重新导出)
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__version__", "0.1.0")?;
+    m.add("__version__", "0.1.0b1")?;
+
+    // 注册公共异常基类(必须先于各子模块的 `create_exception!`)
+    error::register_exceptions(m)?;
 
     // axon-rl 子模块（使用 #[pymodule] 函数）
     let rl_module = PyModule::new(m.py(), "rl")?;
@@ -56,6 +65,61 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let trading_module = PyModule::new(m.py(), "trading")?;
     axon_llm::python::trading::register_trading_module(&trading_module)?;
     m.add_submodule(&trading_module)?;
+
+    // Stage 1:`axon-data` 子模块
+    // 注:axon-data 内部已注册 error/types/sources/dataset/service 五个子模块,
+    // 这里只调 `register_module` 把 `data` 挂到 `_native` 下。
+    let data_module = PyModule::new(m.py(), "data")?;
+    axon_data::python::register_module(&data_module)?;
+    m.add_submodule(&data_module)?;
+
+    // Stage 2:`axon-backtest` 子模块
+    // 注:axon-backtest 内部已注册 error/types/matching_l1/matching_l2/
+    // matching_l3/impact/engine 七个 Python 子模块,这里只调
+    // `register_module` 把 `backtest` 挂到 `_native` 下。
+    // 设计约束:axon-backtest 不依赖 axon-python(避免 cargo 循环),
+    // BacktestError 继承 builtin PyException 而非 AxonError。
+    let backtest_module = PyModule::new(m.py(), "backtest")?;
+    axon_backtest::python::register_module(&backtest_module)?;
+    m.add_submodule(&backtest_module)?;
+
+    // Stage 3:`axon-risk` 子模块
+    // 注:axon-risk 内部已注册 error/config/engine/circuit_breaker/metrics
+    // 五个 Python 子模块,这里只调 `register_module` 把 `risk` 挂到
+    // `_native` 下。设计约束同 backtest:RiskError 不继承 AxonError,
+    // axon-risk 不依赖 axon-python(避免 cargo 循环)。
+    let risk_module = PyModule::new(m.py(), "risk")?;
+    axon_risk::python::register_module(&risk_module)?;
+    m.add_submodule(&risk_module)?;
+
+    // Stage 4:`axon-oms` 子模块
+    // 注:axon-oms 内部已注册 error/types/manager/portfolio 四个 Python
+    // 子模块,这里只调 `register_module` 把 `oms` 挂到 `_native` 下。
+    // 设计约束同 backtest/risk:OmsError 不继承 AxonError,axon-oms 不
+    // 依赖 axon-python(避免 cargo 循环)。
+    let oms_module = PyModule::new(m.py(), "oms")?;
+    axon_oms::python::register_module(&oms_module)?;
+    m.add_submodule(&oms_module)?;
+
+    // Stage 5:`axon-exchange` 子模块
+    // 注:axon-exchange 内部已注册 error/config/binance/okx/lifecycle/
+    // rate_limiter 六个 Python 子模块,这里只调 `register_module` 把
+    // `exchange` 挂到 `_native` 下。设计约束同 backtest/risk/oms:
+    // ExchangeError 继承 builtin PyException 而非 AxonError,
+    // axon-exchange 不依赖 axon-python(避免 cargo 循环)。
+    let exchange_module = PyModule::new(m.py(), "exchange")?;
+    axon_exchange::python::register_module(&exchange_module)?;
+    m.add_submodule(&exchange_module)?;
+
+    // Stage 6:`axon-inference` 子模块
+    // 注:axon-inference 内部已注册 error/config/engine/pipeline 四个
+    // Python 子模块,这里只调 `register_module` 把 `inference` 挂到
+    // `_native` 下。设计约束同 backtest/risk/oms/exchange:
+    // InferenceError 继承 builtin PyException 而非 AxonError,
+    // axon-inference 不依赖 axon-python(避免 cargo 循环)。
+    let inference_module = PyModule::new(m.py(), "inference")?;
+    axon_inference::python::register_module(&inference_module)?;
+    m.add_submodule(&inference_module)?;
 
     Ok(())
 }

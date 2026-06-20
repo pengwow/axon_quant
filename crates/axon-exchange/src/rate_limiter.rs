@@ -35,6 +35,25 @@ impl TokenBucketRateLimiter {
         self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity as f64);
         self.last_refill = Instant::now();
     }
+
+    /// 当前可用 token 数(refill 后,饱和到 `[0, capacity]`)。
+    /// Stage 5 Python 绑定需要,暴露只读状态。
+    pub fn available_tokens(&self) -> u32 {
+        // 复制 refill 语义但不动 last_refill
+        let elapsed = self.last_refill.elapsed().as_secs_f64();
+        let cur = (self.tokens + elapsed * self.refill_rate).min(self.capacity as f64);
+        cur.floor().max(0.0) as u32
+    }
+
+    /// 配置的容量(即构造时传入的 `requests_per_second`)。
+    pub fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
+    /// token 补充速率(tokens / second,与 `requests_per_second` 相等)。
+    pub fn refill_rate(&self) -> f64 {
+        self.refill_rate
+    }
 }
 
 #[cfg(test)]
@@ -52,6 +71,20 @@ mod tests {
         let mut limiter = TokenBucketRateLimiter::new(1);
         assert!(limiter.try_acquire().is_ok());
         assert!(limiter.try_acquire().is_err());
+    }
+
+    #[test]
+    fn test_rate_limiter_getters() {
+        let mut limiter = TokenBucketRateLimiter::new(5);
+        assert_eq!(limiter.capacity(), 5);
+        assert!((limiter.refill_rate() - 5.0).abs() < 1e-9);
+        // 初始 available ≈ capacity
+        let initial = limiter.available_tokens();
+        assert!(initial <= 5);
+        // acquire 后应下降
+        let _ = limiter.try_acquire();
+        let after = limiter.available_tokens();
+        assert!(after <= initial);
     }
 
     proptest::proptest! {

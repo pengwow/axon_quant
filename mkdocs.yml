@@ -156,6 +156,7 @@ nav:
       - CLI 命令: reference/cli.md
       - Python 绑定: reference/python-bindings.md
       - 配置参考: reference/configuration.md
+  - 基准测试: benchmark.md
   - 架构决策:
       - 索引: adr/index.md
       - 0001 Rust 作为核心语言: adr/0001-rust-as-core-language.md

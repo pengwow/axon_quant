@@ -29,3 +29,15 @@ async-trait = "0.1"
 pretty_assertions = "1"
 proptest = "1"
 wiremock = "0.6"
+rust_decimal_macros = "1"
+
+[features]
+default = []
+# Stage 5:Python 绑定开关。`auto-initialize` 让 `cargo test` 嵌入式 Python
+# 自动 init;`rust_decimal` 已在主依赖,无需重复加。
+python = ["dep:pyo3"]
+
+[dependencies.pyo3]
+version = "0.28"
+optional = true
+features = ["auto-initialize"]

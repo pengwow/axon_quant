@@ -35,13 +35,14 @@
 //!
 //! - [`impacted_engine`]：核心 [`ImpactedMatchingEngine`] 包装器
 //! - [`config`]：TOML 配置文件加载
-//! - `python` 模块：PyO3 Python 绑定（`python` feature）
+//!
+//! # Python 绑定
+//!
+//! PyO3 桥接层已迁移到 `crate::python::impact`(Stage 2 Task 7),
+//! 详见 `python::impact` 模块说明。
 
 pub mod config;
 pub mod impacted_engine;
-
-#[cfg(feature = "python")]
-pub mod python;
 
 pub use config::ImpactedEngineConfig;
 pub use impacted_engine::{

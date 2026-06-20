@@ -55,3 +55,5 @@ python/axon_quant/*/__pycache__/
 # 部署由 .github/workflows/docs.yml 处理,本地 site/ 不进版本控制
 /site/
 /.cache/
+docs/en/report/*
+docs/zh/report/*

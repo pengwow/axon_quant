@@ -12,6 +12,7 @@ pub mod cancel_order_tool;
 pub mod circuit_breaker_gate;
 pub mod metrics;
 pub mod mock;
+pub mod place_order_strategy;
 pub mod place_order_tool;
 pub mod query_portfolio_tool;
 pub mod replace_order_tool;

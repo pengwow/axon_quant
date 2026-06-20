@@ -5,6 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 description = "订单管理系统：订单生命周期、状态机、路由、幂等性"
 
+[features]
+# Stage 4:PyO3 绑定,暴露 `axon_quant.oms` 子模块。需配合 PYO3_PYTHON
+# 指向可用 Python,启用方式 `cargo test -p axon-oms --features python`。
+# CI 默认构建不启用,避免污染 `cargo build --workspace`。
+#
+# 注:**不**启用 `extension-module` feature(与 axon-data / axon-risk
+# 一致),它会让 `cargo test` 找不到 Python lib 符号。
+# `extension-module` 只在 maturin 构建 cdylib 时由 `axon-python`
+# crate 统一开启。
+#
+# 注:启用 `auto-initialize` 让 `cargo test` 内部的 `#[test]` 调
+# `Python::attach(...)` 时自动初始化解释器。在 cdylib 模式下
+# `auto-initialize` 是 no-op 不重复 init,不冲突。
+default = []
+python = ["dep:pyo3"]
+
 [dependencies]
 axon-core = { path = "../axon-core" }
 serde = { version = "1", features = ["derive"] }
@@ -15,6 +31,8 @@ parking_lot = "0.12"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1", features = ["serde-with-str"] }
+# Stage 4:PyO3 绑定依赖,仅 `python` feature 启用时引入
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

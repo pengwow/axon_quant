@@ -16,8 +16,19 @@ default = []
 l2 = []
 # L3 多资产交叉（Phase 1A 后启用）
 l3 = []
-# PyO3 Python 绑定
-python = ["dep:pyo3"]
+# PyO3 Python 绑定(`axon_quant.backtest` 子模块)
+#
+# 注:Stage 2 加 `pyo3-arrow` 0.16(arrow RecordBatch 零拷贝桥)
+# + `arrow` 57(workspace 统一)用于 BacktestEngine 批量成交结果导出
+# (`RunResult::trades_arrow` / `MatchFill` 流)。
+#
+# 注:**不**加 `arrow-pyarrow`(arrow-pyarrow 57 锁 pyo3 0.26 与
+# workspace pyo3 0.28 `pyo3-ffi links=python` 冲突,Stage 1 实战发现)。
+# 走 `pyo3-arrow 0.16` 路径:Python 端 `into_pyarrow()` 经 Arrow C data
+# interface 零拷贝。详见 `crates/axon-data/Cargo.toml` 的 `python`
+# feature 注释 + `.axon-internal/plans/2026-06-19-python-bindings-expansion-s2-axon-backtest.md`
+# Task 2 Errata。
+python = ["dep:pyo3", "dep:pyo3-arrow", "dep:arrow"]
 
 [dependencies]
 axon-core = { workspace = true }
@@ -28,8 +39,24 @@ toml = "0.8"
 tracing = { workspace = true }
 async-trait = "0.1"
 
+# Stage 2:列式存储桥(arrow 57,workspace 统一)
+# `optional = true` 让非 `python` feature 时不引入,避免对纯 Rust 用户造成编译开销
+arrow = { workspace = true, optional = true }
+
 # Python 绑定
-pyo3 = { version = "0.28", optional = true }
+#
+# 注:启用 `auto-initialize` feature 以让 `cargo test` 内部的 `#[test]` 调
+# `Python::attach(...)` 时自动初始化解释器(否则 `cargo test` 嵌入式
+# Python 不会自动 init,需每个测试手工调 `Python::initialize()`,体验差)。
+# 在 cdylib 模式下,axon-python 加载 `_native.so` 时 Python 解释器已就绪,
+# `auto-initialize` 是 no-op 不会重复 init,所以不冲突。
+#
+# 详见 `.axon-internal/plans/2026-06-19-python-bindings-expansion-s1-axon-data.md`
+# Task 2 + `crates/axon-data/Cargo.toml` 注释。
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
+# Stage 2:PyO3 Arrow 桥(zero-copy RecordBatch)
+# 0.16 支持 pyo3 0.28 + arrow 57(Stage 1 实战升级决定)
+pyo3-arrow = { version = "0.16", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

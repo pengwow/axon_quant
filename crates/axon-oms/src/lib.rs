@@ -60,3 +60,8 @@ pub use error::OmsError;
 pub use manager::OrderManager;
 pub use portfolio::{Portfolio, PortfolioError, PortfolioSnapshot, Position};
 pub use types::*;
+
+// Stage 4:`axon-oms` Python 绑定(PyO3)。仅在 `python` feature 启用时编译。
+// 完整子模块结构见 `crates/axon-oms/src/python/mod.rs`。
+#[cfg(feature = "python")]
+pub mod python;

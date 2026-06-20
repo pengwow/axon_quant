@@ -40,6 +40,13 @@ mod service;
 #[cfg(test)]
 mod fuzz;
 
+// Stage 1: PyO3 Python 绑定(`axon_quant.data` 子模块入口)
+// 注:axon-data 不依赖 axon-python(避免 cargo 循环依赖),
+// 异常基类使用 builtin `PyException`,Python 端 `except Exception` 统一捕获,
+// 设计见 `.axon-internal/specs/2026-06-19-python-bindings-expansion-design.md` §3.1.6。
+#[cfg(feature = "python")]
+pub mod python;
+
 // 公开 re-export
 pub use cache::CacheControl;
 pub use dataset::Dataset;

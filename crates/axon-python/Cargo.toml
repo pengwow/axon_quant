@@ -31,6 +31,17 @@ python = [
     "dep:axon-walk-forward",
     "dep:axon-distributed",
     "dep:axon-llm",
+    "dep:axon-data",
+    # Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
+    "dep:axon-backtest",
+    # Stage 3:`axon-risk` 暴露为 `_native.risk` 子模块
+    "dep:axon-risk",
+    # Stage 4:`axon-oms` 暴露为 `_native.oms` 子模块
+    "dep:axon-oms",
+    # Stage 5:`axon-exchange` 暴露为 `_native.exchange` 子模块
+    "dep:axon-exchange",
+    # Stage 6:`axon-inference` 暴露为 `_native.inference` 子模块
+    "dep:axon-inference",
 ]
 
 [dependencies]
@@ -45,3 +56,27 @@ axon-hpo = { workspace = true, optional = true, features = ["python"] }
 axon-walk-forward = { workspace = true, optional = true, features = ["python"] }
 axon-distributed = { workspace = true, optional = true, features = ["python"] }
 axon-llm = { workspace = true, optional = true, features = ["python", "backends"] }
+# Stage 1:`axon-data` 暴露为 `_native.data` 子模块
+axon-data = { workspace = true, optional = true, features = ["python"] }
+# Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
+# 注:axon-backtest 的 `python` feature 是必须的,否则其子模块不会编译
+axon-backtest = { workspace = true, optional = true, features = ["python"] }
+# Stage 3:`axon-risk` 暴露为 `_native.risk` 子模块
+# 设计约束:axon-risk 不依赖 axon-python(避免 cargo 循环),
+# RiskError 继承 builtin PyException 而非 AxonError。
+axon-risk = { workspace = true, optional = true, features = ["python"] }
+# Stage 4:`axon-oms` 暴露为 `_native.oms` 子模块
+# 设计约束:axon-oms 不依赖 axon-python(避免 cargo 循环),
+# OmsError 继承 builtin PyException 而非 AxonError。
+axon-oms = { workspace = true, optional = true, features = ["python"] }
+# Stage 5:`axon-exchange` 暴露为 `_native.exchange` 子模块
+# 设计约束:axon-exchange 不依赖 axon-python(避免 cargo 循环),
+# ExchangeError 继承 builtin PyException 而非 AxonError。
+# 包含 Binance / OKX 适配器 + WebSocket 监督 + 限流 + 订单生命周期。
+axon-exchange = { workspace = true, optional = true, features = ["python"] }
+# Stage 6:`axon-inference` 暴露为 `_native.inference` 子模块
+# 设计约束:axon-inference 不依赖 axon-python(避免 cargo 循环),
+# InferenceError 继承 builtin PyException 而非 AxonError。
+# 包含 InferenceEngine(Onnx/Candle 后端) + BatchInferencePipeline +
+# ModelHotReloader(stub)。
+axon-inference = { workspace = true, optional = true, features = ["python"] }

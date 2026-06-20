@@ -17,6 +17,7 @@ use axon_core::time::Timestamp;
 use axon_core::types::{Price, Quantity};
 
 /// Mock 数据源(默认实现,在 `mod.rs` 中已使用)
+#[derive(Clone)]
 pub struct MockSource {
     name: String,
     /// 行数组(对内可见,供 fuzz.rs 不变量测试访问;对外通过 `query`/`iter` 暴露)
