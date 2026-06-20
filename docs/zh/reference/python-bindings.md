@@ -296,6 +296,158 @@ except axon_quant.risk.RiskError as e:  # 实际是 Exception 子类
 | `ConfigInvalid` | 风控配置非法 |
 | `Overflow` | 数值溢出 |
 
+### `axon_quant.oms`(Stage 4 交付)
+
+订单管理系统(OMS),含订单生命周期管理(提交/撤销/状态机)、fill 事件处理、组合多币种现金 + 多 symbol 持仓、幂等键防重。
+
+| 类 / 工厂 | 说明 |
+|-----------|------|
+| `OrderManager` | OMS 主类:`submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` |
+| `Order` | 订单对象:`symbol` / `side` / `order_type` / `quantity` / `price` / `idempotency_key` |
+| `OrderStatus` | 订单状态(`kind` 标签模式):`New` / `Acknowledged` / `PartiallyFilled(filled_qty, avg_price)` / `Filled` / `Cancelled` / `Rejected(reason)` / `Expired`,带 `is_terminal()` 判定 |
+| `Side` | 枚举:`Buy` / `Sell` |
+| `OrderType` | 枚举:`Limit` / `Market` |
+| `Portfolio` | 多币种现金 + 持仓容器:`deposit` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
+| `Position` | 单 symbol 持仓:`symbol` / `quantity` / `avg_price` / `realized_pnl` / `updated_at` / `to_dict` |
+| `OmsError` | OMS 异常(继承 `Exception`,**不**继承 `AxonError`,避免 cargo 循环) |
+| `limit_order(symbol, side, quantity, price, idempotency_key=None)` | 工厂函数,返回限价单 `Order` |
+| `market_order(symbol, side, quantity, idempotency_key=None)` | 工厂函数,返回市价单 `Order`(taker 价待撮合确认) |
+| `make_order_status(kind, filled_qty=None, avg_price=None, reason=None)` | 工厂函数,从 dict 构造 `OrderStatus` |
+
+#### 示例:订单全生命周期 + 组合更新
+
+```python
+from axon_quant.oms import (
+    OrderManager, Order, OrderStatus, Side, OrderType, Portfolio, Position,
+    OmsError, limit_order, market_order, make_order_status,
+)
+
+# 1) 构造 OMS + 初始资金
+mgr = OrderManager()
+mgr.deposit("USDT", 100_000)
+
+# 2) 提交订单 → 返回 order_id(UUID 36 字符)
+oid = mgr.submit(limit_order(
+    "BTC-USDT", "Buy", quantity=1, price=50_000,
+    idempotency_key="my-bot-001",
+))
+print(oid, mgr.active_count())   # 1
+
+# 3) 状态机推进
+mgr.update_status(oid, make_order_status("Acknowledged"))
+
+# 4) 推 fill 事件(部分成交)→ portfolio 自动更新
+mgr.add_fill(
+    order_id=oid, fill_id="f1", symbol="BTC-USDT",
+    price=50_000, quantity=0.6, fee=0,
+)
+s = mgr.get_order_status(oid)
+assert s.kind == "PartiallyFilled"
+assert s.filled_qty == "0.6"
+
+# 5) 查组合
+snap = mgr.snapshot_balance()
+assert snap["cash"]["USDT"] == "70000.0"
+pos = snap["positions"]["BTC-USDT"]
+assert pos.quantity == "0.6"
+assert pos.avg_price == "50000"
+
+# 6) 推满成 fill → 终态
+mgr.add_fill(
+    order_id=oid, fill_id="f2", symbol="BTC-USDT",
+    price=51_000, quantity=0.4, fee=0,
+)
+assert mgr.get_order_status(oid) is None  # Filled 已从 active 移除
+```
+
+#### 批量下单 + 幂等键
+
+```python
+# 幂等键防重(同 key 重复 submit 会报 DuplicateIdempotencyKey)
+oid_a = mgr.submit(limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="batch-1"))
+try:
+    oid_a2 = mgr.submit(limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="batch-1"))
+except OmsError as e:
+    assert e.args[0] == "DuplicateIdempotencyKey"
+
+# 批量下单(循环 submit,失败时抛首个错误)
+oids = mgr.batch_submit([
+    limit_order("ETH-USDT", "Buy", 1, 3_000, idempotency_key="batch-2"),
+    limit_order("SOL-USDT", "Buy", 10, 100, idempotency_key="batch-3"),
+])
+assert len(oids) == 2
+```
+
+#### OrderStatus 字段访问
+
+```python
+status = make_order_status("PartiallyFilled", filled_qty=0.6, avg_price=50_000)
+assert status.kind == "PartiallyFilled"
+assert status.filled_qty == "0.6"
+assert status.avg_price == "50000"
+assert status.is_terminal() is False
+
+# 终态判定
+filled = make_order_status("Filled", filled_qty=1, avg_price=50_000)
+assert filled.is_terminal() is True
+cancelled = make_order_status("Cancelled", reason="user_cancelled")
+assert cancelled.is_terminal() is True
+```
+
+#### Portfolio 独立类
+
+```python
+# 不依赖 OrderManager 的轻量 portfolio(测试 / 序列化反序列化场景)
+p = Portfolio()
+p.deposit("USDT", 100_000)
+p.deposit("BTC", 1.5)
+p.apply_fill(
+    fill_id="f1", symbol="BTC-USDT",
+    price=50_000, quantity=0.6, fee=0,
+)
+assert p.cash["USDT"] == "70000.0"
+assert p.positions["BTC-USDT"].quantity == "0.6"
+assert p.position_count() == 1
+
+# 序列化
+d = p.to_dict()  # {"cash": {...}, "positions": {...}, "position_count": 1}
+```
+
+#### Decimal 桥(精度无损)
+
+所有金额字段(`quantity` / `price` / `filled_qty` / `avg_price` / `realized_pnl` / `cash` 字典值)在 Python 端以 **字符串** 返回,通过 `decimal.Decimal` 构造。设计原因:`rust_decimal::Decimal` 128 位精度不可直接转 `float`,字符串往返零误差。
+
+```python
+from decimal import Decimal
+
+o = limit_order("BTC-USDT", "Buy", Decimal("0.1"), Decimal("50000.5"))
+# quantity / price 在 Python 端也是 Decimal 字符串
+```
+
+#### `OmsError` 异常体系
+
+`OmsError` **直接**继承 builtin `Exception`(`PyException` 子类),**不**继承 Stage 1 `AxonError` 基类。设计原因:`axon-oms` 反向依赖 `axon-python::AxonError` 会造成 cargo 循环(`axon-python` 依赖 `axon-oms`),所以 Rust 侧不硬依赖。
+
+```python
+try:
+    mgr.cancel("not-a-uuid")
+except axon_quant.oms.OmsError as e:  # 实际是 Exception 子类
+    code = e.args[0]    # e.g. "OrderNotFound"
+    msg = e.args[1]     # e.g. "[OrderNotFound] order not found: xxx"
+```
+
+| 错误码 | 含义 |
+|--------|------|
+| `OrderNotFound` | 订单 ID 不存在 |
+| `InvalidTransition` | 状态机非法转移(如 Filled → PartiallyFilled) |
+| `DuplicateIdempotencyKey` | 重复幂等键 |
+| `AlreadyTerminal` | 操作终态订单(Filled / Cancelled / Rejected) |
+| `ExchangeRejected` | 交易所拒绝 |
+| `NetworkError` | 网络错误 |
+| `SerializationError` | 序列化错误 |
+| `RecoveryFailed` | 状态恢复失败 |
+| `Portfolio` | 组合错误(fill 数量与现金不一致等) |
+
 ### `axon_quant.rl`
 
 - `AxonEnv` —— Gymnasium 兼容环境

@@ -92,5 +92,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_risk::python::register_module(&risk_module)?;
     m.add_submodule(&risk_module)?;
 
+    // Stage 4:`axon-oms` 子模块
+    // 注:axon-oms 内部已注册 error/types/manager/portfolio 四个 Python
+    // 子模块,这里只调 `register_module` 把 `oms` 挂到 `_native` 下。
+    // 设计约束同 backtest/risk:OmsError 不继承 AxonError,axon-oms 不
+    // 依赖 axon-python(避免 cargo 循环)。
+    let oms_module = PyModule::new(m.py(), "oms")?;
+    axon_oms::python::register_module(&oms_module)?;
+    m.add_submodule(&oms_module)?;
+
     Ok(())
 }

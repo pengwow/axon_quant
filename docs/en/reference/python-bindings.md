@@ -390,6 +390,158 @@ except axon_quant.risk.RiskError as e:  # actually Exception subclass
 | `ConfigInvalid` | Risk config is invalid |
 | `Overflow` | Numeric overflow |
 
+### axon_quant.oms (Stage 4 delivery)
+
+Order Management System (OMS), covering the full order lifecycle (submit / cancel / state machine), fill event handling, multi-currency cash + multi-symbol positions, and idempotency key deduplication.
+
+| Class / Factory | Description |
+|----------------|-------------|
+| `OrderManager` | Main OMS class: `submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` |
+| `Order` | Order object: `symbol` / `side` / `order_type` / `quantity` / `price` / `idempotency_key` |
+| `OrderStatus` | Order status (`kind` tag pattern): `New` / `Acknowledged` / `PartiallyFilled(filled_qty, avg_price)` / `Filled` / `Cancelled` / `Rejected(reason)` / `Expired`, with `is_terminal()` predicate |
+| `Side` | Enum: `Buy` / `Sell` |
+| `OrderType` | Enum: `Limit` / `Market` |
+| `Portfolio` | Multi-currency cash + positions container: `deposit` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
+| `Position` | Single-symbol position: `symbol` / `quantity` / `avg_price` / `realized_pnl` / `updated_at` / `to_dict` |
+| `OmsError` | OMS exception (inherits `Exception`, **not** `AxonError`, to avoid cargo cycles) |
+| `limit_order(symbol, side, quantity, price, idempotency_key=None)` | Factory returning a limit `Order` |
+| `market_order(symbol, side, quantity, idempotency_key=None)` | Factory returning a market `Order` (taker price to be confirmed by matching) |
+| `make_order_status(kind, filled_qty=None, avg_price=None, reason=None)` | Factory constructing an `OrderStatus` from a dict |
+
+#### Example: full order lifecycle + portfolio update
+
+```python
+from axon_quant.oms import (
+    OrderManager, Order, OrderStatus, Side, OrderType, Portfolio, Position,
+    OmsError, limit_order, market_order, make_order_status,
+)
+
+# 1) Create OMS + initial funding
+mgr = OrderManager()
+mgr.deposit("USDT", 100_000)
+
+# 2) Submit order → returns order_id (UUID 36 chars)
+oid = mgr.submit(limit_order(
+    "BTC-USDT", "Buy", quantity=1, price=50_000,
+    idempotency_key="my-bot-001",
+))
+print(oid, mgr.active_count())   # 1
+
+# 3) Advance state machine
+mgr.update_status(oid, make_order_status("Acknowledged"))
+
+# 4) Push fill event (partial fill) → portfolio auto-updated
+mgr.add_fill(
+    order_id=oid, fill_id="f1", symbol="BTC-USDT",
+    price=50_000, quantity=0.6, fee=0,
+)
+s = mgr.get_order_status(oid)
+assert s.kind == "PartiallyFilled"
+assert s.filled_qty == "0.6"
+
+# 5) Query portfolio
+snap = mgr.snapshot_balance()
+assert snap["cash"]["USDT"] == "70000.0"
+pos = snap["positions"]["BTC-USDT"]
+assert pos.quantity == "0.6"
+assert pos.avg_price == "50000"
+
+# 6) Push completing fill → terminal state
+mgr.add_fill(
+    order_id=oid, fill_id="f2", symbol="BTC-USDT",
+    price=51_000, quantity=0.4, fee=0,
+)
+assert mgr.get_order_status(oid) is None  # Filled removed from active
+```
+
+#### Batch submission + idempotency key
+
+```python
+# Idempotency key dedup (re-submit with same key raises DuplicateIdempotencyKey)
+oid_a = mgr.submit(limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="batch-1"))
+try:
+    oid_a2 = mgr.submit(limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="batch-1"))
+except OmsError as e:
+    assert e.args[0] == "DuplicateIdempotencyKey"
+
+# Batch submit (loops submit, throws first error on failure)
+oids = mgr.batch_submit([
+    limit_order("ETH-USDT", "Buy", 1, 3_000, idempotency_key="batch-2"),
+    limit_order("SOL-USDT", "Buy", 10, 100, idempotency_key="batch-3"),
+])
+assert len(oids) == 2
+```
+
+#### OrderStatus field access
+
+```python
+status = make_order_status("PartiallyFilled", filled_qty=0.6, avg_price=50_000)
+assert status.kind == "PartiallyFilled"
+assert status.filled_qty == "0.6"
+assert status.avg_price == "50000"
+assert status.is_terminal() is False
+
+# Terminal predicate
+filled = make_order_status("Filled", filled_qty=1, avg_price=50_000)
+assert filled.is_terminal() is True
+cancelled = make_order_status("Cancelled", reason="user_cancelled")
+assert cancelled.is_terminal() is True
+```
+
+#### Standalone Portfolio class
+
+```python
+# Lightweight portfolio not depending on OrderManager (testing / serialization scenarios)
+p = Portfolio()
+p.deposit("USDT", 100_000)
+p.deposit("BTC", 1.5)
+p.apply_fill(
+    fill_id="f1", symbol="BTC-USDT",
+    price=50_000, quantity=0.6, fee=0,
+)
+assert p.cash["USDT"] == "70000.0"
+assert p.positions["BTC-USDT"].quantity == "0.6"
+assert p.position_count() == 1
+
+# Serialize
+d = p.to_dict()  # {"cash": {...}, "positions": {...}, "position_count": 1}
+```
+
+#### Decimal bridge (lossless precision)
+
+All monetary fields (`quantity` / `price` / `filled_qty` / `avg_price` / `realized_pnl` / `cash` dict values) are returned to Python as **strings**, constructed via `decimal.Decimal`. Reason: `rust_decimal::Decimal` carries 128-bit precision and cannot be safely cast to `float`; string round-trip is zero-loss.
+
+```python
+from decimal import Decimal
+
+o = limit_order("BTC-USDT", "Buy", Decimal("0.1"), Decimal("50000.5"))
+# quantity / price are also Decimal strings on the Python side
+```
+
+#### `OmsError` exception system
+
+`OmsError` **directly** inherits builtin `Exception` (a `PyException` subclass), **not** the Stage 1 `AxonError` base class. Reason: `axon-oms` reverse-depending on `axon-python::AxonError` would create a cargo cycle (`axon-python` depends on `axon-oms`), so the Rust side does not hard-depend on it.
+
+```python
+try:
+    mgr.cancel("not-a-uuid")
+except axon_quant.oms.OmsError as e:  # actually Exception subclass
+    code = e.args[0]    # e.g. "OrderNotFound"
+    msg = e.args[1]     # e.g. "[OrderNotFound] order not found: xxx"
+```
+
+| Error Code | Meaning |
+|------------|---------|
+| `OrderNotFound` | Order ID not found |
+| `InvalidTransition` | Illegal state machine transition (e.g. Filled → PartiallyFilled) |
+| `DuplicateIdempotencyKey` | Duplicate idempotency key |
+| `AlreadyTerminal` | Operating on a terminal order (Filled / Cancelled / Rejected) |
+| `ExchangeRejected` | Exchange rejected the order |
+| `NetworkError` | Network failure |
+| `SerializationError` | Serialization failure |
+| `RecoveryFailed` | State recovery failed |
+| `Portfolio` | Portfolio error (fill qty inconsistent with cash, etc.) |
+
 ## Type Mapping
 
 | Python Type | Rust Type | Description |

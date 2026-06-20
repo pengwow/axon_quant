@@ -5,6 +5,8 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 子模块：
 - ``data`` — 数据服务（多源接入、L1/L2 缓存、PyArrow zero-copy，Stage 1）
 - ``backtest`` — 回测引擎（L1/L2/L3 撮合 + impact + BacktestEngine，Stage 2）
+- ``risk`` — 风控引擎（预交易检查 + 熔断器 + 风险指标，Stage 3）
+- ``oms`` — 订单管理（OrderManager + Portfolio + 状态机，Stage 4）
 - ``rl`` — Gymnasium 兼容的 RL 交易环境（TradingEnv / VecEnv）
 - ``hpo`` — 超参数优化（Optuna 集成 / 多目标 / 剪枝）
 - ``walk_forward`` — 滚动前向验证（purge / embargo / 泄漏检测）
@@ -111,8 +113,10 @@ from ._native import (  # noqa: F401
     data,           # Stage 1:axon-data 暴露
     distributed,
     hpo,
+    oms,            # Stage 4:axon-oms 暴露
     registry,
     rl,
+    risk,           # Stage 3:axon-risk 暴露
     tracker,
     walk_forward,
 )
@@ -153,6 +157,21 @@ from .data import (  # noqa: F401
     Tick,
 )
 
+# 重新导出 oms 顶层 Python API(包装 _native.oms,Stage 4)
+from .oms import (  # noqa: F401
+    OmsError,
+    Order,
+    OrderDict,
+    OrderManager,
+    OrderStatus,
+    OrderType,
+    Portfolio,
+    Position,
+    Side,
+    limit_order,
+    market_order,
+)
+
 # 重新导出 LLM 顶层 Python API(包装 _native.llm)
 # 这里必须用 `from .llm import ...` 而非 `from . import llm`,
 # 后者会优先复用 sys.modules['axon_quant.llm'] 缓存,
@@ -185,6 +204,7 @@ __all__ = [  # noqa: F405
     "data",        # Stage 1
     "backtest",    # Stage 2
     "risk",        # Stage 3
+    "oms",         # Stage 4
     "rl",
     "hpo",
     "walk_forward",
@@ -235,6 +255,16 @@ __all__ = [  # noqa: F405
     "make_portfolio_with_positions",
     "make_risk_config",
     "make_circuit_breaker",
+    # Stage 4:oms 顶层 API
+    "OrderManager",
+    "Order",
+    "OrderStatus",
+    "Side",
+    "OrderType",
+    "Portfolio",
+    "Position",
+    "OmsError",
+    "OrderDict",
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",
