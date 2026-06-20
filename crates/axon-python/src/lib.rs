@@ -111,5 +111,15 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_exchange::python::register_module(&exchange_module)?;
     m.add_submodule(&exchange_module)?;
 
+    // Stage 6:`axon-inference` 子模块
+    // 注:axon-inference 内部已注册 error/config/engine/pipeline 四个
+    // Python 子模块,这里只调 `register_module` 把 `inference` 挂到
+    // `_native` 下。设计约束同 backtest/risk/oms/exchange:
+    // InferenceError 继承 builtin PyException 而非 AxonError,
+    // axon-inference 不依赖 axon-python(避免 cargo 循环)。
+    let inference_module = PyModule::new(m.py(), "inference")?;
+    axon_inference::python::register_module(&inference_module)?;
+    m.add_submodule(&inference_module)?;
+
     Ok(())
 }

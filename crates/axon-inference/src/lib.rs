@@ -57,6 +57,9 @@ pub mod error;
 pub mod hot_reload;
 pub mod pipeline;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 pub use engine::InferenceEngine;
 pub use error::{
     Action, ActionType, BatchConfig, Device, InferenceBackend, InferenceError, InferenceStats,

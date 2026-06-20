@@ -54,6 +54,8 @@ axon-ensemble = { path = "crates/axon-ensemble" }
 axon-llm = { path = "crates/axon-llm" }
 axon-exchange = { path = "crates/axon-exchange" }
 axon-oms = { path = "crates/axon-oms" }
+# Stage 6:推理引擎(ONNX/Candle/Tch 后端,批推理管线,模型热更新)
+axon-inference = { path = "crates/axon-inference" }
 # Stage D / J 简化版:demo + E2E 测试中桥接 CircuitBreaker,lib 零传递依赖
 axon-risk = { path = "crates/axon-risk" }
 # Stage 1:数据服务(数据源、缓存、Arrow IPC)

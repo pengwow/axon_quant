@@ -122,24 +122,129 @@ version = reg.register(
 reg.transition_stage("ppo_btc", version.version, registry.ModelStage.PRODUCTION)
 ```
 
-### axon_quant.inference — Model Inference
+### axon_quant.inference (Stage 6 delivery) — ONNX / Candle Inference Engine
+
+Cross-backend inference engine with PyO3 bindings for `axon-inference` (ONNX / Candle / Tch backends + batch inference pipeline + model hot-reload). Stage 6 exposes `Onnx` and `Candle` to Python; `Tch` is intentionally not exposed (avoids PyTorch C++ linking).
+
+| Class / Function | Purpose |
+| --- | --- |
+| `ModelConfig` | Model configuration: `path` / `backend` / `device` / `input_shape` (3-tuple) / `output_dim` / `fp16` / `num_threads` |
+| `InferenceBackend` | Enum: `Onnx` / `Tch` / `Candle` |
+| `Device` | Device: `Device.cpu()` / `Device.cuda(device_id)` / `Device.metal()` |
+| `Observation` | Input observation: `symbol` / `timestamp_ns` / `features` (list[float]) |
+| `ActionType` | Output enum: `Buy` / `Sell` / `Hold` / `ReduceLong` / `ReduceShort` |
+| `Action` | Output: `action_type` (enum) / `confidence` (f32) / `target_position` (f32) / `model_id` / `inference_time_us` |
+| `BatchConfig` | Batch pipeline: `max_batch_size` / `collect_timeout_us` / `num_workers` / `prealloc_buffer_size` / `collect_cpu_cores` / `collect_gpu_device_id` |
+| `InferenceStats` | Stats: `total_inferences` / `total_batch_inferences` / `avg_latency_us` / `p99_latency_us` / `hot_reloads` / `errors` |
+| `InferenceEngine` | Unified entry; `engine.load(path)` / `engine.infer(obs)` / `engine.infer_batch([obs])` / `engine.to_dict()` |
+| `BatchInferencePipeline` | Simplified batch pipeline: `submit(obs)` / `collect()` / `pending()` / `stats()` |
+| `ModelHotReloader` | Stage 6 stub: `__new__` returns `RuntimeError` (waiting for `engine._config()` accessor) |
+| `create_onnx_engine(model_path, ...)` | One-step ONNX factory (default backend, no extra feature needed) |
+| `create_candle_engine(model_path, ...)` | One-step Candle factory (requires `candle-backend` feature) |
+| `create_inference_engine(config, path=None)` | Lower-level factory (also exposed as `axon_quant.create_inference_engine`) |
+
+#### Example: ONNX single-shot inference
 
 ```python
-import axon_quant.inference as inference
-
-# Create ONNX backend
-engine = inference.OnnxBackend(
-    model_path="model.onnx",
-    device="cuda:0",
-    input_shape=[1, 64, 128],
+from axon_quant.inference import (
+    InferenceEngine, ModelConfig, Device, Observation, InferenceBackend,
+    create_onnx_engine,
 )
 
-# Load model
-engine.load()
+# One-step: create + load
+engine = create_onnx_engine(
+    model_path="model.onnx",
+    input_shape=(1, 64, 128),
+    output_dim=3,
+)
 
-# Run inference
-action = engine.infer(observation)
+# Single inference
+obs = Observation(symbol="BTC-USDT", timestamp_ns=1_000_000_000, features=[0.0] * 128)
+action = engine.infer(obs)
+print(action.action_type, action.confidence, action.target_position)
 ```
+
+#### Example: ONNX batch inference
+
+```python
+from axon_quant.inference import create_onnx_engine, Observation
+
+engine = create_onnx_engine(model_path="model.onnx", input_shape=(1, 64, 128), output_dim=3)
+obs_list = [Observation(symbol="BTC-USDT", timestamp_ns=i * 1_000, features=[0.0] * 128) for i in range(32)]
+actions = engine.infer_batch(obs_list)
+assert len(actions) == 32
+```
+
+#### Example: BatchInferencePipeline (buffered batch inference)
+
+```python
+from axon_quant.inference import (
+    BatchInferencePipeline, BatchConfig, create_onnx_engine, Observation,
+)
+
+engine = create_onnx_engine(model_path="model.onnx", input_shape=(1, 64, 128), output_dim=3)
+bcfg = BatchConfig(max_batch_size=32, collect_timeout_us=500, num_workers=2)
+pipe = BatchInferencePipeline(bcfg, engine)
+
+# Buffer observations, then trigger one batch inference
+for i in range(32):
+    pipe.submit(Observation(symbol="BTC-USDT", timestamp_ns=i * 1_000, features=[0.0] * 128))
+print(pipe.pending())  # 32
+actions = pipe.collect()
+print(len(actions), pipe.stats().total_inferences)  # 32 32
+```
+
+#### Backend selection (`Onnx` / `Candle`)
+
+```python
+from axon_quant.inference import InferenceEngine, ModelConfig, Device, InferenceBackend
+
+# Default Onnx (Stage 6 default feature, no extra compile flags needed)
+engine_onnx = InferenceEngine(ModelConfig(
+    path="model.onnx", backend=InferenceBackend.Onnx, device=Device.cpu(),
+    input_shape=(1, 64, 128), output_dim=3,
+))
+
+# Candle (pure Rust, no ONNX runtime needed) — requires compile-time
+# `candle-backend` feature: `cargo build -p axon-inference --features
+# python --features candle-backend`. If not compiled, `__new__` returns
+# `InferenceError("Candle backend not compiled: ...")`.
+try:
+    engine_candle = InferenceEngine(ModelConfig(
+        path="model.safetensors", backend=InferenceBackend.Candle, device=Device.cpu(),
+        input_shape=(1, 64, 128), output_dim=3,
+    ))
+except Exception as e:  # candle-backend feature not enabled
+    print(f"skip: {e}")
+```
+
+#### `InferenceError` exception system
+
+`InferenceError` **directly** inherits builtin `Exception` (a `PyException` subclass), **not** the Stage 1 `AxonError` base class. Reason: same as `BacktestError` / `RiskError` / `OmsError` / `ExchangeError` — `axon-inference` reverse-depending on `axon-python::AxonError` would create a cargo cycle, so the Rust side does not hard-depend on it. Error code is taken from the Rust `Debug` output variant name (e.g. `ModelNotFound` / `ModelLoadFailed` / `Onnx(...)` / `Candle(...)`), stable across releases.
+
+```python
+from axon_quant.inference import InferenceEngine, ModelConfig, InferenceError, InferenceBackend, Device
+
+cfg = ModelConfig(
+    path="/nonexistent.onnx", backend=InferenceBackend.Onnx, device=Device.cpu(),
+    input_shape=(1, 64, 128), output_dim=3,
+)
+
+try:
+    engine = InferenceEngine(cfg)
+    engine.load("/nonexistent.onnx")
+except InferenceError as e:
+    # e.args[0] is the stable error code (e.g. "ModelNotFound")
+    # e.args[1] is the human-readable form: "[ModelNotFound] model file not found: /nonexistent.onnx"
+    print(e.args[0], e.args[1])
+```
+
+**Caveats / Stage 6 limitations**:
+
+- `Tch` backend is **not** exposed to Python (avoids PyTorch C++ linking); `InferenceEngine(InferenceBackend.Tch)` returns `InferenceError("Tch backend is not exposed to Python in Stage 6 ...")`.
+- `ModelHotReloader.__new__` returns `RuntimeError` because `PyInferenceEngine` does not expose the underlying `ModelConfig` (waiting for Stage 7+ to add an internal accessor). Use `engine.infer_batch([...])` for batch inference in the meantime.
+- `BatchInferencePipeline` is a simplified Python wrapper (no tokio `batch_loop` task). It buffers `Observation`s in a `Vec` and calls `engine.infer_batch` on `collect()`, which already runs `par_iter` (rayon) internally.
+- `Extension-module` PyO3 feature is **disabled** by default (would break `cargo test` static linking). Build the wheel via `make python-develop` instead of `cargo build --features python` to get the actual cdylib.
 
 ### axon_quant.exchange — Exchange Integration
 

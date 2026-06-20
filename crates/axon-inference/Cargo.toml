@@ -14,6 +14,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 sha2 = "0.10"
+pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 # 可选后端依赖
 ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
@@ -29,6 +30,12 @@ onnx = ["dep:ort"]
 tch-backend = ["dep:tch"]
 candle-backend = ["dep:candle-core", "dep:candle-nn"]
 hot-reload = ["dep:notify"]
+# Python 绑定(Stage 6):默认带 onnx 后端(最常用,生产环境主推)
+# Candle 后端可单独启用: `cargo build -p axon-inference --features python --features candle-backend`
+# 设计约束:InferenceError 继承 builtin `PyException` 而非 `AxonError`,
+# 避免 `axon-inference` 反向依赖 `axon-python` 造成 cargo 循环
+# (同 backtest / risk / oms / exchange,详见 design spec §3.1.6)。
+python = ["dep:pyo3", "onnx", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"

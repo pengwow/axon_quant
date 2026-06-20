@@ -8,6 +8,7 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 - ``risk`` — 风控引擎（预交易检查 + 熔断器 + 风险指标，Stage 3）
 - ``oms`` — 订单管理（OrderManager + Portfolio + 状态机，Stage 4）
 - ``exchange`` — 交易所适配器（Binance/OKX REST + WebSocket + 限流 + 状态机，Stage 5）
+- ``inference`` — 推理引擎（ONNX/Candle 后端 + 批推理管线 + 模型热更新，Stage 6）
 - ``rl`` — Gymnasium 兼容的 RL 交易环境（TradingEnv / VecEnv）
 - ``hpo`` — 超参数优化（Optuna 集成 / 多目标 / 剪枝）
 - ``walk_forward`` — 滚动前向验证（purge / embargo / 泄漏检测）
@@ -115,6 +116,7 @@ from ._native import (  # noqa: F401
     distributed,
     exchange,       # Stage 5:axon-exchange 暴露
     hpo,
+    inference,      # Stage 6:axon-inference 暴露
     oms,            # Stage 4:axon-oms 暴露
     registry,
     rl,
@@ -190,6 +192,26 @@ from .exchange import (  # noqa: F401
     okx_testnet_config,
 )
 
+# 重新导出 inference 顶层 Python API(包装 _native.inference,Stage 6)
+from .inference import (  # noqa: F401
+    Action,
+    ActionType,
+    AxonError,
+    BatchConfig,
+    BatchInferencePipeline,
+    Device,
+    InferenceBackend,
+    InferenceEngine,
+    InferenceError,
+    InferenceStats,
+    ModelConfig,
+    ModelHotReloader,
+    Observation,
+    create_candle_engine,
+    create_inference_engine,
+    create_onnx_engine,
+)
+
 # 重新导出 LLM 顶层 Python API(包装 _native.llm)
 # 这里必须用 `from .llm import ...` 而非 `from . import llm`,
 # 后者会优先复用 sys.modules['axon_quant.llm'] 缓存,
@@ -224,6 +246,7 @@ __all__ = [  # noqa: F405
     "risk",        # Stage 3
     "oms",         # Stage 4
     "exchange",    # Stage 5
+    "inference",   # Stage 6
     "rl",
     "hpo",
     "walk_forward",
@@ -308,4 +331,20 @@ __all__ = [  # noqa: F405
     "CancelOrderTool",
     "ReplaceOrderTool",
     "TradingMetrics",
+    # Stage 6:inference 顶层 API
+    "InferenceBackend",
+    "Device",
+    "ModelConfig",
+    "BatchConfig",
+    "InferenceStats",
+    "Observation",
+    "Action",
+    "ActionType",
+    "InferenceEngine",
+    "BatchInferencePipeline",
+    "ModelHotReloader",
+    "InferenceError",
+    "create_inference_engine",
+    "create_onnx_engine",
+    "create_candle_engine",
 ]
