@@ -68,6 +68,9 @@ pub mod traits;
 pub mod types;
 pub mod ws;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 pub use error::ExchangeError;
 pub use lifecycle::{OrderLifecycleManager, OrderRecord, TrackedOrder};
 pub use rate_limiter::TokenBucketRateLimiter;

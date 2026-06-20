@@ -38,6 +38,8 @@ python = [
     "dep:axon-risk",
     # Stage 4:`axon-oms` 暴露为 `_native.oms` 子模块
     "dep:axon-oms",
+    # Stage 5:`axon-exchange` 暴露为 `_native.exchange` 子模块
+    "dep:axon-exchange",
 ]
 
 [dependencies]
@@ -65,3 +67,8 @@ axon-risk = { workspace = true, optional = true, features = ["python"] }
 # 设计约束:axon-oms 不依赖 axon-python(避免 cargo 循环),
 # OmsError 继承 builtin PyException 而非 AxonError。
 axon-oms = { workspace = true, optional = true, features = ["python"] }
+# Stage 5:`axon-exchange` 暴露为 `_native.exchange` 子模块
+# 设计约束:axon-exchange 不依赖 axon-python(避免 cargo 循环),
+# ExchangeError 继承 builtin PyException 而非 AxonError。
+# 包含 Binance / OKX 适配器 + WebSocket 监督 + 限流 + 订单生命周期。
+axon-exchange = { workspace = true, optional = true, features = ["python"] }

@@ -101,5 +101,15 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_oms::python::register_module(&oms_module)?;
     m.add_submodule(&oms_module)?;
 
+    // Stage 5:`axon-exchange` 子模块
+    // 注:axon-exchange 内部已注册 error/config/binance/okx/lifecycle/
+    // rate_limiter 六个 Python 子模块,这里只调 `register_module` 把
+    // `exchange` 挂到 `_native` 下。设计约束同 backtest/risk/oms:
+    // ExchangeError 继承 builtin PyException 而非 AxonError,
+    // axon-exchange 不依赖 axon-python(避免 cargo 循环)。
+    let exchange_module = PyModule::new(m.py(), "exchange")?;
+    axon_exchange::python::register_module(&exchange_module)?;
+    m.add_submodule(&exchange_module)?;
+
     Ok(())
 }

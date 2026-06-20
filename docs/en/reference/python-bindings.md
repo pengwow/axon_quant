@@ -542,6 +542,117 @@ except axon_quant.oms.OmsError as e:  # actually Exception subclass
 | `RecoveryFailed` | State recovery failed |
 | `Portfolio` | Portfolio error (fill qty inconsistent with cash, etc.) |
 
+### `axon_quant.exchange` Submodule (Stage 5) — Real Exchange Adapters
+
+Real exchange adapters (Binance, OKX) with WebSocket subscription, rate limiting, order lifecycle management, and circuit breaker. **Testnet enabled by default**; production mode requires explicit configuration. API keys are read from environment variables (`BINANCE_API_KEY` / `BINANCE_API_SECRET` / `OKX_API_KEY` / `OKX_API_SECRET` / `OKX_PASSPHRASE`).
+
+| Class / Function | Description |
+|------------------|-------------|
+| `ExchangeId` | Enum: `Binance` / `Okx` |
+| `ExchangeConfig` | Full exchange configuration (`api_key` / `api_secret` / `passphrase` / `rest_base_url` / `ws_url` / `testnet` / `rate_limit` / `reconnect`) |
+| `RateLimitConfig` | Token-bucket rate limit (RPS / orders per minute / WS messages per second) |
+| `ReconnectConfig` | Auto-reconnect + circuit breaker configuration (max_retries / backoff / threshold) |
+| `BinanceAdapter` | Binance adapter (REST + WebSocket, testnet / production) |
+| `OkxAdapter` | OKX adapter (REST + WebSocket, testnet / production, requires `passphrase`) |
+| `OrderLifecycleManager` | Order state machine tracking (Pending → Acknowledged → Filled / Rejected / Cancelled) |
+| `TokenBucketRateLimiter` | Token-bucket rate limiter (synchronous `try_acquire` + status read) |
+| `ExchangeError` | Exchange-specific error (inherits `Exception`, **not** `AxonError` to avoid cargo cycle) |
+| `binance_testnet_config()` | Factory: read Binance testnet API keys from environment variables |
+| `okx_testnet_config()` | Factory: read OKX testnet API keys from environment variables |
+
+#### Example: testnet connection (env keys)
+
+```python
+import os
+from axon_quant.exchange import BinanceAdapter, binance_testnet_config
+
+# API key 自动从环境变量读取(BINANCE_API_KEY / BINANCE_API_SECRET)
+# 缺一即抛 ExchangeError("BINANCE_API_KEY / BINANCE_API_SECRET not set in environment")
+os.environ["BINANCE_API_KEY"] = "..."
+os.environ["BINANCE_API_SECRET"] = "..."
+
+adapter = BinanceAdapter(binance_testnet_config())
+adapter.connect()  # 同步包装:内部 block_on 异步 connect
+adapter.subscribe(symbols=["BTCUSDT"], kind="ticker")
+
+# 下单:接受 dict,返回 order_id (UUID 字符串)
+oid = adapter.place_order({
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "market",
+    "quantity": "0.001",
+    "tif": "IOC",
+})
+
+# 撤单
+adapter.cancel_order(oid)
+
+# 查询
+balances = adapter.get_balance()
+positions = adapter.get_positions()
+```
+
+#### Order dict protocol
+
+Order construction uses Python dicts (no need to construct axon-oms types directly):
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `symbol` | str | ✓ | Trading pair (Binance: `"BTCUSDT"`; OKX: `"BTC-USDT"`) |
+| `side` | str | ✓ | `"buy"` / `"sell"` |
+| `type` | str | ✓ | `"market"` / `"limit"` / `"stop_loss"` / `"stop_limit"` |
+| `quantity` | str / Decimal | ✓ | Order quantity (lossless string transfer) |
+| `tif` | str | ✓ | `"GTC"` / `"IOC"` / `"FOK"` |
+| `price` | str / Decimal | (limit types) | Limit price |
+| `client_order_id` | str | optional | Client order ID (UUID string; auto-generated if missing) |
+| `meta` | dict | optional | Exchange-specific metadata (e.g. Binance `newClientOrderId`) |
+
+#### `ExchangeError` exception system
+
+`ExchangeError` **directly** inherits builtin `Exception` (a `PyException` subclass), **not** the Stage 1 `AxonError` base class. Reason: same as `BacktestError` / `RiskError` / `OmsError` — `axon-exchange` reverse-depending on `axon-python::AxonError` would create a cargo cycle. Error code is taken from the variant name, stable across releases.
+
+```python
+from axon_quant.exchange import OrderLifecycleManager, ExchangeError
+
+mgr = OrderLifecycleManager()
+try:
+    mgr.update_status(
+        "00000000-0000-0000-0000-000000000000",
+        {"status": "filled", "filled_qty": "0.1", "avg_price": "50000"},
+    )
+except ExchangeError as e:
+    code = e.args[0]   # e.g. "OrderNotFound"
+    msg  = e.args[1]   # e.g. "[OrderNotFound] order not found: ..."
+```
+
+| Error Code | Meaning |
+|------------|---------|
+| `ConnectionFailed` | REST / WebSocket connection failure |
+| `WebSocketDisconnected` | WebSocket unexpectedly dropped |
+| `AuthenticationFailed` | API key signature verification failed |
+| `OrderRejected` | Exchange rejected the order (min notional, etc.) |
+| `InsufficientBalance` | Balance insufficient |
+| `RateLimited` | API rate limit triggered (returns `wait_ms`) |
+| `OrderNotFound` | Order ID not found |
+| `ParseError` | Response parsing failure |
+| `ApiError` | Generic API error (with `code` + `message` fields) |
+| `WebSocket` | WebSocket error message |
+| `CircuitBreakerOpen` | Circuit breaker open (consecutive failures exceeded threshold) |
+| `Network` | Network failure |
+| `Serialization` | (de)serialization failure |
+
+#### Security: API keys are never exposed
+
+`api_secret` / `passphrase` are **never** serialized to `__repr__`, never printed, never logged. Verify with `repr(adapter)` or `repr(config)`:
+
+```python
+adapter = BinanceAdapter(binance_testnet_config())
+print(repr(adapter))   # "BinanceAdapter(...)"  — no secret
+print(repr(config))    # "ExchangeConfig(Binance, testnet=True, rest=...)"  — no secret
+```
+
+See `docs/en/reference/exchange-security.md` for the full security checklist.
+
 ## Type Mapping
 
 | Python Type | Rust Type | Description |

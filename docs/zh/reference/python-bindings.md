@@ -448,6 +448,117 @@ except axon_quant.oms.OmsError as e:  # 实际是 Exception 子类
 | `RecoveryFailed` | 状态恢复失败 |
 | `Portfolio` | 组合错误(fill 数量与现金不一致等) |
 
+### `axon_quant.exchange` 子模块(Stage 5)—— 真实交易所适配器
+
+真实交易所适配器(Binance / OKX),支持 WebSocket 订阅、限流、订单生命周期管理与熔断器。**默认开启 testnet**,生产模式需显式配置;API key 通过环境变量读取(`BINANCE_API_KEY` / `BINANCE_API_SECRET` / `OKX_API_KEY` / `OKX_API_SECRET` / `OKX_PASSPHRASE`)。
+
+| 类 / 函数 | 说明 |
+|-----------|------|
+| `ExchangeId` | 枚举:`Binance` / `Okx` |
+| `ExchangeConfig` | 完整交易所配置(`api_key` / `api_secret` / `passphrase` / `rest_base_url` / `ws_url` / `testnet` / `rate_limit` / `reconnect`) |
+| `RateLimitConfig` | 令牌桶限流(RPS / orders per minute / WS messages per second) |
+| `ReconnectConfig` | 自动重连 + 熔断器配置(max_retries / backoff / 阈值) |
+| `BinanceAdapter` | Binance 适配器(REST + WebSocket,testnet / production) |
+| `OkxAdapter` | OKX 适配器(REST + WebSocket,testnet / production,需 `passphrase`) |
+| `OrderLifecycleManager` | 订单状态机跟踪(Pending → Acknowledged → Filled / Rejected / Cancelled) |
+| `TokenBucketRateLimiter` | 令牌桶限流器(同步 `try_acquire` + 状态查询) |
+| `ExchangeError` | 交易所异常(继承 `Exception`,**不**继承 `AxonError` 以避免 cargo 循环) |
+| `binance_testnet_config()` | 工厂:从环境变量读 Binance testnet API key |
+| `okx_testnet_config()` | 工厂:从环境变量读 OKX testnet API key |
+
+#### 示例:testnet 连接(env 读 key)
+
+```python
+import os
+from axon_quant.exchange import BinanceAdapter, binance_testnet_config
+
+# API key 自动从环境变量读取(BINANCE_API_KEY / BINANCE_API_SECRET)
+# 缺一即抛 ExchangeError("BINANCE_API_KEY / BINANCE_API_SECRET not set in environment")
+os.environ["BINANCE_API_KEY"] = "..."
+os.environ["BINANCE_API_SECRET"] = "..."
+
+adapter = BinanceAdapter(binance_testnet_config())
+adapter.connect()  # 同步包装:内部 block_on 异步 connect
+adapter.subscribe(symbols=["BTCUSDT"], kind="ticker")
+
+# 下单:接受 dict,返回 order_id (UUID 字符串)
+oid = adapter.place_order({
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "market",
+    "quantity": "0.001",
+    "tif": "IOC",
+})
+
+# 撤单
+adapter.cancel_order(oid)
+
+# 查询
+balances = adapter.get_balance()
+positions = adapter.get_positions()
+```
+
+#### 订单 dict 协议
+
+订单构造用 Python dict(无需直接构造 axon-oms 类型):
+
+| Key | 类型 | 必填 | 说明 |
+|-----|------|------|------|
+| `symbol` | str | ✓ | 交易对(Binance:`"BTCUSDT"`;OKX:`"BTC-USDT"`) |
+| `side` | str | ✓ | `"buy"` / `"sell"` |
+| `type` | str | ✓ | `"market"` / `"limit"` / `"stop_loss"` / `"stop_limit"` |
+| `quantity` | str / Decimal | ✓ | 数量(字符串无损传输) |
+| `tif` | str | ✓ | `"GTC"` / `"IOC"` / `"FOK"` |
+| `price` | str / Decimal | (限价单) | 限价 |
+| `client_order_id` | str | optional | 客户端订单 ID(UUID 字符串,缺省自动生成) |
+| `meta` | dict | optional | 透传给交易所的元数据(如 Binance `newClientOrderId`) |
+
+#### `ExchangeError` 异常体系
+
+`ExchangeError` **直接**继承 builtin `Exception`(`PyException` 子类),**不**继承 Stage 1 `AxonError` 基类。设计原因:同 `BacktestError` / `RiskError` / `OmsError`,`axon-exchange` 反向依赖 `axon-python::AxonError` 会造成 cargo 循环。错误码取变体名,跨 release 稳定。
+
+```python
+from axon_quant.exchange import OrderLifecycleManager, ExchangeError
+
+mgr = OrderLifecycleManager()
+try:
+    mgr.update_status(
+        "00000000-0000-0000-0000-000000000000",
+        {"status": "filled", "filled_qty": "0.1", "avg_price": "50000"},
+    )
+except ExchangeError as e:
+    code = e.args[0]   # 例如 "OrderNotFound"
+    msg  = e.args[1]   # 例如 "[OrderNotFound] order not found: ..."
+```
+
+| 错误码 | 含义 |
+|--------|------|
+| `ConnectionFailed` | REST / WebSocket 连接失败 |
+| `WebSocketDisconnected` | WebSocket 意外断开 |
+| `AuthenticationFailed` | API key 签名验证失败 |
+| `OrderRejected` | 交易所拒绝订单(min notional 等) |
+| `InsufficientBalance` | 余额不足 |
+| `RateLimited` | 触发 API 限流(返回 `wait_ms`) |
+| `OrderNotFound` | 订单 ID 不存在 |
+| `ParseError` | 响应解析失败 |
+| `ApiError` | 通用 API 错误(带 `code` + `message` 字段) |
+| `WebSocket` | WebSocket 错误信息 |
+| `CircuitBreakerOpen` | 熔断器打开(连续失败超阈值) |
+| `Network` | 网络失败 |
+| `Serialization` | (反)序列化失败 |
+
+#### 安全:API key 永不暴露
+
+`api_secret` / `passphrase` **永远不会**写入 `__repr__` / 不会打印 / 不会记录日志。可用 `repr(adapter)` 或 `repr(config)` 自验:
+
+```python
+adapter = BinanceAdapter(binance_testnet_config())
+print(repr(adapter))   # "BinanceAdapter(...)"  —— 不含 secret
+print(repr(config))    # "ExchangeConfig(Binance, testnet=True, rest=...)"  —— 不含 secret
+```
+
+完整安全清单见 `docs/zh/reference/exchange-security.md`。
+
 ### `axon_quant.rl`
 
 - `AxonEnv` —— Gymnasium 兼容环境
