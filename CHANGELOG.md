@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **26 个 L3 Python E2E 测试** `python/tests/test_ensemble_e2e.py`: 覆盖类型导入 / 枚举 / 概率归一化 / 投票策略 / EnsembleManager 预测 / 堆叠集成。**全部 26/26 通过**。
   - **64 个 Rust 单元测试**: 覆盖 register_module / 错误映射 / 投票逻辑 / 动态加权。
 
+- **axon-compliance Python 绑定聚合**: 把 `axon-compliance`(交易记录 + 日报/月报/年报生成 + 审计完整性验证)聚合到 `_native.compliance` 子模块。**改动范围**:
+  - 添加 `register_module()` 函数到 `crates/axon-compliance/src/python/mod.rs`
+  - 更新 `crates/axon-python/Cargo.toml` 添加 `axon-compliance` 依赖
+  - 更新 `crates/axon-python/src/lib.rs` 注册 `compliance` 子模块
+  - 将 `python` 模块改为 `pub` 以便外部访问
+
 - **axon-data Python 绑定 Stage 1 实现完成**:把 `axon-data`(多源数据接入 + L1/L2 缓存 + Arrow 零拷贝)完整暴露到 `axon_quant._native.data` 子模块,Python 端可像调用普通库一样使用。**改动范围**:
   - **5 个核心 pyclass**:`PyDataService`(L1/L2 缓存 + 异步 load 同步化)、`PyDataset`(`Arc<RustDataset>` 共享所有权 + zero-copy `to_arrow` / `to_arrow_table`)、`PyMockSource`(`with_tick_series` 接受 Python callable 生成 tick)、`PyCacheControl`(清缓存/调容量)、`PyCacheStats`(L1+L2 命中快照 + `hit_rate` 属性)。
   - **2 个 pyenum**:`PyFrequency`(`tick` / `1m` / `1h` / ...)+ `PyDataType`(`f64` / `i64` / `string` / `bool` / `timestamp`)。
