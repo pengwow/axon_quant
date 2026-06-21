@@ -219,4 +219,78 @@ mod tests {
         let fired = registry.check_missing_alerts();
         assert_eq!(fired.len(), 1);
     }
+
+    #[test]
+    fn test_registry_gauge() {
+        let mut registry = MetricsRegistry::new();
+        let gauge = registry.register_gauge("temperature");
+        gauge.set(36.5);
+        assert_eq!(gauge.get(), 36.5);
+    }
+
+    #[test]
+    fn test_registry_histogram() {
+        let mut registry = MetricsRegistry::new();
+        let hist = registry.register_histogram("latency");
+        hist.observe(100.0);
+        hist.observe(200.0);
+        assert_eq!(hist.total_count(), 2);
+    }
+
+    #[test]
+    fn test_multiple_counters() {
+        let mut registry = MetricsRegistry::new();
+        let c1 = registry.register_counter("orders");
+        let c2 = registry.register_counter("trades");
+        c1.inc();
+        c2.inc_by(5);
+        assert_eq!(c1.get(), 1);
+        assert_eq!(c2.get(), 5);
+    }
+
+    #[test]
+    fn test_multiple_alert_rules() {
+        let mut registry = MetricsRegistry::new();
+        registry.register_counter("latency");
+        registry.add_alert_rule(AlertRule::Threshold {
+            metric_name: "latency".into(),
+            condition: ThresholdCondition::GreaterThan(100.0),
+            severity: AlertSeverity::Warning,
+            message: "high latency".into(),
+        });
+        registry.add_alert_rule(AlertRule::Threshold {
+            metric_name: "latency".into(),
+            condition: ThresholdCondition::GreaterThan(1000.0),
+            severity: AlertSeverity::Critical,
+            message: "critical latency".into(),
+        });
+        // 500 应该触发 Warning 但不触发 Critical
+        registry.check_alerts("latency", 500.0);
+        let alerts = registry.get_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+    }
+
+    #[test]
+    fn test_get_alerts_returns_all() {
+        let mut registry = MetricsRegistry::new();
+        registry.register_counter("a");
+        registry.register_counter("b");
+        registry.add_alert_rule(AlertRule::Threshold {
+            metric_name: "a".into(),
+            condition: ThresholdCondition::GreaterThan(10.0),
+            severity: AlertSeverity::Warning,
+            message: "a high".into(),
+        });
+        registry.add_alert_rule(AlertRule::Threshold {
+            metric_name: "b".into(),
+            condition: ThresholdCondition::GreaterThan(10.0),
+            severity: AlertSeverity::Warning,
+            message: "b high".into(),
+        });
+        registry.check_alerts("a", 20.0);
+        registry.check_alerts("b", 20.0);
+        let alerts = registry.get_alerts();
+        assert_eq!(alerts.len(), 2);
+    }
 }
