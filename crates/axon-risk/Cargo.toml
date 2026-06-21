@@ -39,6 +39,7 @@ criterion = "0.5"
 axon-oms = { path = "../axon-oms" }
 axon-monitor = { path = "../axon-monitor" }
 rust_decimal = { version = "1", features = ["serde-with-str"] }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "phase4_bench"

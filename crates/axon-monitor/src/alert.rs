@@ -250,4 +250,91 @@ mod tests {
         let event = rule.check_missing("latency", None, now);
         assert!(event.is_none());
     }
+
+    #[test]
+    fn test_threshold_less_than() {
+        let rule = AlertRule::Threshold {
+            metric_name: "balance".into(),
+            condition: ThresholdCondition::LessThan(1000.0),
+            severity: AlertSeverity::Critical,
+            message: "balance below minimum".into(),
+        };
+        let event = rule.check("balance", 500.0);
+        assert!(event.is_some());
+        assert_eq!(event.unwrap().severity, AlertSeverity::Critical);
+    }
+
+    #[test]
+    fn test_threshold_less_than_no_fire() {
+        let rule = AlertRule::Threshold {
+            metric_name: "balance".into(),
+            condition: ThresholdCondition::LessThan(1000.0),
+            severity: AlertSeverity::Critical,
+            message: "balance below minimum".into(),
+        };
+        let event = rule.check("balance", 2000.0);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn test_threshold_equal() {
+        // 测试边界值：刚好等于阈值时不触发（GreaterThan 是严格大于）
+        let rule = AlertRule::Threshold {
+            metric_name: "count".into(),
+            condition: ThresholdCondition::GreaterThan(42.0),
+            severity: AlertSeverity::Info,
+            message: "count reached target".into(),
+        };
+        let event = rule.check("count", 42.0);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn test_threshold_greater_than_boundary() {
+        let rule = AlertRule::Threshold {
+            metric_name: "count".into(),
+            condition: ThresholdCondition::GreaterThan(10.0),
+            severity: AlertSeverity::Info,
+            message: "count high".into(),
+        };
+        // 刚好等于边界不触发
+        assert!(rule.check("count", 10.0).is_none());
+        // 超过边界触发
+        assert!(rule.check("count", 10.1).is_some());
+    }
+
+    #[test]
+    fn test_threshold_less_than_boundary() {
+        let rule = AlertRule::Threshold {
+            metric_name: "balance".into(),
+            condition: ThresholdCondition::LessThan(100.0),
+            severity: AlertSeverity::Warning,
+            message: "balance low".into(),
+        };
+        // 刚好等于边界不触发
+        assert!(rule.check("balance", 100.0).is_none());
+        // 低于边界触发
+        assert!(rule.check("balance", 99.9).is_some());
+    }
+
+    #[test]
+    fn test_alert_severity_ordering() {
+        assert!(AlertSeverity::Critical as u8 > AlertSeverity::Warning as u8);
+        assert!(AlertSeverity::Warning as u8 > AlertSeverity::Info as u8);
+    }
+
+    #[test]
+    fn test_alert_event_fields() {
+        let rule = AlertRule::Threshold {
+            metric_name: "test".into(),
+            condition: ThresholdCondition::GreaterThan(10.0),
+            severity: AlertSeverity::Warning,
+            message: "test alert".into(),
+        };
+        let event = rule.check("test", 20.0).unwrap();
+        assert_eq!(event.rule_name, "test");
+        assert_eq!(event.severity, AlertSeverity::Warning);
+        assert!(event.message.contains("test alert"));
+        assert_eq!(event.value, 20.0);
+    }
 }

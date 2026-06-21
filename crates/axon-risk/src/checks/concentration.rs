@@ -51,4 +51,13 @@ mod tests {
         let alerts = check_concentration(&portfolio, &config);
         assert!(alerts.is_empty());
     }
+
+    #[test]
+    fn test_concentration_zero_nav() {
+        let portfolio = Portfolio::new(Currency::USD, 0.001);
+        // 不存款，NAV 为 0
+        let config = RiskConfig::default();
+        let alerts = check_concentration(&portfolio, &config);
+        assert!(alerts.is_empty());
+    }
 }

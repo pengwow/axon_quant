@@ -121,5 +121,32 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_inference::python::register_module(&inference_module)?;
     m.add_submodule(&inference_module)?;
 
+    // `axon-explain` 子模块
+    // 注:axon-explain 内部已注册 error/types/shap/counterfactual/report
+    // 五个 Python 子模块,这里只调 `register_module` 把 `explain` 挂到
+    // `_native` 下。设计约束同 backtest/risk/oms/exchange/inference:
+    // ExplainError 继承 builtin PyException 而非 AxonError,
+    // axon-explain 不依赖 axon-python(避免 cargo 循环)。
+    let explain_module = PyModule::new(m.py(), "explain")?;
+    axon_explain::python::register_module(&explain_module)?;
+    m.add_submodule(&explain_module)?;
+
+    // `axon-ensemble` 子模块
+    // 注:axon-ensemble 内部已注册 error/types/voting/manager/stacking
+    // 五个 Python 子模块,这里只调 `register_module` 把 `ensemble` 挂到
+    // `_native` 下。设计约束同 backtest/risk/oms/exchange/inference/explain:
+    // EnsembleError 继承 builtin PyException 而非 AxonError,
+    // axon-ensemble 不依赖 axon-python(避免 cargo 循环)。
+    let ensemble_module = PyModule::new(m.py(), "ensemble")?;
+    axon_ensemble::python::register_module(&ensemble_module)?;
+    m.add_submodule(&ensemble_module)?;
+
+    // `axon-compliance` 子模块
+    // 注:axon-compliance 内部已注册 ComplianceModule,
+    // 这里只调 `register_module` 把 `compliance` 挂到 `_native` 下。
+    let compliance_module = PyModule::new(m.py(), "compliance")?;
+    axon_compliance::python::register_module(&compliance_module)?;
+    m.add_submodule(&compliance_module)?;
+
     Ok(())
 }

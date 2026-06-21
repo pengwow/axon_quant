@@ -20,9 +20,13 @@
 
 ## 详细报告
 
-详细的基准测试报告可通过以下链接查看：
+运行以下命令在本地生成完整的 HTML 基准测试报告：
 
-- [完整基准测试报告](./report/report/index.html)
+```bash
+make bench-report
+```
+
+报告将生成到 `target/criterion/` 目录。
 
 ## 运行基准测试
 

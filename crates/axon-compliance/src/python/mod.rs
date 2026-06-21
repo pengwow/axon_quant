@@ -123,3 +123,9 @@ fn axon_compliance(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyComplianceModule>()?;
     Ok(())
 }
+
+/// 在父模块（`_native.compliance`）下注册全部已实现的子模块。
+pub fn register_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
+    parent.add_class::<PyComplianceModule>()?;
+    Ok(())
+}

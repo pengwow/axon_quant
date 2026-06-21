@@ -42,6 +42,12 @@ python = [
     "dep:axon-exchange",
     # Stage 6:`axon-inference` 暴露为 `_native.inference` 子模块
     "dep:axon-inference",
+    # `axon-explain` 暴露为 `_native.explain` 子模块
+    "dep:axon-explain",
+    # `axon-ensemble` 暴露为 `_native.ensemble` 子模块
+    "dep:axon-ensemble",
+    # `axon-compliance` 暴露为 `_native.compliance` 子模块
+    "dep:axon-compliance",
 ]
 
 [dependencies]
@@ -80,3 +86,16 @@ axon-exchange = { workspace = true, optional = true, features = ["python"] }
 # 包含 InferenceEngine(Onnx/Candle 后端) + BatchInferencePipeline +
 # ModelHotReloader(stub)。
 axon-inference = { workspace = true, optional = true, features = ["python"] }
+# `axon-explain` 暴露为 `_native.explain` 子模块
+# 设计约束:axon-explain 不依赖 axon-python(避免 cargo 循环),
+# ExplainError 继承 builtin PyException 而非 AxonError。
+# 包含 KernelSHAP + CounterfactualGenerator + ReportGenerator。
+axon-explain = { workspace = true, optional = true, features = ["python"] }
+# `axon-ensemble` 暴露为 `_native.ensemble` 子模块
+# 设计约束:axon-ensemble 不依赖 axon-python(避免 cargo 循环),
+# EnsembleError 继承 builtin PyException 而非 AxonError。
+# 包含 EnsembleManager + 投票策略 + StackingEnsemble + DynamicWeightedEnsemble。
+axon-ensemble = { workspace = true, optional = true, features = ["python"] }
+# `axon-compliance` 暴露为 `_native.compliance` 子模块
+# 包含 ComplianceModule(交易记录 + 日报/月报/年报生成 + 审计完整性验证)。
+axon-compliance = { workspace = true, optional = true, features = ["python"] }

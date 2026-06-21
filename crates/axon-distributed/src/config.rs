@@ -338,4 +338,92 @@ num_workers = 4
         let result = DistributedConfig::from_toml(toml_content);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_cluster_config_local_defaults() {
+        let cfg = ClusterConfig::local(1);
+        assert_eq!(cfg.num_workers, 1);
+        assert_eq!(cfg.num_cpus_per_worker, 1);
+    }
+
+    #[test]
+    fn test_cluster_config_local_multiple_workers() {
+        let cfg = ClusterConfig::local(4);
+        assert_eq!(cfg.num_workers, 4);
+        assert_eq!(cfg.num_cpus_per_worker, 1);
+    }
+
+    #[test]
+    fn test_algorithm_config_valid_frameworks() {
+        for framework in &["torch", "tensorflow"] {
+            let cfg = AlgorithmConfig {
+                algorithm: "PPO".to_string(),
+                framework: framework.to_string(),
+                hparams: HashMap::new(),
+            };
+            assert!(
+                cfg.validate().is_ok(),
+                "framework {} should be valid",
+                framework
+            );
+        }
+    }
+
+    #[test]
+    fn test_algorithm_config_valid_algorithms() {
+        for algo in &["PPO", "SAC", "DQN", "IMPALA", "APE_X"] {
+            let cfg = AlgorithmConfig {
+                algorithm: algo.to_string(),
+                framework: "torch".to_string(),
+                hparams: HashMap::new(),
+            };
+            assert!(cfg.validate().is_ok(), "algorithm {} should be valid", algo);
+        }
+    }
+
+    #[test]
+    fn test_algorithm_config_invalid_algorithm() {
+        let cfg = AlgorithmConfig {
+            algorithm: "A2C".to_string(),
+            framework: "torch".to_string(),
+            hparams: HashMap::new(),
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_algorithm_config_invalid_framework() {
+        let cfg = AlgorithmConfig {
+            algorithm: "PPO".to_string(),
+            framework: "jax".to_string(),
+            hparams: HashMap::new(),
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_fault_tolerance_config_validate_ok() {
+        let cfg = FaultToleranceConfig {
+            max_retries: 3,
+            checkpoint_interval_s: 300,
+            checkpoint_dir: "checkpoints/".to_string(),
+            checkpoint_at_end: true,
+            keep_checkpoints_num: 5,
+            restore: true,
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_resource_config_validate_zero_minibatch() {
+        let cfg = ResourceConfig {
+            num_envs_per_worker: 4,
+            rollout_fragment_length: 200,
+            train_batch_size: 1000,
+            sgd_minibatch_size: 0,
+            num_sgd_iter: 10,
+            lr_schedule: None,
+        };
+        assert!(cfg.validate().is_err());
+    }
 }

@@ -184,12 +184,42 @@ mod tests {
     }
 
     #[test]
+    fn test_counter_default() {
+        let counter = AtomicCounter::default();
+        assert_eq!(counter.get(), 0);
+    }
+
+    #[test]
+    fn test_counter_multiple_inc() {
+        let counter = AtomicCounter::new();
+        for _ in 0..100 {
+            counter.inc();
+        }
+        assert_eq!(counter.get(), 100);
+    }
+
+    #[test]
     fn test_gauge() {
         let gauge = AtomicGauge::new();
         gauge.set(42.0);
         assert_eq!(gauge.get(), 42.0);
         gauge.add(8.0);
         assert_eq!(gauge.get(), 50.0);
+    }
+
+    #[test]
+    fn test_gauge_negative() {
+        let gauge = AtomicGauge::new();
+        gauge.set(-100.0);
+        assert_eq!(gauge.get(), -100.0);
+        gauge.add(50.0);
+        assert_eq!(gauge.get(), -50.0);
+    }
+
+    #[test]
+    fn test_gauge_default() {
+        let gauge = AtomicGauge::default();
+        assert_eq!(gauge.get(), 0.0);
     }
 
     #[test]
@@ -203,5 +233,30 @@ mod tests {
         let p = hist.latency_percentiles();
         assert!(p.p50 > 0.0);
         assert!(p.p99 > 0.0);
+    }
+
+    #[test]
+    fn test_histogram_quantiles() {
+        let hist = LatencyHistogram::default_latency();
+        // 添加 100 个样本
+        for i in 1..=100 {
+            hist.observe(i as f64 * 1000.0);
+        }
+        assert_eq!(hist.total_count(), 100);
+
+        let p = hist.latency_percentiles();
+        assert!(p.p50 > 0.0);
+        assert!(p.p99 > 0.0);
+        assert!(p.p999 > 0.0);
+        // p99 应该大于 p50
+        assert!(p.p99 >= p.p50);
+    }
+
+    #[test]
+    fn test_histogram_empty() {
+        let hist = LatencyHistogram::default_latency();
+        assert_eq!(hist.total_count(), 0);
+        let p = hist.latency_percentiles();
+        assert_eq!(p.p50, 0.0);
     }
 }

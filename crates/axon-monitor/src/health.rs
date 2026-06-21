@@ -97,4 +97,63 @@ mod tests {
         ]);
         assert_eq!(check.status, HealthStatus::Degraded);
     }
+
+    #[test]
+    fn test_unhealthy() {
+        let service = HealthService::new();
+        let check = service.check(vec![
+            ComponentHealth {
+                name: "db".into(),
+                status: HealthStatus::Healthy,
+                message: "ok".into(),
+            },
+            ComponentHealth {
+                name: "cache".into(),
+                status: HealthStatus::Unhealthy,
+                message: "down".into(),
+            },
+        ]);
+        assert_eq!(check.status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_multiple_unhealthy() {
+        let service = HealthService::new();
+        let check = service.check(vec![
+            ComponentHealth {
+                name: "db".into(),
+                status: HealthStatus::Unhealthy,
+                message: "connection refused".into(),
+            },
+            ComponentHealth {
+                name: "cache".into(),
+                status: HealthStatus::Unhealthy,
+                message: "timeout".into(),
+            },
+        ]);
+        assert_eq!(check.status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_empty_components() {
+        let service = HealthService::new();
+        let check = service.check(vec![]);
+        // 空组件列表应该是 Healthy
+        assert_eq!(check.status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_uptime() {
+        let service = HealthService::new();
+        let check = service.check(vec![]);
+        // 刚创建的服务 uptime 应该接近 0
+        assert!(check.uptime_secs < 2);
+    }
+
+    #[test]
+    fn test_default() {
+        let service = HealthService::default();
+        let check = service.check(vec![]);
+        assert_eq!(check.status, HealthStatus::Healthy);
+    }
 }

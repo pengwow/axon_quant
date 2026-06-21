@@ -20,9 +20,13 @@ This document presents the performance benchmark results for the AXON quantitati
 
 ## Detailed Report
 
-Detailed benchmark reports can be viewed through the following link:
+Run the following command to generate a full HTML benchmark report locally:
 
-- [Full Benchmark Report](./report/report/index.html)
+```bash
+make bench-report
+```
+
+The report will be generated to the `target/criterion/` directory.
 
 ## Running Benchmarks
 

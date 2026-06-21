@@ -40,3 +40,4 @@ python = ["dep:pyo3", "onnx", "hot-reload"]
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile = { workspace = true }
+serde_json = { workspace = true }

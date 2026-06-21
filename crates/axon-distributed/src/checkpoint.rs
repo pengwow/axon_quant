@@ -151,4 +151,50 @@ mod tests {
         let m2 = m1.clone();
         assert_eq!(m1, m2);
     }
+
+    #[test]
+    fn test_checkpoint_add_metrics() {
+        let mut ckpt = TrainingCheckpoint::new(0, vec![], vec![], vec![]);
+        assert!(ckpt.metrics_history.is_empty());
+
+        ckpt.add_metrics(StepMetrics {
+            step: 1,
+            episode_reward_mean: 10.0,
+            episode_len_mean: 100.0,
+            policy_loss: 0.01,
+            value_loss: 0.02,
+            entropy: 0.5,
+            fps: 1000.0,
+        });
+        assert_eq!(ckpt.metrics_history.len(), 1);
+        assert_eq!(ckpt.metrics_history[0].step, 1);
+    }
+
+    #[test]
+    fn test_checkpoint_size_bytes() {
+        let ckpt = TrainingCheckpoint::new(0, vec![0; 100], vec![0; 200], vec![0; 300]);
+        assert_eq!(ckpt.size_bytes(), 600);
+    }
+
+    #[test]
+    fn test_checkpoint_json_empty_metrics() {
+        let ckpt = TrainingCheckpoint::new(10, vec![1, 2], vec![3, 4], vec![5, 6]);
+        let json = ckpt.to_json().unwrap();
+        let restored = TrainingCheckpoint::from_json(&json).unwrap();
+        assert!(restored.metrics_history.is_empty());
+    }
+
+    #[test]
+    fn test_step_metrics_default() {
+        let m = StepMetrics {
+            step: 0,
+            episode_reward_mean: 0.0,
+            episode_len_mean: 0.0,
+            policy_loss: 0.0,
+            value_loss: 0.0,
+            entropy: 0.0,
+            fps: 0.0,
+        };
+        assert_eq!(m.step, 0);
+    }
 }

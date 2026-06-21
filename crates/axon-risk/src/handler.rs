@@ -45,4 +45,12 @@ mod tests {
         let portfolio = Arc::new(RwLock::new(Portfolio::default()));
         let _handler = RiskEventHandler::new(engine, portfolio);
     }
+
+    #[test]
+    fn test_handler_event_types() {
+        let engine = Arc::new(DefaultRiskEngine::new(RiskConfig::default()));
+        let portfolio = Arc::new(RwLock::new(Portfolio::default()));
+        let handler = RiskEventHandler::new(engine, portfolio);
+        assert_eq!(handler.event_types(), EventType::FILL);
+    }
 }
