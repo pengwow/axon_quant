@@ -5,6 +5,8 @@
 pub mod dynamic;
 pub mod error;
 pub mod manager;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod stacking;
 pub mod traits;
 pub mod types;

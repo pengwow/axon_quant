@@ -28,7 +28,7 @@ chrono = { workspace = true }
 rand = { workspace = true }
 
 # Python 绑定（可选）
-pyo3 = { version = "0.28", optional = true }
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

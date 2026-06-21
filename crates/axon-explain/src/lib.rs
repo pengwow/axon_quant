@@ -8,6 +8,8 @@
 
 pub mod counterfactual;
 pub mod error;
+#[cfg(feature = "python")]
+pub mod python;
 pub mod report;
 pub mod shap;
 pub mod traits;

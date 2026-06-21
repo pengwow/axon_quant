@@ -323,10 +323,10 @@ impl PyOrderStatus {
 /// 把 Python `Decimal` / `int` / `float` / `str` 转 str(精度无损)
 fn decimal_to_string<'py>(v: &Bound<'py, pyo3::types::PyAny>) -> PyResult<String> {
     // 优先 Decimal.__str__
-    if let Ok(s) = v.call_method0("__str__") {
-        if let Ok(s) = s.extract::<String>() {
-            return Ok(s);
-        }
+    if let Ok(s) = v.call_method0("__str__")
+        && let Ok(s) = s.extract::<String>()
+    {
+        return Ok(s);
     }
     // fallback:int / float
     v.extract::<String>()

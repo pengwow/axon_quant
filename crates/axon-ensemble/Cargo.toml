@@ -9,6 +9,10 @@ documentation.workspace = true
 authors.workspace = true
 description = "AXON 模型集成引擎：硬投票/软投票/加权/堆叠/动态加权（Phase 3 P0 阶段填充）"
 
+[features]
+default = []
+python = ["dep:pyo3"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -16,6 +20,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
+
+# Python 绑定（可选）
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
