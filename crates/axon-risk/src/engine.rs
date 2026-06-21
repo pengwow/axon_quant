@@ -371,7 +371,7 @@ mod tests {
         engine.update_daily_pnl(-50_000.0);
         let order = make_limit_order(Side::Buy, 100.0, 10.0);
         // 超过回撤限制应该被拒绝
-        let result = engine.check_order(&order, &portfolio);
+        let _result = engine.check_order(&order, &portfolio);
         // 注意：check_order 中的 drawdown 检查基于 peak_value，而不是 daily_pnl
         // 所以这里可能不会触发 MaxDrawdownExceeded
     }
@@ -399,7 +399,7 @@ mod tests {
         engine.update_daily_pnl(10_000.0);
         // 再亏损
         engine.update_daily_pnl(-20_000.0);
-        let metrics = engine.get_metrics(&funded_portfolio(100_000.0));
+        let _metrics = engine.get_metrics(&funded_portfolio(100_000.0));
         // 验证 metrics 计算不 panic
     }
 
@@ -436,7 +436,10 @@ mod tests {
         let order = make_limit_order(Side::Buy, 100.0, 10.0);
         // 熔断后应该拒绝订单
         let result = engine.check_order(&order, &portfolio);
-        assert!(matches!(result, RiskResult::Reject(RiskReason::CircuitBreakerActive { .. })));
+        assert!(matches!(
+            result,
+            RiskResult::Reject(RiskReason::CircuitBreakerActive { .. })
+        ));
     }
 
     #[test]

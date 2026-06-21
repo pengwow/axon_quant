@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_concentration_zero_nav() {
-        let mut portfolio = Portfolio::new(Currency::USD, 0.001);
+        let portfolio = Portfolio::new(Currency::USD, 0.001);
         // 不存款，NAV 为 0
         let config = RiskConfig::default();
         let alerts = check_concentration(&portfolio, &config);
