@@ -222,3 +222,29 @@ docs-validate: docs-build ## 严格校验 mkdocs 配置 + 链接 + 引用
 .PHONY: docs-clean
 docs-clean: ## 清理 mkdocs 临时产物
 	@rm -rf site/ .cache/
+
+# ==================== 代码覆盖率 ====================
+.PHONY: coverage coverage-all coverage-report
+
+coverage: ## 运行代码覆盖率分析（排除 Python 模块）
+	@echo "==> 运行代码覆盖率分析（排除 Python 模块）"
+	cargo tarpaulin --workspace \
+		--exclude-files "*/tests/*" "*/benches/*" "*/examples/*" "*/python/*" \
+		--skip-clean \
+		--out Stdout
+
+coverage-all: ## 运行代码覆盖率分析（包含 Python 模块）
+	@echo "==> 运行代码覆盖率分析（包含 Python 模块）"
+	cargo tarpaulin --workspace \
+		--exclude-files "*/tests/*" "*/benches/*" "*/examples/*" \
+		--skip-clean \
+		--out Stdout
+
+coverage-report: ## 生成 HTML 覆盖率报告
+	@echo "==> 生成 HTML 覆盖率报告"
+	cargo tarpaulin --workspace \
+		--exclude-files "*/tests/*" "*/benches/*" "*/examples/*" "*/python/*" \
+		--skip-clean \
+		--out Html \
+		--output-dir target/coverage
+	@echo "覆盖率报告已生成到 target/coverage/tarpaulin.html"
