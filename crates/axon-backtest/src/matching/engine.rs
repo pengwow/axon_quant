@@ -34,10 +34,10 @@ use super::types::{MatchFill, OrderBookLevel, SubmitResult};
 /// # 自动 trait 约束
 ///
 /// `Send + Sync` 是必要的:
-/// - Python 绑定(Stage 2 Task 8)中 [`crate::python::engine::PyBacktestEngine`]
-///   需要把 [`crate::engine::BacktestEngine`] 包在 `#[pyclass]` 中,
+/// - Python 绑定(Stage 2 Task 8)中 `PyBacktestEngine`
+///   需要把 `BacktestEngine` 包在 `#[pyclass]` 中,
 ///   pyo3 0.28 要求 `#[pyclass]` 自动派生 `Send + Sync`。
-/// - Box<dyn MatchingEngine> 是 BacktestEngineConfig 的字段,
+/// - `Box<dyn MatchingEngine>` 是 BacktestEngineConfig 的字段,
 ///   必须 Send + Sync 才能放进 PyBacktestEngine。
 ///
 /// 由于所有已知实现(`L1MatchingEngine`)的字段都是 `Send + Sync`,
