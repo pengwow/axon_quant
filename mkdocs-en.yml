@@ -150,6 +150,7 @@ nav:
       - CLI Commands: reference/cli.md
       - Python Bindings: reference/python-bindings.md
       - Configuration: reference/configuration.md
+      - Exchange Security: reference/exchange-security.md
   - Benchmark: benchmark.md
   - Architecture Decisions:
       - Index: adr/index.md
