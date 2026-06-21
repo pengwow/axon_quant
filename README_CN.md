@@ -49,6 +49,12 @@
 ### AI 增强
 
 - **LLM 智能体**：ReAct + Tool Calling，内置 `PlaceOrder` / `QueryPortfolio` 交易工具，带 SafetyMode 风控
+- **Agent Swarm**：多 Agent 协作框架，采用 Actor 模型，支持投票共识和动态扩缩容
+  - **MarketAgent**：市场分析与信号生成
+  - **RiskAgent**：预交易风控评估与合规检查
+  - **ExecutionAgent**：订单执行（TWAP/VWAP 策略）
+  - **AuditAgent**：决策日志与合规报告
+  - **SwarmOrchestrator**：Agent 生命周期管理、消息路由、自动扩缩容
 - **模型集成**：Voting / Stacking / 动态加权，在线监控夏普比率自动调权
 - **可解释性**：SHAP 特征归因 + 反事实解释 + `Explainer` trait 内建
 - **合规审计**：不可篡改的交易日志 + 决策报告归档

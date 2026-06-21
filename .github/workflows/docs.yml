@@ -73,18 +73,18 @@ jobs:
         run: |
           mkdocs build --strict
           mkdocs build -f mkdocs-en.yml --strict
-          # 创建根目录 index.html 重定向到中文版本
+          # 创建根目录 index.html 重定向到英文版本
           cat > site/index.html << 'EOF'
           <!DOCTYPE html>
           <html>
           <head>
             <meta charset="utf-8">
             <title>Redirecting...</title>
-            <meta http-equiv="refresh" content="0; url=zh/">
-            <link rel="canonical" href="zh/">
+            <meta http-equiv="refresh" content="0; url=en/">
+            <link rel="canonical" href="en/">
           </head>
           <body>
-            <p>Redirecting to <a href="zh/">Chinese documentation</a>...</p>
+            <p>Redirecting to <a href="en/">English documentation</a>...</p>
           </body>
           </html>
           EOF

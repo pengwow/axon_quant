@@ -14,6 +14,7 @@ pub mod config;
 pub mod context;
 pub mod prompt;
 pub mod react_agent;
+pub mod swarm;
 pub mod tools;
 pub mod trading;
 pub mod types;
