@@ -46,6 +46,8 @@ python = [
     "dep:axon-explain",
     # `axon-ensemble` 暴露为 `_native.ensemble` 子模块
     "dep:axon-ensemble",
+    # `axon-compliance` 暴露为 `_native.compliance` 子模块
+    "dep:axon-compliance",
 ]
 
 [dependencies]
@@ -94,3 +96,6 @@ axon-explain = { workspace = true, optional = true, features = ["python"] }
 # EnsembleError 继承 builtin PyException 而非 AxonError。
 # 包含 EnsembleManager + 投票策略 + StackingEnsemble + DynamicWeightedEnsemble。
 axon-ensemble = { workspace = true, optional = true, features = ["python"] }
+# `axon-compliance` 暴露为 `_native.compliance` 子模块
+# 包含 ComplianceModule(交易记录 + 日报/月报/年报生成 + 审计完整性验证)。
+axon-compliance = { workspace = true, optional = true, features = ["python"] }

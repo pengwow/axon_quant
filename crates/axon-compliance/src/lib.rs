@@ -64,7 +64,7 @@
 pub mod audit;
 pub mod error;
 #[cfg(feature = "python")]
-mod python;
+pub mod python;
 pub mod regulator;
 pub mod report;
 pub mod types;

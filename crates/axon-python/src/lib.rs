@@ -141,5 +141,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_ensemble::python::register_module(&ensemble_module)?;
     m.add_submodule(&ensemble_module)?;
 
+    // `axon-compliance` 子模块
+    // 注:axon-compliance 内部已注册 ComplianceModule,
+    // 这里只调 `register_module` 把 `compliance` 挂到 `_native` 下。
+    let compliance_module = PyModule::new(m.py(), "compliance")?;
+    axon_compliance::python::register_module(&compliance_module)?;
+    m.add_submodule(&compliance_module)?;
+
     Ok(())
 }
