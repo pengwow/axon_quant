@@ -13,5 +13,8 @@ pub mod evm;
 pub mod mev;
 pub mod types;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 /// DeFi 模块版本
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

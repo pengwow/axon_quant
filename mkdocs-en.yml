@@ -45,6 +45,8 @@ theme:
     - navigation.footer
     - navigation.indexes
     - toc.integrate
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     # Light mode
     - media: "(prefers-color-scheme: light)"

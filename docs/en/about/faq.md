@@ -1,5 +1,8 @@
 # FAQ
 
+> **Related examples**: [`examples/`](../../../examples/) contains complete runnable examples for all features.
+> Start with [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py).
+
 This document collects common questions and answers for the AXON quantitative trading framework, organized by category for quick reference.
 
 ---

@@ -1,5 +1,8 @@
 # Exchange Security Best Practices
 
+> **Full example**: [`examples/09_exchange/binance_demo.py`](../../../examples/09_exchange/binance_demo.py)
+> Complete Binance testnet integration (REST + HMAC signing + K-line queries).
+
 This document outlines the security best practices for using the `axon_quant.exchange` Python bindings
 in production. **Treat API keys as production credentials**; a leak can lead to direct financial loss.
 

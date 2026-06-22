@@ -1,5 +1,8 @@
 # API Reference
 
+> **Full runnable example**: [`examples/17_python_bindings/python_bindings_demo.py`](../../../examples/17_python_bindings/python_bindings_demo.py)
+> Demonstrates Python APIs for all core modules.
+
 This document provides quick reference tables and key API code examples for AXON quantitative trading framework's top-level modules, helping developers quickly locate required functionality.
 
 ---

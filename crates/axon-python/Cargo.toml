@@ -48,6 +48,8 @@ python = [
     "dep:axon-ensemble",
     # `axon-compliance` 暴露为 `_native.compliance` 子模块
     "dep:axon-compliance",
+    # `axon-defi` 暴露为 `_native.defi` 子模块
+    "dep:axon-defi",
 ]
 
 [dependencies]
@@ -99,3 +101,6 @@ axon-ensemble = { workspace = true, optional = true, features = ["python"] }
 # `axon-compliance` 暴露为 `_native.compliance` 子模块
 # 包含 ComplianceModule(交易记录 + 日报/月报/年报生成 + 审计完整性验证)。
 axon-compliance = { workspace = true, optional = true, features = ["python"] }
+# `axon-defi` 暴露为 `_native.defi` 子模块
+# 包含 EvmAdapter + UniswapRouter + MevShareClient + BridgeManager。
+axon-defi = { workspace = true, optional = true, features = ["python"] }

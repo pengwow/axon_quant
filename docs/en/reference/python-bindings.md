@@ -1,5 +1,8 @@
 # Python Bindings
 
+> **Full runnable example**: [`examples/17_python_bindings/python_bindings_demo.py`](../../../examples/17_python_bindings/python_bindings_demo.py)
+> Covers all 6 modules (Backtest / Risk / OMS / Exchange / Inference / LLM Trading). Run with one command.
+
 > Applicable version: AXON v0.1.0+ Python bindings (Stage K delivery)
 
 AXON exposes core Rust types to Python via PyO3, providing the `axon_quant` package.
@@ -852,7 +855,7 @@ For detailed design, refer to [Agent Swarm Architecture Design](https://github.c
 
 ## DeFi On-Chain Trading (Experimental)
 
-> **Note**: DeFi features are experimental and under active development. APIs may change. Python bindings will be provided in future versions.
+> **Note**: DeFi features are experimental and under active development. APIs may change.
 
 ### Architecture Overview
 
@@ -891,11 +894,44 @@ For detailed design, refer to [Agent Swarm Architecture Design](https://github.c
 | Optimism | 10 | 111 |
 | Polygon | 137 | 109 |
 
+### Python Types
+
+| Type | Description |
+|------|-------------|
+| `Chain` | EVM chain enum (Ethereum / Arbitrum / Optimism / Polygon) |
+| `EvmConfig` | EVM chain config (RPC, private key, API key) |
+| `DefiOrder` | DeFi order (token, amount, slippage) |
+| `SwapRoute` | Swap route (input/output token, fee) |
+| `RiskCheckResult` | Risk check result |
+| `UniswapV3Contracts` | Uniswap V3 contract addresses |
+| `DefiError` | DeFi exception |
+
 ### Usage Example
 
 ```python
-# DeFi features are currently implemented only in Rust layer
-# Python bindings will be provided in future versions
+from axon_quant._native.defi import (
+    Chain, EvmConfig, DefiOrder, SwapRoute, RiskCheckResult,
+    UniswapV3Contracts, DefiError,
+)
+
+# 1. Get chain config
+chain = Chain.Ethereum
+print(f"Chain: {chain.name}, ID: {chain.chain_id}")
+
+# 2. Get Uniswap V3 contract addresses
+contracts = UniswapV3Contracts.for_chain(Chain.Ethereum)
+print(f"Router: {contracts.router}")
+
+# 3. Create EVM config
+config = EvmConfig(
+    chain_id=1,
+    rpc_url="https://mainnet.infura.io/v3/xxx",
+    private_key="0x...",
+)
+
+# 4. Create DeFi order
+order = DefiOrder("0xtoken", "1000", 50000.0)
+print(f"Order: {order}")
 ```
 
 ### Design Document

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **15 个 L3 Python E2E 测试** `python/tests/test_explain_e2e.py`: 覆盖类型导入 / 枚举 / 属性访问 / KernelSHAP 计算 / 异常路径。**全部 15/15 通过**。
   - **48 个 Rust 单元测试**: 覆盖 register_module / 错误映射 / 类型转换。
 
+- **axon-ensemble 演示**:新增 `examples/14_ensemble/ensemble_demo.py`,演示三种投票策略(HardVote / SoftVote / WeightedVote)、EnsembleManager 注册模型与预测、模型多样性计算、权重查询。
+
 - **axon-ensemble Python 绑定**:把 `axon-ensemble`(模型集成:投票/堆叠/动态加权)暴露到 `axon_quant.ensemble` 子模块。**改动范围**:
   - **13 个 pyclass**: `ModelType`(枚举)、`ActionType`(枚举)、`EnsembleStrategy`(枚举)、`ActionProbabilities`、`Action`、`Observation`、`ModelWeight`、`HardVoteStrategy`、`SoftVoteStrategy`、`WeightedVoteStrategy`、`EnsembleManager`、`MetaModel`、`StackingEnsemble`。
   - **PyPolicy 适配器**: 将 Python callable 适配为 Rust `Policy` trait。
