@@ -804,6 +804,52 @@ async def main():
 asyncio.run(main())
 ```
 
+## Agent Swarm Multi-Agent Collaboration
+
+axon_quant supports multi-Agent collaboration framework using Actor model for professional division and voting consensus.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    SwarmOrchestrator                          │
+│  - Agent lifecycle management                                │
+│  - Message routing                                           │
+│  - Voting coordination                                       │
+└────────────────────┬────────────────────────────────────────┘
+                     │ tokio::mpsc
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ Market   │ │ Risk     │ │ Execution│
+    │ Agent    │ │ Agent    │ │ Agent    │
+    └──────────┘ └──────────┘ └──────────┘
+```
+
+### Core Components
+
+| Component | Description |
+|-----------|-------------|
+| `AgentId` | Unique Agent identifier |
+| `AgentRole` | Agent role (Market / Risk / Execution / Audit) |
+| `AgentMessage` | Inter-Agent message |
+| `MessageContent` | Message content (MarketSignal / RiskSignal / TradeOrder, etc.) |
+| `VoteProposal` | Voting proposal |
+| `VoteResult` | Voting result |
+| `ConsensusManager` | Consensus manager |
+| `SwarmOrchestrator` | Swarm orchestrator |
+
+### Usage Example
+
+```python
+# Agent Swarm is currently implemented only in Rust layer
+# Python bindings will be provided in future versions
+```
+
+### Design Document
+
+For detailed design, refer to [Agent Swarm Architecture Design](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-agent-swarm-design.md).
+
 ## Next Steps
 
 - [API Reference](api-reference.md) — Complete API documentation

@@ -51,6 +51,12 @@ English | **[中文](./README_CN.md)**
 ### AI Enhancement
 
 - **LLM Agents**: ReAct + Tool Calling, built-in `PlaceOrder` / `QueryPortfolio` trading tools with SafetyMode risk control
+- **Agent Swarm**: Multi-Agent collaboration with Actor model, voting consensus, dynamic scaling
+  - **MarketAgent**: Market analysis and signal generation
+  - **RiskAgent**: Pre-trade risk assessment and compliance checks
+  - **ExecutionAgent**: Order execution with TWAP/VWAP strategies
+  - **AuditAgent**: Decision logging and compliance reporting
+  - **SwarmOrchestrator**: Agent lifecycle management, message routing, auto-scaling
 - **Model Ensemble**: Voting / Stacking / dynamic weighting, online Sharpe ratio monitoring for auto-adjustment
 - **Explainability**: SHAP feature attribution + counterfactual explanations + `Explainer` trait built-in
 - **Compliance Audit**: Immutable trade logs + decision report archiving

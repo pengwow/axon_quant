@@ -853,3 +853,49 @@ with ThreadPoolExecutor() as ex:
 | `TradingError::BackendError::Rejected` | `RuntimeError` |
 | `TradingError::BackendError::InsufficientFunds` | `ValueError` |
 | `TradingError::ParseError` | `ValueError` |
+
+## Agent Swarm 多智能体协作
+
+axon_quant 支持多 Agent 协作框架，采用 Actor 模型实现专业分工和投票共识。
+
+### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    SwarmOrchestrator                          │
+│  - Agent 生命周期管理                                          │
+│  - 消息路由                                                    │
+│  - 投票协调                                                    │
+└────────────────────┬────────────────────────────────────────┘
+                     │ tokio::mpsc
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ Market   │ │ Risk     │ │ Execution│
+    │ Agent    │ │ Agent    │ │ Agent    │
+    └──────────┘ └──────────┘ └──────────┘
+```
+
+### 核心组件
+
+| 组件 | 说明 |
+|------|------|
+| `AgentId` | Agent 唯一标识 |
+| `AgentRole` | Agent 角色（Market / Risk / Execution / Audit） |
+| `AgentMessage` | Agent 间消息 |
+| `MessageContent` | 消息内容（MarketSignal / RiskSignal / TradeOrder 等） |
+| `VoteProposal` | 投票提案 |
+| `VoteResult` | 投票结果 |
+| `ConsensusManager` | 共识管理器 |
+| `SwarmOrchestrator` | Swarm 编排器 |
+
+### 使用示例
+
+```python
+# Agent Swarm 目前仅在 Rust 层实现
+# Python 绑定将在后续版本中提供
+```
+
+### 设计文档
+
+详细设计请参考 [Agent Swarm 架构设计](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-agent-swarm-design.md)。
