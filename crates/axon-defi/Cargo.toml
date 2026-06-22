@@ -1,0 +1,47 @@
+[package]
+name = "axon-defi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+description = "DeFi 链上交易：EVM 链适配器、Uniswap V3、MEV-Share、LayerZero 跨链"
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+# 内部依赖
+axon-core = { path = "../axon-core" }
+axon-exchange = { path = "../axon-exchange" }
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 错误
+thiserror = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# 时间
+chrono = { workspace = true }
+
+# 异步
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# EVM
+ethers = "2.0"
+
+# Python 绑定（可选）
+pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

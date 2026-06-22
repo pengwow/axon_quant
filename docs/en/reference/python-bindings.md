@@ -850,6 +850,58 @@ axon_quant supports multi-Agent collaboration framework using Actor model for pr
 
 For detailed design, refer to [Agent Swarm Architecture Design](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-agent-swarm-design.md).
 
+## DeFi On-Chain Trading (Experimental)
+
+> **Note**: DeFi features are experimental and under active development. APIs may change. Python bindings will be provided in future versions.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              axon-defi                                  │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │ EvmAdapter   │  │ UniswapV3    │  │ MevShare     │  │ BridgeMgr  │ │
+│  │ (Exchange    │  │ Router       │  │ Client       │  │ (LayerZero)│ │
+│  │  Adapter)    │  │              │  │              │  │            │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └────────────┘ │
+│  ┌──────────────┐                                                     │
+│  │ ContractRisk │                                                     │
+│  │ Checker      │                                                     │
+│  └──────────────┘                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core Components
+
+| Component | Description |
+|-----------|-------------|
+| `EvmAdapter` | EVM chain adapter, implements ExchangeAdapter trait |
+| `UniswapRouter` | Uniswap V3 router, optimal path execution |
+| `MevShareClient` | MEV-Share client, sandwich attack prevention |
+| `ContractRiskChecker` | Smart contract risk checker |
+| `BridgeManager` | Cross-chain bridge manager, LayerZero integration |
+
+### Supported Chains
+
+| Chain | Chain ID | LayerZero ID |
+|-------|----------|--------------|
+| Ethereum | 1 | 101 |
+| Arbitrum | 42161 | 110 |
+| Optimism | 10 | 111 |
+| Polygon | 137 | 109 |
+
+### Usage Example
+
+```python
+# DeFi features are currently implemented only in Rust layer
+# Python bindings will be provided in future versions
+```
+
+### Design Document
+
+For detailed design, refer to [DeFi On-Chain Trading Architecture Design](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-defi-onchain-trading-design.md).
+
 ## Next Steps
 
 - [API Reference](api-reference.md) — Complete API documentation
