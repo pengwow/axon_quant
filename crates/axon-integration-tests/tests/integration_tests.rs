@@ -284,6 +284,50 @@ fn matching_flow_l2_snapshot() {
     matching_flow::run_l2_depth_snapshot();
 }
 
+// ── 压力场景测试 ──
+
+#[test]
+fn matching_flow_flash_crash() {
+    matching_flow::run_flash_crash_scenario();
+}
+
+#[test]
+fn matching_flow_zero_liquidity() {
+    matching_flow::run_zero_liquidity_rejection();
+}
+
+#[test]
+fn matching_flow_large_order_impact() {
+    matching_flow::run_large_order_impact();
+}
+
+#[test]
+fn matching_flow_partial_fill() {
+    matching_flow::run_partial_fill_update();
+}
+
+#[test]
+fn matching_flow_rapid_churn() {
+    matching_flow::run_rapid_order_churn();
+}
+
+// ── L3 多资产引擎测试 ──
+
+#[test]
+fn matching_flow_l3_multi_asset_routing() {
+    matching_flow::run_l3_multi_asset_routing();
+}
+
+#[test]
+fn matching_flow_l3_cross_pair_arbitrage() {
+    matching_flow::run_l3_cross_pair_arbitrage();
+}
+
+#[test]
+fn matching_flow_l3_snapshot_restore() {
+    matching_flow::run_l3_snapshot_restore();
+}
+
 // ── 场景 3：HPO 超参数优化全流程 ──
 
 #[test]

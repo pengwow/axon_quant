@@ -578,6 +578,103 @@ proptest! {
 }
 
 // ───────────────────────────────────────────────────────────────────
+// 9. L3 多资产撮合引擎不变式
+// ───────────────────────────────────────────────────────────────────
+
+use axon_backtest::matching::{BatchMode, CrossPair, MultiAssetMatchingEngine};
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    /// L3 提交任意合法订单不应 panic
+    #[test]
+    fn prop_l3_submit_never_panics(
+        price in 1.0f64..1_000_000.0,
+        qty in 0.001f64..1000.0,
+        side in prop::bool::ANY,
+    ) {
+        let mut engine = MultiAssetMatchingEngine::new();
+        engine.register_asset(Symbol::from("FUZZ"));
+        let s = if side { Side::Buy } else { Side::Sell };
+        let order = Order::new(
+            0, Symbol::from("FUZZ"), s,
+            OrderType::Limit { price: Price::from_f64(price) },
+            Quantity::from_f64(qty), TimeInForce::GTC,
+        );
+        let _ = engine.submit(order);
+    }
+
+    /// 跨资产 ratio 始终 > 0
+    #[test]
+    fn prop_l3_cross_pair_ratio_positive(
+        ratio in 0.001f64..1000.0,
+    ) {
+        let mut engine = MultiAssetMatchingEngine::new();
+        let pair = CrossPair {
+            leg1: Symbol::from("A"),
+            leg2: Symbol::from("B"),
+            ratio,
+            max_quantity: Quantity::from_f64(1.0),
+        };
+        prop_assert!(engine.register_cross_pair(pair).is_ok());
+        assert_eq!(engine.cross_pair_count(), 1);
+    }
+
+    /// 暗池成交数 ≤ 提交订单数
+    #[test]
+    fn prop_l3_dark_pool_fill_count_bounded(
+        n_orders in 1usize..20usize,
+    ) {
+        let mut engine = MultiAssetMatchingEngine::new();
+        engine.register_asset(Symbol::from("FUZZ"));
+        engine.set_batch_mode(BatchMode::DarkPool);
+
+        let mut total_fills = 0usize;
+        for i in 0..n_orders {
+            let order = Order::new(
+                i as u64, Symbol::from("FUZZ"), Side::Buy,
+                OrderType::Limit { price: Price::from_f64(100.0) },
+                Quantity::from_f64(1.0), TimeInForce::GTC,
+            );
+            let fills = engine.submit(order).unwrap();
+            total_fills += fills.len();
+        }
+        prop_assert!(total_fills <= n_orders, "成交数 {} > 订单数 {}", total_fills, n_orders);
+    }
+
+    /// 相同操作序列产生相同快照
+    #[test]
+    fn prop_l3_snapshot_deterministic(
+        n_assets in 1usize..5usize,
+    ) {
+        let mut engine1 = MultiAssetMatchingEngine::new();
+        let mut engine2 = MultiAssetMatchingEngine::new();
+
+        for i in 0..n_assets {
+            let sym = Symbol::from(format!("SYM_{}", i));
+            engine1.register_asset(sym.clone());
+            engine2.register_asset(sym);
+        }
+
+        // 提交相同订单
+        for i in 0..5u64 {
+            let order = Order::new(
+                i, Symbol::from("SYM_0"), Side::Buy,
+                OrderType::Limit { price: Price::from_f64(100.0 + i as f64) },
+                Quantity::from_f64(1.0), TimeInForce::GTC,
+            );
+            engine1.submit(order.clone()).unwrap();
+            engine2.submit(order).unwrap();
+        }
+
+        let snap1 = engine1.snapshot();
+        let snap2 = engine2.snapshot();
+        prop_assert_eq!(snap1.batch_mode, snap2.batch_mode);
+        prop_assert_eq!(snap1.engines.len(), snap2.engines.len());
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────
 // 链接标记：确保 `fuzz` 模块在测试二进制中被实际包含
 // ───────────────────────────────────────────────────────────────────
 
