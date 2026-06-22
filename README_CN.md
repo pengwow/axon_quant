@@ -1,14 +1,18 @@
-<div align="right">
+<div align="center">
+
+# <img src="docs/assets/logo.svg" width="36" alt="" style="vertical-align: middle;"/> AXON
+
+**AI 原生量化交易框架**
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.96%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.2.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
 
 **[English](./README.md)** | 中文
 
 </div>
 
-# AXON
-
 > 面向量化交易与强化学习的事件驱动交易引擎。它从设计之初就以 AI 为核心，而非在传统量化系统上"嫁接"机器学习模块。
 
-**AI 原生量化交易框架** — Rust 实现高性能内核，Python 提供 RL 训练接口，一套代码贯穿回测、训练、优化、验证、生产的完整链路。
+Rust 实现高性能内核，Python 提供 RL 训练接口，一套代码贯穿回测、训练、优化、验证、生产的完整链路。
 
 [在线文档](https://pengwow.github.io/axon_quant/) · [设计文档](./axon-design/) · [ADR](./docs/adr/) · [更新日志](./CHANGELOG.md) · [示例](./examples/)
 
@@ -363,3 +367,17 @@ collect_gpu_device_id = 0
 ## 许可
 
 [Apache-2.0](./LICENSE)
+
+---
+
+## 免责声明
+
+本项目是一个**开源量化交易框架**，仅供**研究和学习目的**使用。
+
+- **非投资建议**：本仓库中的任何内容均不构成金融、投资或交易建议。
+- **不保证收益**：历史表现（包括回测结果）不代表未来收益。
+- **风险自担**：作者和贡献者**不对使用本软件造成的任何经济损失承担责任**。
+- **非生产就绪**：本软件按"现状"提供，不附带任何明示或暗示的保证。在实盘环境中使用前，需进行充分测试和风险评估。
+- **合规责任**：用户有责任自行确保其使用行为符合适用的法律法规。
+
+**使用本软件即表示您理解并接受上述条款。**

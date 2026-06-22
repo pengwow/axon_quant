@@ -1,5 +1,8 @@
 # 常见问题
 
+> **相关示例**: [`examples/`](../../../examples/) 目录包含所有功能的完整可运行示例。
+> 推荐从 [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py) 开始。
+
 本文档汇总了 AXON 量化交易框架使用过程中的常见问题与解答，按类别组织以便快速定位。
 
 ---

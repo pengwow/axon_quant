@@ -169,3 +169,9 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [Traditional Strategy Migration](user-guide/traditional-strategy.md)
 - [API Reference](reference/api-reference.md)
 - [FAQ](about/faq.md)
+
+---
+
+## Disclaimer
+
+This project is an **open-source quantitative trading framework** for **research and educational purposes only**. The authors and contributors are **not responsible for any financial losses** incurred through the use of this software. By using this software, you acknowledge that you understand and accept these terms. See [LICENSE](https://github.com/pengwow/axon_quant/blob/main/LICENSE).

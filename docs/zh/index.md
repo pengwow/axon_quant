@@ -167,3 +167,9 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [传统策略迁移](user-guide/traditional-strategy.md)
 - [API 参考](reference/api-reference.md)
 - [常见问题](about/faq.md)
+
+---
+
+## 免责声明
+
+本项目是一个**开源量化交易框架**，仅供**研究和学习目的**使用。作者和贡献者**不对使用本软件造成的任何经济损失承担责任**。使用本软件即表示您理解并接受上述条款。详见 [LICENSE](https://github.com/pengwow/axon_quant/blob/main/LICENSE)。

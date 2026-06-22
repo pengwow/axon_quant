@@ -1,5 +1,8 @@
 # 安装与快速入门
 
+> **快速开始**: [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py)
+> 一键运行，覆盖全部 6 个 Stage，内置离线数据，无需额外配置。
+
 > 本章节介绍如何在本地安装 AXON，并通过一个最小可运行的随机策略基线验证环境是否正常。
 
 ---

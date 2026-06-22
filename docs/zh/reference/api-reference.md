@@ -1,5 +1,8 @@
 # API 参考
 
+> **完整可运行示例**: [`examples/17_python_bindings/python_bindings_demo.py`](../../../examples/17_python_bindings/python_bindings_demo.py)
+> 覆盖全部核心模块的 Python API 演示。
+
 本文档提供 AXON 量化交易框架各顶层模块的速查表与关键 API 代码示例，帮助开发者快速定位所需功能。
 
 ---

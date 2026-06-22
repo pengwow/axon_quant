@@ -1,14 +1,18 @@
-<div align="right">
+<div align="center">
+
+# <img src="docs/assets/logo.svg" width="36" alt="" style="vertical-align: middle;"/> AXON
+
+**AI-Native Quantitative Trading Framework**
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.96%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.2.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
 
 English | **[中文](./README_CN.md)**
 
 </div>
 
-# AXON
-
 > An event-driven trading engine for quantitative trading and reinforcement learning. Designed from the ground up with AI at its core, rather than "bolting on" ML modules to a traditional quant system.
 
-**AI-Native Quantitative Trading Framework** — Rust core for high-performance, Python interface for RL training, one codebase for the complete pipeline from backtesting to production.
+Rust core for high-performance, Python interface for RL training, one codebase for the complete pipeline from backtesting to production.
 
 [Online Documentation](https://pengwow.github.io/axon_quant/en/) · [Design Docs](./axon-design/) · [ADR](./docs/adr/) · [Changelog](./CHANGELOG.md) · [Examples](./examples/)
 
@@ -373,3 +377,17 @@ Platform support: Linux / macOS full support, Windows runtime returns `Err(Affin
 ## License
 
 [Apache-2.0](./LICENSE)
+
+---
+
+## Disclaimer
+
+This project is an **open-source quantitative trading framework** intended for **research and educational purposes only**.
+
+- **No investment advice**: Nothing in this repository constitutes financial, investment, or trading advice.
+- **No guarantee of profits**: Past performance (including backtesting results) does not guarantee future returns.
+- **Use at your own risk**: The authors and contributors are **not responsible for any financial losses** incurred through the use of this software.
+- **Not production-ready**: This software is provided "as is" without warranty of any kind. Use in live trading environments requires thorough testing and risk assessment.
+- **Regulatory compliance**: Users are solely responsible for ensuring compliance with applicable laws and regulations in their jurisdiction.
+
+**By using this software, you acknowledge that you understand and accept these terms.**

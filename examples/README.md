@@ -8,7 +8,7 @@
 
 ```
 examples/
-├── 01_getting_started/      # 入门示例
+├── 01_getting_started/      # 入门示例（一站式教程）
 ├── 02_rl_training/          # RL 训练示例
 ├── 03_hpo/                  # 超参数优化示例
 ├── 04_distributed/          # 分布式训练示例
@@ -16,6 +16,14 @@ examples/
 ├── 06_tracker/              # 指标追踪示例
 ├── 07_visualization/        # 可视化示例
 ├── 08_walk_forward/         # Walk-Forward 验证示例
+├── 09_exchange/             # 交易所对接示例（需网络）
+├── 10_risk/                 # 风控引擎示例
+├── 11_oms/                  # 订单管理示例
+├── 12_inference/            # 推理引擎示例
+├── 13_llm/                  # LLM 大语言模型示例（需网络）
+├── 14_ensemble/             # 集成学习示例
+├── 15_explain/              # 可解释性示例
+├── axon_examples/           # 共享工具层
 ├── _common.py               # 共享工具层
 ├── _vec_env.py              # VecEnv 包装层
 └── README.md                # 本文档
@@ -27,6 +35,7 @@ examples/
 
 | 示例 | 说明 | 依赖 |
 |------|------|------|
+| `00_all_in_one.py` | **一站式教程**：覆盖全部 6 个 Stage，交互菜单，详细输出 | axon_quant |
 | `01_quick_start.py` | 快速入门：创建环境、运行随机策略、观察交互 | axon_rl (Rust 扩展) |
 | `02_data_analysis.py` | 策略分析：多种策略运行、性能指标计算、对比排名 | axon_rl, numpy |
 | `03_strategy_backtest.py` | 策略回测：动量/均值回归/RSI 策略实现与回测 | axon_rl, numpy |
@@ -82,6 +91,60 @@ examples/
 | `walk_forward_basic.py` | Walk-Forward 基础示例 | axon-walk-forward |
 | `walk_forward_purging.py` | Purged Walk-Forward 示例 | axon-walk-forward |
 
+### 09_exchange - 交易所对接示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `binance_demo.py` | Binance 测试网对接（REST + 签名 + K 线） | 网络, BINANCE_API_KEY |
+
+### 10_risk - 风控引擎示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `risk_demo.py` | 预交易检查 + 熔断器 + 风险指标 | axon_quant |
+
+### 11_oms - 订单管理示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `oms_demo.py` | 订单状态机 + Portfolio + 批量操作 + 撤单 | axon_quant |
+
+### 12_inference - 推理引擎示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `inference_demo.py` | ONNX/Candle 后端 + 批推理管线 + 热更新 | axon_quant |
+
+### 13_llm - LLM 交易 Agent 示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `llm_demo.py` | LLM 驱动的交易: 市场分析 → 信号生成 → 风控 → Mock 执行 → ReAct 循环 | 网络, AXON_LLM_API_KEY |
+
+### 14_ensemble - 集成学习示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `ensemble_demo.py` | HardVote/SoftVote/WeightedVote + 多样性计算 | axon_quant |
+
+### 15_explain - 可解释性示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `explain_demo.py` | KernelSHAP + 反事实分析 + 决策报告 | axon_quant |
+
+### 16_traditional_strategy - 传统策略示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `traditional_strategy_demo.py` | 动量/均值回归/趋势跟踪策略信号生成与回测对比 | axon_quant |
+
+### 17_python_bindings - Python 绑定综合示例
+
+| 示例 | 说明 | 依赖 |
+|------|------|------|
+| `python_bindings_demo.py` | 全部 6 个模块 API 演示（Backtest/Risk/OMS/Exchange/Inference/Trading） | axon_quant |
+
 ### 共享工具
 
 | 文件 | 说明 |
@@ -95,44 +158,79 @@ examples/
 # 激活虚拟环境
 source .venv/bin/activate
 
-# 入门示例
+# ── 入门示例 ──────────────────────────────────────────
+python examples/01_getting_started/00_all_in_one.py          # 一站式教程（推荐新手）
+python examples/01_getting_started/00_all_in_one.py --stage 1 # 直接运行指定 Stage
+python examples/01_getting_started/00_all_in_one.py --all     # 依次运行全部 Stage
 python examples/01_getting_started/01_quick_start.py
 python examples/01_getting_started/02_data_analysis.py
 python examples/01_getting_started/03_strategy_backtest.py
 
-# RL 训练示例（零依赖）
+# ── RL 训练示例（零依赖）──────────────────────────────
 python examples/02_rl_training/random_agent.py
 python examples/02_rl_training/custom_reward.py
 
-# RL 训练示例（需要 sb3 + torch）
+# ── RL 训练示例（需要 sb3 + torch）────────────────────
 pip install stable-baselines3 gymnasium torch
 python examples/02_rl_training/train_ppo.py --timesteps 5000 --n-envs 1
 python examples/02_rl_training/train_sac.py --timesteps 5000 --reward sharpe
 python examples/02_rl_training/vec_env_train.py --n-envs 4 --timesteps 5000
 
-# HPO 示例
+# ── HPO 示例 ──────────────────────────────────────────
 python examples/03_hpo/hpo_single_objective.py
 python examples/03_hpo/hpo_smoke_test.py
 
-# 分布式示例
+# ── 分布式示例 ────────────────────────────────────────
 python examples/04_distributed/distributed_basic.py
 python examples/04_distributed/distributed_actor_pool.py
 
-# 注册表示例
+# ── 注册表示例 ────────────────────────────────────────
 python examples/05_registry/registry_register_promote.py
 python examples/05_registry/registry_rollback.py
 
-# 追踪示例
+# ── 追踪示例 ──────────────────────────────────────────
 python examples/06_tracker/tracker_basic.py
 python examples/06_tracker/tracker_multi_backend.py
 
-# 可视化示例
+# ── 可视化示例 ────────────────────────────────────────
 pip install matplotlib numpy
 python examples/07_visualization/visualize.py --n-bars 500 --show
 
-# Walk-Forward 示例
+# ── Walk-Forward 示例 ─────────────────────────────────
 python examples/08_walk_forward/walk_forward_basic.py
 python examples/08_walk_forward/walk_forward_purging.py
+
+# ── 交易所示例（需网络 + API Key）──────────────────────
+export BINANCE_TESTNET_API_KEY="your_key"
+export BINANCE_TESTNET_API_SECRET="your_secret"
+python examples/09_exchange/binance_demo.py
+
+# ── 风控引擎示例 ──────────────────────────────────────
+python examples/10_risk/risk_demo.py
+
+# ── 订单管理示例 ──────────────────────────────────────
+python examples/11_oms/oms_demo.py
+
+# ── 推理引擎示例 ──────────────────────────────────────
+python examples/12_inference/inference_demo.py
+
+# ── LLM 示例（需网络 + API Key）───────────────────────
+export AXON_LLM_BASE_URL="https://api.openai.com/v1"
+export AXON_LLM_API_KEY="sk-xxx"
+export AXON_LLM_MODEL="gpt-4o-mini"
+python examples/13_llm/llm_demo.py
+
+# ── 集成学习示例 ──────────────────────────────────────
+python examples/14_ensemble/ensemble_demo.py
+
+# ── 可解释性示例 ──────────────────────────────────────
+python examples/15_explain/explain_demo.py
+
+# ── 传统策略示例 ──────────────────────────────────────
+python examples/16_traditional_strategy/traditional_strategy_demo.py
+
+# ── Python 绑定综合示例 ──────────────────────────────
+python examples/17_python_bindings/python_bindings_demo.py
 ```
 
 ## 依赖安装

@@ -1,5 +1,8 @@
 # Scenario 4 — Traditional Strategy Migration and Custom Strategies
 
+> **Full runnable example**: [`examples/16_traditional_strategy/traditional_strategy_demo.py`](../../../examples/16_traditional_strategy/traditional_strategy_demo.py)
+> Covers momentum, mean reversion, and trend following strategies with signal generation and backtest comparison.
+
 This document demonstrates how to implement and run traditional quantitative strategies (without RL) in the AXON framework, and how to combine traditional signals with AI modules to build hybrid trading systems.
 
 ---

@@ -50,6 +50,8 @@ theme:
     - navigation.footer
     - navigation.indexes
     - toc.integrate
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   palette:
     # 亮色模式
     - media: "(prefers-color-scheme: light)"
