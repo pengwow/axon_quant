@@ -21,6 +21,7 @@ members = [
     "crates/axon-exchange",
     "crates/axon-oms",
     "crates/axon-monitor",
+    "crates/axon-defi",
     "crates/axon-integration-tests",
     "crates/axon-python",
 ]

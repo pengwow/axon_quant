@@ -67,6 +67,16 @@ English | **[中文](./README_CN.md)**
 - **Risk Engine**: Pre-trade checks (12ns), real-time circuit breaker, position limits
 - **Inference Engine**: ONNX / Candle dual backends + CPU/GPU affinity pinning + batch inference
 
+### DeFi Integration (Experimental)
+
+> **Note**: DeFi features are experimental and under active development. APIs may change.
+
+- **EVM Chain Support**: Ethereum / Arbitrum / Optimism / Polygon
+- **DEX Integration**: Uniswap V3 direct integration with optimal routing
+- **MEV Protection**: MEV-Share for sandwich attack prevention
+- **Smart Contract Risk**: Hybrid risk checks (off-chain fast + on-chain authoritative)
+- **Cross-Chain Bridge**: LayerZero integration for multi-chain asset transfers
+
 ---
 
 ## Quick Start
