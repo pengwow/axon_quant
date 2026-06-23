@@ -372,9 +372,9 @@ impl L1MatchingEngine {
     }
 
     /// 将未成交部分挂入本方订单簿
-    fn insert_passive(&mut self, order: &Order) {
+    fn insert_passive(&mut self, order: Order) {
         // 限价单按价格挂单；市价单无价格不入簿
-        let Some(price) = Self::limit_price(order) else {
+        let Some(price) = Self::limit_price(&order) else {
             return;
         };
         let book = match order.side {
@@ -383,9 +383,12 @@ impl L1MatchingEngine {
         };
 
         let orders = book.entry(price).or_insert_with(VecDeque::new);
-        orders.push_back(order.clone());
+        orders.push_back(order);
 
-        self.order_index.insert(order.id, (order.side, price));
+        // order 已 move，从参数获取 id/side
+        // order_index 在 push_back 之后更新，避免借用冲突
+        let last = orders.back().unwrap();
+        self.order_index.insert(last.id, (last.side, price));
     }
 }
 
@@ -443,9 +446,9 @@ impl MatchingEngine for L1MatchingEngine {
             to_insert = false;
         }
 
-        // 5. 挂单
+        // 5. 挂单（move taker 避免 clone）
         if to_insert && !is_filled && taker.can_cancel() {
-            self.insert_passive(&taker);
+            self.insert_passive(taker);
         }
 
         // 6. 构造结果

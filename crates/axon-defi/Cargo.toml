@@ -36,9 +36,6 @@ chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
 
-# EVM
-ethers = "2.0"
-
 # Python 绑定（可选）
 pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 

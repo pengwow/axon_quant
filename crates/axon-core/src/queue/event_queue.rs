@@ -25,8 +25,9 @@ pub struct EventQueue {
     seq_counter: u64,
     /// 运行模式
     mode: QueueMode,
-    /// 重放日志：记录所有出队事件，用于 `reset` 后重放
-    replay_log: Vec<QueuedEvent>,
+    /// 重放日志：记录所有入队事件，用于 `reset` 后重放
+    /// 只存储 Event（不含 timestamp/seq），replay 时从索引重建
+    replay_log: Vec<Event>,
     /// 是否启用重放日志
     enable_replay_log: bool,
     /// 统计信息
@@ -72,28 +73,30 @@ impl EventQueue {
     /// 入队单个事件（时间戳从事件本身读取）
     pub fn push(&mut self, event: Event) {
         let ts = event.timestamp();
+        // replay_log 只存 Event，避免克隆 timestamp+seq
+        if self.enable_replay_log {
+            self.replay_log.push(event.clone());
+        }
         let queued = QueuedEvent {
             timestamp: ts,
             seq: self.next_seq(),
             event,
         };
-        if self.enable_replay_log {
-            self.replay_log.push(queued.clone());
-        }
         self.events.push(queued);
         self.stats.total_pushed += 1;
     }
 
     /// 入队单个事件（指定时间戳，用于外部数据注入）
     pub fn push_at(&mut self, timestamp: Timestamp, event: Event) {
+        // replay_log 只存 Event，避免克隆 timestamp+seq
+        if self.enable_replay_log {
+            self.replay_log.push(event.clone());
+        }
         let queued = QueuedEvent {
             timestamp,
             seq: self.next_seq(),
             event,
         };
-        if self.enable_replay_log {
-            self.replay_log.push(queued.clone());
-        }
         self.events.push(queued);
         self.stats.total_pushed += 1;
     }
@@ -263,14 +266,23 @@ impl EventQueue {
         self.mode = QueueMode::Normal;
         self.stats.replay_count += 1;
 
-        // 按时间 + seq 排序后反向插入构建最小堆
-        let mut sorted = self.replay_log.clone();
-        sorted.sort_by(|a, b| {
-            a.timestamp
-                .cmp(&b.timestamp)
-                .then_with(|| a.seq.cmp(&b.seq))
-        });
-        for queued in sorted.into_iter().rev() {
+        // 从 replay_log 重建 QueuedEvent，seq 用索引保持原始顺序
+        let mut indexed: Vec<(usize, Timestamp)> = self
+            .replay_log
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.timestamp()))
+            .collect();
+        indexed.sort_by_key(|(_, ts)| *ts);
+
+        // 反向插入构建最小堆
+        for (idx, ts) in indexed.into_iter().rev() {
+            let queued = QueuedEvent {
+                timestamp: ts,
+                seq: idx as u64,
+                // clone 是不可避免的（需要同时在 heap 和 log 中）
+                event: self.replay_log[idx].clone(),
+            };
             self.events.push(queued);
         }
 
@@ -278,7 +290,7 @@ impl EventQueue {
     }
 
     /// 获取重放日志
-    pub fn replay_log(&self) -> &[QueuedEvent] {
+    pub fn replay_log(&self) -> &[Event] {
         &self.replay_log
     }
 
