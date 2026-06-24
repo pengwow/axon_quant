@@ -19,6 +19,8 @@ serde = ["dep:serde", "dep:rust_decimal"]
 async = ["dep:tokio"]
 # 后续阶段启用（占位）
 arrow = []
+# Python 绑定工具宏（py_exception! / parse_py_enum! / dict_field!）
+python-utils = ["dep:pyo3"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
@@ -29,6 +31,7 @@ tokio = { workspace = true, optional = true }
 chrono = { workspace = true }
 rand = { workspace = true }
 rust_decimal_macros = { workspace = true }
+pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

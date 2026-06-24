@@ -20,7 +20,7 @@ default = []
 # `Python::attach(...)` 时自动初始化解释器(否则需手工 `Python::initialize()`)。
 # 在 cdylib 模式下,axon-python 加载 `_native.so` 时 Python 解释器已就绪,
 # `auto-initialize` 是 no-op 不会重复 init,所以不冲突。
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "axon-core/python-utils"]
 
 [dependencies]
 axon-core = { path = "../axon-core" }

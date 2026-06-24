@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **axon-core Python 绑定工具宏**:新增 `python-utils` feature，导出 3 个声明宏消除 Python 绑定层重复代码：
+  - **`py_exception!`**: 一行代码替代 ~80 行重复的异常定义 + 错误转换 + 注册逻辑。支持 `#[cfg]` 条件编译变体。
+  - **`parse_py_enum!`**: 一行代码替代 ~25 行重复的字符串→枚举转换（大小写不敏感）。
+  - **`dict_field!`**: 简化 Python Dict 字段提取，带清晰的 `PyKeyError` / `PyValueError` 错误信息。
+
+### Changed
+- **Python 绑定层去重**: 迁移 10 个 crate 的错误处理和工具函数到共享宏：
+  - **错误处理迁移** (9 个 crate): `axon-data`, `axon-backtest`, `axon-defi`, `axon-ensemble`, `axon-exchange`, `axon-explain`, `axon-inference`, `axon-oms`, `axon-risk` — 全部使用 `py_exception!` 宏替代手写 `create_exception!` + `to_py_err` + `From` + `register`。
+  - **枚举解析迁移** (5 个 crate): `axon-backtest`, `axon-exchange/okx`, `axon-exchange/binance`, `axon-exchange/lifecycle`, `axon-risk` — 全部使用 `parse_py_enum!` 宏替代手写 `parse_side` / `parse_tif`。
+  - **Dict 提取迁移** (3 个 crate): `axon-backtest`, `axon-exchange/okx`, `axon-exchange/binance` — 使用 `dict_field!` 宏替代手写 `require_field` 函数。
+  - **总代码减少**: ~450 行重复代码 → ~120 行宏定义，净减少 ~330 行。
+
+### Fixed
+- **axon-defi clippy 修复**: 修复 `chain.rs` 中冗余闭包警告 (`map_err(|e| PyErr::from(e))` → `map_err(PyErr::from)`)。
+
+### Added
 - **axon-explain Python 绑定**:把 `axon-explain`(SHAP 特征归因 + 反事实解释 + 决策报告)暴露到 `axon_quant.explain` 子模块。**改动范围**:
   - **10 个 pyclass**: `ContributionDirection`(枚举)、`FeatureContribution`、`ActionSnapshot`、`ActionAttribution`、`CounterfactualExplanation`、`Explanation`、`DecisionReport`、`KernelSHAP`(SHAP 解释器)、`CounterfactualConfig`(Builder 模式)、`ReportGenerator`(静态方法)。
   - **PyModelPredictor 适配器**: 将 Python callable 适配为 Rust `ModelPredictor` trait。

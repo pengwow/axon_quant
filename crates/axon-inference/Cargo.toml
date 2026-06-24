@@ -35,7 +35,7 @@ hot-reload = ["dep:notify"]
 # 设计约束:InferenceError 继承 builtin `PyException` 而非 `AxonError`,
 # 避免 `axon-inference` 反向依赖 `axon-python` 造成 cargo 循环
 # (同 backtest / risk / oms / exchange,详见 design spec §3.1.6)。
-python = ["dep:pyo3", "onnx", "hot-reload"]
+python = ["dep:pyo3", "onnx", "hot-reload", "axon-core/python-utils"]
 
 [dev-dependencies]
 pretty_assertions = "1"

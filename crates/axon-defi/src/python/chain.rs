@@ -35,7 +35,7 @@ impl PyChain {
     /// 从链 ID 创建
     #[staticmethod]
     fn from_chain_id(chain_id: u64) -> PyResult<Self> {
-        let chain = Chain::from_chain_id(chain_id).map_err(|e| PyErr::from(e))?;
+        let chain = Chain::from_chain_id(chain_id).map_err(PyErr::from)?;
         Ok(chain.into())
     }
 

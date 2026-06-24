@@ -26,6 +26,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use rust_decimal::Decimal;
 
+use axon_core::parse_py_enum;
+
 use crate::lifecycle::OrderLifecycleManager as RustLifecycle;
 use crate::types::{
     Order as RustOrder, OrderId as RustOrderId, OrderStatus as RustOrderStatus,
@@ -251,28 +253,16 @@ fn py_to_decimal(obj: &Bound<'_, PyAny>) -> PyResult<Decimal> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid decimal: {e}")))
 }
 
-/// `side` 字符串解析
-fn parse_side(s: &str) -> PyResult<RustSide> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok(RustSide::Buy),
-        "sell" => Ok(RustSide::Sell),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "invalid side: {other}"
-        ))),
-    }
-}
+parse_py_enum!(parse_side, RustSide, [
+    Buy => "buy",
+    Sell => "sell",
+]);
 
-/// `tif` 字符串解析
-fn parse_tif(s: &str) -> PyResult<RustTif> {
-    match s.to_uppercase().as_str() {
-        "GTC" => Ok(RustTif::Gtc),
-        "IOC" => Ok(RustTif::Ioc),
-        "FOK" => Ok(RustTif::Fok),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "invalid tif: {other}"
-        ))),
-    }
-}
+parse_py_enum!(parse_tif, RustTif, [
+    Gtc => "gtc",
+    Ioc => "ioc",
+    Fok => "fok",
+]);
 
 /// `exchange` 字符串解析
 fn parse_exchange_id(s: &str) -> PyResult<crate::types::ExchangeId> {

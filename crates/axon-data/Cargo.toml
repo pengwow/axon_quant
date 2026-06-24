@@ -37,7 +37,7 @@ mmap-cache = ["dep:memmap2", "dep:fs2"]
 #
 # 如未来要直接用 `arrow::pyarrow::PyArrowType<T>`,需等 arrow-rs 升级
 # `arrow-pyarrow` 依赖到 pyo3 0.28+。
-python = ["dep:pyo3", "dep:pyo3-arrow"]
+python = ["dep:pyo3", "dep:pyo3-arrow", "axon-core/python-utils"]
 
 [dependencies]
 # 序列化

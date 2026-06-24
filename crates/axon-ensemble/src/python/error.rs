@@ -1,47 +1,28 @@
 //! `EnsembleError` → `PyEnsembleError(PyException)` 统一异常转换。
 
-use pyo3::exceptions::PyException;
-use pyo3::prelude::*;
+use axon_core::py_exception;
 
 use crate::error::EnsembleError as RustEnsembleError;
+use crate::error::EnsembleError::*;
 
-pyo3::create_exception!(
+py_exception!(
     axon_quant._native.ensemble,
     EnsembleError,
-    PyException,
-    "axon-ensemble specific error. Inherits Exception. \
-     `args[0]` is a stable error code; `args[1]` is a human-readable message."
-);
-
-/// 将 Rust 错误转为 Python 异常
-pub fn to_py_err(err: RustEnsembleError) -> PyErr {
-    let code = match &err {
-        RustEnsembleError::NoModels => "NoModels",
-        RustEnsembleError::WeightMismatch { .. } => "WeightMismatch",
-        RustEnsembleError::InvalidWeights { .. } => "InvalidWeights",
-        RustEnsembleError::PredictionFailed { .. } => "PredictionFailed",
-        RustEnsembleError::MetaModelFailed(_) => "MetaModelFailed",
-    };
-    let msg = format!("[{code}] {err}");
-    EnsembleError::new_err((code, msg))
-}
-
-impl From<RustEnsembleError> for PyErr {
-    fn from(err: RustEnsembleError) -> Self {
-        to_py_err(err)
+    RustEnsembleError,
+    {
+        NoModels => "NoModels",
+        WeightMismatch { .. } => "WeightMismatch",
+        InvalidWeights { .. } => "InvalidWeights",
+        PredictionFailed { .. } => "PredictionFailed",
+        MetaModelFailed(_) => "MetaModelFailed",
     }
-}
-
-/// 注册异常类到 Python 模块
-pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = parent.py();
-    parent.add("EnsembleError", py.get_type::<EnsembleError>())
-}
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pyo3::Python;
+    use pyo3::prelude::*;
 
     #[test]
     fn to_py_err_no_models_preserves_code() {

@@ -12,7 +12,7 @@ description = "DeFi 链上交易：EVM 链适配器、Uniswap V3、MEV-Share、L
 
 [features]
 default = []
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "axon-core/python-utils"]
 
 [dependencies]
 # 内部依赖

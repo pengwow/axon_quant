@@ -1,50 +1,32 @@
 //! Python 异常定义
 
-use pyo3::exceptions::PyException;
-use pyo3::prelude::*;
+use axon_core::py_exception;
 
 use crate::error::DefiError as RustDefiError;
+use crate::error::DefiError::*;
 
-pyo3::create_exception!(
+py_exception!(
     axon_quant._native.defi,
     DefiError,
-    PyException,
-    "DeFi error"
-);
-
-/// 将 Rust 错误转为 Python 异常
-pub fn to_py_err(err: RustDefiError) -> PyErr {
-    let code = match &err {
-        RustDefiError::UnsupportedChain(_) => "UnsupportedChain",
-        RustDefiError::RpcError(_) => "RpcError",
-        RustDefiError::TransactionFailed(_) => "TransactionFailed",
-        RustDefiError::NoRouteFound => "NoRouteFound",
-        RustDefiError::SlippageTooHigh { .. } => "SlippageTooHigh",
-        RustDefiError::RiskRejected(_) => "RiskRejected",
-        RustDefiError::BridgeError(_) => "BridgeError",
-        RustDefiError::ContractError(_) => "ContractError",
-        RustDefiError::ConfigError(_) => "ConfigError",
-    };
-    let msg = format!("[{code}] {err}");
-    DefiError::new_err((code, msg))
-}
-
-impl From<RustDefiError> for PyErr {
-    fn from(err: RustDefiError) -> Self {
-        to_py_err(err)
+    RustDefiError,
+    {
+        UnsupportedChain(_) => "UnsupportedChain",
+        RpcError(_) => "RpcError",
+        TransactionFailed(_) => "TransactionFailed",
+        NoRouteFound => "NoRouteFound",
+        SlippageTooHigh { .. } => "SlippageTooHigh",
+        RiskRejected(_) => "RiskRejected",
+        BridgeError(_) => "BridgeError",
+        ContractError(_) => "ContractError",
+        ConfigError(_) => "ConfigError",
     }
-}
-
-/// 注册异常到 Python 模块
-pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = parent.py();
-    parent.add("DefiError", py.get_type::<DefiError>())
-}
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pyo3::Python;
+    use pyo3::prelude::*;
 
     #[test]
     fn test_to_py_err_unsupported_chain() {

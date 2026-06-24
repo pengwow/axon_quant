@@ -41,6 +41,7 @@ use pyo3::types::{PyDict, PyList};
 
 use axon_core::market::Side as CoreSide;
 use axon_core::order::{Order as CoreOrder, OrderType, TimeInForce};
+use axon_core::parse_py_enum;
 use axon_core::portfolio::{Currency, Portfolio, Position};
 use axon_core::types::{Price, Quantity, Symbol};
 
@@ -604,26 +605,18 @@ fn dict_to_portfolio(dict: &Bound<'_, PyDict>) -> PyResult<Portfolio> {
     Ok(p)
 }
 
-/// `side` 字符串解析(大小写不敏感)
-fn parse_side(s: &str) -> PyResult<CoreSide> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok(CoreSide::Buy),
-        "sell" => Ok(CoreSide::Sell),
-        other => Err(PyValueError::new_err(format!("invalid side: {other}"))),
-    }
-}
+parse_py_enum!(parse_side, CoreSide, [
+    Buy => "buy",
+    Sell => "sell",
+]);
 
-/// `tif` 字符串解析(大小写不敏感)
-fn parse_tif(s: &str) -> PyResult<TimeInForce> {
-    match s.to_uppercase().as_str() {
-        "GTC" => Ok(TimeInForce::GTC),
-        "IOC" => Ok(TimeInForce::IOC),
-        "FOK" => Ok(TimeInForce::FOK),
-        "GFD" => Ok(TimeInForce::GFD),
-        "FAK" => Ok(TimeInForce::FAK),
-        other => Err(PyValueError::new_err(format!("invalid tif: {other}"))),
-    }
-}
+parse_py_enum!(parse_tif, TimeInForce, [
+    GTC => "gtc",
+    IOC => "ioc",
+    FOK => "fok",
+    GFD => "gfd",
+    FAK => "fak",
+]);
 
 /// [`RiskAlert`] → Python dict
 fn risk_alert_to_dict<'py>(py: Python<'py>, a: &RiskAlert) -> PyResult<Bound<'py, PyDict>> {
