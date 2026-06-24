@@ -25,7 +25,9 @@ notify = { version = "7", optional = true }
 core_affinity = "0.8"
 
 [features]
-default = ["onnx", "hot-reload"]
+# onnx 不在默认 features 中，避免 CI macOS 链接错误（ort download-binaries 与 Xcode 不兼容）
+# 使用时显式启用：cargo build -p axon-inference --features onnx
+default = ["hot-reload"]
 onnx = ["dep:ort"]
 tch-backend = ["dep:tch"]
 candle-backend = ["dep:candle-core", "dep:candle-nn"]
