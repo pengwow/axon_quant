@@ -114,7 +114,7 @@ tempfile = "3"
 # Stage 1 spike 验证后,arrow 53 → 57 以兼容 pyo3-arrow 0.16 + pyo3 0.28
 # (2026 年新版本;arrow 53 时代的 pyo3-arrow 0.14 锁 pyo3 0.26,与 workspace 冲突)
 arrow = "57"
-parquet = { version = "57", default-features = false, features = ["arrow", "snap", "brotli", "flate2", "lz4", "zstd"] }
+parquet = { version = "57", default-features = false, features = ["arrow", "snap", "brotli", "flate2", "flate2-rust_backened", "lz4", "zstd"] }
 
 # Workspace 级 profile 配置
 [profile.release]

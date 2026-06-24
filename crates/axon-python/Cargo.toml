@@ -58,14 +58,15 @@ python = [
 # 启用 `python` feature 时再拉入 pyo3 与各上游 crate 的 python bindings。
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 axon-rl = { workspace = true, optional = true, features = ["python"] }
-axon-tracker = { workspace = true, optional = true, features = ["python"] }
+axon-tracker = { workspace = true, optional = true, features = ["python", "http"] }
 axon-registry = { workspace = true, optional = true, features = ["python"] }
 axon-hpo = { workspace = true, optional = true, features = ["python"] }
 axon-walk-forward = { workspace = true, optional = true, features = ["python"] }
 axon-distributed = { workspace = true, optional = true, features = ["python"] }
 axon-llm = { workspace = true, optional = true, features = ["python", "backends"] }
 # Stage 1:`axon-data` 暴露为 `_native.data` 子模块
-axon-data = { workspace = true, optional = true, features = ["python"] }
+# 显式启用 csv-source 和 parquet-source，支持 CSV/Parquet 数据加载。
+axon-data = { workspace = true, optional = true, features = ["python", "csv-source", "parquet-source"] }
 # Stage 2:`axon-backtest` 暴露为 `_native.backtest` 子模块
 # 注:axon-backtest 的 `python` feature 是必须的,否则其子模块不会编译
 axon-backtest = { workspace = true, optional = true, features = ["python"] }
@@ -87,7 +88,8 @@ axon-exchange = { workspace = true, optional = true, features = ["python"] }
 # InferenceError 继承 builtin PyException 而非 AxonError。
 # 包含 InferenceEngine(Onnx/Candle 后端) + BatchInferencePipeline +
 # ModelHotReloader(stub)。
-axon-inference = { workspace = true, optional = true, features = ["python"] }
+# 显式启用 onnx feature，确保 Python 包包含 ONNX 推理支持。
+axon-inference = { workspace = true, optional = true, features = ["python", "onnx"] }
 # `axon-explain` 暴露为 `_native.explain` 子模块
 # 设计约束:axon-explain 不依赖 axon-python(避免 cargo 循环),
 # ExplainError 继承 builtin PyException 而非 AxonError。

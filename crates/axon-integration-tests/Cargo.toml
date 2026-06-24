@@ -26,7 +26,7 @@ axon-distributed = { workspace = true }
 
 # 内部 Phase 4 crates
 axon-risk = { path = "../axon-risk" }
-axon-inference = { path = "../axon-inference" }
+axon-inference = { path = "../axon-inference", default-features = false }
 axon-exchange = { path = "../axon-exchange" }
 axon-oms = { path = "../axon-oms" }
 axon-monitor = { path = "../axon-monitor" }

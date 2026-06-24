@@ -28,7 +28,7 @@ l3 = []
 # interface 零拷贝。详见 `crates/axon-data/Cargo.toml` 的 `python`
 # feature 注释 + `.axon-internal/plans/2026-06-19-python-bindings-expansion-s2-axon-backtest.md`
 # Task 2 Errata。
-python = ["dep:pyo3", "dep:pyo3-arrow", "dep:arrow"]
+python = ["dep:pyo3", "dep:pyo3-arrow", "dep:arrow", "axon-core/python-utils"]
 
 [dependencies]
 axon-core = { workspace = true }

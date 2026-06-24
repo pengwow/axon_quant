@@ -85,12 +85,21 @@ Rust core for high-performance, Python interface for RL training, one codebase f
 
 ## Quick Start
 
-### Requirements
+### Install (Recommended)
 
-- Rust >= 1.96.0 ([rustup](https://rustup.rs))
-- Python >= 3.12 (optional, for RL training)
+```bash
+pip install axon_quant
+```
 
-### Build and Test
+Verify installation:
+
+```bash
+python -c "import axon_quant; print(axon_quant.__version__)"
+```
+
+### Build from Source
+
+For developers who want to modify the Rust core:
 
 ```bash
 git clone https://github.com/pengwow/axon_quant.git
@@ -99,24 +108,15 @@ cd axon_quant
 # Build
 cargo build
 
-# Test (1200+ test cases)
+# Test (2300+ test cases)
 cargo test --workspace
 
 # Static analysis
 cargo clippy --workspace -- -D warnings
-```
 
-### Python Wheel
-
-```bash
-# Build wheel
+# Build and install Python wheel
 maturin build --release
-
-# Install
 pip install target/wheels/axon_quant-*.whl
-
-# Verify
-python -c "import axon_quant; print(axon_quant.__version__)"
 ```
 
 ### Training Examples

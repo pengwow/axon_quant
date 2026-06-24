@@ -44,6 +44,10 @@ pub mod time;
 pub mod types;
 pub mod volatility;
 
+/// Python 绑定工具宏（py_exception! / parse_py_enum! / dict_field!）
+#[cfg(feature = "python-utils")]
+pub mod python_utils;
+
 /// SIMD 加速模块（使用 unsafe SIMD intrinsics）
 #[allow(unsafe_code)]
 pub mod simd;

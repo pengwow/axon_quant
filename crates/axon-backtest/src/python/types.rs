@@ -25,12 +25,14 @@
 //! - 解析 `side` / `type` / `tif` 字符串失败时返回 `PyValueError`,
 //!   携带失败字段名便于 Python 端排查。
 
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use axon_core::dict_field;
 use axon_core::market::Side as CoreSide;
 use axon_core::order::{Order, OrderType, TimeInForce};
+use axon_core::parse_py_enum;
 use axon_core::types::{Price, Quantity, Symbol};
 
 use crate::matching::types::{MatchFill, SubmitResult};
@@ -54,18 +56,18 @@ use crate::matching::types::{MatchFill, SubmitResult};
 /// - 缺字段 → `PyKeyError("missing '<field>'")`
 /// - 字段类型不匹配 / 枚举值非法 → `PyValueError`
 pub fn dict_to_order<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Order> {
-    let id: u64 = require_field(dict, "id")?;
-    let symbol: String = require_field(dict, "symbol")?;
-    let side_str: String = require_field(dict, "side")?;
+    let id: u64 = dict_field!(dict, "id", u64);
+    let symbol: String = dict_field!(dict, "symbol", String);
+    let side_str: String = dict_field!(dict, "side", String);
     let side = parse_side(&side_str)?;
-    let order_type_str: String = require_field(dict, "type")?;
-    let quantity: f64 = require_field(dict, "quantity")?;
-    let tif_str: String = require_field(dict, "tif")?;
+    let order_type_str: String = dict_field!(dict, "type", String);
+    let quantity: f64 = dict_field!(dict, "quantity", f64);
+    let tif_str: String = dict_field!(dict, "tif", String);
     let tif = parse_tif(&tif_str)?;
 
     let order_type = match order_type_str.to_lowercase().as_str() {
         "limit" => {
-            let price: f64 = require_field(dict, "price")?;
+            let price: f64 = dict_field!(dict, "price", f64);
             OrderType::Limit {
                 price: Price::from_f64(price),
             }
@@ -90,26 +92,18 @@ pub fn dict_to_order<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Order> {
 
 // ─── 枚举解析 ────────────────────────────────────────────
 
-/// 解析 `side` 字符串(大小写不敏感)
-pub fn parse_side(s: &str) -> PyResult<CoreSide> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok(CoreSide::Buy),
-        "sell" => Ok(CoreSide::Sell),
-        other => Err(PyValueError::new_err(format!("invalid side: {other}"))),
-    }
-}
+parse_py_enum!(parse_side, CoreSide, [
+    Buy => "buy",
+    Sell => "sell",
+]);
 
-/// 解析 `tif` 字符串(大小写不敏感)
-pub fn parse_tif(s: &str) -> PyResult<TimeInForce> {
-    match s.to_uppercase().as_str() {
-        "GTC" => Ok(TimeInForce::GTC),
-        "IOC" => Ok(TimeInForce::IOC),
-        "FOK" => Ok(TimeInForce::FOK),
-        "GFD" => Ok(TimeInForce::GFD),
-        "FAK" => Ok(TimeInForce::FAK),
-        other => Err(PyValueError::new_err(format!("invalid tif: {other}"))),
-    }
-}
+parse_py_enum!(parse_tif, TimeInForce, [
+    GTC => "gtc",
+    IOC => "ioc",
+    FOK => "fok",
+    GFD => "gfd",
+    FAK => "fak",
+]);
 
 // ─── 序列化辅助 ──────────────────────────────────────────
 
@@ -158,27 +152,6 @@ pub fn submit_result_to_dict<'py>(
 // ─── 内部辅助 ────────────────────────────────────────────
 
 /// 从 dict 中取必填字段,缺字段返回 `PyKeyError("missing '<field>'")`,
-/// 类型不匹配返回 `PyValueError("field '<field>' has wrong type")`。
-///
-/// 设计:`T: FromPyObjectOwned<'py>` (pyo3 0.28 引入) 避免对 `'a` / `'py` 生命周期
-/// 做复杂的 HRTB 约束(早期 pyo3 的 `for<'py> FromPyObject<'py>` 在 0.28 已
-/// 改为 `FromPyObjectOwned<'py>`,吸收掉 `'a` 这个无关的 owner 生命周期)。
-///
-/// `'py` 与 `Python<'py>` 关联,只要 GIL 持有即可满足。`dict` 必须用
-/// `Bound<'py, PyDict>` 而非 `Bound<'_, PyDict>`,这样 `extract::<T>()` 才能
-/// 在 `'py` 生命周期内取到 T(因为 `T: FromPyObjectOwned<'py>` 要求
-/// `Py<T>` 的引用在 `'py` 内)。
-fn require_field<'py, T>(dict: &Bound<'py, PyDict>, field: &str) -> PyResult<T>
-where
-    T: pyo3::conversion::FromPyObjectOwned<'py>,
-{
-    let v = dict
-        .get_item(field)?
-        .ok_or_else(|| PyKeyError::new_err(format!("missing '{field}'")))?;
-    v.extract::<T>()
-        .map_err(|_e| PyValueError::new_err(format!("field '{field}' has wrong type or value")))
-}
-
 /// 当前模块无 `#[pyclass]`,只暴露辅助函数 + 公共 `register` 占位
 /// (保持与 `error.rs` / `matching_l1.rs` 风格一致,便于 `mod.rs` 一行调用)。
 ///

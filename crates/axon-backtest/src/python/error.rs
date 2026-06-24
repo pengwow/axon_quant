@@ -1,50 +1,23 @@
 //! `BacktestError` → `PyBacktestError(PyException)` 统一异常转换。
 //!
+//! 使用 `axon_core::py_exception!` 宏生成异常类 + 错误转换 + 注册函数。
+//!
 //! 设计:与 `axon-data::python::error` 保持一致 ——
 //! - `BacktestError` 继承 builtin `PyException`(不引 `AxonError` 基类,
 //!   避免 `axon-backtest` 反向依赖 `axon-python` 造成 cargo 循环);
 //! - 用 `From<BacktestErrorKind> for PyErr` 让 `?` 自动转换;
 //! - `code` 标签从变体反推,保留 2 个错误源(`MatchingError` /
-//!   `MatchingL3Error`)的可识别性;`[Code] message` 形式 message 便于
-//!   Python 端 `e.args[1].startswith(f"[{code}]")` 二次校验。
+//!   `MatchingL3Error`)的可识别性。
 //!
 //! **为什么不引 `BacktestEngine` 自身的错误?**
 //! `BacktestEngine::run()` 返回 `RunResult` 而非 `Result`(`engine.rs:194-215`),
 //! 不会失败。`step()` 返回 `Option<RunStats>`,失败语义是 `None` 而非 `Result`。
 //! 故 `BacktestErrorKind` 只包含底层撮合错误源。
-//!
-//! Python 端使用示例:
-//! ```python
-//! try:
-//!     engine.submit({"id": 1, "symbol": "BTC-USDT", ...})
-//! except _native.backtest.BacktestError as e:
-//!     code, message = e.args
-//!     if code == "Matching":
-//!         ...
-//!     elif code == "MatchingL3":
-//!         ...
-//! ```
 
-use pyo3::exceptions::PyException;
-use pyo3::prelude::*;
+use axon_core::py_exception;
 
 use crate::matching::error::MatchingError;
 use crate::matching::l3::error::MatchingL3Error;
-
-// `axon_quant._native.backtest.BacktestError` —— 继承 builtin `PyException`。
-//
-// Python 端用 `__module__ = "axon_quant._native.backtest"`,但实际 Python 类路径
-// 由 `register` 时挂载的位置决定(`_native.backtest.BacktestError`)。
-// (注:`create_exception!` 是宏,上面的 doc 注释必须用 `//` 而非 `///`,
-// 否则 rustdoc 报 `unused_doc_comments` 警告 —— 宏展开的 token 不继承 doc。)
-pyo3::create_exception!(
-    axon_quant._native.backtest,
-    BacktestError,
-    PyException,
-    "axon-backtest specific error. Inherits Exception. \
-     `args[0]` is a stable error code (e.g. \"Matching\" or \"MatchingL3\"); \
-     `args[1]` is a human-readable message in the form `[<code>] <details>`."
-);
 
 /// 内部枚举:统一 2 个 backtest 错误源(Matching / MatchingL3)。
 ///
@@ -56,16 +29,6 @@ pub enum BacktestErrorKind {
     Matching(MatchingError),
     /// L3 多资产撮合错误
     MatchingL3(MatchingL3Error),
-}
-
-impl BacktestErrorKind {
-    /// 稳定错误码(对应 Python 端 `args[0]`)。
-    fn code(&self) -> &'static str {
-        match self {
-            Self::Matching(_) => "Matching",
-            Self::MatchingL3(_) => "MatchingL3",
-        }
-    }
 }
 
 impl std::fmt::Display for BacktestErrorKind {
@@ -89,34 +52,17 @@ impl From<MatchingL3Error> for BacktestErrorKind {
     }
 }
 
-/// 把 `BacktestErrorKind` 转 Python 异常。
-///
-/// 设计:用 `From<BacktestErrorKind> for PyErr` 让 `?` 自动转换;
-/// 关键:从变体反推 `code`,保留每个错误源的可识别性。
-pub fn to_py_err(err: BacktestErrorKind) -> PyErr {
-    let code = err.code();
-    let msg = format!("[{code}] {err}");
-    BacktestError::new_err((code, msg))
-}
+use BacktestErrorKind::*;
 
-impl From<BacktestErrorKind> for PyErr {
-    fn from(err: BacktestErrorKind) -> Self {
-        to_py_err(err)
+py_exception!(
+    axon_quant._native.backtest,
+    BacktestError,
+    BacktestErrorKind,
+    {
+        Matching(_) => "Matching",
+        MatchingL3(_) => "MatchingL3",
     }
-}
-
-/// 在 `_native.backtest` 子模块下注册 `BacktestError` 异常类。
-///
-/// 调用方:`crates/axon-backtest/src/python/mod.rs::register_module`。
-///
-/// 实现:用 `py.get_type::<BacktestError>()` 拿到 PyType,
-/// 然后 `parent.add("BacktestError", py_type)` 挂到子模块上。
-/// 这样不依赖 `axon-python` 的 `_native` Rust 模块,
-/// 也避免在 `axon-backtest` 中加一个虚拟的 `#[pymodule] fn _native`。
-pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = parent.py();
-    parent.add("BacktestError", py.get_type::<BacktestError>())
-}
+);
 
 // ===== 测试 =====
 
@@ -124,6 +70,7 @@ pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use pyo3::Python;
+    use pyo3::prelude::*;
 
     /// `to_py_err` 反推的 `code` 必须出现在 message 中(`[Code] ...` 形式),
     /// 便于 Python 端 `e.args[1].startswith(f"[{code}]")` 二次校验。
@@ -183,19 +130,5 @@ mod tests {
     #[test]
     fn register_signature() {
         let _f: fn(&Bound<'_, PyModule>) -> PyResult<()> = register;
-    }
-
-    /// `code()` 返回值与 `MatchingError` / `MatchingL3Error` 一一对应,
-    /// 避免 Stage 6 时新增变体时漏改 code 映射。
-    #[test]
-    fn code_matches_variant() {
-        assert_eq!(
-            BacktestErrorKind::Matching(MatchingError::OrderAlreadyFilled).code(),
-            "Matching"
-        );
-        assert_eq!(
-            BacktestErrorKind::MatchingL3(MatchingL3Error::AuctionNoClearingPrice).code(),
-            "MatchingL3"
-        );
     }
 }

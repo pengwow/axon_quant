@@ -12,7 +12,7 @@ description = "DeFi 链上交易：EVM 链适配器、Uniswap V3、MEV-Share、L
 
 [features]
 default = []
-python = ["dep:pyo3"]
+python = ["dep:pyo3", "axon-core/python-utils"]
 
 [dependencies]
 # 内部依赖
@@ -35,9 +35,6 @@ chrono = { workspace = true }
 # 异步
 tokio = { workspace = true }
 async-trait = "0.1"
-
-# EVM
-ethers = "2.0"
 
 # Python 绑定（可选）
 pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }

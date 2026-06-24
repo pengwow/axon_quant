@@ -1,50 +1,31 @@
 //! `ExplainabilityError` → `PyExplainError(PyException)` 统一异常转换。
 
-use pyo3::exceptions::PyException;
-use pyo3::prelude::*;
+use axon_core::py_exception;
 
 use crate::error::ExplainabilityError as RustExplainError;
+use crate::error::ExplainabilityError::*;
 
-pyo3::create_exception!(
+py_exception!(
     axon_quant._native.explain,
     ExplainError,
-    PyException,
-    "axon-explain specific error. Inherits Exception. \
-     `args[0]` is a stable error code; `args[1]` is a human-readable message."
-);
-
-/// 将 Rust 错误转为 Python 异常
-pub fn to_py_err(err: RustExplainError) -> PyErr {
-    let code = match &err {
-        RustExplainError::PythonInterop(_) => "PythonInterop",
-        RustExplainError::InvalidDimension(_) => "InvalidDimension",
-        RustExplainError::SHAPComputationFailed(_) => "SHAPComputationFailed",
-        RustExplainError::AttentionExtractionFailed(_) => "AttentionExtractionFailed",
-        RustExplainError::FeatureMismatch { .. } => "FeatureMismatch",
-        RustExplainError::ModelNotLoaded(_) => "ModelNotLoaded",
-        RustExplainError::ReportGenerationFailed(_) => "ReportGenerationFailed",
-        RustExplainError::CounterfactualTimeout => "CounterfactualTimeout",
-    };
-    let msg = format!("[{code}] {err}");
-    ExplainError::new_err((code, msg))
-}
-
-impl From<RustExplainError> for PyErr {
-    fn from(err: RustExplainError) -> Self {
-        to_py_err(err)
+    RustExplainError,
+    {
+        PythonInterop(_) => "PythonInterop",
+        InvalidDimension(_) => "InvalidDimension",
+        SHAPComputationFailed(_) => "SHAPComputationFailed",
+        AttentionExtractionFailed(_) => "AttentionExtractionFailed",
+        FeatureMismatch { .. } => "FeatureMismatch",
+        ModelNotLoaded(_) => "ModelNotLoaded",
+        ReportGenerationFailed(_) => "ReportGenerationFailed",
+        CounterfactualTimeout => "CounterfactualTimeout",
     }
-}
-
-/// 注册异常类到 Python 模块
-pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = parent.py();
-    parent.add("ExplainError", py.get_type::<ExplainError>())
-}
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pyo3::Python;
+    use pyo3::prelude::*;
 
     #[test]
     fn to_py_err_shap_computation_preserves_code() {

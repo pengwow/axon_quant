@@ -54,6 +54,9 @@ use pyo3::types::{PyAny, PyDict, PyList};
 use rust_decimal::Decimal;
 use tokio::runtime::Runtime;
 
+use axon_core::dict_field;
+use axon_core::parse_py_enum;
+
 use crate::adapters::binance::BinanceAdapter;
 use crate::traits::ExchangeAdapter;
 use crate::types::{
@@ -383,15 +386,15 @@ fn dict_to_order(
     dict: &Bound<'_, PyDict>,
     exchange: crate::types::ExchangeId,
 ) -> PyResult<RustOrder> {
-    let symbol: String = require_field(dict, "symbol")?;
-    let side_str: String = require_field(dict, "side")?;
+    let symbol: String = dict_field!(dict, "symbol", String);
+    let side_str: String = dict_field!(dict, "side", String);
     let side = parse_side(&side_str)?;
-    let type_str: String = require_field(dict, "type")?;
+    let type_str: String = dict_field!(dict, "type", String);
     let qty_any: Bound<'_, PyAny> = dict
         .get_item("quantity")?
         .ok_or_else(|| PyKeyError::new_err("missing 'quantity'"))?;
     let quantity = py_to_decimal(&qty_any)?;
-    let tif_str: String = require_field(dict, "tif")?;
+    let tif_str: String = dict_field!(dict, "tif", String);
     let time_in_force = parse_tif(&tif_str)?;
 
     // price: 可选;限价单必填
@@ -562,28 +565,16 @@ fn py_to_decimal(obj: &Bound<'_, PyAny>) -> PyResult<Decimal> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid decimal: {e}")))
 }
 
-/// `side` 字符串解析(大小写不敏感)
-fn parse_side(s: &str) -> PyResult<RustSide> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok(RustSide::Buy),
-        "sell" => Ok(RustSide::Sell),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "invalid side: {other}"
-        ))),
-    }
-}
+parse_py_enum!(parse_side, RustSide, [
+    Buy => "buy",
+    Sell => "sell",
+]);
 
-/// `tif` 字符串解析(大小写不敏感)
-fn parse_tif(s: &str) -> PyResult<RustTif> {
-    match s.to_uppercase().as_str() {
-        "GTC" => Ok(RustTif::Gtc),
-        "IOC" => Ok(RustTif::Ioc),
-        "FOK" => Ok(RustTif::Fok),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "invalid tif: {other}"
-        ))),
-    }
-}
+parse_py_enum!(parse_tif, RustTif, [
+    Gtc => "gtc",
+    Ioc => "ioc",
+    Fok => "fok",
+]);
 
 /// `margin_type` 字符串解析
 fn parse_margin_type(s: &str) -> PyResult<RustMarginType> {
@@ -601,19 +592,6 @@ fn parse_order_id(s: &str) -> PyResult<RustOrderId> {
     uuid::Uuid::from_str(s)
         .map(RustOrderId)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid order id: {e}")))
-}
-
-/// 从 dict 取必填字段(参考 `axon-risk::python::engine::require_field`)
-fn require_field<'py, T>(dict: &Bound<'py, PyDict>, field: &str) -> PyResult<T>
-where
-    T: pyo3::conversion::FromPyObjectOwned<'py>,
-{
-    let v = dict
-        .get_item(field)?
-        .ok_or_else(|| PyKeyError::new_err(format!("missing '{field}'")))?;
-    v.extract::<T>().map_err(|_e| {
-        pyo3::exceptions::PyValueError::new_err(format!("field '{field}' has wrong type or value"))
-    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
