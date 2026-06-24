@@ -249,6 +249,168 @@ except InferenceError as e:
 - `BatchInferencePipeline` is a simplified Python wrapper (no tokio `batch_loop` task). It buffers `Observation`s in a `Vec` and calls `engine.infer_batch` on `collect()`, which already runs `par_iter` (rayon) internally.
 - `Extension-module` PyO3 feature is **disabled** by default (would break `cargo test` static linking). Build the wheel via `make python-develop` instead of `cargo build --features python` to get the actual cdylib.
 
+### axon_quant.compliance (Stage 7 delivery) — Compliance & Audit Engine
+
+PyO3 bindings for `axon-compliance`. Provides trade recording, immutable audit log (blockchain-style hash chain), report generation, and regulator submission. Stage 7 exposes the full Rust compliance module to Python, with internal state guarded by `Mutex` for thread safety.
+
+| Class / Function | Purpose |
+| --- | --- |
+| `ComplianceConfig` | Compliance configuration: `account_id` / `base_currency` / `large_trade_threshold` / `position_limit` / `max_portfolio_concentration` / `data_retention_years` / `regulators` |
+| `ComplianceModule` | Main module: `record_trade(dict)` / `trade_count` / `audit_event_count` / `query_trades(filter)` / `get_trade_stats` / `generate_daily_report` / `generate_monthly_report` / `generate_annual_report` / `verify_audit_integrity` / `storage_path` / `config` |
+| `TradeSide` | Enum: `Buy` / `Sell` (`__str__` returns `buy` / `sell`) |
+| `OrderType` | Enum: `Market` / `Limit` / `StopLoss` / `TakeProfit` / `StopLimit` / `TrailingStop` (`__str__` returns `market` / `limit` / `stop_loss` / `take_profit` / `stop_limit` / `trailing_stop`) |
+| `LiquidityType` | Enum: `Maker` / `Taker` |
+| `TradeStatus` | Enum: `Pending` / `Filled` / `PartiallyFilled` / `Cancelled` / `Rejected` |
+| `AuditEventType` | 17 audit event types: `TradeExecuted` / `OrderPlaced` / `OrderCancelled` / `OrderModified` / `PositionOpened` / `PositionClosed` / `StrategyStarted` / `StrategyStopped` / `ConfigChanged` / `UserLogin` / `UserLogout` / `ApiKeyCreated` / `ApiKeyRevoked` / `ReportGenerated` / `DataExported` / `SystemError` / `ComplianceAlert` |
+| `TradeRecord` | Helper: `required_fields()` / `optional_fields()` static methods returning required / optional field names for `record_trade` dict (`__new__` not constructible; use dict protocol) |
+| `load_config_from_toml(path, storage_path=None)` | One-step factory: load config from TOML file, create `ComplianceModule` (Stage 1 compat entry) |
+
+#### Example: Basic compliance flow
+
+```python
+import tempfile
+from axon_quant.compliance import ComplianceModule, ComplianceConfig
+
+tmp = tempfile.mkdtemp()
+cfg = ComplianceConfig(
+    account_id="acc-001",
+    base_currency="USDT",
+    large_trade_threshold=100_000.0,
+    position_limit=1_000_000.0,
+    max_portfolio_concentration=0.4,
+    data_retention_years=7,
+    regulators=["SEC", "FINRA"],
+)
+cm = ComplianceModule(cfg, tmp)
+
+# Record trade (dict protocol; enum strings are case-insensitive)
+cm.record_trade({
+    "strategy_id": "strat-1",
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "quantity": 1.0,
+    "price": 50_000.0,
+    "fee": 50.0,
+    "fee_currency": "USDT",
+    "exchange": "Binance",
+})
+
+print(cm.trade_count, cm.audit_event_count)  # 1 1
+print(cm.verify_audit_integrity())  # True
+```
+
+#### record_trade dict protocol
+
+`record_trade(dict)` accepts a dict (lowering the bar — Python users do not need to import 5 enums). Fields:
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `strategy_id` | ✓ | str | Strategy ID |
+| `symbol` | ✓ | str | Trading pair (e.g. `BTCUSDT`) |
+| `side` | ✓ | str | `buy` / `sell` (case-insensitive) |
+| `quantity` | ✓ | float | Quantity, > 0 |
+| `price` | ✓ | float | Price, > 0 |
+| `fee` | ✓ | float | Fee amount |
+| `fee_currency` | ✓ | str | Fee currency |
+| `exchange` | ✓ | str | Exchange name |
+| `trade_id` | ✗ | str (UUID) | Auto-generated if absent |
+| `order_id` | ✗ | str (UUID) | Auto-generated if absent |
+| `execution_time` | ✗ | str (RFC3339) | Defaults to current UTC |
+| `settlement_time` | ✗ | str (RFC3339) | None by default |
+| `status` | ✗ | str | `pending` / `filled` / `partially_filled` / `cancelled` / `rejected` (default `filled`) |
+| `order_type` | ✗ | str | `market` / `limit` / `stop_loss` / `take_profit` / `stop_limit` / `trailing_stop` (default `market`) |
+| `exchange_trade_id` | ✗ | str | Exchange-returned trade ID |
+| `liquidity` | ✗ | str | `maker` / `taker` (default `taker`) |
+| `realized_pnl` | ✗ | float | Realized PnL |
+| `funding_rate` | ✗ | float | Funding rate |
+| `slippage` | ✗ | float | Slippage |
+
+Errors:
+- `KeyError` — missing required field
+- `ValueError` — wrong type / UUID parse failure / invalid status string
+- `ComplianceError` — quantity/price ≤ 0 / notional mismatch / audit failure
+
+#### Query & stats
+
+```python
+# Query trades (all filters optional)
+btc_trades = cm.query_trades({
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "min_notional": 10_000.0,
+    "start_time": "2026-01-01T00:00:00Z",
+    "end_time": "2026-12-31T23:59:59Z",
+})
+
+# Stats (dict return)
+stats = cm.get_trade_stats("2026-01-01T00:00:00Z", "2026-12-31T23:59:59Z")
+print(stats["total_trades"], stats["win_rate"], stats["avg_trade_size"])
+```
+
+#### Report generation (daily / monthly / annual)
+
+```python
+# Daily report (date="YYYY-MM-DD", starting_balance)
+daily = cm.generate_daily_report("2026-06-24", 100_000.0)
+print(daily["account_id"], daily["net_pnl"])
+
+# Monthly report (year, month)
+monthly = cm.generate_monthly_report(2026, 6)
+
+# Annual report (year, initial_balance)
+annual = cm.generate_annual_report(2026, 100_000.0)
+```
+
+#### `ComplianceError` exception system
+
+`ComplianceError` **directly** inherits builtin `Exception` (`PyException` subclass), **not** Stage 1 `AxonError` base class. Reason: same as `BacktestError` / `RiskError` / `OmsError` / `ExchangeError` / `InferenceError` — `axon-compliance` would create a cargo cycle if it depended on `axon-python::AxonError`, so the Rust side has no hard dependency.
+
+Error codes are stable across releases (taken from Rust `Debug` output variant names):
+
+| Code | Trigger |
+| --- | --- |
+| `InvalidTradeData` | quantity / price ≤ 0, notional mismatch |
+| `ConcentrationLimitBreached` | position concentration over limit |
+| `LargeTradeThresholdExceeded` | single trade exceeds large-trade threshold |
+| `AuditIntegrityFailed` | audit log hash chain verification failed |
+| `StorageError` | file storage failure |
+| `SerializationError` | serialization / deserialization failure |
+| `ReportError` | report generation failure |
+| `RegulatorFormatError` | regulator submission format failure |
+| `ConfigError` | config parse / validation failure |
+
+```python
+from axon_quant.compliance import ComplianceModule, ComplianceConfig, ComplianceError
+import tempfile
+
+cfg = ComplianceConfig(
+    account_id="acc-001", base_currency="USDT",
+    large_trade_threshold=100_000.0, position_limit=1_000_000.0,
+    max_portfolio_concentration=0.4, data_retention_years=7, regulators=["SEC"],
+)
+cm = ComplianceModule(cfg, tempfile.mkdtemp())
+
+try:
+    cm.record_trade({
+        "strategy_id": "x", "symbol": "BTCUSDT", "side": "buy",
+        "quantity": -1.0,  # triggers InvalidTradeData
+        "price": 50_000.0, "fee": 50.0, "fee_currency": "USDT", "exchange": "Binance",
+    })
+except ComplianceError as e:
+    # e.args[0] is the stable error code (e.g. "InvalidTradeData")
+    # e.args[1] is the human-readable form: "[InvalidTradeData] Invalid trade data: Quantity must be positive"
+    print(e.args[0], e.args[1])
+```
+
+**Caveats / Stage 7 limitations**:
+
+- `ComplianceModule` uses `Mutex<RustModule>` internally for Python multi-thread safety (no lock-degradation risk).
+- `query_trades` / `get_trade_stats` / `generate_*_report` are all **synchronous** (no async), CPU-bound, no `block_on` wrapper needed.
+- Report dicts are produced via `serde_json` round-trip from the Rust `DailyReport` / `MonthlyReport` / `AnnualReport` structs — **no** corresponding pyclass on the Python side (avoids 30+ field boilerplate).
+- `TradeRecord` is **not** exposed as a constructible pyclass; Python side uses dict protocol (`required_fields()` / `optional_fields()` only provide metadata).
+- `AuditEvent` is **not** exposed to Python (only `audit_event_count` getter), internal fields are chain-managed by `AuditLog`.
+- `load_config_from_toml(path, storage_path=None)` is a Stage 1 compat entry; recommended new API is `ComplianceModule(cfg, storage_path)`.
+
 ### axon_quant.exchange — Exchange Integration
 
 ```python

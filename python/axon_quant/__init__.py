@@ -192,6 +192,20 @@ from .exchange import (  # noqa: F401
     okx_testnet_config,
 )
 
+# 重新导出 compliance 顶层 Python API(包装 _native.compliance,Stage 7)
+from .compliance import (  # noqa: F401
+    AuditEventType,
+    ComplianceConfig,
+    ComplianceError,
+    ComplianceModule,
+    LiquidityType,
+    OrderType,
+    TradeRecord,
+    TradeSide,
+    TradeStatus,
+    load_config_from_toml,
+)
+
 # 重新导出 inference 顶层 Python API(包装 _native.inference,Stage 6)
 from .inference import (  # noqa: F401
     Action,
@@ -347,4 +361,14 @@ __all__ = [  # noqa: F405
     "create_inference_engine",
     "create_onnx_engine",
     "create_candle_engine",
+    # Stage 7:compliance 顶层 API
+    "ComplianceModule",
+    "ComplianceConfig",
+    "ComplianceError",
+    "TradeSide",
+    "OrderType",
+    "LiquidityType",
+    "TradeStatus",
+    "AuditEventType",
+    "TradeRecord",
 ]

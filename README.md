@@ -8,6 +8,8 @@
 
 English | **[中文](./README_CN.md)**
 
+<img src="docs/assets/banner.png" width="100%" alt="AXON Banner"/>
+
 </div>
 
 > An event-driven trading engine for quantitative trading and reinforcement learning. Designed from the ground up with AI at its core, rather than "bolting on" ML modules to a traditional quant system.

@@ -8,6 +8,8 @@
 
 **[English](./README.md)** | 中文
 
+<img src="docs/assets/banner.png" width="100%" alt="AXON Banner"/>
+
 </div>
 
 > 面向量化交易与强化学习的事件驱动交易引擎。它从设计之初就以 AI 为核心，而非在传统量化系统上"嫁接"机器学习模块。

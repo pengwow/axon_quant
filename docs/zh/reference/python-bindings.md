@@ -685,6 +685,168 @@ except InferenceError as e:
 - `BatchInferencePipeline` 是简化版 Python 包装(无 tokio `batch_loop` task)。它在 `Vec` 中缓冲 `Observation`,`collect()` 时调 `engine.infer_batch`(内部已走 `par_iter` rayon 并行)。
 - `Extension-module` PyO3 feature **默认关闭**(会破坏 `cargo test` 静态链接)。需走 `make python-develop` 编译 cdylib,而**不是** `cargo build --features python`。
 
+### `axon_quant.compliance`(Stage 7 交付)—— 合规审计引擎
+
+`axon-compliance` 的 PyO3 绑定。提供交易记录、不可变审计日志、报告生成和监管报送功能。Stage 7 把原本只在 Rust 端可用的合规模块完整暴露到 Python,内部状态使用 `Mutex` 包装保证线程安全。
+
+| 类 / 函数 | 用途 |
+| --- | --- |
+| `ComplianceConfig` | 合规配置: `account_id` / `base_currency` / `large_trade_threshold` / `position_limit` / `max_portfolio_concentration` / `data_retention_years` / `regulators` |
+| `ComplianceModule` | 合规模块主类: `record_trade(dict)` / `trade_count` / `audit_event_count` / `query_trades(filter)` / `get_trade_stats` / `generate_daily_report` / `generate_monthly_report` / `generate_annual_report` / `verify_audit_integrity` / `storage_path` / `config` |
+| `TradeSide` | 枚举: `Buy` / `Sell`(`__str__` 返回 `buy` / `sell`) |
+| `OrderType` | 枚举: `Market` / `Limit` / `StopLoss` / `TakeProfit` / `StopLimit` / `TrailingStop`(`__str__` 返回 `market` / `limit` / `stop_loss` / `take_profit` / `stop_limit` / `trailing_stop`) |
+| `LiquidityType` | 枚举: `Maker` / `Taker` |
+| `TradeStatus` | 枚举: `Pending` / `Filled` / `PartiallyFilled` / `Cancelled` / `Rejected` |
+| `AuditEventType` | 17 种审计事件: `TradeExecuted` / `OrderPlaced` / `OrderCancelled` / `OrderModified` / `PositionOpened` / `PositionClosed` / `StrategyStarted` / `StrategyStopped` / `ConfigChanged` / `UserLogin` / `UserLogout` / `ApiKeyCreated` / `ApiKeyRevoked` / `ReportGenerated` / `DataExported` / `SystemError` / `ComplianceAlert` |
+| `TradeRecord` | 辅助类: `required_fields()` / `optional_fields()` 静态方法返回 trade dict 必填 / 可选字段名(`__new__` 不可直接用,Python 端走 dict 协议) |
+| `load_config_from_toml(path, storage_path=None)` | 从 TOML 配置文件一步创建 `ComplianceModule`(Stage 1 兼容入口) |
+
+#### 示例:基础合规流程
+
+```python
+import tempfile
+from axon_quant.compliance import ComplianceModule, ComplianceConfig
+
+tmp = tempfile.mkdtemp()
+cfg = ComplianceConfig(
+    account_id="acc-001",
+    base_currency="USDT",
+    large_trade_threshold=100_000.0,
+    position_limit=1_000_000.0,
+    max_portfolio_concentration=0.4,
+    data_retention_years=7,
+    regulators=["SEC", "FINRA"],
+)
+cm = ComplianceModule(cfg, tmp)
+
+# 记录交易(dict 协议,字符串枚举大小写不敏感)
+cm.record_trade({
+    "strategy_id": "strat-1",
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "quantity": 1.0,
+    "price": 50_000.0,
+    "fee": 50.0,
+    "fee_currency": "USDT",
+    "exchange": "Binance",
+})
+
+print(cm.trade_count, cm.audit_event_count)  # 1 1
+print(cm.verify_audit_integrity())  # True
+```
+
+#### 提交 trade dict 协议
+
+`record_trade(dict)` 用 dict 协议接收交易,**降门槛**(用户不必 import 5 个枚举)。字段:
+
+| 字段 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `strategy_id` | ✓ | str | 策略 ID |
+| `symbol` | ✓ | str | 交易对(如 `BTCUSDT`) |
+| `side` | ✓ | str | `buy` / `sell`(大小写不敏感) |
+| `quantity` | ✓ | float | 数量,> 0 |
+| `price` | ✓ | float | 价格,> 0 |
+| `fee` | ✓ | float | 手续费 |
+| `fee_currency` | ✓ | str | 手续费币种 |
+| `exchange` | ✓ | str | 交易所名 |
+| `trade_id` | ✗ | str (UUID) | 缺省自动生成 |
+| `order_id` | ✗ | str (UUID) | 缺省自动生成 |
+| `execution_time` | ✗ | str (RFC3339) | 缺省用当前 UTC |
+| `settlement_time` | ✗ | str (RFC3339) | None |
+| `status` | ✗ | str | `pending` / `filled` / `partially_filled` / `cancelled` / `rejected`(默认 `filled`) |
+| `order_type` | ✗ | str | `market` / `limit` / `stop_loss` / `take_profit` / `stop_limit` / `trailing_stop`(默认 `market`) |
+| `exchange_trade_id` | ✗ | str | 交易所返回的 trade ID |
+| `liquidity` | ✗ | str | `maker` / `taker`(默认 `taker`) |
+| `realized_pnl` | ✗ | float | 已实现盈亏 |
+| `funding_rate` | ✗ | float | 资金费率 |
+| `slippage` | ✗ | float | 滑点 |
+
+错误:
+- `KeyError` —— 缺必填字段
+- `ValueError` —— 字段类型错 / UUID 解析失败 / 状态字符串无效
+- `ComplianceError` —— 数量/价格 ≤ 0 / notional 不匹配 / 审计失败
+
+#### 查询与统计
+
+```python
+# 查询交易(过滤条件全部 optional)
+btc_trades = cm.query_trades({
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "min_notional": 10_000.0,
+    "start_time": "2026-01-01T00:00:00Z",
+    "end_time": "2026-12-31T23:59:59Z",
+})
+
+# 统计(dict 返回)
+stats = cm.get_trade_stats("2026-01-01T00:00:00Z", "2026-12-31T23:59:59Z")
+print(stats["total_trades"], stats["win_rate"], stats["avg_trade_size"])
+```
+
+#### 报告生成(日报 / 月报 / 年报)
+
+```python
+# 日报(date="YYYY-MM-DD", starting_balance)
+daily = cm.generate_daily_report("2026-06-24", 100_000.0)
+print(daily["account_id"], daily["net_pnl"])
+
+# 月报(year, month)
+monthly = cm.generate_monthly_report(2026, 6)
+
+# 年报(year, initial_balance)
+annual = cm.generate_annual_report(2026, 100_000.0)
+```
+
+#### `ComplianceError` 异常体系
+
+`ComplianceError` **直接**继承 builtin `Exception`(`PyException` 子类),**不**继承 Stage 1 `AxonError` 基类。设计原因:同 `BacktestError` / `RiskError` / `OmsError` / `ExchangeError` / `InferenceError` —— `axon-compliance` 反向依赖 `axon-python::AxonError` 会造成 cargo 循环,所以 Rust 侧不硬依赖。
+
+错误码取 Rust `Debug` 输出的变体名,跨 release 稳定:
+
+| 错误码 | 触发场景 |
+| --- | --- |
+| `InvalidTradeData` | quantity / price ≤ 0、notional 不匹配 |
+| `ConcentrationLimitBreached` | 持仓集中度超限 |
+| `LargeTradeThresholdExceeded` | 单笔交易超过大额交易阈值 |
+| `AuditIntegrityFailed` | 审计日志哈希链校验失败 |
+| `StorageError` | 文件存储错误 |
+| `SerializationError` | 序列化 / 反序列化错误 |
+| `ReportError` | 报告生成错误 |
+| `RegulatorFormatError` | 监管报送格式错误 |
+| `ConfigError` | 配置解析 / 验证错误 |
+
+```python
+from axon_quant.compliance import ComplianceModule, ComplianceConfig, ComplianceError
+import tempfile
+
+cfg = ComplianceConfig(
+    account_id="acc-001", base_currency="USDT",
+    large_trade_threshold=100_000.0, position_limit=1_000_000.0,
+    max_portfolio_concentration=0.4, data_retention_years=7, regulators=["SEC"],
+)
+cm = ComplianceModule(cfg, tempfile.mkdtemp())
+
+try:
+    cm.record_trade({
+        "strategy_id": "x", "symbol": "BTCUSDT", "side": "buy",
+        "quantity": -1.0,  # 触发 InvalidTradeData
+        "price": 50_000.0, "fee": 50.0, "fee_currency": "USDT", "exchange": "Binance",
+    })
+except ComplianceError as e:
+    # e.args[0] 是稳定错误码(如 "InvalidTradeData")
+    # e.args[1] 是人类可读形式:"[InvalidTradeData] Invalid trade data: Quantity must be positive"
+    print(e.args[0], e.args[1])
+```
+
+**Stage 7 限制 / 注意事项**:
+
+- `ComplianceModule` 内部用 `Mutex<RustModule>` 保护,Python 端多线程调用安全(无锁退化风险)。
+- `query_trades` / `get_trade_stats` / `generate_*_report` 全部**同步**返回(无 async),CPU 计算密集,不需要 `block_on` 包装。
+- 报告(dict 返回)通过 `serde_json` round-trip 从 Rust 端 `DailyReport` / `MonthlyReport` / `AnnualReport` 直接序列化,**不**在 Python 端定义对应的 pyclass(避免 30+ 字段的 boilerplate)。
+- `TradeRecord` **不**作为可构造 pyclass 暴露,Python 端走 dict 协议(`required_fields()` / `optional_fields()` 仅给元信息)。
+- `AuditEvent` **不**暴露给 Python(只暴露 `audit_event_count` getter),内部字段由 `AuditLog` 链式管理。
+- `load_config_from_toml(path, storage_path=None)` 是 Stage 1 兼容入口,推荐用 `ComplianceModule(cfg, storage_path)` 新接口。
+
 ### `axon_quant.rl`
 
 - `AxonEnv` —— Gymnasium 兼容环境

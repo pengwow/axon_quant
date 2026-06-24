@@ -187,6 +187,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Stage 6 计划文档**:`.axon-internal/plans/2026-06-19-python-bindings-expansion-s6-axon-inference.md` 标记全部 11 个 task 为 Completed(本条目),并补充 Stage 6 收口摘要(11 个 task 完成 / 6 项关键设计决策实战记录 / 关键文件清单 / 测试结果总览)。
   - **Stage 6 后续**:Python 绑定 6 stage(数据 / 回测 / 风控 / OMS / 交易所 / 推理)全部交付,`axon_quant` 已成为"RL 训练 + 通用量化交易框架"双入口。下一步可考虑(a) Stage 7 给 `ModelHotReloader` 加 `_config()` 内部访问器并启用热更新;(b) Stage 8 完善 `axon-inference` PyArrow zero-copy 输入(`pyo3-arrow` + `ndarray`);(c) PyO3 0.28 → 0.29 升级评估(若上游稳定)。
 
+- **axon-compliance Python 绑定 Stage 7 收口(Task 1-8)**:把 `axon-compliance` 的 `ComplianceModule` / `ComplianceConfig` / 5 个枚举(`TradeSide` / `OrderType` / `LiquidityType` / `TradeStatus` / `AuditEventType`)+ `TradeRecord` 辅助类 + `load_config_from_toml` 工厂暴露到 Python,形成 `axon_quant.compliance` 子模块。**改动范围**:
+  - **Rust 端**:
+    - **`python/error.rs`**:用 `py_exception!` 宏(axon-core 共享)生成 `ComplianceError` → `PyComplianceError(PyException)`,9 个变体(`InvalidTradeData` / `ConcentrationLimitBreached` / `LargeTradeThresholdExceeded` / `AuditIntegrityFailed` / `StorageError` / `SerializationError` / `ReportError` / `RegulatorFormatError` / `ConfigError`)。
+    - **`python/types.rs`**:7 个 pyclass — `PyComplianceConfig`(8 字段 getter)、`PyTradeSide` / `PyOrderType` / `PyLiquidityType` / `PyTradeStatus` / `PyAuditEventType`(枚举 + 小写 `__str__` + `from_str` 大小写不敏感)、`PyTradeRecord`(`required_fields()` / `optional_fields()` 静态方法,`__new__` 不可用)。
+    - **`python/module.rs`**:`PyComplianceModule`(`Mutex<RustModule>` 线程安全),15 个方法 — `record_trade(dict 协议)` / `trade_count` / `audit_event_count` / `config` / `storage_path` / `verify_audit_integrity` / `query_trades(filter dict)` / `get_trade_stats(start, end)` / `generate_daily_report(date, balance)` / `generate_monthly_report(year, month)` / `generate_annual_report(year, balance)` / `__repr__` + 顶层 `load_config_from_toml` 工厂 + `__new__` 双构造(ComplianceConfig + storage_path / TOML 路径)。
+    - **`python/mod.rs`**:`register_module(parent)` 扁平注册到 `_native.compliance`(同 `axon-explain` / `axon-ensemble` 模式)。
+    - **`Cargo.toml`**:`python` feature 依赖 `pyo3` + `axon-core/python-utils`(拿宏)。
+    - **`src/types.rs`**:`TradeStats` 加 `#[derive(Serialize, Deserialize)]`(serde_json round-trip 报告序列化)。
+  - **Python 端**:
+    - **`python/axon_quant/compliance.py`**:thin wrapper 模式,10 个公开符号(ComplianceModule / ComplianceConfig / 5 枚举 / TradeRecord / ComplianceError / load_config_from_toml)。
+    - **`python/axon_quant/__init__.py`**:从 `.compliance` 重新导出所有 10 个符号到顶层 `axon_quant.*`。
+    - **`python/tests/test_compliance_e2e.py`**:47 个 L3 Python E2E 测试 — 覆盖类型导入(2)/ 枚举(8)/ ComplianceConfig(2)/ TradeRecord(2)/ ComplianceModule 基础(3)/ record_trade(8)/ query_trades(6)/ get_trade_stats(3)/ 报告生成(4)/ load_config_from_toml(3)/ ComplianceError(2)/ 审计完整性(1)。**全部 47/47 通过**。
+  - **`crates/axon-python/src/lib.rs`**:在 `_native` 下挂 `axon_compliance::python::register_module(&compliance_module)`。
+  - **Stage 7 关键设计决策**:
+    - **ComplianceError 不继承 AxonError**(同 BacktestError / RiskError / OmsError / ExchangeError / InferenceError):`axon-compliance` 反向依赖 `axon-python::AxonError` 会造成 cargo 循环,直接继承 builtin `PyException`。Python 端可走 `except Exception` 统一捕获。
+    - **record_trade(dict 协议)**:Python 用户不必 import 5 个枚举,内部 `parse_side` / `parse_order_type` / `parse_liquidity` / `parse_status` 把字符串大小写不敏感地转 Rust 枚举(同 `axon-oms::submit_order(dict)` / `axon-exchange::send_order(dict)` 模式)。
+    - **报告 dict 返回**(serde_json round-trip):`DailyReport` / `MonthlyReport` / `AnnualReport` 30+ 字段,避免在 Python 端 boilerplate 一份 pyclass,直接序列化为 dict(同 `axon-risk` 模式)。
+    - **Mutex<RustModule> 线程安全**:`ComplianceModule` 内部 `Mutex` 保护,Python 端多线程调用安全(同 `axon-oms::OrderManager` 模式)。
+    - **TradeRecord 不暴露为可构造 pyclass**:有 13+4 字段 + `DateTime<Utc>` / `Uuid` / 5 个枚举等需复杂转换的类型,直接 pyclass 暴露门槛过高;Python 端走 dict 协议,`TradeRecord.required_fields()` / `optional_fields()` 仅提供元信息。
+    - **AuditEvent 不暴露给 Python**:内部 13+ 字段 + 哈希链管理生命周期,Python 端用户只关心"审计完整性"和"事件计数",不必直接构造事件;`ComplianceModule.audit_event_count` getter 即可。
+  - **Stage 7 测试结果总览**:`cargo test -p axon-compliance --features python` 70 passed(58 unit + 11 integration + 1 doc)/ `python/tests/test_compliance_e2e.py` 47/47 通过 / `cargo test --workspace` 全工作区 0 失败 / `cargo fmt --all -- --check` 0 diff / `cargo clippy -p axon-compliance --features python -- -D warnings` 0 警告 / `cargo build -p axon-compliance --features python` 0 错误。
+  - **Python 文档**:`docs/zh/reference/python-bindings.md` + `docs/en/reference/python-bindings.md` 新增 `axon_quant.compliance` 子模块小节(Stage 7),含 10 个公开符号表格(1 module + 1 config + 5 枚举 + 1 trade helper + 1 异常 + 1 工厂)+ 5 个示例(基础合规流程 / record_trade dict 协议 / 查询与统计 / 报告生成 / ComplianceError 异常体系)+ Stage 7 限制说明(Mutex 线程安全 / 同步返回 / 报告 dict round-trip / TradeRecord dict 协议 / AuditEvent 不暴露 / load_config_from_toml 兼容入口)。
+
 ### Changed
 - **docs/ 重组为 GitHub Pages 文档站(Stage L 收口)**:`docs/` 重新组织为 mkdocs + Material 主题可直接部署的 user-facing 文档站,内部 spec/plan 文件移到仓库根的 `.axon-internal/`。
   - **docs/ 内部清理**:删除内部 spec/plan 目录 `docs/superpowers/`(35 个 specs + 43 个 plans)、`docs/compose/plans/`(1 个 plan),`git mv` 全部 75 个内部文件到 `.axon-internal/{specs,plans}/`,保留完整历史。删除零散临时文档 `docs/rename-summary.md`(重命名已完成)。
