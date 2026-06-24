@@ -1,11 +1,6 @@
 name: Publish to TestPyPI
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'Cargo.toml'
-      - 'pyproject.toml'
   workflow_dispatch:
 
 env:
@@ -13,43 +8,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ==================== 检查版本变更 ====================
-  check-version:
-    name: Check version change
-    runs-on: ubuntu-latest
-    outputs:
-      version_changed: ${{ steps.check.outputs.changed }}
-      version: ${{ steps.check.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - name: Check version change
-        id: check
-        run: |
-          # 获取当前和上一个提交的版本号
-          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          PREVIOUS_VERSION=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/' || echo "")
-          
-          echo "Current: $CURRENT_VERSION"
-          echo "Previous: $PREVIOUS_VERSION"
-          
-          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ] && [ -n "$PREVIOUS_VERSION" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "No version change detected"
-          fi
-
   # ==================== 构建 Wheels ====================
   build-wheels:
     name: Build wheels (${{ matrix.os }})
-    needs: check-version
-    if: needs.check-version.outputs.version_changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
