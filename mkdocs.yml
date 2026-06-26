@@ -144,6 +144,7 @@ nav:
       - LLM 智能体驱动交易: user-guide/llm-trading/oader.md
       - 生产部署与监控: user-guide/production.md
       - 传统策略迁移: user-guide/traditional-strategy.md
+      - RL 训练: user-guide/rl-training.md
   - 用户指南:
       - 架构总览: user-guide/architecture.md
       - AI 原生核心设计: user-guide/ai-native-design.md

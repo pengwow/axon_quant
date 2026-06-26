@@ -1,6 +1,6 @@
 # Exchange Security Best Practices
 
-> **Full example**: [`examples/09_exchange/binance_demo.py`](../../../examples/09_exchange/binance_demo.py)
+> **Full example**: [`examples/09_exchange/binance_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/09_exchange/binance_demo.py)
 > Complete Binance testnet integration (REST + HMAC signing + K-line queries).
 
 This document outlines the security best practices for using the `axon_quant.exchange` Python bindings

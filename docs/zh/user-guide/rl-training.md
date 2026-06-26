@@ -306,7 +306,7 @@ action, _ = model.predict(obs, deterministic=True)
 
 ## 相关文档
 
-- [PPO 训练脚本](../../../examples/02_rl_training/train_ppo.py)
-- [SAC 训练脚本](../../../examples/02_rl_training/train_sac.py)
-- [向量化训练示例](../../../examples/02_rl_training/vec_env_train.py)
-- [奖励函数对比](../../../examples/02_rl_training/custom_reward.py)
+- [PPO 训练脚本](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_ppo.py)
+- [SAC 训练脚本](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_sac.py)
+- [向量化训练示例](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/vec_env_train.py)
+- [奖励函数对比](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/custom_reward.py)

@@ -306,7 +306,7 @@ action, _ = model.predict(obs, deterministic=True)
 
 ## Related Documentation
 
-- [PPO Training Script](../../../examples/02_rl_training/train_ppo.py)
-- [SAC Training Script](../../../examples/02_rl_training/train_sac.py)
-- [Vectorized Training Example](../../../examples/02_rl_training/vec_env_train.py)
-- [Reward Function Comparison](../../../examples/02_rl_training/custom_reward.py)
+- [PPO Training Script](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_ppo.py)
+- [SAC Training Script](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_sac.py)
+- [Vectorized Training Example](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/vec_env_train.py)
+- [Reward Function Comparison](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/custom_reward.py)

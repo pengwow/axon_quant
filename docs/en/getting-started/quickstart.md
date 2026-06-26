@@ -7,60 +7,84 @@ This document takes you through running your first AXON backtest in 5 minutes.
 
 ## 1. Run Example
 
-The repository includes multiple examples. Let's start with the most straightforward one:
+The repository includes 6 RL examples. Let's start with the most straightforward one:
 
 ```bash
 git clone https://github.com/pengwow/axon_quant.git
 cd axon_quant
 
-# Run random agent baseline (pure Python, no external dependencies)
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/random_agent.py
+# Run L1 matching backtest example (pure Rust, no Python dependency)
+cargo run -p axon-backtest --example simple_l1_backtest
 ```
 
 Expected output:
 
 ```text
-[random_agent] Running 5 random episodes, max 500 steps each
-=== Random Strategy Baseline ===
-  episodes        : 5
-  mean_reward     : -0.1234
-  mean_steps      : 500.0
-  mean_final_value: 98765.43
-  elapsed         : 0.15s
-PASS: Random agent running normally
+[INFO] axon-backtest started
+[INFO] Loading market data: 1,000,000 ticks (50ms granularity)
+[INFO] Matching engine: L1 (best price execution)
+[INFO] Simulated orders: 100
+[INFO] Average impact: 2.3 bps
+[INFO] Total return: +12.4%
+[INFO] Sharpe: 1.87
 ```
 
 ## 2. First Python Backtest (Optional)
 
 ```python
-import axon_quant
+import axon_quant as aq
+import numpy as np
 
 # 1. Create synthetic market data
-data = [
-    {"timestamp": i, "open": 100.0, "high": 100.5, "low": 99.5,
-     "close": 100.0, "volume": 1000.0}
-    for i in range(500)
-]
+n_ticks = 100_000
+prices = 100 + np.cumsum(np.random.randn(n_ticks) * 0.01)
+volumes = np.random.uniform(100, 1000, n_ticks)
 
-# 2. Create backtest engine
-from axon_quant.backtest import L1MatchingEngine, limit_order
+# 2. Create backtest environment
+env = aq.make_env(
+    market_data=aq.MarketData.from_arrays(prices, volumes),
+    matching_engine="L1",
+    impact_model="almgren_chriss",
+    latency_model="fixed_1ms",
+    fee_model="taker_5bps",
+)
 
-engine = L1MatchingEngine()
+# 3. Run simple momentum strategy
+position = 0
+for tick in env:
+    if tick.price > tick.sma(20):
+        position = 1
+    elif tick.price < tick.sma(20):
+        position = -1
+    env.submit_order(side="buy" if position > 0 else "sell", quantity=1)
 
-# 3. Submit orders
-result = engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
-print(f"Order filled: {result['is_filled']}, Fills: {len(result['fills'])}")
+# 4. Print results
+result = env.run()
+print(f"Total return: {result.total_return:.2%}")
+print(f"Sharpe ratio: {result.sharpe_ratio:.2f}")
+print(f"Max drawdown: {result.max_drawdown:.2%}")
 ```
 
-## 3. RL Training Example
+## 3. LLM Trading Example
 
-```bash
-# Install RL dependencies
-pip install axon_quant[rl]
+```python
+import axon_quant as aq
 
-# Run PPO training
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/train_ppo.py \
-    --timesteps 5000
+# Create LLM trading agent
+agent = aq.llm.ReActAgent(
+    backend=aq.llm.OpenAICompatBackend(api_key="your-api-key"),
+    tools=[
+        aq.llm.PlaceOrderTool(),
+        aq.llm.QueryPortfolioTool(),
+    ],
+    safety_mode="two_phase",
+)
+
+# Run trading loop
+for market_state in env:
+    decision = agent.decide(market_state)
+    if decision.confidence > 0.7:
+        env.execute(decision.action)
 ```
 
 ## Next Steps

@@ -7,7 +7,7 @@
 
 ## 1. 跑通示例
 
-仓库自带多个示例,先挑一个最直观的验证环境:
+仓库自带 6 个 RL 示例,先挑一个最直观的验证环境:
 
 ```bash
 git clone https://github.com/pengwow/axon_quant.git
