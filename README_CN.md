@@ -8,7 +8,6 @@
 
 **[English](./README.md)** | 中文
 
-<img src="docs/assets/banner.png" width="100%" alt="AXON Banner"/>
 
 </div>
 
