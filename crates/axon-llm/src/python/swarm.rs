@@ -160,7 +160,10 @@ impl PySwarmConfig {
     }
 
     fn __repr__(&self) -> String {
-        format!("SwarmConfig(vote_timeout_ms={})", self.inner.vote_timeout_ms)
+        format!(
+            "SwarmConfig(vote_timeout_ms={})",
+            self.inner.vote_timeout_ms
+        )
     }
 }
 
@@ -259,7 +262,10 @@ impl PyVoteResult {
     fn __repr__(&self) -> String {
         format!(
             "VoteResult(proposal='{}', passed={}, approve={}, reject={})",
-            self.inner.proposal_id, self.inner.passed, self.inner.approve_count, self.inner.reject_count
+            self.inner.proposal_id,
+            self.inner.passed,
+            self.inner.approve_count,
+            self.inner.reject_count
         )
     }
 }
@@ -504,13 +510,19 @@ mod tests {
 
     #[test]
     fn test_py_agent_role_conversion() {
-        assert_eq!(RustAgentRole::from(PyAgentRole::Market), RustAgentRole::Market);
+        assert_eq!(
+            RustAgentRole::from(PyAgentRole::Market),
+            RustAgentRole::Market
+        );
         assert_eq!(RustAgentRole::from(PyAgentRole::Risk), RustAgentRole::Risk);
         assert_eq!(
             RustAgentRole::from(PyAgentRole::Execution),
             RustAgentRole::Execution
         );
-        assert_eq!(RustAgentRole::from(PyAgentRole::Audit), RustAgentRole::Audit);
+        assert_eq!(
+            RustAgentRole::from(PyAgentRole::Audit),
+            RustAgentRole::Audit
+        );
     }
 
     #[test]
@@ -528,7 +540,13 @@ mod tests {
     #[test]
     fn test_py_signal_type_conversion() {
         assert_eq!(RustSignalType::from(PySignalType::Buy), RustSignalType::Buy);
-        assert_eq!(RustSignalType::from(PySignalType::Sell), RustSignalType::Sell);
-        assert_eq!(RustSignalType::from(PySignalType::Hold), RustSignalType::Hold);
+        assert_eq!(
+            RustSignalType::from(PySignalType::Sell),
+            RustSignalType::Sell
+        );
+        assert_eq!(
+            RustSignalType::from(PySignalType::Hold),
+            RustSignalType::Hold
+        );
     }
 }
