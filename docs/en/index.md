@@ -5,7 +5,7 @@
 AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven trading engine designed for quantitative trading and reinforcement learning. It was built from the ground up with AI at its core, rather than "bolting on" machine learning modules to a traditional quant system.
 
 !!! note "Version Info"
-    This documentation is based on AXON `v0.1.0`, targeting Rust version `1.96.0+`.
+    This documentation is based on AXON `v0.2.0`, targeting Rust version `1.96.0+`.
 
 ---
 
@@ -31,7 +31,7 @@ AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven t
 
     Backtesting, training, hyperparameter optimization, walk-forward validation, experiment tracking, and model registry share the same `MarketBar` / `PortfolioState` data structures.
 
--   :material-package-variant-closed: **21 Independent Crates**
+-   :material-package-variant-closed: **23 Independent Crates**
 
     ---
 
@@ -80,7 +80,7 @@ AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven t
 
 ## Architecture Overview
 
-AXON uses Cargo Workspace to manage 21 crates, organized in 9 layers:
+AXON uses Cargo Workspace to manage 23 crates, organized in 9 layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

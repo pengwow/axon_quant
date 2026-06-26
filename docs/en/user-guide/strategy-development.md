@@ -6,7 +6,7 @@
 > - [`examples/03_hpo/`](../../../examples/03_hpo/) — Hyperparameter optimization
 > - [`examples/08_walk_forward/`](../../../examples/08_walk_forward/) — Walk-Forward validation
 
-This document demonstrates how to complete a full strategy development pipeline on the AXON quantitative platform, covering 7 key steps from data preparation to model deployment. Each step is based on AXON `0.1.0` real source code and shows "how the output of one step becomes the input of the next".
+This document demonstrates how to complete a full strategy development pipeline on the AXON quantitative platform, covering 7 key steps from data preparation to model deployment. Each step is based on AXON `0.2.0` real source code and shows "how the output of one step becomes the input of the next".
 
 ---
 
@@ -161,8 +161,8 @@ except ImportError:
     print("ERROR: requires `stable-baselines3`. Run: pip install stable-baselines3 gymnasium torch")
     sys.exit(2)
 
-import _vec_env
-import _common
+from axon_examples.vec_env import AxonTradingEnv, make_vec_env
+from axon_examples.common import make_env, make_env_config, make_synthetic_market_data
 
 
 def parse_args() -> argparse.Namespace:

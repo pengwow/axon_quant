@@ -13,7 +13,7 @@ This document collects common questions and answers for the AXON quantitative tr
 
 **A:** AXON framework minimum requirements:
 
-- **Rust version**: 1.75 or higher (check with `rustc --version`)
+- **Rust version**: 1.96.0 or higher (check with `rustc --version`)
 - **Python version**: 3.9 or higher (if using Python bindings)
 - **Operating System**: Linux (Ubuntu 22.04+ recommended), macOS 13+, Windows 11+
 - **Memory**: Minimum 8GB, 16GB recommended (for training large models)

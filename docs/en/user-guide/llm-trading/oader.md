@@ -3,7 +3,7 @@
 > **Full example**: [`examples/13_llm/llm_demo.py`](../../../examples/13_llm/llm_demo.py)
 > LLM + Trading agent demo: market analysis → signal generation → risk control → Mock execution → ReAct loop.
 
-This document provides an in-depth analysis of the core trading loop for LLM agents in the AXON quantitative platform: the **OADER model** (Observe-Analyze-Decide-Execute-Record). OADER combines the ReAct (Reasoning + Acting) reasoning paradigm with rigorous quantitative trading risk control, supporting both live trading and backtesting modes. All code examples are based on AXON `0.1.0` real source code.
+This document provides an in-depth analysis of the core trading loop for LLM agents in the AXON quantitative platform: the **OADER model** (Observe-Analyze-Decide-Execute-Record). OADER combines the ReAct (Reasoning + Acting) reasoning paradigm with rigorous quantitative trading risk control, supporting both live trading and backtesting modes. All code examples are based on AXON `0.2.0` real source code.
 
 ---
 

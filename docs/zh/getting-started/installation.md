@@ -41,7 +41,7 @@ pip install axon-quant
 
 # 3. 验证安装
 python -c "import axon_quant; print(axon_quant.__version__)"
-# 预期输出: 0.1.0
+# 预期输出: 0.2.0
 ```
 
 !!! note "PyPI 包名说明"

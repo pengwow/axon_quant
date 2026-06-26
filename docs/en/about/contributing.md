@@ -134,8 +134,8 @@ proptest! {
 1. Update version in `Cargo.toml` and `pyproject.toml`
 2. Update `CHANGELOG.md`
 3. Create release PR
-4. After merge, create git tag: `git tag v0.1.0`
-5. Push tag: `git push origin v0.1.0`
+4. After merge, create git tag: `git tag v0.2.0`
+5. Push tag: `git push origin v0.2.0`
 
 ## Questions?
 

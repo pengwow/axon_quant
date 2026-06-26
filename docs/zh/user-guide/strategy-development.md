@@ -6,7 +6,7 @@
 > - [`examples/03_hpo/`](../../../examples/03_hpo/) — 超参数优化
 > - [`examples/08_walk_forward/`](../../../examples/08_walk_forward/) — Walk-Forward 验证
 
-本文档演示如何在 AXON 量化平台中完成一条完整的策略研发流水线，涵盖从数据准备到模型上线的 7 个关键步骤。每个步骤均基于 AXON `0.1.0` 版本的真实源代码，并展示"上一步的输出如何成为下一步的输入"。
+本文档演示如何在 AXON 量化平台中完成一条完整的策略研发流水线，涵盖从数据准备到模型上线的 7 个关键步骤。每个步骤均基于 AXON `0.2.0` 版本的真实源代码，并展示"上一步的输出如何成为下一步的输入"。
 
 ---
 
@@ -167,8 +167,8 @@ except ImportError:
     sys.exit(2)
 
 # 引入 AXON 环境封装（示例中的 _vec_env.py 对 TradingEnv 做 Gymnasium 适配）
-import _vec_env
-import _common
+from axon_examples.vec_env import AxonTradingEnv, make_vec_env
+from axon_examples.common import make_env, make_env_config, make_synthetic_market_data
 
 
 def parse_args() -> argparse.Namespace:
