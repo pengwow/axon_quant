@@ -76,7 +76,7 @@ pub struct MarketSignal {
 }
 
 /// 信号类型
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalType {
     /// 买入
     Buy,

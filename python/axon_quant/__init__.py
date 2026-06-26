@@ -238,6 +238,23 @@ from .llm import (  # noqa: F401
     make_backend,
 )
 
+# swarm 子模块（如果可用）
+try:
+    from .llm import (  # noqa: F401
+        AgentRole,
+        AgentStatus,
+        MarketSignal,
+        SignalType,
+        SwarmConfig,
+        SwarmOrchestrator,
+        VoteProposal,
+        VoteResult,
+        VoteType,
+    )
+    _has_swarm = True
+except ImportError:
+    _has_swarm = False
+
 # 重新导出 trading 顶层 Python API(包装 _native.trading,Stage K)
 from .trading import (  # noqa: F401
     CancelOrderTool,
@@ -338,6 +355,16 @@ __all__ = [  # noqa: F405
     "LLMMessage",
     "make_backend",
     "load_config_from_toml",
+    # Swarm 子模块
+    "SwarmOrchestrator",
+    "SwarmConfig",
+    "AgentRole",
+    "AgentStatus",
+    "VoteType",
+    "SignalType",
+    "VoteProposal",
+    "VoteResult",
+    "MarketSignal",
     "RiskLimits",
     "MockTradingBackend",
     "PlaceOrderTool",

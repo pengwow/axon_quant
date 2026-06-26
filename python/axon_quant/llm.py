@@ -70,12 +70,38 @@ _RustLLMBackend = _native_llm_module.LLMBackend
 _RustLLMMessage = _native_llm_module.LLMMessage
 _rust_make_backend = _native_llm_module.make_backend
 
+# swarm 子模块（如果可用）
+try:
+    from axon_quant._native.llm import swarm as _native_swarm_module  # noqa: E402
+    SwarmOrchestrator = _native_swarm_module.SwarmOrchestrator
+    SwarmConfig = _native_swarm_module.SwarmConfig
+    AgentRole = _native_swarm_module.AgentRole
+    AgentStatus = _native_swarm_module.AgentStatus
+    VoteType = _native_swarm_module.VoteType
+    SignalType = _native_swarm_module.SignalType
+    VoteProposal = _native_swarm_module.VoteProposal
+    VoteResult = _native_swarm_module.VoteResult
+    MarketSignal = _native_swarm_module.MarketSignal
+    _has_swarm = True
+except (ImportError, AttributeError):
+    _has_swarm = False
+
 __all__ = [
     "LLMConfig",
     "LLMBackend",
     "LLMMessage",
     "make_backend",
     "load_config_from_toml",
+    # swarm（如果可用）
+    "SwarmOrchestrator",
+    "SwarmConfig",
+    "AgentRole",
+    "AgentStatus",
+    "VoteType",
+    "SignalType",
+    "VoteProposal",
+    "VoteResult",
+    "MarketSignal",
 ]
 
 
