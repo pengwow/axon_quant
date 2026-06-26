@@ -1,10 +1,10 @@
 # Scenario 3 — Production Deployment and Monitoring
 
 > **Related examples**:
-> - [`examples/09_exchange/binance_demo.py`](../../../examples/09_exchange/binance_demo.py) — Exchange integration
-> - [`examples/12_inference/inference_demo.py`](../../../examples/12_inference/inference_demo.py) — Inference engine
-> - [`examples/14_ensemble/ensemble_demo.py`](../../../examples/14_ensemble/ensemble_demo.py) — Ensemble learning
-> - [`examples/15_explain/explain_demo.py`](../../../examples/15_explain/explain_demo.py) — Explainability
+> - [`examples/09_exchange/binance_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/09_exchange/binance_demo.py) — Exchange integration
+> - [`examples/12_inference/inference_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/12_inference/inference_demo.py) — Inference engine
+> - [`examples/14_ensemble/ensemble_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/14_ensemble/ensemble_demo.py) — Ensemble learning
+> - [`examples/15_explain/explain_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/15_explain/explain_demo.py) — Explainability
 
 This document covers the complete process of moving AXON quantitative trading framework from laboratory to production, including inference backend selection, model hot updates, explainability auditing, model ensemble dynamic weighting, and exchange integration.
 

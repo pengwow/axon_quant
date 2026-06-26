@@ -1,6 +1,6 @@
 # LLM 交易风控与安全
 
-> 适用版本:axon-llm v0.1.0+
+> 适用版本:axon-llm v0.2.0+
 > 前置阅读:[overview.md](overview.md) §4
 
 本文档详述 axon-llm 的三道风控防线 + 失败模式 + 恢复策略。所有风控都是 **fail-closed**(任一阶段失败立刻拒绝,绝不进入后端)。

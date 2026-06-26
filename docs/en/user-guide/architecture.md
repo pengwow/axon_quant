@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> Applicable version: AXON v0.1.0+
+> Applicable version: AXON v0.2.0+
 
 This document describes AXON's system architecture and data flow.
 

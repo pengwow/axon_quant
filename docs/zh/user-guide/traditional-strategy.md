@@ -1,6 +1,6 @@
 # 场景四 — 传统策略迁移与自定义策略
 
-> **完整可运行示例**: [`examples/16_traditional_strategy/traditional_strategy_demo.py`](../../../examples/16_traditional_strategy/traditional_strategy_demo.py)
+> **完整可运行示例**: [`examples/16_traditional_strategy/traditional_strategy_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/16_traditional_strategy/traditional_strategy_demo.py)
 > 覆盖动量策略、均值回归、趋势跟踪三种经典策略的信号生成与回测对比。
 
 本文档展示如何在 AXON 框架中实现和运行传统量化策略（不依赖 RL），以及如何将传统信号与 AI 模块结合，构建混合模式交易系统。

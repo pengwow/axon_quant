@@ -1,6 +1,6 @@
 # API Reference
 
-> **Full runnable example**: [`examples/17_python_bindings/python_bindings_demo.py`](../../../examples/17_python_bindings/python_bindings_demo.py)
+> **Full runnable example**: [`examples/17_python_bindings/python_bindings_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/17_python_bindings/python_bindings_demo.py)
 > Demonstrates Python APIs for all core modules.
 
 This document provides quick reference tables and key API code examples for AXON quantitative trading framework's top-level modules, helping developers quickly locate required functionality.
@@ -684,23 +684,23 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. Version Compatibility
 
-AXON current version is `0.1.0`, all crate versions unified:
+AXON current version is `0.2.0`, all crate versions unified:
 
 | Crate | Version | Minimum Rust Version |
 |-------|---------|---------------------|
-| axon-core | 0.1.0 | 1.75 |
-| axon-rl | 0.1.0 | 1.75 |
-| axon-llm | 0.1.0 | 1.75 |
-| axon-inference | 0.1.0 | 1.75 |
-| axon-exchange | 0.1.0 | 1.75 |
-| axon-ensemble | 0.1.0 | 1.75 |
-| axon-explain | 0.1.0 | 1.75 |
-| axon-backtest | 0.1.0 | 1.75 |
-| axon-hpo | 0.1.0 | 1.75 |
-| axon-walk-forward | 0.1.0 | 1.75 |
-| axon-tracker | 0.1.0 | 1.75 |
-| axon-registry | 0.1.0 | 1.75 |
-| axon-distributed | 0.1.0 | 1.75 |
-| axon-monitor | 0.1.0 | 1.75 |
-| axon-risk | 0.1.0 | 1.75 |
-| axon-compliance | 0.1.0 | 1.75 |
+| axon-core | 0.2.0 | 1.96.0 |
+| axon-rl | 0.2.0 | 1.96.0 |
+| axon-llm | 0.2.0 | 1.96.0 |
+| axon-inference | 0.2.0 | 1.96.0 |
+| axon-exchange | 0.2.0 | 1.96.0 |
+| axon-ensemble | 0.2.0 | 1.96.0 |
+| axon-explain | 0.2.0 | 1.96.0 |
+| axon-backtest | 0.2.0 | 1.96.0 |
+| axon-hpo | 0.2.0 | 1.96.0 |
+| axon-walk-forward | 0.2.0 | 1.96.0 |
+| axon-tracker | 0.2.0 | 1.96.0 |
+| axon-registry | 0.2.0 | 1.96.0 |
+| axon-distributed | 0.2.0 | 1.96.0 |
+| axon-monitor | 0.2.0 | 1.96.0 |
+| axon-risk | 0.2.0 | 1.96.0 |
+| axon-compliance | 0.2.0 | 1.96.0 |

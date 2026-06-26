@@ -169,6 +169,11 @@ impl SwarmOrchestrator {
         &self.consensus
     }
 
+    /// 清理已完成的投票
+    pub fn cleanup_vote(&mut self, proposal_id: &str) {
+        self.consensus.cleanup(proposal_id);
+    }
+
     /// 处理市场信号
     pub async fn handle_market_signal(&mut self, signal: MarketSignal) -> Result<(), SwarmError> {
         // 1. 创建投票提案

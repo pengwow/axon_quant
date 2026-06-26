@@ -8,6 +8,8 @@
 
 English | **[中文](./README_CN.md)**
 
+<img src="docs/assets/banner.png" width="100%" alt="AXON Banner"/>
+
 </div>
 
 > An event-driven trading engine for quantitative trading and reinforcement learning. Designed from the ground up with AI at its core, rather than "bolting on" ML modules to a traditional quant system.
@@ -88,7 +90,11 @@ Rust core for high-performance, Python interface for RL training, one codebase f
 ### Install (Recommended)
 
 ```bash
+# Basic install (core + data processing)
 pip install axon_quant
+
+# With RL training dependencies (gymnasium, stable-baselines3, torch)
+pip install axon_quant[rl]
 ```
 
 Verify installation:
@@ -134,6 +140,8 @@ python examples/03_hpo/hpo_single_objective.py
 # Rolling forward validation
 python examples/08_walk_forward/walk_forward_basic.py
 ```
+
+> 📖 Detailed RL training documentation: [RL Training Guide](docs/en/user-guide/rl-training.md)
 
 ---
 

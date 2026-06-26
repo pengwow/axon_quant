@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable, Optional
 
 from axon_examples import common as _common  # noqa: E402
@@ -301,6 +302,35 @@ class _FallbackVecEnv:
         return o
 
 
+def _check_training_deps() -> None:
+    """检查 RL 训练依赖并打印缺失信息。"""
+    missing = []
+    try:
+        import gymnasium  # noqa: F401
+    except ImportError:
+        missing.append("gymnasium")
+    try:
+        import stable_baselines3  # noqa: F401
+    except ImportError:
+        missing.append("stable-baselines3")
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        missing.append("torch")
+    if missing:
+        print(
+            f"\n{'='*60}\n"
+            f"⚠️  缺少 RL 训练依赖: {', '.join(missing)}\n"
+            f"{'='*60}\n"
+            f"请运行以下命令安装:\n\n"
+            f"    pip install {' '.join(missing)}\n\n"
+            f"完整安装命令（推荐）:\n"
+            f"    pip install gymnasium stable-baselines3 torch\n"
+            f"{'='*60}\n",
+            file=sys.stderr,
+        )
+
+
 def make_vec_env(
     env_fn: Callable[[], Any],
     n_envs: int = 1,
@@ -329,6 +359,12 @@ def make_vec_env(
         sb3_ok, DummyVecEnv = _try_import_sb3()
         if sb3_ok:
             return DummyVecEnv([env_fn for _ in range(n_envs)])
+        # sb3 不可用时，打印依赖缺失提示
+        _check_training_deps()
+        print(
+            "[vec_env] ⚠️  stable-baselines3 不可用，使用轻量级 FallbackVecEnv（仅支持冒烟测试）",
+            file=sys.stderr,
+        )
     return _FallbackVecEnv([env_fn for _ in range(n_envs)], num_envs=n_envs)
 
 

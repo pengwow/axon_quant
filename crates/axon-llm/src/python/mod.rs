@@ -26,6 +26,8 @@ use backend::{PyLLMBackend, PyMessage};
 
 pub mod trading;
 
+pub mod swarm;
+
 mod helpers;
 use helpers::{pythonize, type_name};
 
@@ -90,5 +92,11 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let trading_submodule = PyModule::new(m.py(), "trading")?;
     trading::register_trading_module(&trading_submodule)?;
     m.add_submodule(&trading_submodule)?;
+    // swarm 子模块挂载:
+    //   - `swarm` 子模块包含 Agent Swarm 编排、投票共识
+    //   - Python 端可用 `axon_llm.swarm.SwarmOrchestrator` 等
+    let swarm_submodule = PyModule::new(m.py(), "swarm")?;
+    swarm::register_swarm_module(&swarm_submodule)?;
+    m.add_submodule(&swarm_submodule)?;
     Ok(())
 }

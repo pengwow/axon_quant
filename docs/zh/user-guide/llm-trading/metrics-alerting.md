@@ -1,6 +1,6 @@
 # LLM 交易指标与告警
 
-> 适用版本:axon-llm v0.1.0+
+> 适用版本:axon-llm v0.2.0+
 > 前置阅读:[overview.md](overview.md) §5
 
 本文档详述 `TradingMetrics` 的指标体系、数据出口、应用方集成到监控后端的示例模板。

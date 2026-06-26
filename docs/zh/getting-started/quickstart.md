@@ -1,6 +1,6 @@
 # 快速开始
 
-> 适用版本:AXON v0.1.0+
+> 适用版本:AXON v0.2.0+
 > 前置阅读:[安装](installation.md)
 
 本文档带你 5 分钟跑通 AXON 的第一个回测示例。
@@ -13,66 +13,55 @@
 git clone https://github.com/pengwow/axon_quant.git
 cd axon_quant
 
-# 跑 L1 撮合回测示例(纯 Rust,无 Python 依赖)
-cargo run -p axon-backtest --example simple_l1_backtest
+# 运行随机策略基线（纯 Python，无需外部依赖）
+PYTHONPATH=examples .venv/bin/python examples/02_rl_training/random_agent.py
 ```
 
 预期输出:
 
 ```text
-[INFO] axon-backtest 启动
-[INFO] 加载市场数据: 1,000,000 ticks(50ms 粒度)
-[INFO] 撮合引擎:L1(最优价成交)
-[INFO] 模拟订单: 100 单
-[INFO] 平均冲击: 2.3 bps
-[INFO] 总收益: +12.4%
-[INFO] Sharpe: 1.87
+[random_agent] 运行 5 个随机 episode，每个最多 500 步
+=== 随机策略基线 ===
+  episodes        : 5
+  mean_reward     : -0.1234
+  mean_steps      : 500.0
+  mean_final_value: 98765.43
+  elapsed         : 0.15s
+PASS: 随机策略运行正常
 ```
 
-## 2. 第一个 Python 回测(可选)
+## 2. 第一个 Python 回测（可选）
 
 ```python
-import axon_quant as aq
-import numpy as np
+import axon_quant
 
 # 1. 构造合成市场数据
-n_ticks = 100_000
-prices = 100 + np.cumsum(np.random.randn(n_ticks) * 0.01)
-volumes = np.random.uniform(100, 1000, n_ticks)
+data = [
+    {"timestamp": i, "open": 100.0, "high": 100.5, "low": 99.5,
+     "close": 100.0, "volume": 1000.0}
+    for i in range(500)
+]
 
-# 2. 创建回测环境
-env = aq.make_env(
-    market_data=aq.MarketData.from_arrays(prices, volumes),
-    matching_engine="L1",
-    impact_model="almgren_chriss",
-    latency_model="fixed_1ms",
-    fee_model="taker_5bps",
-)
+# 2. 创建回测引擎
+from axon_quant.backtest import L1MatchingEngine, limit_order
 
-# 3. 跑通一条 episode
-obs = env.reset()
-done = False
-total_pnl = 0.0
-while not done:
-    # 简单策略:价格上涨买入 1 单位,下跌卖出
-    action = 1 if env.current_price() > env.entry_price() else -1
-    obs, reward, done, info = env.step(action)
-    total_pnl += reward
+engine = L1MatchingEngine()
 
-print(f"Total PnL: {total_pnl:.2f}")
+# 3. 提交订单
+result = engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
+print(f"Order filled: {result['is_filled']}, Fills: {len(result['fills'])}")
 ```
 
-## 3. 跑通 LLM Trading 示例(Stage K 交付)
+## 3. RL 训练示例
 
 ```bash
-# Mock 后端 DryRun(无网络,验证工具链)
-cargo test -p axon-llm --test llm_trading_mock_e2e
+# 安装 RL 依赖
+pip install axon_quant[rl]
 
-# Backtest 后端(对接 axon-backtest L1 撮合)
-cargo test -p axon-llm --test llm_trading_backtest_e2e
+# 运行 PPO 训练
+PYTHONPATH=examples .venv/bin/python examples/02_rl_training/train_ppo.py \
+    --timesteps 5000
 ```
-
-详见 [LLM 交易架构](../user-guide/llm-trading/overview.md)。
 
 ## 下一步
 

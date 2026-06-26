@@ -192,6 +192,20 @@ from .exchange import (  # noqa: F401
     okx_testnet_config,
 )
 
+# 重新导出 compliance 顶层 Python API(包装 _native.compliance,Stage 7)
+from .compliance import (  # noqa: F401
+    AuditEventType,
+    ComplianceConfig,
+    ComplianceError,
+    ComplianceModule,
+    LiquidityType,
+    OrderType,
+    TradeRecord,
+    TradeSide,
+    TradeStatus,
+    load_config_from_toml,
+)
+
 # 重新导出 inference 顶层 Python API(包装 _native.inference,Stage 6)
 from .inference import (  # noqa: F401
     Action,
@@ -223,6 +237,23 @@ from .llm import (  # noqa: F401
     load_config_from_toml,
     make_backend,
 )
+
+# swarm 子模块（如果可用）
+try:
+    from .llm import (  # noqa: F401
+        AgentRole,
+        AgentStatus,
+        MarketSignal,
+        SignalType,
+        SwarmConfig,
+        SwarmOrchestrator,
+        VoteProposal,
+        VoteResult,
+        VoteType,
+    )
+    _has_swarm = True
+except ImportError:
+    _has_swarm = False
 
 # 重新导出 trading 顶层 Python API(包装 _native.trading,Stage K)
 from .trading import (  # noqa: F401
@@ -324,6 +355,16 @@ __all__ = [  # noqa: F405
     "LLMMessage",
     "make_backend",
     "load_config_from_toml",
+    # Swarm 子模块
+    "SwarmOrchestrator",
+    "SwarmConfig",
+    "AgentRole",
+    "AgentStatus",
+    "VoteType",
+    "SignalType",
+    "VoteProposal",
+    "VoteResult",
+    "MarketSignal",
     "RiskLimits",
     "MockTradingBackend",
     "PlaceOrderTool",
@@ -347,4 +388,14 @@ __all__ = [  # noqa: F405
     "create_inference_engine",
     "create_onnx_engine",
     "create_candle_engine",
+    # Stage 7:compliance 顶层 API
+    "ComplianceModule",
+    "ComplianceConfig",
+    "ComplianceError",
+    "TradeSide",
+    "OrderType",
+    "LiquidityType",
+    "TradeStatus",
+    "AuditEventType",
+    "TradeRecord",
 ]

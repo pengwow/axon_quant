@@ -1,6 +1,6 @@
 # API 参考
 
-> **完整可运行示例**: [`examples/17_python_bindings/python_bindings_demo.py`](../../../examples/17_python_bindings/python_bindings_demo.py)
+> **完整可运行示例**: [`examples/17_python_bindings/python_bindings_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/17_python_bindings/python_bindings_demo.py)
 > 覆盖全部核心模块的 Python API 演示。
 
 本文档提供 AXON 量化交易框架各顶层模块的速查表与关键 API 代码示例，帮助开发者快速定位所需功能。
@@ -684,23 +684,23 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. 版本兼容性
 
-AXON 当前版本为 `0.1.0`，各 crate 版本统一：
+AXON 当前版本为 `0.2.0`，各 crate 版本统一：
 
 | Crate | 版本 | 最低 Rust 版本 |
 |-------|------|---------------|
-| axon-core | 0.1.0 | 1.75 |
-| axon-rl | 0.1.0 | 1.75 |
-| axon-llm | 0.1.0 | 1.75 |
-| axon-inference | 0.1.0 | 1.75 |
-| axon-exchange | 0.1.0 | 1.75 |
-| axon-ensemble | 0.1.0 | 1.75 |
-| axon-explain | 0.1.0 | 1.75 |
-| axon-backtest | 0.1.0 | 1.75 |
-| axon-hpo | 0.1.0 | 1.75 |
-| axon-walk-forward | 0.1.0 | 1.75 |
-| axon-tracker | 0.1.0 | 1.75 |
-| axon-registry | 0.1.0a1 | 1.75 |
-| axon-distributed | 0.1.0a1 | 1.75 |
-| axon-monitor | 0.1.0a1 | 1.75 |
-| axon-risk | 0.1.0a1 | 1.75 |
-| axon-compliance | 0.1.0a1 | 1.75 |
+| axon-core | 0.2.0 | 1.96.0 |
+| axon-rl | 0.2.0 | 1.96.0 |
+| axon-llm | 0.2.0 | 1.96.0 |
+| axon-inference | 0.2.0 | 1.96.0 |
+| axon-exchange | 0.2.0 | 1.96.0 |
+| axon-ensemble | 0.2.0 | 1.96.0 |
+| axon-explain | 0.2.0 | 1.96.0 |
+| axon-backtest | 0.2.0 | 1.96.0 |
+| axon-hpo | 0.2.0 | 1.96.0 |
+| axon-walk-forward | 0.2.0 | 1.96.0 |
+| axon-tracker | 0.2.0 | 1.96.0 |
+| axon-registry | 0.2.0 | 1.96.0 |
+| axon-distributed | 0.2.0 | 1.96.0 |
+| axon-monitor | 0.2.0 | 1.96.0 |
+| axon-risk | 0.2.0 | 1.96.0 |
+| axon-compliance | 0.2.0 | 1.96.0 |

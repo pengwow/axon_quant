@@ -1,6 +1,6 @@
 # Quick Start
 
-> Applicable version: AXON v0.1.0+
+> Applicable version: AXON v0.2.0+
 > Prerequisites: [Installation](installation.md)
 
 This document takes you through running your first AXON backtest in 5 minutes.

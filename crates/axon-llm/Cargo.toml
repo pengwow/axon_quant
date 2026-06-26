@@ -76,6 +76,8 @@ tokio = { workspace = true, features = ["rt", "sync", "macros", "rt-multi-thread
 chrono = { workspace = true }
 # UUID(explain 集成使用)
 uuid = { workspace = true }
+# 互斥锁(swarm Python 绑定使用)
+parking_lot = "0.12"
 
 # Python 绑定
 # `extension-module` 启用时禁止 Rust 自带 main(避免重复初始化);

@@ -1,7 +1,7 @@
 # 常见问题
 
-> **相关示例**: [`examples/`](../../../examples/) 目录包含所有功能的完整可运行示例。
-> 推荐从 [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py) 开始。
+> **相关示例**: [`examples/`](https://github.com/pengwow/axon_quant/blob/main/examples/) 目录包含所有功能的完整可运行示例。
+> 推荐从 [`examples/01_getting_started/00_all_in_one.py`](https://github.com/pengwow/axon_quant/blob/main/examples/01_getting_started/00_all_in_one.py) 开始。
 
 本文档汇总了 AXON 量化交易框架使用过程中的常见问题与解答，按类别组织以便快速定位。
 
@@ -13,7 +13,7 @@
 
 **A:** AXON 框架的最低要求如下：
 
-- **Rust 版本**: 1.75 或更高（使用 `rustc --version` 检查）
+- **Rust 版本**: 1.96.0 或更高（使用 `rustc --version` 检查）
 - **Python 版本**: 3.9 或更高（如需使用 Python 绑定）
 - **操作系统**: Linux（推荐 Ubuntu 22.04+）、macOS 13+、Windows 11+
 - **内存**: 最少 8GB，推荐 16GB（训练大规模模型时）

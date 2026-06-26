@@ -1,6 +1,6 @@
 # 交易所安全
 
-> **完整示例**: [`examples/09_exchange/binance_demo.py`](../../../examples/09_exchange/binance_demo.py)
+> **完整示例**: [`examples/09_exchange/binance_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/09_exchange/binance_demo.py)
 > Binance 测试网对接完整流程（REST + 签名 + K 线查询）。最佳实践
 
 本文档介绍在生产环境使用 `axon_quant.exchange` Python 绑定时的安全最佳实践。**请把 API key 视为生产凭证**——泄漏可能直接造成资金损失。

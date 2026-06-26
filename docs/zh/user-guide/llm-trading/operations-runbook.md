@@ -1,6 +1,6 @@
 # LLM 交易运维手册
 
-> 适用版本:axon-llm v0.1.0+
+> 适用版本:axon-llm v0.2.0+
 > 读者:运维 / SRE / on-call 工程师
 > 前置阅读:[overview.md](overview.md) [risk-safety.md](risk-safety.md) [metrics-alerting.md](metrics-alerting.md)
 
@@ -26,7 +26,7 @@ git clone https://github.com/pengwow/axon_quant.git /opt/axon_quant
 cd /opt/axon_quant
 
 # 2. 选择 release tag
-git checkout v0.1.0  # 或 main / develop
+git checkout v0.2.0  # 或 main / develop
 
 # 3. Release 构建(LTO,1 codegen-unit)
 cargo build --workspace --release
@@ -244,7 +244,7 @@ axon-llm **无服务端持久化状态**(所有状态在进程内 / 在 backend 
 cd /opt/axon_quant
 
 # 1. 切回旧 tag
-git checkout v0.1.0
+git checkout v0.2.0
 
 # 2. 重新编译
 cargo build --workspace --release

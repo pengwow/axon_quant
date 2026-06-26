@@ -5,7 +5,7 @@
 AXON（**A**I-driven e**X**ecution and **O**rder e**N**gine）是面向量化交易与强化学习的事件驱动交易引擎。它从设计之初就以 AI 为核心，而非在传统量化系统上"嫁接"机器学习模块。
 
 !!! note "版本信息"
-    当前文档基于 AXON `v0.1.0` 编写，对应 Rust 版本 `1.96.0+`。
+    当前文档基于 AXON `v0.2.0` 编写，对应 Rust 版本 `1.96.0+`。
 
 ---
 
@@ -31,7 +31,7 @@ AXON（**A**I-driven e**X**ecution and **O**rder e**N**gine）是面向量化交
 
     回测、训练、超参优化、滚动验证、实验追踪、模型注册共用一套 `MarketBar` / `PortfolioState` 数据结构，彻底消除"回测可用、上实盘崩"的隐患。
 
--   :material-package-variant-closed: **21 个独立 Crate**
+-   :material-package-variant-closed: **23 个独立 Crate**
 
     ---
 
@@ -80,7 +80,7 @@ AXON（**A**I-driven e**X**ecution and **O**rder e**N**gine）是面向量化交
 
 ## 架构总览
 
-AXON 采用 Cargo Workspace 管理 21 个 crate，按依赖层级自下而上分为 9 层：
+AXON 采用 Cargo Workspace 管理 23 个 crate，按依赖层级自下而上分为 9 层：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

@@ -1,7 +1,7 @@
 # FAQ
 
-> **Related examples**: [`examples/`](../../../examples/) contains complete runnable examples for all features.
-> Start with [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py).
+> **Related examples**: [`examples/`](https://github.com/pengwow/axon_quant/blob/main/examples/) contains complete runnable examples for all features.
+> Start with [`examples/01_getting_started/00_all_in_one.py`](https://github.com/pengwow/axon_quant/blob/main/examples/01_getting_started/00_all_in_one.py).
 
 This document collects common questions and answers for the AXON quantitative trading framework, organized by category for quick reference.
 
@@ -13,7 +13,7 @@ This document collects common questions and answers for the AXON quantitative tr
 
 **A:** AXON framework minimum requirements:
 
-- **Rust version**: 1.75 or higher (check with `rustc --version`)
+- **Rust version**: 1.96.0 or higher (check with `rustc --version`)
 - **Python version**: 3.9 or higher (if using Python bindings)
 - **Operating System**: Linux (Ubuntu 22.04+ recommended), macOS 13+, Windows 11+
 - **Memory**: Minimum 8GB, 16GB recommended (for training large models)

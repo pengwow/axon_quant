@@ -220,7 +220,7 @@ pub struct TradeFilter {
 }
 
 /// 交易统计
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TradeStats {
     /// 总交易数
     pub total_trades: u32,

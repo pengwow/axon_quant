@@ -1,6 +1,6 @@
 # 安装与快速入门
 
-> **快速开始**: [`examples/01_getting_started/00_all_in_one.py`](../../../examples/01_getting_started/00_all_in_one.py)
+> **快速开始**: [`examples/01_getting_started/00_all_in_one.py`](https://github.com/pengwow/axon_quant/blob/main/examples/01_getting_started/00_all_in_one.py)
 > 一键运行，覆盖全部 6 个 Stage，内置离线数据，无需额外配置。
 
 > 本章节介绍如何在本地安装 AXON，并通过一个最小可运行的随机策略基线验证环境是否正常。
@@ -41,7 +41,7 @@ pip install axon-quant
 
 # 3. 验证安装
 python -c "import axon_quant; print(axon_quant.__version__)"
-# 预期输出: 0.1.0
+# 预期输出: 0.2.0
 ```
 
 !!! note "PyPI 包名说明"
