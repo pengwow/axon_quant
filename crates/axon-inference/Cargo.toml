@@ -17,7 +17,7 @@ sha2 = "0.10"
 pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 # 可选后端依赖
-ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "download-binaries", "tls-rustls"] }
+ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "api-24", "load-dynamic", "tls-rustls"] }
 tch = { version = "0.24", optional = true }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
@@ -25,7 +25,7 @@ notify = { version = "7", optional = true }
 core_affinity = "0.8"
 
 [features]
-# onnx 不在默认 features 中，避免 CI macOS 链接错误（ort download-binaries 与 Xcode 不兼容）
+# onnx 不在默认 features 中，避免非 ONNX 场景拉入 ort 依赖
 # 使用时显式启用：cargo build -p axon-inference --features onnx
 default = ["hot-reload"]
 onnx = ["dep:ort"]

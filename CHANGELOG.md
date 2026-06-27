@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **axon-tracker dead code 警告**: `MlflowTracker.experiment_id` 和 `WandbTracker.entity` 存入后未读取，加 `_` 前缀抑制警告。
+- **macOS CI 链接错误**: `ort` 的 `download-binaries` 在 macOS CI 上找不到 `clang_rt.osx`，改为 `load-dynamic` 模式，构建时跳过静态链接，运行时按需加载 ONNX Runtime 共享库。
+
+### Changed
+- **axon-inference ort 依赖**: 从 `download-binaries` 改为 `load-dynamic` + `api-24`，解决 macOS 链接问题。
+- **Python 包 ONNX 依赖**: 新增 `onnx` optional dependency（`pip install axon-quant[onnx]`），`__init__.py` 自动探测 `onnxruntime` 共享库并设置 `ORT_DYLIB_PATH`，无需手动配置环境变量。
+
 ### Added
 - **axon-core Python 绑定工具宏**:新增 `python-utils` feature，导出 3 个声明宏消除 Python 绑定层重复代码：
   - **`py_exception!`**: 一行代码替代 ~80 行重复的异常定义 + 错误转换 + 注册逻辑。支持 `#[cfg]` 条件编译变体。
