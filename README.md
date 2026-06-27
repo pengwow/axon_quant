@@ -15,7 +15,7 @@ English | **[中文](./README_CN.md)**
 
 Rust core for high-performance, Python interface for RL training, one codebase for the complete pipeline from backtesting to production.
 
-[Online Documentation](https://pengwow.github.io/axon_quant/en/) · [Design Docs](./axon-design/) · [ADR](./docs/adr/) · [Changelog](./CHANGELOG.md) · [Examples](./examples/)
+[Online Documentation](https://pengwow.github.io/axon_quant/en/) · [Examples](./examples/)
 
 ---
 

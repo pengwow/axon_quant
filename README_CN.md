@@ -15,7 +15,7 @@
 
 Rust 实现高性能内核，Python 提供 RL 训练接口，一套代码贯穿回测、训练、优化、验证、生产的完整链路。
 
-[在线文档](https://pengwow.github.io/axon_quant/) · [设计文档](./axon-design/) · [ADR](./docs/adr/) · [更新日志](./CHANGELOG.md) · [示例](./examples/)
+[在线文档](https://pengwow.github.io/axon_quant/) · [示例](./examples/)
 
 ## 设计哲学
 

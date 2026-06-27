@@ -44,6 +44,9 @@ pub mod time;
 pub mod types;
 pub mod volatility;
 
+/// Harness 编排系统核心类型（AgentIntent / TaskContext / HarnessResult）
+pub mod harness_types;
+
 /// Python 绑定工具宏（py_exception! / parse_py_enum! / dict_field!）
 #[cfg(feature = "python-utils")]
 pub mod python_utils;

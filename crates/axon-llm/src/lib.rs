@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod backend;
+pub mod declarative_agent;
 #[cfg(feature = "backends")]
 pub mod backends;
 pub mod config;

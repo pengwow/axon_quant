@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 // 确保 `axon-data::python::error::DataError` 等子类的 `create_exception!`
 // 拿到已经存在的 `AxonError` 引用建立继承链。
 mod error;
+mod harness;
 
 /// AXON Quant Python 模块(原生扩展,由 __init__.py 导入并重新导出)
 #[pymodule]
@@ -160,6 +161,12 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_defi::python::types::register(&defi_module)?;
     axon_defi::python::config::register(&defi_module)?;
     m.add_submodule(&defi_module)?;
+
+    // `axon-harness` + `axon-safety` 子模块
+    // 包含 HarnessBridge / CircuitBreaker / AuditChain。
+    let harness_module = PyModule::new(m.py(), "harness")?;
+    harness::register_harness_module(&harness_module)?;
+    m.add_submodule(&harness_module)?;
 
     Ok(())
 }

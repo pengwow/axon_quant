@@ -1,7 +1,7 @@
 [project]
 name = "axon-quant"
 version = "0.2.0"
-description = "AI 原生量化交易框架 — Rust 实现高性能内核，Python 提供 RL 训练接口，一套代码贯穿回测、训练、优化、验证、生产的完整链路。"
+description = "AI-native quantitative trading framework — high-performance Rust core with Python RL training interface, covering backtesting, training, optimization, validation and production in a single codebase."
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"
 license-files = ["LICENSE"]

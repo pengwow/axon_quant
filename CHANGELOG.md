@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Harness Engineering 多智能体编排系统 (Rust 层)**:
+  - **axon-core**: 新增 `harness_types` 模块 — `AgentIntent`（声明式意图）、`TaskContext`（任务上下文）、`HarnessResult`（执行结果枚举）。
+  - **axon-safety**: 新 crate — 生产级安全组件：`CircuitBreaker`（AtomicU8 状态机，热路径 < 20ns）、`AuditChain`（Blake3 哈希链，防篡改）、`PositionGuard`（仓位守卫）。12 个单元测试。
+  - **axon-harness**: 新 crate — Harness 层 trait 接口：`HarnessPolicy`（编排策略）、`ToolGate`（工具门控）、`BudgetGuard`（Token 预算守卫）、`HarnessBridge`（零侵入桥接器，None 时所有方法返回默认值）。
+  - **axon-llm**: 新增 `declarative_agent` 模块 — `DeclarativeAgent`（声明式 Agent，Act 阶段返回 Intent 而非直接调用工具，由 Harness 裁决后决定是否执行）。
+  - **axon-python**: 新增 `harness` 子模块 — `PyHarnessBridge` / `PyCircuitBreaker` / `PyAuditChain` PyO3 绑定。
+
 ### Fixed
 - **axon-tracker dead code 警告**: `MlflowTracker.experiment_id` 和 `WandbTracker.entity` 存入后未读取，加 `_` 前缀抑制警告。
 - **macOS CI 链接错误**: `ort` 的 `download-binaries` 在 macOS CI 上找不到 `clang_rt.osx`，改为 `load-dynamic` 模式，构建时跳过静态链接，运行时按需加载 ONNX Runtime 共享库。

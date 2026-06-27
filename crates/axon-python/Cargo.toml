@@ -50,6 +50,9 @@ python = [
     "dep:axon-compliance",
     # `axon-defi` 暴露为 `_native.defi` 子模块
     "dep:axon-defi",
+    # `axon-harness` + `axon-safety` 暴露为 `_native.harness` 子模块
+    "dep:axon-harness",
+    "dep:axon-safety",
 ]
 
 [dependencies]
@@ -106,3 +109,9 @@ axon-compliance = { workspace = true, optional = true, features = ["python"] }
 # `axon-defi` 暴露为 `_native.defi` 子模块
 # 包含 EvmAdapter + UniswapRouter + MevShareClient + BridgeManager。
 axon-defi = { workspace = true, optional = true, features = ["python"] }
+# `axon-harness` 暴露为 `_native.harness` 子模块
+# 包含 HarnessBridge / Adjudication / BudgetZone / GateResult 等类型。
+axon-harness = { workspace = true, optional = true }
+# `axon-safety` 暴露为 `_native.harness` 子模块
+# 包含 CircuitBreaker / AuditChain / PositionGuard。
+axon-safety = { workspace = true, optional = true }

@@ -24,6 +24,7 @@ python-utils = ["dep:pyo3"]
 
 [dependencies]
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true }
 rust_decimal = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }

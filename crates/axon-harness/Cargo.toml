@@ -1,0 +1,19 @@
+[package]
+name = "axon-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+description = "Harness Engineering primitives for axon_quant multi-agent orchestration"
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
