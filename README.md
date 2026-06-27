@@ -92,8 +92,14 @@ Rust core for high-performance, Python interface for RL training, one codebase f
 # Basic install (core + data processing)
 pip install axon_quant
 
+# With ONNX inference support (onnxruntime, auto-loaded)
+pip install axon_quant[onnx]
+
 # With RL training dependencies (gymnasium, stable-baselines3, torch)
 pip install axon_quant[rl]
+
+# Full install
+pip install axon_quant[onnx,rl]
 ```
 
 Verify installation:

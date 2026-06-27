@@ -102,6 +102,29 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 
 from __future__ import annotations
 
+import os as _os
+import sys as _sys
+
+# 自动探测 onnxruntime 共享库路径，供 ort load-dynamic 使用
+# 必须在导入 _native 之前设置，否则 ort 初始化时找不到 dylib
+if "ORT_DYLIB_PATH" not in _os.environ:
+    try:
+        import onnxruntime as _ort  # noqa: F401
+
+        _ort_dir = _os.path.dirname(_ort.__file__)
+        _capi_dir = _os.path.join(_ort_dir, "capi")
+        if _sys.platform == "darwin":
+            _lib_name = "libonnxruntime.dylib"
+        elif _sys.platform == "win32":
+            _lib_name = "onnxruntime.dll"
+        else:
+            _lib_name = "libonnxruntime.so"
+        _lib_path = _os.path.join(_capi_dir, _lib_name)
+        if _os.path.isfile(_lib_path):
+            _os.environ["ORT_DYLIB_PATH"] = _lib_path
+    except ImportError:
+        pass
+
 # 从原生 Rust 扩展导入所有符号
 from ._native import *  # noqa: F401, F403
 

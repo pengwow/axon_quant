@@ -39,6 +39,9 @@ python --version   # 应输出 Python 3.12.x 或更高
 # 2. 安装 axon_quant（包含所有 Rust 扩展）
 pip install axon-quant
 
+# 包含 ONNX 推理支持
+pip install axon-quant[onnx]
+
 # 3. 验证安装
 python -c "import axon_quant; print(axon_quant.__version__)"
 # 预期输出: 0.2.0
@@ -81,11 +84,12 @@ AXON 的核心 Python 依赖仅包含 `numpy`、`pandas`、`pyarrow`。根据使
 
 | 场景 | 安装命令 |
 |------|---------|
-| RL 训练（PPO / SAC 等） | `pip install stable-baselines3 gymnasium torch` |
+| ONNX 推理 | `pip install axon-quant[onnx]` |
+| RL 训练（PPO / SAC 等） | `pip install axon-quant[rl]` |
 | 超参优化（HPO） | `pip install optuna` |
 | 实验追踪 | `pip install mlflow wandb` |
 | 分布式训练 | `pip install ray` |
-| 开发调试 | `pip install pytest pytest-cov ruff mypy` |
+| 开发调试 | `pip install axon-quant[dev]` |
 
 !!! note "依赖隔离建议"
     建议使用 `venv` 或 `conda` 创建独立环境，避免与系统 Python 包冲突：

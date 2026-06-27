@@ -20,7 +20,7 @@ pub struct MlflowTracker {
     client: Client,
     tracking_uri: Url,
     run_id: RunId,
-    experiment_id: ExperimentId,
+    _experiment_id: ExperimentId,
     metric_buffer: Mutex<MetricBuffer>,
     retry: RetryPolicy,
 }
@@ -39,7 +39,7 @@ impl MlflowTracker {
             client,
             tracking_uri,
             run_id: RunId(run_id),
-            experiment_id: ExperimentId(experiment_id),
+            _experiment_id: ExperimentId(experiment_id),
             metric_buffer: Mutex::new(MetricBuffer::new(1000, std::time::Duration::from_secs(30))),
             retry: RetryPolicy::default(),
         })
