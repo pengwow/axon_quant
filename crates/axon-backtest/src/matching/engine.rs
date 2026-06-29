@@ -444,6 +444,10 @@ impl L1MatchingEngine {
         // 卖盘：ask 在 mid 之上，按 spread 阶梯递增
         for level in 1..=depth_levels {
             let ask_price = mid_price + half_spread * level as f64;
+            if ask_price <= 0.0 {
+                // 防御性:正常参数下不会触发,但 mid/half_spread 为 NaN/负时跳过
+                continue;
+            }
             let order = Order::new(
                 id,
                 symbol.clone(),
@@ -457,9 +461,12 @@ impl L1MatchingEngine {
             self.insert_passive(order);
             id += 1;
         }
-        // 买盘：bid 在 mid 之下
+        // 买盘：bid 在 mid 之下。一旦触及非正值,更深档只会更小,直接跳出循环
         for level in 1..=depth_levels {
             let bid_price = mid_price - half_spread * level as f64;
+            if bid_price <= 0.0 {
+                break;
+            }
             let order = Order::new(
                 id,
                 symbol.clone(),
@@ -1091,6 +1098,27 @@ mod tests {
         let r = engine.seed_liquidity(100.0, 0.5, 0, 2.0, sym.clone(), 1);
         assert_eq!(r, 1);
         assert_eq!(engine.active_order_count(), 0);
+    }
+
+    /// mid_price 不足以容纳所有买盘档位时,负/零价 bid 档应被跳过,避免在订单簿插入 price=0 的废单
+    /// 场景:mid=10, half_spread=3, depth_levels=5 → bid 价 7/4/1/-2/-5
+    ///       后两档 <= 0,只挂 3 档买;卖盘 13/16/19/22/25 全部 >= 0,挂 5 档
+    #[test]
+    fn test_seed_liquidity_skips_non_positive_bid_levels() {
+        let mut engine = L1MatchingEngine::new();
+        let sym = Symbol::from("BTC-USDT");
+
+        let r = engine.seed_liquidity(10.0, 3.0, 5, 1.0, sym.clone(), 100);
+        // 5 卖 + 3 买 = 8 单
+        assert_eq!(engine.active_order_count(), 8);
+        // 返回的 next_id:从 100 起,5 卖 + 3 买 = 8
+        assert_eq!(r, 108);
+
+        // 最深一档买价应 >= 0
+        let lowest_bid = engine.best_bid();
+        if let Some(p) = lowest_bid {
+            assert!(p.as_f64() > 0.0, "best_bid 应为正,实际 {}", p.as_f64());
+        }
     }
 
     /// seed_liquidity 在 impacted_engine.rs 的包装应透传到 L1

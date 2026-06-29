@@ -68,7 +68,7 @@ impl BudgetGuard for SimpleBudgetGuard {
         let ratio = new_total as f64 / self.total_budget as f64;
 
         if ratio >= 1.0 {
-            self.circuit_breaker.force_reset(); // 触发熔断
+            self.circuit_breaker.open(); // 预算耗尽：打开熔断器
             BudgetZone::CircuitBreak
         } else if ratio >= self.config.red_zone_threshold {
             BudgetZone::Red
@@ -154,5 +154,15 @@ mod tests {
         assert_eq!(snap.total_budget, 100_000);
         assert_eq!(snap.tokens_used, 50_000);
         assert_eq!(snap.zone, BudgetZone::Green);
+    }
+
+    /// 预算耗尽时:应打开熔断器(供 is_circuit_break 检查)
+    #[test]
+    fn test_budget_exhausted_opens_circuit() {
+        let guard = SimpleBudgetGuard::new(test_config());
+        assert!(!guard.is_circuit_break());
+        guard.consume(100_000, "gpt-4o");
+        assert!(guard.is_circuit_break(), "预算耗尽后熔断器应处于打开状态");
+        assert_eq!(guard.snapshot().zone, BudgetZone::CircuitBreak);
     }
 }

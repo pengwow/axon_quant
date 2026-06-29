@@ -204,6 +204,11 @@ impl CircuitBreaker {
         *self.inner.daily_trades.lock() = 0;
     }
 
+    /// 显式打开熔断（外部信号触发，如预算耗尽、紧急停机）
+    pub fn open(&self) {
+        self.trip("外部触发");
+    }
+
     fn trip(&self, _reason: &str) {
         self.state.store(STATE_OPEN, Ordering::Relaxed);
         *self.inner.open_since.lock() = Self::now_secs();
