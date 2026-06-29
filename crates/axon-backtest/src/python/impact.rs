@@ -140,6 +140,49 @@ impl PyImpactedMatchingEngine {
         self.inner.set_model(Box::new(adapter));
     }
 
+    /// 播种虚拟流动性（回测辅助）
+    ///
+    /// 在 mid_price 上下分别挂 depth_levels 层限价单作为对手盘。
+    /// 让策略单在没有外部对手盘时仍能成交。
+    ///
+    /// Args:
+    /// - `mid_price`: 中间价（通常为当前 bar close）
+    /// - `half_spread`: 每层价差（绝对价格单位）
+    /// - `depth_levels`: 每侧挂单层数
+    /// - `size_per_level`: 每层挂单数量
+    /// - `symbol`: 交易对字符串
+    /// - `next_id`: 起始订单 id
+    ///
+    /// Returns:
+    ///   更新后的 id 计数器（传给下一次 seed 调用）
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        symbol: &str,
+        next_id: u64,
+    ) -> u64 {
+        self.inner.seed_liquidity(
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            axon_core::types::Symbol::from(symbol),
+            next_id,
+        )
+    }
+
+    /// 清空订单簿两侧（回测辅助 — 瞬时对手盘场景）
+    ///
+    /// 用法:每根 bar 处理前调 `clear_book()` 再 `seed_liquidity(...)`,
+    /// 避免种子单跨 bar 累积撑爆 BTreeMap。**不**清空永久冲击偏移与统计,
+    /// 那部分跨 bar 持续累计。
+    fn clear_book(&mut self) {
+        self.inner.clear_book();
+    }
+
     /// 当前累计永久冲击偏移
     fn permanent_offset(&self) -> f64 {
         self.inner.permanent_offset()

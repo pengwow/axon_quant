@@ -67,6 +67,13 @@ pub trait MatchingEngine: Send + Sync {
 
     /// 当前活跃订单数
     fn active_order_count(&self) -> usize;
+
+    /// 清空订单簿两侧（bids + asks + order_index）。
+    ///
+    /// 用途:回测场景下"瞬时对手盘"——每 bar 由应用层先 `clear_book()` 再
+    /// `seed_liquidity()` 重新挂一组限价单,撮合完不需要保留上 bar 的种子
+    /// 流动性。**不**清空 `trade_sequence`(成交序号跨 bar 连续)。
+    fn clear_book(&mut self);
 }
 
 /// 内部订单簿侧类型
@@ -390,6 +397,84 @@ impl L1MatchingEngine {
         let last = orders.back().unwrap();
         self.order_index.insert(last.id, (last.side, price));
     }
+
+    /// 在订单簿两侧播种虚拟流动性（回测辅助）
+    ///
+    /// # 用途
+    ///
+    /// 回测场景没有真实外部对手盘，需要在撮合引擎内提供"虚拟深度"，
+    /// 让策略单能成交。常见于单边策略回测（量化研究）而非做市回测。
+    ///
+    /// # 行为
+    ///
+    /// 在 mid_price 上下分别挂 depth_levels 层限价单：
+    /// - 卖方：`mid + half_spread * (1, 2, ..., depth_levels)`
+    /// - 买方：`mid - half_spread * (1, 2, ..., depth_levels)`
+    /// 每层 `size_per_level` 数量。
+    ///
+    /// 订单 id 从 `next_id` 起递增，返回更新后的 id 计数器
+    /// （调用方应保存并用于下一次 seed，避免 id 冲突）。
+    ///
+    /// # 参数
+    ///
+    /// - `mid_price`：中间价（通常为当前 bar close）
+    /// - `half_spread`：每层价差（绝对价格单位），如 0.0001 * mid = 10bps
+    /// - `depth_levels`：每侧挂单层数（典型 5~20）
+    /// - `size_per_level`：每层挂单数量
+    /// - `symbol`：交易对
+    /// - `next_id`：下一个可用订单 id（避免与外部订单 id 冲突）
+    ///
+    /// # 副作用
+    ///
+    /// - 内部订单簿新增 `2 * depth_levels` 条 maker 挂单
+    /// - 订单不计入 stats（区别于 submit 路径）
+    pub fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        symbol: Symbol,
+        next_id: u64,
+    ) -> u64 {
+        if mid_price <= 0.0 || half_spread <= 0.0 || depth_levels == 0 || size_per_level <= 0.0 {
+            return next_id;
+        }
+        let mut id = next_id;
+        // 卖盘：ask 在 mid 之上，按 spread 阶梯递增
+        for level in 1..=depth_levels {
+            let ask_price = mid_price + half_spread * level as f64;
+            let order = Order::new(
+                id,
+                symbol.clone(),
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(ask_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            self.insert_passive(order);
+            id += 1;
+        }
+        // 买盘：bid 在 mid 之下
+        for level in 1..=depth_levels {
+            let bid_price = mid_price - half_spread * level as f64;
+            let order = Order::new(
+                id,
+                symbol.clone(),
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(bid_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            self.insert_passive(order);
+            id += 1;
+        }
+        id
+    }
 }
 
 /// 获取价格级别内首个订单的价格（用于 FOK 预检中的限价比较）
@@ -535,6 +620,15 @@ impl MatchingEngine for L1MatchingEngine {
 
     fn active_order_count(&self) -> usize {
         self.order_index.len()
+    }
+
+    fn clear_book(&mut self) {
+        // 1) 清空两侧订单簿与索引;清空后所有"被种子但未成交"的 limit 单
+        //    全部丢弃,这正是回测场景下"瞬时对手盘"想要的语义。
+        // 2) **不**清空 `trade_sequence`,成交序号跨 bar 仍连续递增。
+        self.bids.clear();
+        self.asks.clear();
+        self.order_index.clear();
     }
 }
 
@@ -943,6 +1037,82 @@ mod tests {
         assert!(!result.is_partially_filled);
         // 订单 3 剩余 0.5 挂在卖单簿
         assert_eq!(engine.best_ask(), Some(Price::from_f64(100.0)));
+    }
+
+    /// seed_liquidity 在 mid 上下挂 depth_levels 层对手盘
+    /// 后续策略单应能立即与虚拟对手盘成交
+    #[test]
+    fn test_seed_liquidity_provides_counterparty() {
+        let mut engine = L1MatchingEngine::new();
+        let sym = Symbol::from("BTC-USDT");
+
+        // mid=100, half_spread=0.5, depth=3, size=2.0
+        // 卖盘: 100.5, 101.0, 101.5（各 2.0）
+        // 买盘: 99.5, 99.0, 98.5（各 2.0）
+        let next_id = engine.seed_liquidity(100.0, 0.5, 3, 2.0, sym.clone(), 1);
+        // 挂入 6 个 maker（3 卖 + 3 买）
+        assert_eq!(engine.active_order_count(), 6);
+        // 最优买价 = 99.5，最优卖价 = 100.5
+        assert_eq!(engine.best_bid().unwrap().as_f64(), 99.5);
+        assert_eq!(engine.best_ask().unwrap().as_f64(), 100.5);
+        // next_id 返回 1 + 6 = 7
+        assert_eq!(next_id, 7);
+
+        // 策略买单 @ 100（mid） vs 卖盘 100.5/101.0/101.5：
+        // 限价 100 < 100.5 不撮合（限价单不穿越价差）
+        let buy_under_ask = make_limit_order(100, Side::Buy, 100.0, 1.0, 10_000);
+        let r1 = engine.submit(buy_under_ask);
+        assert!(
+            r1.fills.is_empty(),
+            "mid 限价买单 vs ask@100.5 不应成交"
+        );
+
+        // 策略买单 @ 100.6 vs 卖盘 100.5：成交 1.0（吃掉最优卖）
+        let buy_cross = make_limit_order(101, Side::Buy, 100.6, 1.0, 11_000);
+        let r2 = engine.submit(buy_cross);
+        assert_eq!(r2.fills.len(), 1, "应成交 1 笔（吃掉 100.5 的 1.0）");
+        assert_eq!(r2.fills[0].price.as_f64(), 100.5);
+        // 卖盘 100.5 剩余 1.0（成交 1.0 from 2.0）
+        assert_eq!(engine.best_ask().unwrap().as_f64(), 100.5);
+    }
+
+    /// seed_liquidity 对非法参数（<=0）应 no-op，返回原 next_id
+    #[test]
+    fn test_seed_liquidity_invalid_params_noop() {
+        let mut engine = L1MatchingEngine::new();
+        let sym = Symbol::from("BTC-USDT");
+
+        // mid_price=0 无效
+        let r = engine.seed_liquidity(0.0, 0.5, 3, 2.0, sym.clone(), 1);
+        assert_eq!(r, 1);
+        assert_eq!(engine.active_order_count(), 0);
+
+        // depth_levels=0 无效
+        let r = engine.seed_liquidity(100.0, 0.5, 0, 2.0, sym.clone(), 1);
+        assert_eq!(r, 1);
+        assert_eq!(engine.active_order_count(), 0);
+    }
+
+    /// seed_liquidity 在 impacted_engine.rs 的包装应透传到 L1
+    #[test]
+    fn test_impacted_engine_seed_liquidity_wraps_l1() {
+        use crate::impact::ImpactedMatchingEngine;
+        use axon_core::impact::create_model;
+        use axon_core::impact::ImpactModelConfig;
+
+        let config = ImpactModelConfig::Linear {
+            coefficient: 0.0,
+            depth_levels: 10,
+            instantaneous_ratio: 0.7,
+        };
+        let model: Box<dyn axon_core::impact::ImpactModel> = create_model(config);
+        let mut engine = ImpactedMatchingEngine::new(model);
+        let sym = Symbol::from("BTC-USDT");
+
+        let next_id = engine.seed_liquidity(100.0, 0.5, 2, 1.0, sym.clone(), 1);
+        // 4 个 maker（2 卖 + 2 买）
+        assert_eq!(engine.inner().active_order_count(), 4);
+        assert_eq!(next_id, 5);
     }
 
     /// 大量订单（10K）插入 / 取消性能与一致性

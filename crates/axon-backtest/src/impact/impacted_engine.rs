@@ -23,7 +23,7 @@ use axon_core::impact::{ImpactModel, ImpactModelConfig};
 use axon_core::market::{OrderBookLevel, OrderBookSnapshot, Side};
 use axon_core::order::Order;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity};
+use axon_core::types::{Price, Quantity, Symbol};
 
 use crate::matching::engine::{L1MatchingEngine, MatchingEngine};
 use crate::matching::types::SubmitResult;
@@ -167,6 +167,51 @@ impl ImpactedMatchingEngine {
     #[inline]
     pub fn inner_mut(&mut self) -> &mut L1MatchingEngine {
         &mut self.inner
+    }
+
+    /// 在内部订单簿两侧播种虚拟流动性
+    ///
+    /// 这是回测辅助接口：让策略单在没有外部对手盘时仍能成交。
+    /// 详见 [`L1MatchingEngine::seed_liquidity`] 的语义说明。
+    ///
+    /// # 参数
+    ///
+    /// - `mid_price`：中间价（通常为当前 bar close）
+    /// - `half_spread`：每层价差（绝对价格单位）
+    /// - `depth_levels`：每侧挂单层数
+    /// - `size_per_level`：每层挂单数量
+    /// - `symbol`：交易对
+    /// - `next_id`：下一个可用订单 id（避免与外部订单 id 冲突）
+    ///
+    /// # 返回
+    ///
+    /// 更新后的 id 计数器（传给下一次 seed 调用）
+    pub fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        symbol: Symbol,
+        next_id: u64,
+    ) -> u64 {
+        self.inner.seed_liquidity(
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            symbol,
+            next_id,
+        )
+    }
+
+    /// 清空内部订单簿两侧（透传到 `L1MatchingEngine::clear_book`）
+    ///
+    /// 回测场景下，每根 bar 由应用层先 `clear_book()` 再 `seed_liquidity()`，
+    /// 避免种子单跨 bar 累积撑爆 BTreeMap。**不**清空 `permanent_offset` 和
+    /// `stats` —— 永久冲击跨 bar 持续累计。
+    pub fn clear_book(&mut self) {
+        self.inner.clear_book();
     }
 
     /// 提交订单，应用市场冲击

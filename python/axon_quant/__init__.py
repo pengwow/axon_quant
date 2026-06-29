@@ -148,6 +148,22 @@ from ._native import (  # noqa: F401
     walk_forward,
 )
 
+# 将 PyO3 native-only 子模块注册到 sys.modules。
+# 否则 `from axon_quant.rl import TradingEnv` 之类的导入会因 sys.modules
+# 缺少 `axon_quant.<subname>` 缓存、Python import 系统无法定位 spec 而
+# ModuleNotFoundError。
+#
+# 注意:backtest/data/risk/oms/exchange/inference/explain/ensemble/compliance
+#      /llm/trading 都有同名 .py 包装,Python import 系统会从 .py 加载,
+#      sys.modules 也会被自动设置,这里不重复处理(否则会覆盖 .py 包装)。
+import sys as _sys
+for _sub_name in (
+    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward",
+):
+    _sub_mod = globals().get(_sub_name)
+    if _sub_mod is not None:
+        _sys.modules.setdefault(f"axon_quant.{_sub_name}", _sub_mod)
+
 # 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
 from .backtest import (  # noqa: F401
     ArbitrageOpportunity,

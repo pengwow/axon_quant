@@ -8,12 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **axon-backtest seed_liquidity 接口**: 新增回测辅助 API `L1MatchingEngine::seed_liquidity(mid_price, half_spread, depth_levels, size_per_level, symbol, next_id)` 与 `ImpactedMatchingEngine::seed_liquidity(...)` 包装，自动在 mid 上下挂 `2 * depth_levels` 层限价单作为虚拟对手盘。Python 绑定 `ImpactedMatchingEngine.seed_liquidity(...)` 同步暴露。ponytail: 后续如需基于真实 L2 订单簿快照可重构为 `seed_from_snapshot(snapshot)`，但目前以价格阶梯生成足够覆盖回测场景。
 - **Harness Engineering 多智能体编排系统 (Rust 层)**:
   - **axon-core**: 新增 `harness_types` 模块 — `AgentIntent`（声明式意图）、`TaskContext`（任务上下文）、`HarnessResult`（执行结果枚举）。
-  - **axon-safety**: 新 crate — 生产级安全组件：`CircuitBreaker`（AtomicU8 状态机，热路径 < 20ns）、`AuditChain`（Blake3 哈希链，防篡改）、`PositionGuard`（仓位守卫）。12 个单元测试。
   - **axon-harness**: 新 crate — Harness 层 trait 接口：`HarnessPolicy`（编排策略）、`ToolGate`（工具门控）、`BudgetGuard`（Token 预算守卫）、`HarnessBridge`（零侵入桥接器，None 时所有方法返回默认值）。
   - **axon-llm**: 新增 `declarative_agent` 模块 — `DeclarativeAgent`（声明式 Agent，Act 阶段返回 Intent 而非直接调用工具，由 Harness 裁决后决定是否执行）。
   - **axon-python**: 新增 `harness` 子模块 — `PyHarnessBridge` / `PyCircuitBreaker` / `PyAuditChain` PyO3 绑定。
+
+### Changed
+- **axon-harness 增强**: 将 axon-safety 完全合并到 axon-harness，实现核心组件：
+  - **安全组件合并**: `CircuitBreaker`（熔断器）、`AuditChain`（审计链）、`PositionGuard`（仓位守卫）从 axon-safety 移入 axon-harness。
+  - **核心组件实现**: `DefaultPolicy`（默认裁决策略）、`SimpleBudgetGuard`（Token 预算守卫）、`RBACToolGate`（基于角色的工具门控）、`HarnessObserver`（可观测性组件）。
+  - **HarnessBridge 增强**: 新增 `new()` 和 `with_defaults()` 构造函数。
+  - **依赖简化**: 删除 axon-safety crate，统一由 axon-harness 提供安全组件。
+  - **测试覆盖**: 35 个单元测试 + 5 个集成测试，全部通过。
 
 ### Fixed
 - **axon-tracker dead code 警告**: `MlflowTracker.experiment_id` 和 `WandbTracker.entity` 存入后未读取，加 `_` 前缀抑制警告。

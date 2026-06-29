@@ -7,8 +7,11 @@ use std::sync::Arc;
 
 use axon_core::harness_types::{AgentIntent, TaskContext};
 
+use crate::default_policy::DefaultPolicy;
 use crate::policy::{BudgetGuard, HarnessPolicy, ToolGate};
-use crate::types::{Adjudication, BudgetState, BudgetZone, GateResult};
+use crate::rbac_gate::RBACToolGate;
+use crate::simple_budget::SimpleBudgetGuard;
+use crate::types::{Adjudication, BudgetState, BudgetZone, GateResult, HarnessConfig};
 
 /// Harness 桥接器
 ///
@@ -27,6 +30,32 @@ impl HarnessBridge {
             policy: None,
             tool_gate: None,
             budget: None,
+        }
+    }
+
+    /// 构造新实例
+    pub fn new(
+        policy: Option<Arc<dyn HarnessPolicy>>,
+        tool_gate: Option<Arc<dyn ToolGate>>,
+        budget: Option<Arc<dyn BudgetGuard>>,
+    ) -> Self {
+        Self {
+            policy,
+            tool_gate,
+            budget,
+        }
+    }
+
+    /// 使用默认组件构造实例
+    pub fn with_defaults(config: HarnessConfig) -> Self {
+        let policy = DefaultPolicy::new(config.clone());
+        let budget = SimpleBudgetGuard::new(config);
+        let gate = RBACToolGate::default();
+
+        Self {
+            policy: Some(Arc::new(policy)),
+            tool_gate: Some(Arc::new(gate)),
+            budget: Some(Arc::new(budget)),
         }
     }
 
@@ -158,5 +187,17 @@ mod tests {
         let bridge = HarnessBridge::none();
         // 不应 panic
         bridge.record_tool_call("tool", "agent", &serde_json::Value::Null, "result");
+    }
+
+    #[test]
+    fn test_with_defaults() {
+        let config = HarnessConfig::default();
+        let bridge = HarnessBridge::with_defaults(config);
+        assert!(bridge.is_active());
+        assert_eq!(
+            bridge.adjudicate(&test_intent(), &test_ctx()),
+            Adjudication::Approved
+        );
+        assert!(bridge.can_proceed(&test_ctx()));
     }
 }

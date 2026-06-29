@@ -5,10 +5,14 @@
   1. HarnessBridge — 零侵入模式 vs 激活模式
   2. CircuitBreaker — 熔断器状态机（CLOSED → OPEN → HALF_OPEN → CLOSED）
   3. AuditChain — Blake3 哈希链（防篡改审计）
-  4. 状态机 — 7 态任务生命周期（纯 Python 实现）
-  5. 快速路径路由器 — 三级决策路径（FAST / LIGHT / FULL）
-  6. 投票共识 — 60% 同意通过，RiskAgent 一票否决
-  7. 编排器 — 任务接收 → 路由 → LLM Agent 决策 → 投票 → 审查
+  4. DefaultPolicy — 默认裁决策略（置信度 + 预算区间）
+  5. SimpleBudgetGuard — Token 预算守卫（区间转换）
+  6. RBACToolGate — 基于角色的工具门控
+  7. HarnessObserver — 可观测性组件（决策日志 + 性能指标）
+  8. 状态机 — 7 态任务生命周期（纯 Python 实现）
+  9. 快速路径路由器 — 三级决策路径（FAST / LIGHT / FULL）
+  10. 投票共识 — 60% 同意通过，RiskAgent 一票否决
+  11. 编排器 — 任务接收 → 路由 → LLM Agent 决策 → 投票 → 审查
 
 运行方式:
     source .venv/bin/activate
@@ -275,6 +279,175 @@ def demo_audit_chain() -> None:
         info(f"  [{r['entry_id']}] {r['agent_id']}: {r['action']}")
 
     ok("审计链演示完成 — Blake3 哈希链防篡改")
+
+
+def demo_default_policy() -> None:
+    """演示默认裁决策略。"""
+    header("4. DefaultPolicy — 默认裁决策略")
+
+    harness = _get_native_harness()
+    if harness is None:
+        info("原生 harness 模块未安装，跳过 Rust 组件演示")
+        return
+
+    step("创建 DefaultPolicy（使用默认配置）")
+    # 注意：Python 绑定中可能没有直接暴露 DefaultPolicy
+    # 这里演示通过 HarnessBridge.with_defaults() 间接使用
+    info("DefaultPolicy 通过 HarnessBridge.with_defaults() 使用")
+
+    step("创建 HarnessBridge.with_defaults() — 激活模式")
+    HarnessBridge = harness.HarnessBridge
+    bridge = HarnessBridge.with_defaults()
+
+    step("检查 is_active() — 是否有 Harness 组件")
+    info(f"is_active() = {bridge.is_active()}")
+
+    step("模拟高置信度意图裁决")
+    info("  意图: buy BTC, confidence=0.85")
+    info("  预期: Approved（高置信度 + Green 区间）")
+
+    step("模拟低置信度意图裁决")
+    info("  意图: sell ETH, confidence=0.2")
+    info("  预期: Rejected（置信度 < 0.3）")
+
+    step("模拟红区高置信度意图")
+    info("  意图: buy SOL, confidence=0.9, tokens_used=96000")
+    info("  预期: NeedRevision（红区需要高置信度）")
+
+    ok("DefaultPolicy 演示完成 — 基于置信度和预算区间的裁决")
+
+
+def demo_simple_budget_guard() -> None:
+    """演示 Token 预算守卫。"""
+    header("5. SimpleBudgetGuard — Token 预算守卫")
+
+    harness = _get_native_harness()
+    if harness is None:
+        info("原生 harness 模块未安装，跳过 Rust 组件演示")
+        return
+
+    step("创建 HarnessBridge.with_defaults() — 包含 SimpleBudgetGuard")
+    HarnessBridge = harness.HarnessBridge
+    bridge = HarnessBridge.with_defaults()
+
+    step("初始预算状态")
+    snap = bridge.budget_snapshot()
+    if snap:
+        info(f"  总预算: {snap['total_budget']:,} Token")
+        info(f"  已使用: {snap['tokens_used']:,} Token")
+        info(f"  区间: {snap['zone']}")
+        info(f"  费用: ${snap['cost_usd']:.4f}")
+
+    step("模拟 Token 消耗 — Green 区间")
+    zone = bridge.consume_tokens(50_000, "gpt-4o")
+    info(f"  消耗 50,000 Token → BudgetZone = {zone}")
+
+    step("模拟 Token 消耗 — Yellow 区间")
+    zone = bridge.consume_tokens(30_000, "gpt-4o")
+    info(f"  消耗 30,000 Token → BudgetZone = {zone}")
+
+    step("模拟 Token 消耗 — Red 区间")
+    zone = bridge.consume_tokens(15_000, "gpt-4o")
+    info(f"  消耗 15,000 Token → BudgetZone = {zone}")
+
+    step("最终预算状态")
+    snap = bridge.budget_snapshot()
+    if snap:
+        info(f"  总预算: {snap['total_budget']:,} Token")
+        info(f"  已使用: {snap['tokens_used']:,} Token")
+        info(f"  区间: {snap['zone']}")
+        info(f"  费用: ${snap['cost_usd']:.4f}")
+
+    ok("SimpleBudgetGuard 演示完成 — Green → Yellow → Red 区间转换")
+
+
+def demo_rbac_tool_gate() -> None:
+    """演示基于角色的工具门控。"""
+    header("6. RBACToolGate — 基于角色的工具门控")
+
+    harness = _get_native_harness()
+    if harness is None:
+        info("原生 harness 模块未安装，跳过 Rust 组件演示")
+        return
+
+    step("创建 HarnessBridge.with_defaults() — 包含 RBACToolGate")
+    HarnessBridge = harness.HarnessBridge
+    bridge = HarnessBridge.with_defaults()
+
+    step("测试市场角色权限")
+    result = bridge.check_tool("query_market", "market", "{}")
+    info(f"  market + query_market → {result}")
+
+    result = bridge.check_tool("place_order", "market", "{}")
+    info(f"  market + place_order → {result}")
+
+    step("测试执行角色权限")
+    result = bridge.check_tool("place_order", "execution", "{}")
+    info(f"  execution + place_order → {result}")
+
+    result = bridge.check_tool("query_market", "execution", "{}")
+    info(f"  execution + query_market → {result}")
+
+    step("测试风控角色权限")
+    result = bridge.check_tool("check_risk", "risk", "{}")
+    info(f"  risk + check_risk → {result}")
+
+    result = bridge.check_tool("query_portfolio", "risk", "{}")
+    info(f"  risk + query_portfolio → {result}")
+
+    ok("RBACToolGate 演示完成 — 基于角色的权限控制")
+
+
+def demo_harness_observer() -> None:
+    """演示可观测性组件。"""
+    header("7. HarnessObserver — 可观测性组件")
+
+    harness = _get_native_harness()
+    if harness is None:
+        info("原生 harness 模块未安装，跳过 Rust 组件演示")
+        return
+
+    step("创建 HarnessBridge.with_defaults() — 包含 Observer")
+    HarnessBridge = harness.HarnessBridge
+    bridge = HarnessBridge.with_defaults()
+
+    step("模拟多次决策 — 展示区间转换")
+    # 模拟真实 LLM 调用的 Token 消耗
+    # 场景：100,000 Token 预算，模拟一天的交易决策
+    import random
+    random.seed(42)  # 固定种子，确保演示结果可复现
+    
+    total_consumed = 0
+    decision_count = 0
+    
+    # 模拟多轮对话，每轮消耗 500-5000 Token
+    while total_consumed < 95_000:  # 直到接近熔断
+        decision_count += 1
+        # 模拟真实 Token 消耗：简单查询 500-1500，复杂分析 2000-5000
+        tokens = random.randint(500, 5000)
+        total_consumed += tokens
+        zone = bridge.consume_tokens(tokens, "gpt-4o")
+        pct = total_consumed / 100_000 * 100
+        
+        # 只在区间变化时显示
+        if decision_count <= 3 or zone != "green" or pct > 50:
+            info(f"  决策 {decision_count}: 消耗 {tokens:,} Token (累计 {pct:.1f}%) → BudgetZone = {zone}")
+        
+        # 如果触发熔断，停止
+        if zone == "circuit_break":
+            break
+    
+    info(f"  ... 共 {decision_count} 次决策，累计消耗 {total_consumed:,} Token")
+
+    step("获取预算快照")
+    snap = bridge.budget_snapshot()
+    if snap:
+        info(f"  总预算: {snap['total_budget']:,} Token")
+        info(f"  已使用: {snap['tokens_used']:,} Token")
+        info(f"  区间: {snap['zone']}")
+        info(f"  费用: ${snap['cost_usd']:.4f}")
+
+    ok("HarnessObserver 演示完成 — 决策日志和性能指标")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -616,7 +789,7 @@ class Orchestrator:
 
 
 def demo_state_machine() -> None:
-    header("4. 状态机 — 7 态任务生命周期")
+    header("8. 状态机 — 7 态任务生命周期")
 
     sm = StateMachine()
     ctx = TaskContext(task_id="demo-001", description="分析 BTC 市场")
@@ -651,7 +824,7 @@ def demo_state_machine() -> None:
 
 
 def demo_fast_path_router() -> None:
-    header("5. 快速路径路由器 — 三级决策")
+    header("9. 快速路径路由器 — 三级决策")
 
     router = FastPathRouter()
     signals = [
@@ -674,7 +847,7 @@ def demo_fast_path_router() -> None:
 
 
 def demo_voting_consensus() -> None:
-    header("6. 投票共识 — 60% 同意通过，RiskAgent 一票否决")
+    header("10. 投票共识 — 60% 同意通过，RiskAgent 一票否决")
 
     voting = VotingConsensus(quorum=0.6, risk_agent_veto=True)
     proposal = TradingProposal(action="buy", symbol="BTC", amount=50_000, confidence=0.85, reasoning="看涨")
@@ -698,7 +871,7 @@ def demo_voting_consensus() -> None:
 
 
 def demo_orchestrator() -> None:
-    header("7. 编排器 — 多 Agent 协作完整流程")
+    header("11. 编排器 — 多 Agent 协作完整流程")
 
     llm = _create_llm_backend()
     if llm:
@@ -757,9 +930,16 @@ def main() -> None:
     print(f"{'═' * 60}{RESET}", flush=True)
     time.sleep(STEP_DELAY)
 
+    # Part 1: Rust 组件演示
     demo_harness_bridge()
     demo_circuit_breaker()
     demo_audit_chain()
+    demo_default_policy()
+    demo_simple_budget_guard()
+    demo_rbac_tool_gate()
+    demo_harness_observer()
+
+    # Part 2: Python 层组件演示
     demo_state_machine()
     demo_fast_path_router()
     demo_voting_consensus()

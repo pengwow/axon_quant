@@ -22,7 +22,6 @@ members = [
     "crates/axon-oms",
     "crates/axon-monitor",
     "crates/axon-defi",
-    "crates/axon-safety",
     "crates/axon-harness",
     "crates/axon-integration-tests",
     "crates/axon-python",
@@ -66,9 +65,7 @@ axon-compliance = { path = "crates/axon-compliance" }
 axon-risk = { path = "crates/axon-risk" }
 # Stage 1:数据服务(数据源、缓存、Arrow IPC)
 axon-data = { path = "crates/axon-data" }
-# 生产级安全组件：熔断器、审计链、仓位守卫
-axon-safety = { path = "crates/axon-safety" }
-# Harness 编排系统 trait 接口
+# Harness 编排系统 trait 接口 + 安全组件
 axon-harness = { path = "crates/axon-harness" }
 
 # 错误处理
