@@ -140,8 +140,15 @@ impl PyBacktestEngine {
     /// - `taker_rate`: Taker 手续费率(0.001 = 0.1%)。`notional * taker_rate` 按每笔 fill 累计。
     ///
     /// 不传任何参数时使用 `FeeConfig::default()`(0.1%)。
-    fn with_fee_config(&mut self, taker_rate: f64) {
-        self.inner.with_fee_config(taker_rate);
+    ///
+    /// Returns:
+    /// - `&mut Self` 供链式调用(如 `engine.with_fee_config(0.001).with_force_liquidate(True)`)
+    fn with_fee_config<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        taker_rate: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_fee_config(taker_rate);
+        Ok(slf)
     }
 
     /// EOD 强制平仓开关(Stage 3 阶段 C 新增)
@@ -155,8 +162,15 @@ impl PyBacktestEngine {
     ///
     /// Args:
     /// - `on`:True 启用强制平仓,False 关闭
-    fn with_force_liquidate(&mut self, on: bool) {
-        self.inner.with_force_liquidate(on);
+    ///
+    /// Returns:
+    /// - `&mut Self` 供链式调用(如 `engine.with_force_liquidate(True).with_fee_config(0.001)`)
+    fn with_force_liquidate<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        on: bool,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_force_liquidate(on);
+        Ok(slf)
     }
 
     /// 启用虚拟流动性种子(回测"瞬时对手盘"语义)
