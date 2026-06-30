@@ -39,6 +39,7 @@
 pub mod engine;
 pub mod error;
 pub mod impact;
+pub mod matching;
 pub mod matching_l1;
 pub mod matching_l2;
 pub mod matching_l3;

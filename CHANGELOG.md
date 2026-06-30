@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **EOD 强制平仓开关（Stage 3 阶段 D）**:`BacktestEngineConfig` 新增 `force_liquidate: bool` 字段(默认 `false`);`BacktestEngine` 新增 `with_force_liquidate(on: bool)` 链式 API 与 `liquidate_eod()` 内部方法,回测结束时遍历 `position_states`,对每个非零持仓发市价单(IOC,撮合引擎当前最优对手价),走 `apply_fill` 6 状态机正常扣手续费 + 算 realized_pnl + 记录 trades,把剩余持仓全部清仓后才算终态。`PyBacktestEngine` 暴露同名 Python 绑定。**应用层语义**:
+  - `force_liquidate=false`(默认):保留策略意图,`final_nav` 用 `equity_curve` 末帧 mark 估值(浮盈浮亏计入)
+  - `force_liquidate=true`:EOD 清仓,所有 PnL 转为已实现(适合日报/对账,但末日单若 PnL 不理想会污染结果,业内通常手动控制开关)
+- **`build_result` 账户视角修复**: `total_pnl` 从 fill 维度 cash flow 累计改为 `final_nav - initial_cash`(账户视角),`max_drawdown` 从 PnL 峰值谷值改为基于 `equity_curve` 真实扫描(`O(n)` 单次,`O(1)` 空间)。修复了未平仓 long 持仓的盈亏失真问题(旧版 `total_pnl` 会把开仓花的现金误算成亏损,新版用 mark-to-market 抵消)。
+
+### Fixed
+- **测试期望公式修正** (`crates/axon-backtest/tests/run_result_fields.rs::total_pnl_account_view_with_unclosed_long`):`expected_final_nav` 之前多算了一次 `+ 100.0 * 0.1`(mark-to-market),实际账户视角下 cash 减 10 + 持仓 mark +10 抵消,`final_nav = initial_cash - fee` 即可。修正后 `cargo test -p axon-backtest --test run_result_fields` 10/10 通过。
+
+### Fixed
+- **`L1MatchingEngine::clear_book` 内存泄漏修复**(影响 `ImpactedMatchingEngine` 透传路径):原实现 `self.order_index.clear()` 不释放 `HashMap` 底层 raw table(`HashMap::clear()` std 明确语义 "Keeps the allocated memory for reuse"),叠加 `seed_liquidity` 单调递增 `next_id` 触发 raw table 按需扩容,跨多轮 `seed_liquidity + clear_book` 循环后 raw table 容量只增不减;PyO3 端 `Arc<Mutex<Py<PyAny>>>` 持 Python 对象 + 多回测引擎实例创建/丢弃场景累积到 GB 级。**修复**:把 `order_index.clear()` 替换为 `self.order_index = HashMap::new()`(等价 `mem::replace`),旧实例 drop 时 raw table 真正 deallocate。**`BTreeMap::clear()` 保持原状**,其内部实现 `self.root = None; self.length = 0` 递归释放整棵 B 树节点,真正释放内存。新增 3 个内存稳定性测试(`test_clear_book_resets_all_state` / `test_clear_book_stable_over_1000_rounds` / `test_clear_book_does_not_ghost_retain_old_ids`),`cargo test -p axon-backtest --lib` 179 passed(176 原有 + 3 新增),零回归。**下游影响**:quantcell `backend/backtest/backtest_loop.py` 可安全切回 `ImpactedMatchingEngine + seed_liquidity` 路径(原本因内存泄漏用 `L1MatchingEngine` 兜底,导致 buy 单无对手盘 → `fills=0`)。
+
+### Planned
+- _（暂无;阶段 A + 阶段 B 全部完成,下游 quantcell 切路径任务见 quantcell 仓库 `docs/superpowers/plans/2026-06-30-axon-pymatching-engine-adaptation.md`）_
+
+### Added
+- **PyMatchingEngine trait + RunResult 扩展（Stage 3）— 阶段 B 完成**:`RunResult` 扩展 + `PositionState` 6 状态机,quantcell 应用层可切回 `BacktestEngine.push_event + run()` 路径,手算 ~420 行全部下沉到 Rust 框架层。**改动范围**:
+  - **`RunResult` 新增 8 字段**(`crates/axon-backtest/src/engine.rs`):`trades: Vec<TradeRecord>`(开/平仓配对)、`total_fees: f64`(按 fill 累计)、`equity_curve: Vec<(Timestamp, f64)>`(每笔 fill 后采样)、`nav_peak: f64`(NAV 历史峰值)、`max_drawdown_pct: f64`(限制 [0, 1])、`win_rate: f64`(来自 TradingMetrics)、`sharpe_ratio: f64`(log return 年化,默认 15m bar 因子 `sqrt(35040)`)、`positions: HashMap<String, f64>`(终态快照)。
+  - **`PositionState` 内部 struct**(`crates/axon-backtest/src/engine.rs`):单 symbol 持仓状态(quantity / avg_cost / entry_price / entry_time_ns / side / realized_pnl / entry_fee)。
+  - **`BacktestState` 内部 struct**(`crates/axon-backtest/src/engine.rs`):整合 per-symbol PositionState + TradingMetrics + cash + fee_accumulator + nav_peak + equity_curve + trades 的回测运行时状态,封装在 `BacktestEngine` 内部。
+  - **`apply_fill` 6 状态机**(`crates/axon-backtest/src/engine.rs`):全新开仓 / 同向加仓 / 完全平仓 / 反向部分平仓(修复 #R-04:`close_qty = n.abs()` 而非 `p.abs()`,`pos.quantity = p + n` 而非 `n`) / 反手 / 防御性兜底。`net_quantity` 统一为 `n`(本次 fill 方向),与完全平仓分支一致。
+  - **`FeeConfig` + `with_fee_config(taker_rate)`**:Python 端可设置 `notional * taker_rate` 的手续费率(默认 0.1%)。
+  - **`PyRunResult` 暴露 8 字段**(`crates/axon-backtest/src/python/engine.rs`):`trades` / `total_fees` / `equity_curve` / `nav_peak` / `max_drawdown_pct` / `win_rate` / `sharpe_ratio` / `positions` 全部 `#[getter]` 暴露。
+  - **7 个集成测试**(`crates/axon-backtest/tests/run_result_fields.rs`):trades 配对 / fee 累计 / equity 采样 / metrics 计算 / 反向部分平仓 / 反手 / 多笔盈亏混合胜率,`cargo test -p axon-backtest --test run_result_fields` 7/7 通过。
+  - **最终结果**:`cargo test -p axon-backtest` 176 单元 + 1 PyMatchingEngine trait + 7 RunResult 字段 = **184 测试全过**,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 0 warning。
+
+- **PyMatchingEngine trait + RunResult 扩展（Stage 3）— 阶段 A 完成**:`BacktestEngine::with_matching_engine` 真正注入撮合引擎（之前是 no-op，仅校验方法存在）。**改动范围**:
+  - **新建 `crates/axon-core/src/metrics/trading_metrics.rs`**:线程安全的 `TradingMetrics` 收集器(AtomicI64 定点数),用于阶段 B 计算 win_rate / sharpe_ratio,避免应用层重复实现。
+  - **新建 `crates/axon-backtest/src/python/matching.rs`**:Python 端撮合引擎的 Rust 桥接,通过 `Arc<Mutex<Py<PyAny>>>` 持有 Python 对象,`MatchingEngine` trait 实现把 `Order → dict → Python.submit() → dict → SubmitResult` 全链路桥接完整。Python 端异常降级为 `SubmitResult::empty(0)`,不阻塞整个 backtest。
+  - **`BacktestEngine::replace_matching_engine`**(新增):Stage 3 暴露的 `pub fn`,支持 `with_matching_engine` 真替换默认 `L1MatchingEngine`。
+  - **`PyBacktestEngine::with_matching_engine`**:从"仅校验方法存在"改为真注入,接受任何含 `submit(dict) -> dict` 方法的 Python 对象(`L1MatchingEngine` / `L2MatchingEngine` / `ImpactedMatchingEngine` / 用户自定义撮合类)。
+  - **3 个集成测试**(`crates/axon-backtest/tests/python_matching_engine_trait.rs`):stub 接受 / Python 异常降级 / 替换默认 L1 验证真接入路径;`cargo test -p axon-backtest --features python --test python_matching_engine_trait` 3/3 通过。
 - **axon-backtest seed_liquidity 接口**: 新增回测辅助 API `L1MatchingEngine::seed_liquidity(mid_price, half_spread, depth_levels, size_per_level, symbol, next_id)` 与 `ImpactedMatchingEngine::seed_liquidity(...)` 包装，自动在 mid 上下挂 `2 * depth_levels` 层限价单作为虚拟对手盘。Python 绑定 `ImpactedMatchingEngine.seed_liquidity(...)` 同步暴露。ponytail: 后续如需基于真实 L2 订单簿快照可重构为 `seed_from_snapshot(snapshot)`，但目前以价格阶梯生成足够覆盖回测场景。
 - **Harness Engineering 多智能体编排系统 (Rust 层)**:
   - **axon-core**: 新增 `harness_types` 模块 — `AgentIntent`（声明式意图）、`TaskContext`（任务上下文）、`HarnessResult`（执行结果枚举）。

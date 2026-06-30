@@ -210,6 +210,14 @@ impl ImpactedMatchingEngine {
     /// 回测场景下，每根 bar 由应用层先 `clear_book()` 再 `seed_liquidity()`，
     /// 避免种子单跨 bar 累积撑爆 BTreeMap。**不**清空 `permanent_offset` 和
     /// `stats` —— 永久冲击跨 bar 持续累计。
+    ///
+    /// ponytail: 关键内存语义。
+    /// - 透传到 `L1MatchingEngine::clear_book`,该函数已修复 `order_index`
+    ///   替换为新 `HashMap` 实例以强制 deallocate,避免单调 `next_id`
+    ///   扩容后 `HashMap::clear()` 不缩容导致的 raw table 累积。
+    /// - 叠加 PyO3 端 `PyImpactModelAdapter` 持 `Arc<Py<PyAny>>` + 多次回测
+    ///   引擎实例创建/丢弃,GB 级内存泄漏的真正根因在底层,这里只是确保
+    ///   `L1MatchingEngine` 状态真正释放。
     pub fn clear_book(&mut self) {
         self.inner.clear_book();
     }

@@ -36,6 +36,7 @@ pub mod fee;
 pub mod impact;
 pub mod latency;
 pub mod market;
+pub mod metrics;
 pub mod order;
 pub mod portfolio;
 pub mod queue;
@@ -68,6 +69,9 @@ pub use types::{Price, Quantity, Symbol};
 
 // 时间类型 re-export
 pub use time::{MonotonicClock, TimePrecision, Timestamp};
+
+// 交易指标 re-export
+pub use metrics::TradingMetrics;
 
 // 订单类型 re-export
 pub use order::{

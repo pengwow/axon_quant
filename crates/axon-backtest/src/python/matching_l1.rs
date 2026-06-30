@@ -121,6 +121,54 @@ impl PyL1MatchingEngine {
         self.inner.fill_count()
     }
 
+    /// 清空订单簿两侧(应用层手动管理虚拟对手盘时用,回测辅助)
+    ///
+    /// 用法:
+    /// - 启用 `BacktestEngine.with_seed_liquidity(...)` 后,**不**需要手动调本方法,
+    ///   `BacktestEngine.begin_bar(price, symbol)` 会自动执行 `clear_book + seed_liquidity`。
+    /// - 单独使用 L1 撮合引擎做研究 / 单元测试时,可用本方法手动清空。
+    fn clear_book(&mut self) {
+        self.inner.clear_book()
+    }
+
+    /// 在订单簿两侧播种虚拟流动性(回测辅助,详见 `L1MatchingEngine::seed_liquidity`)
+    ///
+    /// Args:
+    /// - `mid_price`: 中间价(通常为当前 bar close)
+    /// - `half_spread`: 每层价差(绝对价格单位)
+    /// - `depth_levels`: 每侧挂单层数(典型 5~20)
+    /// - `size_per_level`: 每层挂单数量
+    /// - `symbol`: 交易品种
+    /// - `next_id`: 下一个可用订单 id(避免与外部订单 id 冲突)
+    ///
+    /// Returns: 更新后的 `next_id` 计数器(供下次 seed 复用)
+    #[pyo3(signature = (
+        mid_price,
+        half_spread,
+        depth_levels,
+        size_per_level,
+        symbol,
+        next_id,
+    ))]
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        symbol: &str,
+        next_id: u64,
+    ) -> u64 {
+        self.inner.seed_liquidity(
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            Symbol::from(symbol),
+            next_id,
+        )
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "L1MatchingEngine(active_orders={}, best_bid={:?}, best_ask={:?})",

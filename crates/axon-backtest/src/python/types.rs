@@ -168,6 +168,7 @@ pub fn register(_parent: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3::exceptions::PyKeyError;
 
     /// `dict_to_order` 全部字段合法时返回正确 `Order`
     #[test]

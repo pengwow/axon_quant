@@ -18,16 +18,20 @@
 //!   价格调整由 `ImpactedMatchingEngine` 在更高层包装完成
 //! - 单一回测任务单线程执行（事件驱动串行），不引入额外锁
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use axon_core::event::{Event, FillEvent, OrderAction, OrderEvent};
 use axon_core::impact::ImpactModel;
 use axon_core::market::Side;
 use axon_core::market::Trade;
-use axon_core::order::Order;
+use axon_core::metrics::TradingMetrics;
+use axon_core::order::{Order, OrderType, TimeInForce};
+use axon_core::portfolio::TradeRecord;
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
+use axon_core::types::{Quantity, Symbol};
 use tracing::trace;
 
 use crate::matching::MatchingEngine;
@@ -39,6 +43,9 @@ use crate::matching::MatchingEngine;
 /// - `impact_model`：可选的市场冲击模型（仅用于统计；实际价格调整由
 ///   `ImpactedMatchingEngine` 在上层包装）
 /// - `initial_cash`：初始现金（用于计算 `final_nav`）
+/// - `force_liquidate`：回测结束 EOD 是否强制市价平仓
+///   - `false` (默认)：按 `equity_curve` 末帧 mark-to-market 估值(保留策略意图)
+///   - `true`:遍历 `position_states`,对每个非零持仓发市价单走撮合,清仓后才算终态
 pub struct BacktestEngineConfig {
     /// 模拟时钟
     pub clock: SimulatedClock,
@@ -48,6 +55,28 @@ pub struct BacktestEngineConfig {
     pub impact_model: Option<Box<dyn ImpactModel>>,
     /// 初始资金
     pub initial_cash: f64,
+    /// 手续费配置(Stage 3 阶段 B 引入,默认 taker 0.1% / maker 0.1%)
+    pub fee_config: FeeConfig,
+    /// EOD 强制平仓开关(默认 false,见 BacktestEngineConfig doc)
+    pub force_liquidate: bool,
+}
+
+/// 手续费配置(Stage 3 阶段 B 新增)
+///
+/// 每笔 fill 按 `notional = price * qty` 收取 taker_rate 比例手续费;
+/// 不区分 maker/taker(回测阶段简化为统一费率,与 `axon_core::fee::FeeModel`
+/// 体系解耦,避免 Stage 2 的 `FeePosition` 复杂语义拖累主循环)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FeeConfig {
+    /// Taker 费率(0.001 = 0.1%)
+    pub taker_rate: f64,
+}
+
+impl Default for FeeConfig {
+    fn default() -> Self {
+        // 行业默认:Binance/OKX VIP0 大约 0.1% taker
+        Self { taker_rate: 0.001 }
+    }
 }
 
 impl std::fmt::Debug for BacktestEngineConfig {
@@ -60,9 +89,14 @@ impl std::fmt::Debug for BacktestEngineConfig {
                 &self.impact_model.as_ref().map(|m| m.name()),
             )
             .field("initial_cash", &self.initial_cash)
+            .field("fee_config", &self.fee_config)
+            .field("force_liquidate", &self.force_liquidate)
             .finish()
     }
 }
+
+/// EOD 强制平仓所发市价单的 id 起点(避免与策略订单 id / seed 流动性 id 冲突)
+const EOD_LIQUIDATE_ID_BASE: u64 = 2_000_000_000;
 
 /// 回测运行结果
 #[derive(Debug, Clone, PartialEq)]
@@ -79,11 +113,21 @@ pub struct RunResult {
     pub orders_cancelled: u64,
     /// 修改的订单数
     pub orders_modified: u64,
-    /// 已实现的 PnL：buy 端为负、sell 端为正
+    /// 已实现 + 未实现 PnL(账户视角):`final_nav - initial_cash`
     ///
-    /// 公式：`Σ (side=Buy: -price*qty) + (side=Sell: +price*qty)`
+    /// 等于"账户从初始资金到终值的变化量",已包含:
+    /// - 已平仓 trade 的 realized_pnl(见 `trades`)
+    /// - 未平仓持仓的 mark-to-market(`equity_curve` 末帧 mark)
+    /// - 累计手续费(`total_fees`)
+    ///
+    /// 与 `final_nav` 自洽:`final_nav == initial_cash + total_pnl`。
+    /// 旧版本按 fill 维度 cash flow 累计(buy=-notional, sell=+notional),
+    /// 对未平仓 long 持仓会失真;现版本统一为账户视角。
     pub total_pnl: f64,
-    /// 最大回撤（基于 PnL 曲线的运行最大值与运行最小值之差）
+    /// 最大回撤(USD,绝对值),基于 `equity_curve` 扫描得到
+    ///
+    /// 算法:沿 equity_curve 单次扫描,维护 `nav_peak`,回撤 = `nav_peak - nav`。
+    /// ponytail:简单 O(n) 单次扫描,O(1) 空间,无锁。
     pub max_drawdown: f64,
     /// 最终净资产（初始资金 + 累计 PnL）
     pub final_nav: f64,
@@ -91,6 +135,24 @@ pub struct RunResult {
     pub duration: Duration,
     /// 引擎最终时间（最后一个事件的时间戳）
     pub final_time: Timestamp,
+
+    // ── Stage 3 阶段 B 新增字段 ─────────────────────────────
+    /// 完整交易记录(开/平仓配对的 TradeRecord,单位 ×1e6 定点)
+    pub trades: Vec<TradeRecord>,
+    /// 累计手续费(f64,按 fill 累计扣除)
+    pub total_fees: f64,
+    /// NAV 曲线(`(timestamp_ns, nav)`),每笔 fill 后采样
+    pub equity_curve: Vec<(Timestamp, f64)>,
+    /// NAV 历史峰值(用于计算 max_drawdown_pct)
+    pub nav_peak: f64,
+    /// 最大回撤百分比(`max_drawdown / nav_peak`,0~1)
+    pub max_drawdown_pct: f64,
+    /// 胜率(盈利平仓笔数 / 总平仓笔数,来自 TradingMetrics)
+    pub win_rate: f64,
+    /// 夏普比率(基于 log return 年化,默认 15m bar 年化因子 sqrt(35040))
+    pub sharpe_ratio: f64,
+    /// 终态持仓快照(`symbol -> qty`),简化只暴露数量
+    pub positions: HashMap<String, f64>,
 }
 
 impl Default for RunResult {
@@ -107,6 +169,15 @@ impl Default for RunResult {
             final_nav: 0.0,
             duration: Duration::ZERO,
             final_time: Timestamp::from_nanos(0),
+            // Stage 3 阶段 B 默认值
+            trades: Vec::new(),
+            total_fees: 0.0,
+            equity_curve: Vec::new(),
+            nav_peak: 0.0,
+            max_drawdown_pct: 0.0,
+            win_rate: 0.0,
+            sharpe_ratio: 0.0,
+            positions: HashMap::new(),
         }
     }
 }
@@ -132,16 +203,110 @@ pub struct RunStats {
     pub pnl_peak: f64,
 }
 
+// ── Stage 3 阶段 B 新增:PositionState + BacktestState ─────────────────────
+
+/// 单 symbol 持仓状态(Stage 3 阶段 B 新增)
+///
+/// 在 `apply_fill` 的 6 状态机中维护,作为 `trades: Vec<TradeRecord>` 的来源:
+/// - 平仓/反手时调用方把 `(pnl, fee)` 累计到 `realized_pnl` + TradingMetrics
+/// - `entry_price` / `entry_fee` 用于反手时重建新仓位的"开仓参考"
+///
+/// 简化点(ponytail):`quantity` 同时表示方向(正=Long,负=Short)与数量;
+/// `side` 字段冗余,仅用于 Python 端报告展示。后续如果需要按 symbol 跟踪
+/// 多空分别的 PnL,可拆分。
+#[derive(Debug, Clone, Default)]
+struct PositionState {
+    /// 当前持仓量(正=Long,负=Short,0=空仓)
+    quantity: f64,
+    /// 加权平均成本(每次同向加仓时按 (|p|*cost + |n|*price)/|new| 更新)
+    avg_cost: f64,
+    /// 最近一次开仓价(用于反手时显示)
+    entry_price: f64,
+    /// 最近一次开仓时间(纳秒)
+    entry_time_ns: i64,
+    /// 当前持仓方向
+    side: Option<Side>,
+    /// 已实现盈亏累计(平仓/反手时 += pnl,f64)
+    realized_pnl: f64,
+    /// 累计开仓手续费
+    entry_fee: f64,
+}
+
+/// 回测运行时状态(Stage 3 阶段 B 新增,封装在 `BacktestEngine` 内部)
+///
+/// 整合 6 状态机需要的全部上下文:
+/// - `position_states`:per-symbol PositionState
+/// - `trading_metrics`:胜率/夏普/累计 pnl/fees 收集器(线程安全,无锁)
+/// - `cash`:当前现金余额
+/// - `fee_accumulator`:累计手续费(冗余于 metrics.total_fees,便于快速读取)
+/// - `nav_peak` / `max_drawdown_pct`:NAV 历史峰值与最大回撤百分比
+/// - `equity_curve`:每笔 fill 后采样 `(Timestamp, nav)`
+/// - `trades`:开/平仓配对的 `TradeRecord`(完全平仓/反手时 push)
+#[derive(Debug, Default)]
+struct BacktestState {
+    /// per-symbol 持仓状态
+    position_states: HashMap<String, PositionState>,
+    /// 交易指标收集器(胜率/夏普)
+    trading_metrics: TradingMetrics,
+    /// 当前现金(buy 减 / sell 增 / ±fee)
+    cash: f64,
+    /// 累计手续费(f64 冗余字段,主源是 TradingMetrics.total_fees)
+    fee_accumulator: f64,
+    /// NAV 历史峰值(用于 max_drawdown_pct)
+    nav_peak: f64,
+    /// NAV 曲线采样
+    equity_curve: Vec<(Timestamp, f64)>,
+    /// 平仓记录(完全平仓/反手时 push)
+    trades: Vec<TradeRecord>,
+}
+
+/// 虚拟流动性种子配置(回测辅助)
+///
+/// 通过 `BacktestEngine::with_seed_liquidity(...)` 启用后,引擎在每根 bar
+/// 同步执行 `clear_book + seed_liquidity`:
+/// - 在 `mid_price` 上下分别挂 `depth_levels` 层限价单
+/// - 每层 `size_per_level` 数量
+/// - 在 `half_spread` 价差阶梯上递增/递减
+///
+/// 由 `BacktestEngine::begin_bar(price, symbol)` 触发(每根 bar 调一次),
+/// quantcell 应用层在每根 bar push 订单事件**之前**调用 `begin_bar`,
+/// 即可让策略单"瞬时有对手盘"成交。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeedLiquidityConfig {
+    /// 每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
+    pub half_spread: f64,
+    /// 每侧挂单层数(典型 5~20)
+    pub depth_levels: usize,
+    /// 每层挂单数量
+    pub size_per_level: f64,
+}
+
+impl Default for SeedLiquidityConfig {
+    fn default() -> Self {
+        Self {
+            half_spread: 0.0,
+            depth_levels: 0,
+            size_per_level: 0.0,
+        }
+    }
+}
+
 /// 回测引擎：消费 `EventQueue` 调度撮合 + 汇总结果
 pub struct BacktestEngine {
     /// 引擎配置（含 clock / matching_engine / impact_model）
     config: BacktestEngineConfig,
     /// 待消费事件队列
     event_queue: EventQueue,
-    /// 运行统计
+    /// 运行统计(原有 stats,fill 计数/PnL 峰值等)
     stats: RunStats,
     /// 引擎是否已运行完成（防止重复调用 run）
     finished: bool,
+    /// 阶段 B 持仓 / 资金 / 指标状态(6 状态机上下文)
+    bt_state: BacktestState,
+    /// 虚拟流动性种子配置(`None` = 不启用,等价纯订单簿撮合)
+    seed_liquidity_config: Option<SeedLiquidityConfig>,
+    /// 虚拟流动性种子 id 计数器(从大数 1_000_000_000 开始,避免与策略订单 id 冲突)
+    seed_liquidity_next_id: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -151,6 +316,7 @@ impl std::fmt::Debug for BacktestEngine {
             .field("event_queue_len", &self.event_queue.len())
             .field("stats", &self.stats)
             .field("finished", &self.finished)
+            .field("bt_state", &self.bt_state)
             .finish()
     }
 }
@@ -158,15 +324,122 @@ impl std::fmt::Debug for BacktestEngine {
 impl BacktestEngine {
     /// 创建回测引擎
     ///
-    /// - `config`：回测配置（clock / 撮合器 / 冲击模型 / 初始资金）
+    /// - `config`：回测配置（clock / 撮合器 / 冲击模型 / 初始资金 / 手续费）
     /// - `event_queue`：已填充事件的事件队列（所有权转移）
     pub fn new(config: BacktestEngineConfig, event_queue: EventQueue) -> Self {
+        let initial_cash = config.initial_cash;
+        // 初始 NAV = initial_cash,记入 peak
+        let bt_state = BacktestState {
+            cash: initial_cash,
+            nav_peak: initial_cash,
+            ..Default::default()
+        };
         Self {
             config,
             event_queue,
             stats: RunStats::default(),
             finished: false,
+            bt_state,
+            // 虚拟流动性种子:默认未启用,需调 `with_seed_liquidity` 启用
+            seed_liquidity_config: None,
+            // id 计数器从 1_000_000_000 开始(策略订单 id 通常从 1 起递增,避免冲突)
+            seed_liquidity_next_id: std::sync::atomic::AtomicU64::new(1_000_000_000),
         }
+    }
+
+    /// 替换撮合引擎(Stage 3 新增,支持 Python 端自定义 Engine 真注入)
+    pub fn replace_matching_engine(&mut self, engine: Box<dyn MatchingEngine>) {
+        self.config.matching_engine = engine;
+    }
+
+    /// 注入手续费配置(Stage 3 阶段 B 任务 B4)
+    ///
+    /// 调用后,所有 fill 都按 `notional * taker_rate` 累计手续费;
+    /// 不传任何参数时使用 `FeeConfig::default()`(0.1% taker)。
+    pub fn with_fee_config(&mut self, taker_rate: f64) {
+        self.config.fee_config = FeeConfig { taker_rate };
+    }
+
+    /// EOD 强制平仓开关(回测结束把未平仓持仓按市价平掉)
+    ///
+    /// - `false` (默认):保留策略意图,`final_nav` 用 `equity_curve` 末帧 mark 估值
+    /// - `true`:遍历 `position_states`,对每个非零持仓发市价单,清仓后 `final_nav = cash`
+    ///   (所有 PnL 转为已实现,胜率/夏普统计更准;但末根 bar 的"末日单"会污染 PnL)
+    ///
+    /// 可重复调用,生效于下一次 `run()`。
+    pub fn with_force_liquidate(&mut self, on: bool) {
+        self.config.force_liquidate = on;
+    }
+
+    /// 启用虚拟流动性种子(回测"瞬时对手盘"语义)
+    ///
+    /// 启用后,应用层每根 bar 调用 `begin_bar(price, symbol)` 即可触发
+    /// 撮合引擎的 `clear_book + seed_liquidity` —— 让策略单"瞬时有对手盘"成交,
+    /// 撮合完不保留上 bar 的种子流动性(避免跨 bar 累积撑爆订单簿)。
+    ///
+    /// # 参数
+    ///
+    /// - `half_spread`:每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
+    /// - `depth_levels`:每侧挂单层数(典型 5~20)
+    /// - `size_per_level`:每层挂单数量
+    ///
+    /// # 调用次数
+    ///
+    /// 可重复调用(更新配置);但**不**自动调用 `clear_book` —— 已有种子会保留,
+    /// 下次 `begin_bar` 触发时一起清。配置变更语义"下次生效"。
+    pub fn with_seed_liquidity(
+        &mut self,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) {
+        self.seed_liquidity_config = Some(SeedLiquidityConfig {
+            half_spread,
+            depth_levels,
+            size_per_level,
+        });
+    }
+
+    /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
+    ///
+    /// 行为:
+    /// - 若 `seed_liquidity_config` 未设置(未调 `with_seed_liquidity`):no-op
+    /// - 若已设置:`matcher.clear_book()` 清空旧种子,再 `seed_liquidity(mid_price, ...)`
+    ///   按配置在 `mid_price` 上下挂 `depth_levels` 层限价单
+    ///
+    /// 必须在 `push_event("order_submitted", ...)` **之前**调用 —— 让对手盘先就位。
+    /// 同步执行不入事件队列,纯配置侧操作。
+    ///
+    /// # 内存语义
+    ///
+    /// `clear_book` 会清空撮合引擎所有挂单 + 索引(L1 实现中
+    /// `order_index` 替换为新 `HashMap` 实例强制 deallocate,见
+    /// `L1MatchingEngine::clear_book` 注释)。多次 `begin_bar` 循环
+    /// 后内存稳定,不累积。
+    pub fn begin_bar(&mut self, mid_price: f64, symbol: Symbol) {
+        let Some(cfg) = self.seed_liquidity_config else {
+            return;
+        };
+        // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
+        if mid_price <= 0.0 || cfg.half_spread <= 0.0 || cfg.depth_levels == 0 || cfg.size_per_level <= 0.0 {
+            return;
+        }
+        // 1) 清空上一 bar 的种子挂单
+        self.config.matching_engine.clear_book();
+        // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
+        let next_id = self
+            .seed_liquidity_next_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let new_next_id = self.config.matching_engine.seed_liquidity(
+            mid_price,
+            cfg.half_spread,
+            cfg.depth_levels,
+            cfg.size_per_level,
+            symbol,
+            next_id,
+        );
+        self.seed_liquidity_next_id
+            .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 当前已注册的源数量（队列中剩余事件数）
@@ -201,6 +474,9 @@ impl BacktestEngine {
     /// - 退出条件：`EventQueue::next()` 返回 `None`（队列耗尽或暂停）
     /// - 时钟推进：每步设置 `clock` 为当前事件时间戳
     /// - 耗时：使用 `Instant::now()` 测量墙钟耗时（`duration` 字段）
+    /// - EOD 强制平仓：若 `config.force_liquidate = true`,主循环结束后遍历
+    ///   `position_states` 把非零持仓按市价清掉(通过 `MatchingEngine::submit`),
+    ///   清仓后 `final_nav = cash`,所有 PnL 转为已实现
     pub fn run(&mut self) -> RunResult {
         let started = Instant::now();
         let initial_cash = self.config.initial_cash;
@@ -220,8 +496,68 @@ impl BacktestEngine {
             self.dispatch(event);
         }
 
+        // EOD 强制平仓(可选)
+        if self.config.force_liquidate {
+            self.liquidate_eod();
+        }
+
         self.finished = true;
         self.build_result(initial_cash, started.elapsed())
+    }
+
+    /// EOD 强制平仓:遍历 `position_states`,对每个非零持仓发市价单清仓
+    ///
+    /// # 实现要点
+    ///
+    /// - 用市价单(IOC,撮合引擎不维护挂单)走 `MatchingEngine::submit`,
+    ///   不入事件队列 —— 平仓是"瞬时收尾",无时序语义
+    /// - 市价单无价格,用撮合引擎当前最优对手价成交(`best_bid` / `best_ask`);
+    ///   若对手盘空,订单被拒,保留剩余持仓(留待下个回测 / 报告里说明)
+    /// - 平仓产生的 fill 仍走 `apply_fill` 6 状态机,正常累加 `total_fees` /
+    ///   `realized_pnl` / `trades`
+    /// - 平仓完后再调 `apply_fill` 内部的 mark-to-market 采样一遍 NAV,
+    ///   保证 `equity_curve` 末帧反映"已清仓"的状态
+    fn liquidate_eod(&mut self) {
+        // 复制一份 symbol+qty 列表(后续会 borrow/mut borrow bt_state,不能持 &)
+        // ponytail:回测场景 position 数量 << 100,O(n) 复制可忽略
+        let to_liquidate: Vec<(String, f64)> = self
+            .bt_state
+            .position_states
+            .iter()
+            .filter(|(_, p)| p.quantity.abs() > 1e-9)
+            .map(|(sym, p)| (sym.clone(), p.quantity))
+            .collect();
+        if to_liquidate.is_empty() {
+            return;
+        }
+
+        // 用 enumerate 替代外部可变计数器,clippy explicit_counter_loop 合规
+        for (idx, (symbol, qty)) in to_liquidate.into_iter().enumerate() {
+            // qty > 0 → 持 long,平仓卖;qty < 0 → 持 short,平仓买
+            let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
+            let close_qty = qty.abs();
+            let order = Order::new(
+                EOD_LIQUIDATE_ID_BASE + idx as u64,
+                Symbol::from(symbol.as_str()),
+                side,
+                OrderType::Market,
+                Quantity::from_f64(close_qty),
+                TimeInForce::IOC,
+            );
+            // 走 submit(同步),fill 走 apply_fill 6 状态机正常处理
+            let result = self.config.matching_engine.submit(order);
+            for fill in &result.fills {
+                self.stats.orders_accepted += 1;
+                self.stats.fills += 1;
+                // 关键:走 6 状态机,正常扣手续费 + 算 realized_pnl + 记录 trades
+                // PnL 增量累计到 stats(虽然 build_result 不再用,但保留 step 模式可见)
+                self.stats.total_pnl += fill_pnl_delta(fill);
+                if self.stats.total_pnl > self.stats.pnl_peak {
+                    self.stats.pnl_peak = self.stats.total_pnl;
+                }
+                self.apply_fill(symbol.as_str(), side, fill);
+            }
+        }
     }
 
     /// 分发单个事件
@@ -271,6 +607,9 @@ impl BacktestEngine {
     /// - 若活跃订单数未变且 fills 为空 ⇒ 订单被拒绝（accepted/rejected counter +1）
     /// - 若 fills 非空 ⇒ 订单被接受（accepted +1，且按 fill 数累加 fills/PnL）
     fn handle_submit(&mut self, order: Order) {
+        // 阶段 B:从 order 提取 symbol/side,供 apply_fill 6 状态机使用
+        let symbol = order.symbol.clone();
+        let side = order.side;
         let active_before = self.config.matching_engine.active_order_count();
         let result = self.config.matching_engine.submit(order);
         let active_after = self.config.matching_engine.active_order_count();
@@ -290,6 +629,8 @@ impl BacktestEngine {
                     if self.stats.total_pnl > self.stats.pnl_peak {
                         self.stats.pnl_peak = self.stats.total_pnl;
                     }
+                    // 阶段 B:6 状态机处理
+                    self.apply_fill(symbol.as_str(), side, fill);
                 }
             }
             // 无 fill 但挂入订单簿 ⇒ accepted（pending）
@@ -303,7 +644,189 @@ impl BacktestEngine {
         }
     }
 
+    /// 6 状态机:处理单笔 fill,更新 BacktestState
+    ///
+    /// 输入:order 的 symbol/side + MatchFill。
+    /// 行为:扣除/增加现金,扣除手续费,按 6 状态机维护 PositionState,
+    /// 平仓/反手时 push TradeRecord + 记录到 TradingMetrics。
+    ///
+    /// 6 状态分类(按 prev=p,new=n 的符号与幅值):
+    /// 1. **全新开仓** (p=0, n≠0):开新仓,记 entry_price / entry_fee
+    /// 2. **同向加仓** (sign(p)=sign(n), p≠0):加权平均成本
+    /// 3. **完全平仓** (sign(p)≠sign(n), |p|=|n|):close_qty=|p|,push TradeRecord
+    /// 4. **反向部分平仓** (sign(p)≠sign(n), |n|<|p|):等同"完全平仓 + 反向开仓 n"
+    /// 5. **反手** (sign(p)≠sign(n), |n|>|p|):等同"完全平仓 + 开反向 (n+p)"
+    ///
+    /// 不存在的"同向减仓"分支:fill 方向不变只会加仓,无法减仓(在主循环语义下);
+    /// 如果将来加 reconcile 路径,该分支会出现在另外的状态机里。
+    fn apply_fill(&mut self, symbol: &str, side: Side, fill: &crate::matching::MatchFill) {
+        let fill_price = fill.price.as_f64();
+        let fill_qty = fill.quantity.as_f64();
+        let timestamp = fill.timestamp;
+
+        // ── 1. 现金 + 手续费 ────────────────────────────
+        let notional = fill_price * fill_qty;
+        let fee = notional * self.config.fee_config.taker_rate;
+        self.bt_state.fee_accumulator += fee;
+        match side {
+            Side::Buy => self.bt_state.cash -= notional + fee,
+            Side::Sell => self.bt_state.cash += notional - fee,
+        }
+
+        // ── 2. 6 状态机 ──────────────────────────────
+        let signed_qty = if side == Side::Buy { fill_qty } else { -fill_qty };
+        let pos = self
+            .bt_state
+            .position_states
+            .entry(symbol.to_string())
+            .or_default();
+        let p = pos.quantity;
+        let n = signed_qty;
+
+        match (p, n) {
+            // (1) 全新开仓
+            (0.0, _) if n != 0.0 => {
+                pos.quantity = n;
+                pos.avg_cost = fill_price;
+                pos.entry_price = fill_price;
+                pos.entry_fee = fee;
+                pos.entry_time_ns = timestamp.nanos;
+                pos.side = Some(side);
+            }
+            // (2) 同向加仓 (sign same, p≠0)
+            (p, n) if p.signum() == n.signum() && p != 0.0 => {
+                let new_qty = p + n;
+                // 加权平均成本(ponytail:简化用 f64,累计误差可忽略)
+                pos.avg_cost =
+                    (p.abs() * pos.avg_cost + n.abs() * fill_price) / new_qty.abs();
+                pos.quantity = new_qty;
+                pos.entry_fee += fee;
+            }
+            // (3) 完全平仓 (sign diff, |p|=|n|,容忍 1e-9 浮点误差)
+            (p, n) if p.signum() != n.signum() && (p + n).abs() < 1e-9 => {
+                let close_qty = p.abs();
+                let pnl = (fill_price - pos.avg_cost) * close_qty * p.signum();
+                pos.realized_pnl += pnl;
+                self.bt_state
+                    .trading_metrics
+                    .record_trade((pnl * 1e6) as i64, (fee * 1e6) as i64);
+                let trade = Trade::new(
+                    timestamp,
+                    fill.price,
+                    fill.quantity,
+                    fill.taker_order_id,
+                    fill.maker_order_id,
+                );
+                self.bt_state.trades.push(TradeRecord::new(
+                    trade,
+                    (pnl * 1e6) as i64,
+                    (fee * 1e6) as i64,
+                    (n * 1e6) as i64,
+                ));
+                // 清仓
+                pos.quantity = 0.0;
+                pos.avg_cost = 0.0;
+                pos.entry_price = 0.0;
+                pos.entry_fee = 0.0;
+                pos.side = None;
+            }
+            // (4) 反向部分平仓 (sign diff, |n| < |p|):用 |n| 平掉一部分旧仓,留 p+n
+            //
+            // ponytail:修复 #R-04 — 之前 `close_qty = p.abs()` 错误地把旧仓全平,
+            // 跟"完全平仓"分支语义重叠;正确语义是"反向 fill 一部分只平一部分"。
+            // 终态 `pos.quantity = p + n`,方向同 n,幅值 = |p| - |n|。
+            (p, n) if p.signum() != n.signum() && n.abs() < p.abs() => {
+                let close_qty = n.abs();
+                let pnl = (fill_price - pos.avg_cost) * close_qty * p.signum();
+                pos.realized_pnl += pnl;
+                self.bt_state
+                    .trading_metrics
+                    .record_trade((pnl * 1e6) as i64, (fee * 1e6) as i64);
+                // 平仓的 TradeRecord(净量 = n,即本次 fill 方向)
+                let close_trade = Trade::new(
+                    timestamp,
+                    fill.price,
+                    Quantity::from_f64(close_qty),
+                    fill.maker_order_id,
+                    fill.taker_order_id,
+                );
+                self.bt_state.trades.push(TradeRecord::new(
+                    close_trade,
+                    (pnl * 1e6) as i64,
+                    (fee * 1e6) as i64,
+                    (n * 1e6) as i64,
+                ));
+                // 留 p+n(同 n 方向,幅值 = |p|-|n|)
+                pos.quantity = p + n;
+                // 平均成本不变(没加新仓,只是减仓)
+            }
+            // (5) 反手 (sign diff, |n| > |p|):平 p + 开反向 (n+p)
+            (p, n) if p.signum() != n.signum() && n.abs() > p.abs() => {
+                let close_qty = p.abs();
+                let pnl = (fill_price - pos.avg_cost) * close_qty * p.signum();
+                pos.realized_pnl += pnl;
+                self.bt_state
+                    .trading_metrics
+                    .record_trade((pnl * 1e6) as i64, (fee * 1e6) as i64);
+                let close_trade = Trade::new(
+                    timestamp,
+                    fill.price,
+                    Quantity::from_f64(close_qty),
+                    fill.maker_order_id,
+                    fill.taker_order_id,
+                );
+                self.bt_state.trades.push(TradeRecord::new(
+                    close_trade,
+                    (pnl * 1e6) as i64,
+                    (fee * 1e6) as i64,
+                    (-p * 1e6) as i64,
+                ));
+                // 开反向 n + p
+                pos.quantity = n + p;
+                pos.avg_cost = fill_price;
+                pos.entry_price = fill_price;
+                pos.entry_fee = fee;
+                pos.entry_time_ns = timestamp.nanos;
+                pos.side = Some(side);
+            }
+            // 不应到达 — 防御性兜底
+            _ => {}
+        }
+
+        // ── 3. NAV 采样 + log return ─────────────────
+        // ponytail:用本次 fill_price 作为 mark 简化(实际场景可用 bar close 等更准的 mark)
+        let mark = fill_price;
+        let position_value: f64 = self
+            .bt_state
+            .position_states
+            .values()
+            .map(|p| p.quantity * mark)
+            .sum();
+        let nav = self.bt_state.cash + position_value;
+        if nav > self.bt_state.nav_peak {
+            self.bt_state.nav_peak = nav;
+        }
+        self.bt_state.equity_curve.push((timestamp, nav));
+
+        // log return:本次 nav / 上次 nav(仅在 prev>0 时记录)
+        if self.bt_state.equity_curve.len() >= 2 {
+            let prev_nav = self.bt_state.equity_curve
+                [self.bt_state.equity_curve.len() - 2]
+                .1;
+            if prev_nav > 0.0 {
+                let lr = (nav / prev_nav).ln();
+                self.bt_state
+                    .trading_metrics
+                    .record_log_return((lr * 1e9) as i64);
+            }
+        }
+    }
+
     /// 处理成交事件（来自外部 FillEvent 推送）
+    ///
+    /// FillEvent.trade 不含 taker_side 字段(只有 buyer/seller 订单 ID),
+    /// 无法直接接入 6 状态机,故此处保守地只累计 fills 计数 + 现金恒等式
+    /// (FillEvent 通常由外部 backtest harness 推送用于 hybrid 场景)。
     fn handle_fill(&mut self, fill: FillEvent) {
         self.stats.fills += 1;
         // FillEvent.trade 含 buyer/seller 订单 ID；用 axon-core Trade 转为 PnL
@@ -315,14 +838,67 @@ impl BacktestEngine {
     }
 
     /// 构造最终 RunResult
+    ///
+    /// # 关键语义(total_pnl / max_drawdown 是"账户视角"而非"现金流视角")
+    ///
+    /// - `total_pnl = final_nav - initial_cash`:已实现 PnL + 未实现 PnL - 手续费
+    ///   (i.e. 等于"账户从初始资金到终值的变化量")。这与 `final_nav` 自洽,
+    ///   也与 `trades[].realized_pnl` + 未平仓持仓的 mark-to-market 等价。
+    /// - 旧实现把 `total_pnl` 当成"fill 维度 cash flow 累计"(buy=-notional, sell=+notional),
+    ///   对未平仓 long 持仓会失真(把开仓花的现金误算成亏损);旧 `max_drawdown` 也是
+    ///   基于该 cash flow,`pnl_peak - total_pnl` 同样失真。
+    /// - `max_drawdown`:基于 `equity_curve` 真实扫描计算,反映实际账户价值回撤。
     fn build_result(&self, initial_cash: f64, duration: Duration) -> RunResult {
-        // 最大回撤 = 峰值 - 谷值；本引擎未独立跟踪 running min，
-        // 这里用 `max(0, peak - final_pnl)` 作为下界安全的近似值。
-        // 完整 PnL 曲线跟踪属于未来增强项。
-        let max_drawdown = (self.stats.pnl_peak - self.stats.total_pnl).max(0.0);
-
-        let final_nav = initial_cash + self.stats.total_pnl;
+        // 1. final_nav:equity_curve 最后一帧(mark-to-market);空时回退 initial_cash
+        let final_nav = if let Some((_, last_nav)) = self.bt_state.equity_curve.last() {
+            *last_nav
+        } else {
+            initial_cash
+        };
         let final_time = self.config.clock.now();
+
+        // 2. total_pnl:账户视角 = final_nav - initial_cash
+        //    (已实现 PnL 来自 trades;未实现 PnL 来自 equity_curve 末帧 mark;
+        //     手续费已扣 cash,自然包含)
+        let total_pnl = final_nav - initial_cash;
+
+        // 3. max_drawdown:扫描 equity_curve 真实计算
+        //    ponytail:简单 O(n) 单次扫描,O(1) 空间
+        let mut nav_peak = initial_cash;
+        let mut max_drawdown: f64 = 0.0;
+        for (_, nav) in &self.bt_state.equity_curve {
+            if *nav > nav_peak {
+                nav_peak = *nav;
+            }
+            let dd = nav_peak - *nav;
+            if dd > max_drawdown {
+                max_drawdown = dd;
+            }
+        }
+        // 兼容旧语义:若 equity_curve 为空,沿用 stats.pnl_peak - total_pnl
+        // (空场景无 fill,无 PnL,dd=0)
+        let _ = (self.stats.pnl_peak, self.stats.total_pnl);
+
+        // 4. max_drawdown_pct = drawdown / nav_peak(0~1,限制)
+        let max_drawdown_pct = if nav_peak > 0.0 {
+            (max_drawdown / nav_peak).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // 5. positions 快照
+        let positions: HashMap<String, f64> = self
+            .bt_state
+            .position_states
+            .iter()
+            .filter(|(_, p)| p.quantity.abs() > 1e-9)
+            .map(|(sym, p)| (sym.clone(), p.quantity))
+            .collect();
+
+        // 6. win_rate / sharpe_ratio 从 TradingMetrics 取
+        //    默认年化因子:15m bar 一年 35040 根(24h * 4 * 365)
+        let win_rate = self.bt_state.trading_metrics.win_rate();
+        let sharpe_ratio = self.bt_state.trading_metrics.sharpe_ratio(35_040_f64.sqrt());
 
         RunResult {
             events_processed: self.stats.events_processed,
@@ -331,11 +907,19 @@ impl BacktestEngine {
             fills: self.stats.fills,
             orders_cancelled: self.stats.orders_cancelled,
             orders_modified: self.stats.orders_modified,
-            total_pnl: self.stats.total_pnl,
+            total_pnl,
             max_drawdown,
             final_nav,
             duration,
             final_time,
+            trades: self.bt_state.trades.clone(),
+            total_fees: self.bt_state.fee_accumulator,
+            equity_curve: self.bt_state.equity_curve.clone(),
+            nav_peak,
+            max_drawdown_pct,
+            win_rate,
+            sharpe_ratio,
+            positions,
         }
     }
 }
@@ -395,6 +979,8 @@ mod tests {
             matching_engine: Box::new(L1MatchingEngine::new()),
             impact_model: None,
             initial_cash: 100_000.0,
+            fee_config: FeeConfig::default(),
+            force_liquidate: false,
         }
     }
 
@@ -480,10 +1066,35 @@ mod tests {
         assert_eq!(result.orders_accepted, 2);
         assert_eq!(result.orders_rejected, 0);
         assert_eq!(result.fills, 1);
-        // PnL: 买单侧 -100*1 = -100
-        assert!((result.total_pnl - (-100.0)).abs() < 1e-9);
-        // final_nav = 100_000 + (-100) = 99_900
-        assert!((result.final_nav - 99_900.0).abs() < 1e-9);
+        // 新语义:total_pnl = final_nav - initial_cash(账户视角)
+        // 1 笔 fill @ 100 qty=1:buy 端 -notional=-100, sell 端 +100 → cash flow 抵消;
+        // 终态 long 1 @ mark=100 → final_nav ≈ initial_cash(持仓抵 cash 减少);
+        // 但手续费 0.1 扣 cash → final_nav = 100_000 - 0.1 = 99_999.9
+        // total_pnl = 99_999.9 - 100_000 = -0.1
+        assert!(
+            (result.total_pnl - (-0.1)).abs() < 1e-6,
+            "expected total_pnl=-0.1 (final_nav-initial_cash), got {}",
+            result.total_pnl
+        );
+        // 阶段 B:final_nav = state.cash + mark-to-market
+        // 卖单挂入订单簿,无 fill 不计费;买单吃单 1 笔 fill,手续费 0.1
+        // 终态: cash=100_000-100-0.1=99899.9, position=+1 @ 100, nav=99999.9
+        let expected_nav = 100_000.0 - 100.0 - 0.1 + 100.0;
+        assert!(
+            (result.final_nav - expected_nav).abs() < 1e-6,
+            "expected final_nav={}, got {}",
+            expected_nav,
+            result.final_nav
+        );
+        // total_fees: 1 笔 fill × 0.001 × 100 = 0.1
+        assert!(
+            (result.total_fees - 0.1).abs() < 1e-6,
+            "expected total_fees=0.1, got {}",
+            result.total_fees
+        );
+        // 终态 long 1 BTC
+        assert_eq!(result.positions.len(), 1);
+        assert!((result.positions["BTC-USDT"] - 1.0).abs() < 1e-9);
     }
 
     /// 推进时钟：final_time 应为最后一个事件时间戳
@@ -627,12 +1238,19 @@ mod tests {
         assert!(r2.duration >= Duration::ZERO);
     }
 
-    /// max_drawdown 在 PnL 单调递减时正确计算
+    /// max_drawdown 在 NAV 单调递减时正确计算
     ///
-    /// 场景：
-    /// 1. Sell @ 100 qty=1.0 → 挂簿（无对手方）→ PnL 不变, peak=0
-    /// 2. Sell @ 100 qty=1.0 → 挂簿 → PnL 不变
-    /// 3. Buy @ 100 qty=2.0 → 吃两单，PnL = -200，peak=0, max_drawdown = 0 - (-200) = 200
+    /// 场景:
+    /// 1. Sell @ 100 qty=1.0 → 挂簿(无 fill)
+    /// 2. Sell @ 100 qty=1.0 → 挂簿(无 fill)
+    /// 3. Buy @ 100 qty=2.0 → 吃两笔 sell,2 笔 fill,每笔 0.1 手续费
+    ///
+    /// 终态:long 2 @ mark=100, cash 减少 200 + 0.2 手续费
+    /// final_nav = 100_000 - 200 - 0.2 + 200 = 99_999.8
+    /// total_pnl = 99_999.8 - 100_000 = -0.2
+    /// equity_curve:fill1 后 nav ≈ 99999.9,fill2 后 nav ≈ 99999.8
+    /// NAV 从 initial 100_000 → 99999.9(扣费 0.1)→ 99999.8(再扣 0.1)
+    /// max_drawdown = 100_000 - 99999.8 = 0.2
     #[test]
     fn test_max_drawdown_tracks_peak() {
         let mut q = EventQueue::new();
@@ -649,7 +1267,7 @@ mod tests {
             2,
             OrderAction::Submitted(make_limit_order(2, Side::Sell, 100.0, 1.0)),
         ));
-        // 买单吃两单：PnL = -100*1 + -100*1 = -200
+        // 买单吃两单
         q.push(b.order(
             Timestamp::from_nanos(3_000),
             3,
@@ -659,19 +1277,21 @@ mod tests {
         let cfg = simple_config();
         let mut engine = BacktestEngine::new(cfg, q);
         let result = engine.run();
-        // 2 卖单挂簿 accepted + 1 买单 fill accepted
+        // 2 卖单挂簿 accepted + 1 买单 2 笔 fill accepted
         assert_eq!(result.orders_accepted, 3);
         assert_eq!(result.fills, 2, "买单吃两单");
-        // PnL: -200
+        // 新语义:total_pnl = final_nav - initial_cash = -0.2(只扣手续费)
         assert!(
-            (result.total_pnl - (-200.0)).abs() < 1e-9,
-            "expected total_pnl=-200, got {}",
+            (result.total_pnl - (-0.2)).abs() < 1e-6,
+            "expected total_pnl=-0.2 (账户视角), got {}",
             result.total_pnl
         );
-        // peak = 0（PnL 单调下降）→ drawdown = 0 - (-200) = 200
+        // max_drawdown 基于 equity_curve 扫描:
+        // initial 100_000 → 99_999.9(fill1 扣费)→ 99_999.8(fill2 扣费)
+        // peak = 100_000,trough = 99_999.8 → max_dd = 0.2
         assert!(
-            (result.max_drawdown - 200.0).abs() < 1e-9,
-            "expected max_drawdown=200, got {}",
+            (result.max_drawdown - 0.2).abs() < 1e-6,
+            "expected max_drawdown=0.2 (基于 equity_curve), got {}",
             result.max_drawdown
         );
     }

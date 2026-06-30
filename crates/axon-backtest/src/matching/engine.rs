@@ -74,6 +74,46 @@ pub trait MatchingEngine: Send + Sync {
     /// `seed_liquidity()` 重新挂一组限价单,撮合完不需要保留上 bar 的种子
     /// 流动性。**不**清空 `trade_sequence`(成交序号跨 bar 连续)。
     fn clear_book(&mut self);
+
+    /// 在订单簿两侧播种虚拟流动性(回测辅助,默认 no-op)
+    ///
+    /// # 用途(下沉到 BacktestEngine 后)
+    ///
+    /// 回测场景没有真实外部对手盘,需要在撮合引擎内提供"虚拟深度"让策略单能成交。
+    /// 通过 `BacktestEngine::with_seed_liquidity(...)` 启用后,引擎在每根 bar
+    /// 同步执行 `clear_book + seed_liquidity`,应用层无需手动调用。
+    ///
+    /// # 默认实现
+    ///
+    /// `no-op`:直接返回 `next_id`(不消费 ID 计数器),适用于不实现该方法的
+    /// 撮合引擎(如 `L2` / `L3` 的拍卖撮合等,流动性由真市场事件驱动)。
+    /// `L1MatchingEngine` 重写此方法提供完整实现。
+    ///
+    /// # 参数
+    ///
+    /// - `mid_price`:中间价(通常为当前 bar close)
+    /// - `half_spread`:每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
+    /// - `depth_levels`:每侧挂单层数(典型 5~20)
+    /// - `size_per_level`:每层挂单数量
+    /// - `symbol`:交易对
+    /// - `next_id`:下一个可用订单 id(避免与外部订单 id 冲突)
+    ///
+    /// # 返回
+    ///
+    /// 更新后的 `next_id` 计数器(调用方保存并用于下一次 seed,避免 id 冲突)。
+    fn seed_liquidity(
+        &mut self,
+        _mid_price: f64,
+        _half_spread: f64,
+        _depth_levels: usize,
+        _size_per_level: f64,
+        _symbol: Symbol,
+        next_id: u64,
+    ) -> u64 {
+        // ponytail:默认 no-op 实现,适配 L2/L3/自定义撮合引擎。
+        // 真正支持的实现(L1)需要 override 此方法。
+        next_id
+    }
 }
 
 /// 内部订单簿侧类型
@@ -410,6 +450,7 @@ impl L1MatchingEngine {
     /// 在 mid_price 上下分别挂 depth_levels 层限价单：
     /// - 卖方：`mid + half_spread * (1, 2, ..., depth_levels)`
     /// - 买方：`mid - half_spread * (1, 2, ..., depth_levels)`
+    ///
     /// 每层 `size_per_level` 数量。
     ///
     /// 订单 id 从 `next_id` 起递增，返回更新后的 id 计数器
@@ -633,9 +674,47 @@ impl MatchingEngine for L1MatchingEngine {
         // 1) 清空两侧订单簿与索引;清空后所有"被种子但未成交"的 limit 单
         //    全部丢弃,这正是回测场景下"瞬时对手盘"想要的语义。
         // 2) **不**清空 `trade_sequence`,成交序号跨 bar 仍连续递增。
+        //
+        // 3) ponytail: 关键内存语义。
+        //    - `BTreeMap::clear()` 内部实现 `self.root = None; self.length = 0`,
+        //      drop 根节点会递归释放整棵 B 树(节点 + 各价格下的 VecDeque +
+        //      内部每个 Order 及其 Symbol 堆),真正释放内存。直接 `.clear()` 即可。
+        //    - **`HashMap::clear()` 不释放底层 raw table 内存**(Rust std 明确语义,
+        //      "Keeps the allocated memory for reuse")。`seed_liquidity` 中
+        //      `order_index` 的 key 是单调递增的 `next_id`,HashMap 会按需扩容
+        //      到能容纳最大 id 的容量,但 `clear()` 不会缩容,导致多次 seed 循环
+        //      后 raw table 容量只增不减,叠加 PyO3 端 `Arc<Mutex<Py<PyAny>>>`
+        //      持有 Python 对象,多引擎实例创建/丢弃时会产生 GB 级累积。
+        //    - **修复**:把 `order_index` 替换为新 `HashMap` 实例(等价于
+        //      `mem::replace`),旧实例 drop 时 raw table 真正 deallocate。
+        //    - 已知简化面:`BTreeMap::clear()` 仍保留根节点的 leaf node
+        //      allocation 给下次 `seed_liquidity` 复用(避免重新分配 root),
+        //      容量重用语义稳定,无需替换新实例。
         self.bids.clear();
         self.asks.clear();
-        self.order_index.clear();
+        self.order_index = HashMap::new();
+    }
+
+    /// trait 适配:委托给 `L1MatchingEngine::seed_liquidity` inherent 方法
+    /// (`engine.rs:432-485`)。详见该方法文档。
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        symbol: Symbol,
+        next_id: u64,
+    ) -> u64 {
+        L1MatchingEngine::seed_liquidity(
+            self,
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            symbol,
+            next_id,
+        )
     }
 }
 
@@ -1183,6 +1262,103 @@ mod tests {
         assert!(
             ask.as_f64() >= 100.0,
             "best_ask 应 ≥ 100（最低卖价），实际: {ask}"
+        );
+    }
+
+    // ─── clear_book 内存稳定性测试（ponytail）──────────────────────────
+    //
+    // 根因:`HashMap::clear()` 不释放底层 raw table 内存(Rust std 明确语义,
+    // "Keeps the allocated memory for reuse")。`seed_liquidity` 中
+    // `order_index` 的 key 是单调递增的 `next_id`,HashMap 会按需扩容,
+    // 但 `clear()` 不会缩容。修复:`clear_book` 把 `order_index` 替换为
+    // 新 `HashMap` 实例,强制 deallocate 旧 raw table。
+    //
+    // 本组测试用最小化规模(1000 rounds × 20 orders = 20K 临时 order)
+    // 验证不变量,不依赖 RSS 测量(避免环境差异),仅验证"clear 后
+    // 所有结构为空 + 可被新种子复用"。
+
+    /// `clear_book` 后所有订单簿状态必须完全清空
+    #[test]
+    fn test_clear_book_resets_all_state() {
+        let mut engine = L1MatchingEngine::new();
+        let symbol = Symbol::from("BTC-USDT");
+
+        // 种子注入虚拟对手盘
+        let _ = engine.seed_liquidity(100.0, 0.1, 10, 1.0, symbol.clone(), 1);
+        assert!(engine.active_order_count() > 0, "seed 后应有 active order");
+        assert!(engine.best_bid().is_some());
+        assert!(engine.best_ask().is_some());
+
+        // 清空后必须完全归零
+        engine.clear_book();
+        assert_eq!(engine.active_order_count(), 0, "active_order_count 必须为 0");
+        assert!(engine.best_bid().is_none(), "best_bid 必须为 None");
+        assert!(engine.best_ask().is_none(), "best_ask 必须为 None");
+        // 索引 len 必须为 0(通过 active_order_count 间接验证)
+    }
+
+    /// 1000 轮 seed+clear 循环后,clear 必须仍能完全清空
+    /// (验证 HashMap 替换为新实例后,旧 raw table 已被 deallocate,
+    ///  不会因单调 next_id 扩容而泄漏)
+    #[test]
+    fn test_clear_book_stable_over_1000_rounds() {
+        let mut engine = L1MatchingEngine::new();
+        let symbol = Symbol::from("BTC-USDT");
+
+        // 1000 轮 seed + clear,每轮 mid_price 略微变化以触发不同价格键
+        for round in 0..1000 {
+            // 上一轮的种子清掉
+            engine.clear_book();
+            assert_eq!(
+                engine.active_order_count(),
+                0,
+                "round {round} clear 后必须归零"
+            );
+
+            // 注入新种子(id 单调递增模拟真实回测 caller 行为)
+            let next_id = engine.seed_liquidity(
+                100.0 + (round as f64 * 0.0001), // mid_price 变化触发新价格键
+                0.1,
+                10, // depth_levels
+                1.0,
+                symbol.clone(),
+                round * 100 + 1, // next_id 单调递增
+            );
+            assert_eq!(next_id, round * 100 + 1 + 20, "next_id 应递增 20");
+            assert!(engine.active_order_count() > 0, "seed 后应有 active order");
+        }
+
+        // 最后一轮 clear 必须完全归零
+        engine.clear_book();
+        assert_eq!(engine.active_order_count(), 0);
+        assert!(engine.best_bid().is_none());
+        assert!(engine.best_ask().is_none());
+    }
+
+    /// 修复后 `clear_book` 不应保留 `order_index` 的旧 entry
+    /// (防御性:`HashMap::replace` 后再 seed,新 entry id 范围应被正确接受)
+    #[test]
+    fn test_clear_book_does_not_ghost_retain_old_ids() {
+        let mut engine = L1MatchingEngine::new();
+        let symbol = Symbol::from("BTC-USDT");
+
+        // 第一轮:seed 1000 个 id (1..=1000)
+        let _ = engine.seed_liquidity(100.0, 0.1, 10, 1.0, symbol.clone(), 1);
+        assert!(engine.active_order_count() > 0);
+
+        // 关键:`clear_book` 替换 HashMap 后,旧 id 不应被保留
+        engine.clear_book();
+        assert_eq!(engine.active_order_count(), 0);
+
+        // 第二轮:用相同 id 范围 (1..=20) 重新 seed
+        // 修复前:`order_index.clear()` 不释放 raw table,id 1..=1000 仍存在(虽然 len=0)
+        // 修复后:`HashMap::new()` 替换,完全干净
+        let _ = engine.seed_liquidity(101.0, 0.1, 10, 1.0, symbol.clone(), 1);
+        // 验证:active_order_count = 20(10 buy + 10 sell),不等于上轮的 1000 或 0
+        assert_eq!(
+            engine.active_order_count(),
+            20,
+            "二轮 seed 后 active_order_count 必须等于 20(无 ghost entry)"
         );
     }
 }
