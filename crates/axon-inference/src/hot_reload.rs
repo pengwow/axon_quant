@@ -27,6 +27,27 @@ impl ModelHotReloader {
         }
     }
 
+    /// Python 端简化构造:仅给定 `path` + `num_threads`,其余字段用 defaults。
+    ///
+    /// 主要服务 `PyModelHotReloader::new(&PyInferenceEngine)`,避免 Python
+    /// 端重复传完整 `ModelConfig`(已经存在 `InferenceEngine.config_path`)。
+    pub fn new_from_path(
+        backend: Arc<RwLock<dyn InferenceEngine>>,
+        path: std::path::PathBuf,
+        num_threads: usize,
+    ) -> Self {
+        let config = ModelConfig {
+            path,
+            backend: crate::error::InferenceBackend::Onnx, // 占位,实际热更新只看 path
+            device: crate::error::Device::Cpu,
+            input_shape: [1, 1, 1],
+            output_dim: 0,
+            fp16: false,
+            num_threads,
+        };
+        Self::new(backend, config)
+    }
+
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.version_rx.clone()
     }
@@ -44,9 +65,17 @@ impl ModelHotReloader {
 
         let new_checksum = compute_sha256(path)?;
 
+        // 两步原子热更新:
+        // 1. 只读锁阶段:`build_session` 在 backend 上下文中预构造新 session,
+        //    此时旧 session 仍可被并发推理使用;
+        // 2. 写锁阶段:`replace_session` 瞬间原子替换,阻塞时间极短。
+        let new_session = {
+            let backend = self.backend.read();
+            backend.build_session(path)?
+        };
         {
             let mut backend = self.backend.write();
-            backend.load(path)?;
+            backend.replace_session(new_session)?;
         }
 
         let v = self.current_version.fetch_add(1, Ordering::SeqCst) + 1;
@@ -135,8 +164,17 @@ impl ModelHotReloader {
         config: &ModelConfig,
     ) -> Result<String, InferenceError> {
         let checksum = compute_sha256(&config.path)?;
-        let mut guard = backend.write();
-        guard.load(&config.path)?;
+        // 两步原子热更新(同 `reload`):
+        // 1. 只读锁构造新 session
+        // 2. 写锁原子替换
+        let new_session = {
+            let r = backend.read();
+            r.build_session(&config.path)?
+        };
+        {
+            let mut w = backend.write();
+            w.replace_session(new_session)?;
+        }
         Ok(checksum)
     }
 }

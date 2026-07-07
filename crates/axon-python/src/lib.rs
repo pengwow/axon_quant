@@ -150,16 +150,15 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_submodule(&compliance_module)?;
 
     // `axon-defi` 子模块
-    // 注:axon-defi 内部已注册 error/types/chain/config 四个 Python 子模块,
-    // 这里只调 `register_module` 把 `defi` 挂到 `_native` 下。
-    // 设计约束同 backtest/risk/oms/exchange/inference/explain/ensemble:
-    // DefiError 继承 builtin PyException 而非 AxonError,
-    // axon-defi 不依赖 axon-python(避免 cargo 循环)。
+    // 注:axon-defi 内部已注册 error/chain/types/config/evm/bridge/mev
+    // 七个 Python 子模块,这里只调 `register_module` 把 `defi` 挂到
+    // `_native` 下。设计约束同 backtest/risk/oms/exchange/inference/
+    // explain/ensemble/compliance:DefiError 继承 builtin PyException
+    // 而非 AxonError,axon-defi 不依赖 axon-python(避免 cargo 循环)。
+    // 0.3.0 P0 Batch 4:evm/bridge/mev 三个新子模块走真链 RPC + Flashbots
+    // relay + LayerZero Endpoint,见 `axon-defi::python::evm/bridge/mev`.
     let defi_module = PyModule::new(m.py(), "defi")?;
-    axon_defi::python::error::register(&defi_module)?;
-    axon_defi::python::chain::register(&defi_module)?;
-    axon_defi::python::types::register(&defi_module)?;
-    axon_defi::python::config::register(&defi_module)?;
+    axon_defi::python::register_module(&defi_module)?;
     m.add_submodule(&defi_module)?;
 
     // `axon-harness` + `axon-safety` 子模块

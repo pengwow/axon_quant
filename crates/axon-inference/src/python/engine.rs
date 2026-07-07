@@ -74,12 +74,17 @@ pub struct PyInferenceEngine {
     pub(crate) inner: Arc<RwLock<dyn RustEngine>>,
     /// 后端名(冗余存,方便 `__repr__` / `backend` getter)
     backend: &'static str,
+    /// 模型路径(冗余存,供 `ModelHotReloader` 构造 + 调试输出)
+    config_path: String,
+    /// num_threads(冗余存,供 `ModelHotReloader` 构造)
+    num_threads: usize,
 }
 
 impl std::fmt::Debug for PyInferenceEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PyInferenceEngine")
             .field("backend", &self.backend)
+            .field("config_path", &self.config_path)
             .finish_non_exhaustive()
     }
 }
@@ -99,6 +104,9 @@ impl PyInferenceEngine {
     pub fn new(config: PyModelConfig) -> PyResult<Self> {
         let backend_choice: RustBackend = config.0.backend;
         let cfg = config.0;
+        // 提前存 path / num_threads,后续 `__repr__` / `config_path` getter 用
+        let config_path = cfg.path.display().to_string();
+        let num_threads = cfg.num_threads;
         match backend_choice {
             RustBackend::Onnx => {
                 // onnx feature 默认由 `python` feature 带入
@@ -108,6 +116,8 @@ impl PyInferenceEngine {
                     Ok(Self {
                         inner: Arc::new(RwLock::new(be)),
                         backend: "onnx",
+                        config_path,
+                        num_threads,
                     })
                 }
                 #[cfg(not(feature = "onnx"))]
@@ -126,6 +136,8 @@ impl PyInferenceEngine {
                     Ok(Self {
                         inner: Arc::new(RwLock::new(be)),
                         backend: "candle",
+                        config_path,
+                        num_threads,
                     })
                 }
                 #[cfg(not(feature = "candle-backend"))]
@@ -152,6 +164,12 @@ impl PyInferenceEngine {
     #[getter]
     fn backend(&self) -> &'static str {
         self.backend
+    }
+
+    /// 模型路径(冗余存自 `ModelConfig.path`,供 `ModelHotReloader` 构造 + 调试)。
+    #[getter]
+    fn config_path(&self) -> String {
+        self.config_path.clone()
     }
 
     /// 暴露底层 backend 的 `Arc<RwLock<dyn InferenceEngine>>` —— 用于
@@ -211,7 +229,28 @@ impl PyInferenceEngine {
     }
 
     fn __repr__(&self) -> String {
-        format!("InferenceEngine(backend={})", self.backend)
+        format!(
+            "InferenceEngine(backend={}, path={})",
+            self.backend, self.config_path
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 内部接口:供 `PyModelHotReloader` 共享 backend
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl PyInferenceEngine {
+    /// 0.3.0 P0 Stage 6 收口:供 `PyModelHotReloader` 拿
+    /// backend 句柄 + config_path + num_threads(走 `pub(crate)`,Python 端不可见)。
+    pub(crate) fn _shared_backend(
+        &self,
+    ) -> (Arc<RwLock<dyn RustEngine>>, String, usize) {
+        (
+            self.inner.clone(),
+            self.config_path.clone(),
+            self.num_threads,
+        )
     }
 }
 
@@ -282,7 +321,8 @@ mod tests {
         let cfg = make_py_config(RustBackend::Onnx);
         let eng = PyInferenceEngine::new(cfg).expect("Onnx backend should be available");
         assert_eq!(eng.backend(), "onnx");
-        assert_eq!(eng.__repr__(), "InferenceEngine(backend=onnx)");
+        // __repr__ 含 backend + path(0.3.0 P0 Stage 6 收口)
+        assert_eq!(eng.__repr__(), "InferenceEngine(backend=onnx, path=/tmp/m.onnx)");
     }
 
     /// `__new__` 在 `Tch` backend 时返回明确错误(Stage 6 暂不暴露)。

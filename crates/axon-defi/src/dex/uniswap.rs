@@ -1,45 +1,44 @@
-//! Uniswap V3 路由
+//! Uniswap V3 路由(0.3.0 P0 Batch 3 重写)
+//!
+//! 0.3.0 改造点:
+//! - `quote_swap` 不再是 `amount_in * fee_factor` 模拟,改走 [V3Quoter] 真链报价
+//! - `get_best_route` 扫描 4 个 fee tier(100/500/3000/10000)选最优
+//! - 新增 [estimate_price_impact] / [pool_depth] 走池子 `slot0()` + `liquidity()`
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::DefiError;
 use crate::evm::chain::Chain;
 
+#[cfg(feature = "evm")]
+use alloy::primitives::{Address, U256};
+
+pub use crate::dex::v3_quoter::{is_valid_fee_tier, V3Quoter, FEE_TIERS};
+
 /// Uniswap V3 合约地址
 #[derive(Debug, Clone)]
 pub struct UniswapV3Contracts {
     /// 工厂合约
     pub factory: String,
-    /// 路由合约（SwapRouter）
+    /// 路由合约(SwapRouter02)
     pub router: String,
-    /// 非同质化仓位管理
+    /// NonfungiblePositionManager(LP 仓位管理)
     pub position_manager: String,
+    /// QuoterV2 报价合约
+    pub quoter: String,
 }
 
 impl UniswapV3Contracts {
     /// 获取指定链的合约地址
+    ///
+    /// 4 链共用 Uniswap canonical 地址
+    #[allow(unused_variables)] // `chain` 保留以备后续 per-chain 路由差异
     pub fn for_chain(chain: &Chain) -> Self {
-        match chain {
-            Chain::Ethereum => Self {
-                factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984".into(),
-                router: "0xE592427A0AEce92De3Edee1F18E0157C05861564".into(),
-                position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88".into(),
-            },
-            Chain::Arbitrum => Self {
-                factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984".into(),
-                router: "0xE592427A0AEce92De3Edee1F18E0157C05861564".into(),
-                position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88".into(),
-            },
-            Chain::Optimism => Self {
-                factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984".into(),
-                router: "0xE592427A0AEce92De3Edee1F18E0157C05861564".into(),
-                position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88".into(),
-            },
-            Chain::Polygon => Self {
-                factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984".into(),
-                router: "0xE592427A0AEce92De3Edee1F18E0157C05861564".into(),
-                position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88".into(),
-            },
+        Self {
+            factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984".into(),
+            router: crate::dex::v3_router::SWAP_ROUTER_02_ADDRESS.into(),
+            position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88".into(),
+            quoter: crate::dex::v3_quoter::QUOTER_V2_ADDRESS.into(),
         }
     }
 }
@@ -51,7 +50,7 @@ pub struct PoolInfo {
     pub token0: String,
     /// 代币 1
     pub token1: String,
-    /// 费率（500, 3000, 10000）
+    /// 费率(500, 3000, 10000)
     pub fee: u32,
     /// 流动性
     pub liquidity: String,
@@ -61,8 +60,45 @@ pub struct PoolInfo {
     pub tick: i32,
 }
 
-/// 支持的费率
-pub const FEE_TIERS: [u32; 4] = [100, 500, 3000, 10000];
+/// 交易路由
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwapRoute {
+    /// 输入代币
+    pub token_in: String,
+    /// 输出代币
+    pub token_out: String,
+    /// 费率
+    pub fee: u32,
+    /// 输入金额
+    pub amount_in: String,
+    /// 输出金额
+    pub amount_out: String,
+    /// 跨过的 tick 数(深度代理)
+    pub initialized_ticks_crossed: u32,
+    /// 估算 gas
+    pub gas_estimate: String,
+}
+
+impl SwapRoute {
+    /// 计算 amount_out (f64,用于比较)
+    #[cfg(feature = "evm")]
+    pub fn amount_out_f64(&self) -> f64 {
+        // U256 -> string -> f64 转换(仅用于 best route 比较,精度损失可接受)
+        let s = self.amount_out.trim_start_matches("0x");
+        let bytes = alloy::primitives::hex::decode(s).unwrap_or_default();
+        let mut be = [0u8; 32];
+        let start = 32usize.saturating_sub(bytes.len());
+        be[start..].copy_from_slice(&bytes[..bytes.len().min(32)]);
+        let u = U256::from_be_bytes(be);
+        // 简化:u.to_string() 解析,精度损失可控
+        u.to_string().parse::<f64>().unwrap_or(0.0)
+    }
+
+    #[cfg(not(feature = "evm"))]
+    pub fn amount_out_f64(&self) -> f64 {
+        self.amount_out.parse().unwrap_or(0.0)
+    }
+}
 
 /// Uniswap V3 路由器
 pub struct UniswapRouter {
@@ -92,75 +128,107 @@ impl UniswapRouter {
         &FEE_TIERS
     }
 
-    /// 报价（模拟）
+    /// 报价(走真 QuoterV2)
+    ///
+    /// 0.3.0 改造:不再用 `amount_in * fee_factor` 模拟,改走 [V3Quoter::quote_exact_input_single]
+    #[cfg(feature = "evm")]
     pub async fn quote_swap(
         &self,
-        token_in: &str,
-        token_out: &str,
-        amount_in: &str,
+        quoter: &V3Quoter,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
         fee: u32,
-    ) -> Result<String, DefiError> {
-        // 验证费率
-        if !FEE_TIERS.contains(&fee) {
-            return Err(DefiError::ConfigError(format!("Invalid fee tier: {}", fee)));
+    ) -> Result<QuoteWithMeta, DefiError> {
+        if !is_valid_fee_tier(fee) {
+            return Err(DefiError::ConfigError(format!("invalid fee tier: {}", fee)));
         }
-
-        // 验证代币地址
-        if token_in.is_empty() || token_out.is_empty() {
-            return Err(DefiError::ConfigError("Token address is empty".into()));
-        }
-
-        // 模拟报价（实际实现需要调用合约）
-        let amount_in_val: f64 = amount_in.parse().unwrap_or(0.0);
-        let fee_factor = 1.0 - (fee as f64 / 1_000_000.0);
-        let amount_out = amount_in_val * fee_factor;
-
-        Ok(format!("{:.6}", amount_out))
+        let res = quoter
+            .quote_exact_input_single(token_in, token_out, amount_in, fee, U256::ZERO)
+            .await?;
+        Ok(QuoteWithMeta {
+            amount_out: res.amount_out,
+            fee,
+            initialized_ticks_crossed: res.initialized_ticks_crossed,
+            gas_estimate: res.gas_estimate,
+        })
     }
 
-    /// 获取最优路由
+    /// quote_swap stub(无 evm feature)
+    #[cfg(not(feature = "evm"))]
+    pub async fn quote_swap(
+        &self,
+        _quoter: &V3Quoter,
+        _token_in: String,
+        _token_out: String,
+        _amount_in: String,
+        fee: u32,
+    ) -> Result<String, DefiError> {
+        if !is_valid_fee_tier(fee) {
+            return Err(DefiError::ConfigError(format!("invalid fee tier: {}", fee)));
+        }
+        Ok("0".into())
+    }
+
+    /// 获取最优路由(扫描 4 个 fee tier,选 amount_out 最大)
+    ///
+    /// 0.3.0 改造:不再用模拟,改走 V3Quoter 真实扫描
+    #[cfg(feature = "evm")]
     pub async fn get_best_route(
         &self,
-        token_in: &str,
-        token_out: &str,
-        amount_in: &str,
+        quoter: &V3Quoter,
+        token_in: Address,
+        token_out: Address,
+        amount_in: U256,
     ) -> Result<SwapRoute, DefiError> {
-        let mut best_route = None;
-        let mut best_amount_out = 0.0;
-
+        let mut best: Option<QuoteWithMeta> = None;
         for &fee in &FEE_TIERS {
-            let amount_out_str = self.quote_swap(token_in, token_out, amount_in, fee).await?;
-            let amount_out: f64 = amount_out_str.parse().unwrap_or(0.0);
-
-            if amount_out > best_amount_out {
-                best_amount_out = amount_out;
-                best_route = Some(SwapRoute {
-                    token_in: token_in.to_string(),
-                    token_out: token_out.to_string(),
-                    fee,
-                    amount_in: amount_in.to_string(),
-                    amount_out: amount_out_str,
-                });
+            match self.quote_swap(quoter, token_in, token_out, amount_in, fee).await {
+                Ok(q) => {
+                    if best.as_ref().is_none_or(|b| q.amount_out > b.amount_out) {
+                        best = Some(q);
+                    }
+                }
+                // 某个 fee tier 池子不存在 → 跳过
+                Err(_) => continue,
             }
         }
+        let b = best.ok_or(DefiError::NoRouteFound)?;
+        Ok(SwapRoute {
+            token_in: format!("{:?}", token_in),
+            token_out: format!("{:?}", token_out),
+            fee: b.fee,
+            amount_in: amount_in.to_string(),
+            amount_out: b.amount_out.to_string(),
+            initialized_ticks_crossed: b.initialized_ticks_crossed,
+            gas_estimate: b.gas_estimate.to_string(),
+        })
+    }
 
-        best_route.ok_or(DefiError::NoRouteFound)
+    /// get_best_route stub
+    #[cfg(not(feature = "evm"))]
+    pub async fn get_best_route(
+        &self,
+        _quoter: &V3Quoter,
+        _token_in: String,
+        _token_out: String,
+        _amount_in: String,
+    ) -> Result<SwapRoute, DefiError> {
+        Err(DefiError::NoRouteFound)
     }
 }
 
-/// 交易路由
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SwapRoute {
-    /// 输入代币
-    pub token_in: String,
-    /// 输出代币
-    pub token_out: String,
-    /// 费率
+/// 报价 + 元信息
+#[derive(Debug, Clone)]
+pub struct QuoteWithMeta {
+    /// 输出 token 数量
+    pub amount_out: U256,
+    /// fee tier
     pub fee: u32,
-    /// 输入金额
-    pub amount_in: String,
-    /// 输出金额
-    pub amount_out: String,
+    /// 跨过 tick 数
+    pub initialized_ticks_crossed: u32,
+    /// 估算 gas
+    pub gas_estimate: U256,
 }
 
 #[cfg(test)]
@@ -173,6 +241,7 @@ mod tests {
         assert!(!contracts.factory.is_empty());
         assert!(!contracts.router.is_empty());
         assert!(!contracts.position_manager.is_empty());
+        assert!(!contracts.quoter.is_empty());
     }
 
     #[test]
@@ -184,7 +253,10 @@ mod tests {
             Chain::Polygon,
         ] {
             let contracts = UniswapV3Contracts::for_chain(&chain);
-            assert!(!contracts.factory.is_empty());
+            assert_eq!(
+                contracts.quoter.to_lowercase(),
+                crate::dex::v3_quoter::QUOTER_V2_ADDRESS.to_lowercase()
+            );
         }
     }
 
@@ -200,42 +272,6 @@ mod tests {
         assert_eq!(router.fee_tiers(), &[100, 500, 3000, 10000]);
     }
 
-    #[tokio::test]
-    async fn test_uniswap_router_quote_swap() {
-        let router = UniswapRouter::new(Chain::Ethereum);
-        let result = router.quote_swap("0xA", "0xB", "1000", 3000).await;
-        assert!(result.is_ok());
-        let amount_out = result.unwrap();
-        let amount: f64 = amount_out.parse().unwrap();
-        assert!(amount > 0.0);
-        assert!(amount < 1000.0); // 扣除手续费
-    }
-
-    #[tokio::test]
-    async fn test_uniswap_router_quote_invalid_fee() {
-        let router = UniswapRouter::new(Chain::Ethereum);
-        let result = router.quote_swap("0xA", "0xB", "1000", 999).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_uniswap_router_quote_empty_token() {
-        let router = UniswapRouter::new(Chain::Ethereum);
-        let result = router.quote_swap("", "0xB", "1000", 3000).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_uniswap_router_get_best_route() {
-        let router = UniswapRouter::new(Chain::Ethereum);
-        let result = router.get_best_route("0xA", "0xB", "1000").await;
-        assert!(result.is_ok());
-        let route = result.unwrap();
-        assert_eq!(route.token_in, "0xA");
-        assert_eq!(route.token_out, "0xB");
-        assert!(FEE_TIERS.contains(&route.fee));
-    }
-
     #[test]
     fn test_swap_route_serialization() {
         let route = SwapRoute {
@@ -244,6 +280,8 @@ mod tests {
             fee: 3000,
             amount_in: "1000".into(),
             amount_out: "997".into(),
+            initialized_ticks_crossed: 1,
+            gas_estimate: "150000".into(),
         };
         let json = serde_json::to_string(&route).unwrap();
         let restored: SwapRoute = serde_json::from_str(&json).unwrap();

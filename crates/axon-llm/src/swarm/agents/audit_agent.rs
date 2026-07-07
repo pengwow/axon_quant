@@ -1,8 +1,10 @@
 //! AuditAgent - 审计 Agent
 
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::swarm::agent::{AgentId, AgentRole, AgentStatus};
+use crate::swarm::agent_runner::{DeclarativeAgentRunner, RunnerOutput};
 use crate::swarm::error::SwarmError;
 use crate::swarm::message::{AgentMessage, MessageContent};
 
@@ -139,6 +141,24 @@ impl AuditAgent {
     }
 }
 
+#[async_trait]
+impl DeclarativeAgentRunner for AuditAgent {
+    fn id(&self) -> &AgentId {
+        &self.id
+    }
+    fn role(&self) -> AgentRole {
+        AgentRole::Audit
+    }
+    fn status(&self) -> AgentStatus {
+        self.status
+    }
+    async fn run_step(&mut self, msg: AgentMessage) -> Result<RunnerOutput, SwarmError> {
+        // AuditAgent 只写 log,不发下游消息 → 永远 None
+        self.handle_message(msg).await?;
+        Ok(RunnerOutput::None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +265,33 @@ mod tests {
         agent.handle_message(msg).await.unwrap();
         assert_eq!(agent.log_count(), 1);
         assert_eq!(agent.audit_log()[0].event_type, "ExecutionResult");
+    }
+
+    /// `AuditAgent` 实现 `DeclarativeAgentRunner`:
+    /// - 任意 `AgentMessage` → 产 `RunnerOutput::None`(只写 log,不发下游)
+    /// - 触发后 log 计数 +1
+    #[tokio::test]
+    async fn test_audit_agent_runner_trait_impl() {
+        let (tx, rx) = mpsc::channel(10);
+        let id = AgentId::from_string("audit_0");
+        let config = AuditAgentConfig {
+            verbose: true, // 让 Heartbeat 也写 log
+        };
+        let mut agent = AuditAgent::new(id, config, rx, tx);
+
+        assert_eq!(agent.log_count(), 0);
+
+        let msg = AgentMessage {
+            id: crate::swarm::message::MessageId::new(),
+            from: AgentId::from_string("orchestrator"),
+            to: AgentId::from_string("audit_0"),
+            correlation_id: None,
+            content: MessageContent::Heartbeat,
+            timestamp: 1000,
+        };
+        let out = agent.run_step(msg).await.unwrap();
+        assert!(matches!(out, RunnerOutput::None));
+        assert_eq!(agent.log_count(), 1);
+        assert_eq!(agent.audit_log()[0].event_type, "Heartbeat");
     }
 }

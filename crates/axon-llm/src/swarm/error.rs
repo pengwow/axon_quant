@@ -28,4 +28,8 @@ pub enum SwarmError {
     /// LLM 错误
     #[error("LLM error: {0}")]
     LLMError(#[from] crate::backend::LLMError),
+
+    /// 通用错误(覆盖未分类的失败场景,如"数据源未配置"等)
+    #[error("swarm error: {0}")]
+    Other(String),
 }

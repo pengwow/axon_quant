@@ -42,11 +42,13 @@
 //! - `reloader.subscribe(callback)` — 注册 Python 端 reload 回调
 //! - `reloader.unsubscribe()` — 清空回调
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use tokio::runtime::Runtime;
+
+use tokio::runtime::{Builder, Runtime};
 
 use crate::engine::InferenceEngine as RustEngine;
 use crate::error::Observation as RustObs;
@@ -212,9 +214,8 @@ impl PyBatchInferencePipeline {
 /// 内部持有 Rust `ModelHotReloader` + tokio runtime;`reload` 等
 /// `async` 方法走 `block_on` 同步包装。
 ///
-/// **Stage 6 限制**:`__new__` 暂返回 `PyRuntimeError`,因 `PyInferenceEngine`
-/// 不暴露 `ModelConfig` 字段。`PyObject` / `tokio` runtime / `RustReloader`
-/// 等内部字段无 Debug 派生,故手动实现 `Debug` 仅暴露 path / version / callback。
+/// `PyObject` / `tokio` runtime / `RustReloader` 等内部字段无 Debug 派生,
+/// 故手动实现 `Debug` 仅暴露 path / version / callback。
 #[pyclass(name = "ModelHotReloader", skip_from_py_object)]
 pub struct PyModelHotReloader {
     /// Rust 端 reloader 句柄
@@ -244,26 +245,32 @@ impl PyModelHotReloader {
     /// **参数**:
     /// - `engine`:`InferenceEngine` 实例(必须已经 `load()` 过模型)
     ///
-    /// **错误**:`PyRuntimeError`(若 `engine._config()` 返回 None)
+    /// **错误**:`PyRuntimeError`(若 tokio runtime 创建失败)
     #[new]
     fn new(engine: &PyInferenceEngine) -> PyResult<Self> {
-        // Stage 6 限制:`PyInferenceEngine` 不暴露 config 字段,
-        // 故 `ModelHotReloader` 暂不可用。返回明确错误,引导用户
-        // 走 `engine.infer_batch` 简单路径。
-        // `engine` 故意未使用(`pub(crate) inner` 可读但 config 未导出),
-        // 显式 `_engine` 模式让 clippy 安静。
-        let _engine = engine;
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "ModelHotReloader is not available in Stage 6: \
-             PyInferenceEngine does not expose the underlying ModelConfig. \
-             Use `engine.infer_batch()` for batch inference. \
-             Hot-reload will be added in a later stage."
-                .to_string(),
-        ))
+        // 0.3.0 P0 Stage 6 收口:从 `PyInferenceEngine` 拿共享 backend + config_path,
+        // 构造 Rust `ModelHotReloader` 真实例,不再返回 `RuntimeError`。
+        let (backend, config_path, num_threads) = engine._shared_backend();
+        let inner = RustReloader::new_from_path(backend, PathBuf::from(&config_path), num_threads);
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to create tokio runtime: {e}"
+                ))
+            })?;
+        Ok(Self {
+            inner,
+            config_path,
+            rt: Arc::new(rt),
+            callback: Arc::new(Mutex::new(None)),
+        })
     }
 
-    /// 手动触发 reload(Stage 6 不可用,因 `__new__` 失败)。
-    #[allow(dead_code)]
+    /// 手动触发 reload(走 `build_session` + `replace_session` 两步原子路径)。
+    ///
+    /// **返回**:新版本号(`u64`,`>= 1`)。
     fn reload<'py>(&self, py: Python<'py>) -> PyResult<u64> {
         let version = self.rt.block_on(self.inner.reload()).map_err(to_py_err)?;
         if let Some(cb) = self.callback.lock().as_ref() {
@@ -442,16 +449,34 @@ mod tests {
         assert_eq!(stats.0.total_batch_inferences, 0);
     }
 
-    /// `ModelHotReloader.__new__(engine)` 在 Stage 6 返回明确错误(待 Stage 7 完善)。
+    /// `ModelHotReloader.__new__(engine)` 在 0.3.0 P0 Stage 6 收口后
+    /// 成功构造(不再返回 `RuntimeError`),`version() == 0`。
     #[test]
-    fn reloader_new_returns_runtime_error() {
+    fn reloader_new_succeeds_with_engine() {
         let engine = make_engine();
-        let res = PyModelHotReloader::new(&engine);
-        assert!(res.is_err(), "reloader.new should error in Stage 6");
-        let py_err = res.unwrap_err();
+        let reloader = PyModelHotReloader::new(&engine)
+            .expect("reloader.new should succeed with engine (Stage 6 收口后)");
+        assert_eq!(reloader.version(), 0, "fresh reloader version is 0");
+        assert!(!reloader.has_callback(), "no callback by default");
+        // model_path 与 engine config 路径一致(冗余存,确认)
+        assert!(!reloader.model_path().is_empty());
+    }
+
+    /// `ModelHotReloader.subscribe(cb)` 记录回调;`unsubscribe()` 清空。
+    #[test]
+    fn reloader_subscribe_and_unsubscribe() {
+        let engine = make_engine();
+        let reloader = PyModelHotReloader::new(&engine).unwrap();
         Python::attach(|py| {
-            let s = py_err.value(py).to_string();
-            assert!(s.contains("Stage 6"), "error should mention Stage 6: {s}");
+            // pyo3 0.28:eval 需要 `&CStr`,返回 `Bound<PyAny>`,`.unbind()` 转 `Py<PyAny>`
+            let cb = py
+                .eval(c"lambda path, version: None", None, None)
+                .unwrap()
+                .unbind();
+            reloader.subscribe(cb);
+            assert!(reloader.has_callback());
+            reloader.unsubscribe();
+            assert!(!reloader.has_callback());
         });
     }
 

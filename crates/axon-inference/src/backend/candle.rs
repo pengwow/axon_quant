@@ -332,20 +332,44 @@ impl InferenceEngine for CandleBackend {
         Ok(actions)
     }
 
+    fn build_session(
+        &self,
+        path: &Path,
+    ) -> Result<Box<dyn Any + Send + Sync>, InferenceError> {
+        if !path.exists() {
+            return Err(InferenceError::ModelNotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        // Candle 模型 state 与 `self.device` / `self.config` 紧耦合,无法独立构造;
+        // 这里只把 path 包成 `CandleReloadState`,在 `replace_session` 里
+        // 再调 `self.load(&state.path)` 走完整 Candle 重建。
+        Ok(Box::new(CandleReloadState {
+            path: path.to_path_buf(),
+        }))
+    }
+
     fn replace_session(
         &mut self,
-        _new_session: Box<dyn Any + Send + Sync>,
+        new_session: Box<dyn Any + Send + Sync>,
     ) -> Result<(), InferenceError> {
-        // 按 hot-reload spec 约定,CandleBackend 不支持 session 替换;
-        // 热更新请用 `backend.load(new_path)`(由 ModelHotReloader 自动调)
-        Err(InferenceError::Candle(
-            "CandleBackend::replace_session not implemented. \
-             For hot-reload call backend.load(new_path) instead \
-             (ModelHotReloader does this). \
-             See axon-inference-hot-update-design for the implementation roadmap."
-                .into(),
-        ))
+        let state = new_session.downcast::<CandleReloadState>().map_err(|_| {
+            InferenceError::Candle("replace_session: expected Box<CandleReloadState>".into())
+        })?;
+        // 复用 `load` 路径完成 Candle 模型重建(走 Mutex 内部缓存)
+        self.load(&state.path)
     }
+}
+
+/// Candle 后端的"session state"——只装 path,因为 Candle 模型与
+/// `self.device` / `self.config` 紧绑定,无法独立构造。
+///
+/// 在 `replace_session` 里 downcast 后调 `self.load(&state.path)`
+/// 走完整 Candle 加载(`LoadedModel` 重建)。
+///
+/// Send + Sync:`PathBuf` 自身是 Send + Sync,故此类型也 Send + Sync。
+pub struct CandleReloadState {
+    pub path: std::path::PathBuf,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,18 +453,42 @@ mod tests {
         assert!(matches!(err, InferenceError::ModelNotLoaded));
     }
 
-    /// `replace_session` 按 hot-reload 约定返回 `Candle("not implemented")`
+    /// `replace_session` 错误类型测试:传入非 `CandleReloadState` 应返回 `Candle` 错误
     #[test]
-    fn candle_replace_session_returns_candle_error() {
+    fn candle_replace_session_wrong_type_returns_candle_error() {
         let mut backend = CandleBackend::new(sample_config());
+        // 传 () → downcast 失败 → 错误信息应包含 "expected Box<CandleReloadState>"
         let err = backend.replace_session(Box::new(())).unwrap_err();
         match err {
             InferenceError::Candle(msg) => {
-                assert!(msg.contains("not implemented"));
-                assert!(msg.contains("backend.load"));
+                assert!(
+                    msg.contains("CandleReloadState"),
+                    "错误信息应提及 CandleReloadState,实际: {msg}"
+                );
             }
             other => panic!("期望 Candle 错误,实际 {other:?}"),
         }
+    }
+
+    /// `build_session` 路径不存在时返回 `ModelNotFound`
+    #[test]
+    fn candle_build_session_nonexistent_returns_model_not_found() {
+        let backend = CandleBackend::new(sample_config());
+        let res = backend.build_session(std::path::Path::new("/nonexistent.safetensors"));
+        assert!(matches!(res, Err(InferenceError::ModelNotFound { .. })));
+    }
+
+    /// `build_session` 成功返回 `Box<CandleReloadState>`
+    #[test]
+    fn candle_build_session_returns_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("model.safetensors");
+        std::fs::write(&p, b"placeholder").expect("write placeholder");
+        let backend = CandleBackend::new(sample_config());
+        let state = backend.build_session(&p).expect("build_session ok");
+        // 确认是 CandleReloadState(通过 downcast 反向验证)
+        let downcasted = state.downcast::<CandleReloadState>().expect("downcast ok");
+        assert_eq!(downcasted.path, p);
     }
 
     /// `fp16 = true` 时 `load` 显式拒绝

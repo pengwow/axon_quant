@@ -71,18 +71,24 @@ _RustLLMMessage = _native_llm_module.LLMMessage
 _rust_make_backend = _native_llm_module.make_backend
 
 # swarm 子模块（如果可用）
+# `_native` 是 cdylib 单文件扩展(不是 Python package),所以 `axon_quant._native.llm.swarm`
+# 这种 dot 路径走不通,需用 `llm.swarm` 属性访问。
 try:
-    from axon_quant._native.llm import swarm as _native_swarm_module  # noqa: E402
-    SwarmOrchestrator = _native_swarm_module.SwarmOrchestrator
-    SwarmConfig = _native_swarm_module.SwarmConfig
-    AgentRole = _native_swarm_module.AgentRole
-    AgentStatus = _native_swarm_module.AgentStatus
-    VoteType = _native_swarm_module.VoteType
-    SignalType = _native_swarm_module.SignalType
-    VoteProposal = _native_swarm_module.VoteProposal
-    VoteResult = _native_swarm_module.VoteResult
-    MarketSignal = _native_swarm_module.MarketSignal
-    _has_swarm = True
+    _native_swarm_module = getattr(_native_llm_module, "swarm", None)
+    if _native_swarm_module is not None:
+        SwarmOrchestrator = _native_swarm_module.SwarmOrchestrator
+        SwarmConfig = _native_swarm_module.SwarmConfig
+        AgentRole = _native_swarm_module.AgentRole
+        AgentStatus = _native_swarm_module.AgentStatus
+        VoteType = _native_swarm_module.VoteType
+        SignalType = _native_swarm_module.SignalType
+        VoteProposal = _native_swarm_module.VoteProposal
+        VoteResult = _native_swarm_module.VoteResult
+        MarketSignal = _native_swarm_module.MarketSignal
+        TradingTools = _native_swarm_module.TradingTools
+        _has_swarm = True
+    else:
+        _has_swarm = False
 except (ImportError, AttributeError):
     _has_swarm = False
 
@@ -102,6 +108,7 @@ __all__ = [
     "VoteProposal",
     "VoteResult",
     "MarketSignal",
+    "TradingTools",
 ]
 
 

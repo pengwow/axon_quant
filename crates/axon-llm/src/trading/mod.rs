@@ -12,6 +12,7 @@ pub mod cancel_order_tool;
 pub mod circuit_breaker_gate;
 pub mod metrics;
 pub mod mock;
+pub mod paper_backend;
 pub mod place_order_strategy;
 pub mod place_order_tool;
 pub mod query_portfolio_tool;
@@ -36,6 +37,7 @@ pub use metrics::{
     TradingMetrics,
 };
 pub use mock::{FailureInjector, MockTradingBackend};
+pub use paper_backend::PaperTradingBackend;
 pub use place_order_tool::PlaceOrderTool;
 pub use query_portfolio_tool::QueryPortfolioTool;
 pub use replace_order_tool::ReplaceOrderTool;

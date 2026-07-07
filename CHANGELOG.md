@@ -8,6 +8,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **axon-llm::swarm 0.3.0 P0 工作流 B 收口完成 — 4-Agent 闭环 + PyO3 绑定 + Python E2E**:`SwarmOrchestrator` 4-Agent pipeline (Market / Risk / Execution / Audit) 跑通,Python 端可直接构造 4 类 agent + 启动 `run_loop` + 注入 MarketSignal / VoteResponse + 读 stats。**核心改动**:
+  - **`DeclarativeAgentRunner` trait 抽取**(`crates/axon-llm/src/swarm/agent_runner.rs`):统一 4 类 agent 接口(`id() / role() / status() / handle_message()`),orchestrator 用 `Arc<dyn DeclarativeAgentRunner>` 统一管理异构 agent,Object safety + Sync 约束允许跨 task 持有。
+  - **4 个 Agent 全部 `impl DeclarativeAgentRunner`**:`MarketAgent`(从 `MarketDataSource` 接收 tick → 输出 MarketSignal,价格变化阈值 `price_change_threshold`)/ `RiskAgent`(接收 MarketSignal → 输出 RiskAssessment,默认 `approved=true` 走 happy path)/ `ExecutionAgent`(调 `PlaceOrderTool` + `QueryPortfolioTool` 真下单,`placed_count` / `failed_count` / `queried_count` 统计)/ `AuditAgent`(审计 ExecutionResult)。
+  - **`MarketDataSource` trait**(`crates/axon-llm/src/swarm/market_data.rs`):`MockSourceAdapter` 包装 `Vec<Tick>` + cursor 推进,`from_ticks` / `from_tick_series` 两种工厂,`next_tick` 异步 yield,`name` / `symbols` 暴露。
+  - **`SwarmOrchestrator::run_loop` + `run_loop_arc`**:前者消费 `mpsc::Receiver<AgentMessage>`,后者持 `Arc<TokioMutex<SwarmOrchestrator>>` 跨 owner 共享(供 PyO3 绑定)。`dispatch()` 按 `MessageContent` 路由 — `MarketAnalysis` 触发投票 + 广播 `VoteRequest` 给 Risk+Execution,`VoteResponse` 走 `ConsensusManager` 统计 + 达法定人数回 `VoteResult`,`VoteResult` 通过时调 `HarnessBridge.adjudicate()`(无 harness 时降级 `Adjudication::Approved`),Approved 转发给 ExecutionAgent 生成 `ExecutionRequest`,Rejected 广播给 Audit,CircuitBreak 触发 `shutdown_requested=true`。
+  - **`HarnessBridge` 共享实例**:`SwarmOrchestrator::with_shared_harness(Arc<HarnessBridge>)` 允许 orchestrator + 各 agent 持同一份 `Arc`,`shared_harness()` getter 暴露给 agent 注册。
+  - **`PaperTradingBackend` 实现 `TradingBackend` trait**(`crates/axon-llm/src/trading/paper_backend.rs`):`place_order` 模拟滑点(`slippage_bps`)+ 手续费(`commission_bps`),维护 `cash` + `positions: HashMap<symbol, (qty, entry_price)>` + `last_prices` + `next_id` 状态,`get_balance` / `get_positions` 真实计算 NAV。**删除** Stage 6 stub 的 `unimplemented!()`。
+  - **`ExecutionAgent::place_order_via_tool` / `query_portfolio` 真实现**:`tools.place_order.execute(&json)` 调 `PlaceOrderTool`,`tools.query_portfolio.execute(&json)` 调 `QueryPortfolioTool`,`OrderAck` 反序列化为 `TradeResult`,失败捕获 + `failed_count` 累加。模拟模式(无 tools)保留向后兼容,生成 `order_{n}` mock id。
+  - **`SwarmOrchestrator::agent_status` 新方法**(`crates/axon-llm/src/swarm/orchestrator.rs`):支持 Python `agent_status(agent_id) -> Option<PyAgentStatus>`,优先查 runner 表(走 `runner.status()`),回退旧版 `AgentHandle`。
+  - **Python 绑定 `axon_quant.llm.swarm`**(`crates/axon-llm/src/python/swarm.rs` + `python/axon_quant/llm.py`):
+    - 枚举:`AgentRole` / `AgentStatus` / `VoteType` / `SignalType`。
+    - 数据结构:`SwarmConfig` / `VoteProposal` / `VoteResult` / `MarketSignal` / `TradingTools`。
+    - `PySwarmOrchestrator`:`start() / stop() / is_running() / register_market_agent() / register_risk_agent() / register_execution_agent() / register_audit_agent() / inject_market_signal() / inject_vote_response() / inject_shutdown() / create_vote() / stats()` 共 11 个方法。Lazy runtime 设计 — `ensure_runtime()` 内部辅助,`register_*_agent` 首次调用时自动启动 `run_loop_arc`,start 多次幂等。`stats()` 返回 11 字段 dict。
+    - `python/axon_quant/llm.py`:把 11 个 swarm 符号 + `TradingTools` 透出到 `from axon_quant.llm import ...`,用 `getattr(_native_llm_module, "swarm", None)` 拿到 native 子模块(因 `_native` 是 cdylib 单文件扩展,dot 路径不可用)。
+  - **Python E2E**(`python/tests/test_swarm_pipeline_e2e.py`,**25/25 通过**):覆盖 11 个核心场景 — 枚举/数据结构字段 / 4 类 agent 注册 / start-stop 生命周期 / lazy runtime / inject 路径 / stats 字段。
+  - **测试结果**:`cargo test -p axon-llm --features "python,trading-oms"` 全部 0 失败(322 lib unittests + 74 integration tests + 3 doctests),`cargo clippy` 仅 `paper_backend.rs` 1 个 unused_import 警告(非阻塞)。
+  - **依赖**:`axum` / `tokio` / `serde_json` 已在 workspace 级别,本 task 0 增量。
+  - **配套文档**:`docs/{zh,en}/reference/swarm-orchestration.md` 新建,4-Agent pipeline 架构图 + run_loop 状态机 + HarnessBridge 集成点 + Python 接入示例。
+  - **配套 example**:`examples/18_harness/swarm_demo.py` 新建,4 agent 注册 + market signal 注入 + 投票共识 + ExecutionAgent 调 `PlaceOrderTool` 真下单到 `MockTradingBackend` 端到端 demo。
+- **axon-defi 0.3.0 P0 Batch 1 + 2 完成 — 真链 EVM 接入**:`axon-defi::evm` 从"模拟"切到 `alloy-rs` 真链交互,所有方法 100% 删除 `format!("0x{:064x}", n)` 假 hash 残留。**新增模块**:
+  - `evm::provider`:`ProviderConfig` + `EvmProvider` 工厂,支持 HTTP RPC + 超时 + 重试 + anvil fork,内部用 `alloy::providers::ProviderBuilder::connect_http`,`chain_id()` / `block_number()` 走真 RPC。
+  - `evm::signer`:`LocalSigner` 包装 `alloy::signers::local::PrivateKeySigner`,`AtomicU64` 持 nonce + `next_nonce()` 原子分配 + `sync_nonce()` 从链上同步 + `transfer_eth()` 真发转账 + `raw_signer()` 暴露给 Erc20Client 内部用。
+  - `evm::erc20`:`Erc20Client` 完整实现:`TokenInfo` 已知 token 预设(USDC/USDT/DAI/WETH)+ 读路径 `decimals()` / `symbol()` / `balance_of()` 走 `sol!` 宏生成 `IERC20` ABI 编码 + `TransactionRequest::call` + 手工 ABI 解码 + 写路径 `approve_tx()` / `transfer_tx()` / `approve()` / `transfer()` 完整签名+发送+等收据 + `parse_transfer_log()` / `parse_approval_log()` 用 `decode_raw_log` 解析事件 topics+data。
+  - `evm::multicall`:`Multicall3` 封装 `0xcA11bde05977b3631167028862bE2a173976CA11` 通用地址,支持 Ethereum/Arbitrum/Optimism/Polygon 4 链,`aggregate3(Call3[])` 走真 Multicall3 合约,`Call3::new/strict` + `CallResult` 结构化输出,便捷封装 `balance_of_batch(token, &[Address]) -> Vec<U256>` 100 个 holder 一次 RPC + `decimals_batch(&[&str]) -> Vec<u8>`。
+  - `evm::chain`:已有 `Chain` enum 扩展 `from_chain_id` / `chain_id` / `name` / `lz_chain_id`,支持 Ethereum(1) / Arbitrum(42161) / Optimism(10) / Polygon(137)。
+  - `error::DefiError` 新增 `ChainError { chain_id, reason }` / `RpcError { url, status, body }`(结构化,带 256 字符截断)/ `ContractError { address, method, reason }`,原有字符串变体重命名为 `*Legacy` 保留向后兼容。
+  - **测试**:`cargo test -p axon-defi --features evm` 全过,统计如下:
+    - lib 单元测试 **76/76**(含 evm::provider 5 个、evm::erc20::TokenInfo 5 个)
+    - `tests/error_types.rs` **4/4**
+    - `tests/evm_provider.rs` **10/10**(anvil 集成测试自动 skip)
+    - `tests/evm_signer.rs` **7/7**
+    - `tests/evm_erc20.rs` **7/7**
+    - `tests/evm_erc20_write.rs` **7/7**(新增,含 Transfer/Approval 事件 ABI 解码 + approve/transfer anvil 集成)
+    - `tests/evm_multicall.rs` **14/14**(新增,含 100 holder 批量 + 4 链支持 + 事件签名校验)
+  - **合计 125/125 测试通过**,`cargo clippy -p axon-defi --features evm --all-targets` 0 error(warning 全在测试文件未使用导入,不影响主流程)。Python 绑定 `DefiError` 已支持结构化变体(原 `#[pyo3::From]` derive 仍 work)。
+  - **依赖**:`alloy = "1.0"`(providers/signers/contract/rpc-types-eth/transports/eips/sol-types)+ `alloy-primitives = "1.0"` + `url = "2.5"`,`evm` feature 默认关(避免 cargo tree 膨胀)。
+- **axon-defi 0.3.0 P0 Batch 3 完成 — Uniswap V3 真接入**:`dex::uniswap` 从模拟公式 `amount_in * fee_factor` 切到 [V3Quoter] + [V3Router] + [V3Pool] 真链交互。**新增模块**:
+  - `dex::v3_quoter`:`V3Quoter` 封装 IQuoterV2(`0x61fFE014bA17989E743c5F6cB21bF9697530B56e` canonical 地址),`quoteExactInputSingle(QuoteExactInputSingleParams)` 走 `eth_call` 拿真实 quote,返回 `amountOut` + `sqrtPriceX96After` + `initializedTicksCrossed` + `gasEstimate`,用 `(U256, U160, u32, U256)` tuple 直接 `abi_decode` 解码(避开 sol! 宏 named struct 返回的 SolValue trait 缺失问题)。`is_valid_fee_tier` 校验 [100/500/3000/10000] 4 个 fee tier。
+  - `dex::v3_router`:`V3Router` 封装 SwapRouter02(`0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`),提供 `build_tx(signer, SwapParams)` 离线构造 + `swap(signer, token_in, SwapParams)` 完整签名+发送+等收据,`SwapParams::with_min_out/with_recipient/with_sqrt_price_limit` 链式 API 表达滑点保护和价格限制。
+  - `dex::v3_pool`:`V3Pool` 封装 `IUniswapV3Pool`,`slot0()` 拿当前 sqrtPriceX96 + tick,`liquidity()` 拿当前 tick 流动性,`state()` 合并,`estimate_price_impact(amount_in, amount_out)` 简化版价格冲击估算(基于 1:1 基准)。
+  - `dex::uniswap` 重写:`quote_swap` 删 `amount_in * fee_factor` 模拟,改走 V3Quoter 真链 quote;`get_best_route` 扫描 4 个 fee tier 选 amount_out 最大;`UniswapV3Contracts` 新增 `quoter` 字段(4 链共用 canonical 地址);`SwapRoute` 新增 `initialized_ticks_crossed` + `gas_estimate` + `amount_out_f64()` 辅助方法。
+  - **测试新增**:`tests/evm_v3_quoter.rs` 9 个,`tests/evm_v3_router.rs` 4 个,`tests/evm_v3_pool.rs` 4 个,`uniswap::tests` 5 个,`v3_quoter::tests` 4 个,`v3_router::tests` 2 个,`v3_pool::tests` 3 个;**合计 147/147 测试通过**(`cargo test -p axon-defi --features evm` 全部 0 failed),`cargo clippy --all-targets` 0 error。anvil fork 集成测试(7 个)自动 skip,纯单测 100% 覆盖 ABI 编码 + selector 长度 + 元信息。
+  - **alloy 1.6 API 适配**:`u24` 字段需要 `Uint::<24, 1>::try_from(fee)` 转换,`sqrtPriceLimitX96: U160` 需要 `U256 → U160` 截断(取低 160 位),`uint160 → U256` 用 12 字节 padding,`fee` 参数类型 strict 转换避免溢出。
+- **axon-defi 0.3.0 P0 Batch 4 完成 — Bridge/MEV 真接入 + Python 绑定**:`bridge::layerzero` 和 `mev::share` 从 `format!("0x{:064x}", n)` 假 hash 切到真链交互,同时把 EVM/DEX/Bridge/MEV 全套组件暴露给 Python。**新增/重写模块**:
+  - `bridge::layerzero`:`LayerZero V2` 真接入,`LZ_ENDPOINT_V2_ADDRESS = 0x1a44076050125825900e736c501f859c50fE728c` 4 链共用,`estimate_fee()` 走真 `EndpointV2.quote(MessagingParams, payInLzToken)` 拿 native fee,`bridge_tokens(signer, provider, dst_chain, params)` 走真 `EndpointV2.send(MessagingParams, refund)` 发交易(必带 native fee),`MessagingParamsInput` 结构化输入。`sol!` 宏生成 `ILayerZeroEndpointV2` ABI 绑定,`U256 → B256` / `address → bytes32`(左 12 字节 0x00 + 20 字节地址) / 嵌套 struct `abi_encode` 全套适配。
+  - `mev::share`:`MevShareClient::submit_transaction(signed_tx_hex)` 走真 `eth_sendBundle` JSON-RPC 提交到 Flashbots relay(`https://relay.flashbots.net`),`reqwest + serde_json` 构造 payload + 解析 `result.bundleHash`,HTTP 错误 → `RpcError` / `result.error` → `ContractError` / 缺 `bundleHash` → `ContractError`,`get_status` 走 `eth_getBundleStats` 失败降级到 `Pending`。`MevShareConfig.validate()` 强制 signing_key 非空。
+  - **Python 绑定(`axon-defi/src/python/`)**:
+    - `python/evm.rs`:`ProviderConfig` / `EvmProvider`(chain_id / block_number 走真 RPC)/ `LocalSigner`(from_hex / address / next_nonce)/ `Erc20Client`(decimals / symbol / balance_of)/ `V3Quoter`(quote_exact_input_single 走真链)/ `V3Router`(address 暴露)/ `Multicall`(balance_of_batch 走真 Multicall3 合约)。`#[pyclass(name = ..., from_py_object)]` 模式 + `future_into_py` async 桥接,`EvmProvider` / `LocalSigner` 的 `inner` 字段 `pub(crate)` 化以便兄弟模块组合。
+    - `python/bridge.rs`:`BridgeConfig` / `BridgeManager`(is_supported / `estimate_fee` 走真链 / `bridge_tokens` 走真链),`parse_messaging_params(dict)` 工具函数把 Python dict 解析成 `MessagingParamsInput`(dst_eid / receiver 20→32 字节右 pad / message 0x hex|bytes / options / pay_in_lz_token),`receipt_to_dict` 把 `TransactionReceipt` 转 Python `(tx_hash, block_number, status, gas_used)` 4-tuple。
+    - `python/mev.rs`:`MevShareConfig` / `MevShareClient`(submit_transaction 走真 Flashbots relay),完整覆盖 T1.12。
+    - `python/chain.rs` / `python/config.rs` / `python/error.rs` / `python/types.rs` 已有 4 个子模块继续工作,`register_module` 把 7 个子模块(18 个核心类)扁平挂到 `_native.defi`。
+  - **Python 顶层 wrapper**:`python/axon_quant/defi.py` 重新导出 18 个核心类 + 工厂函数 `evm_provider()` / `local_signer()` / `erc20_client()`,thin wrapper 模式与 oms.py / risk.py 一致;`DefiError` 继承 builtin `Exception`(非 `AxonError`,避免 cargo 循环,Stage 1 实战发现)。
+  - **Python E2E**(`python/tests/test_defi_e2e.py`,30+ 个 case):覆盖类型导入 / 工厂函数 / 基础类型字段 / Provider 构造 / Signer address + next_nonce / Bridge 默认配置 + is_supported 4 链 / MEV 默认配置 / DefiError 是 Exception 子类 / 9 个错误变体都注册。E2E 用 venv `PYO3_PYTHON` + maturin develop 链。
+  - **测试新增**:`tests/bridge_layerzero.rs` 6 个(4 纯单测 + 2 anvil fork 集成,本地 anvil --fork 启动时跑通 `estimate_fee` / `bridge_tokens` 真链,无 anvil 自动 skip),`bridge::layerzero::tests` 8 个(配置 / validate / 4 链 / unsupported / 序列化),`mev::share::tests` 13 个(配置默认值 / validate / 序列化 / status 变体 / 错误路径),`python::bridge::tests` 2 个 / `python::mev::tests` 2 个;**合计 153/153 测试通过**(`cargo test -p axon-defi --features evm` 全部 0 failed),`cargo clippy -p axon-defi --features evm --all-targets` 0 error,主代码 0 warning(测试文件有 dead_code 提示,non-blocking)。
+  - **依赖**:`reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }`(Flashbots HTTP,仅 mev 模块用,避免拖累 lib 体积)。
+  - **删除假 hash 残留**:`bridge_tokens` 的 `format!("0x{:064x}", 67890)` 和 `submit_transaction` 的 `format!("0x{:064x}", 12345)` 100% 删除,改为 `TransactionReceipt.transaction_hash` 真收据 / Flashbots `result.bundleHash` 真响应。
+  - **配套文档**:`docs/{zh,en}/reference/defi.md` 新建,覆盖 18 个 Python 类 + LayerZero/Falshbots 真接入流程 + Multicall3 批量查询 + 错误码清单。
+- **axon-inference 0.3.0 P0 Stage 6 收口完成 — 模型热更新两步原子路径**:`ModelHotReloader` 收口"两步原子热更新"工作流,从 Stage 6 stub(`PyRuntimeError("not available in Stage 6")`)切到**真实现**。**核心改动**:
+  - **`InferenceEngine` trait 加 `build_session` 抽象方法**(`crates/axon-inference/src/engine.rs`):在 backend 上下文中预构造新 session(不替换当前 session),只接收 `&self`,允许 `build_session` 阶段持**只读锁**并发推理;只有 `replace_session` 瞬间持写锁。`build_session` 返回 `Box<dyn Any + Send + Sync>`,各 backend 自己决定装什么(Onnx = `ort::Session`,Tch = `tch::CModule`,Candle = `CandleReloadState { path }`)。
+  - **3 个 backend 全部真实现 `build_session` + `replace_session`**:
+    - `OnnxBackend::build_session` 走 `ort::Session::builder().commit_from_file(path)`,`replace_session` downcast 到 `Box<ort::Session>` 原子换 `self.session`。
+    - `TchBackend::build_session` 走 `tch::CModule::load(path)`,`replace_session` downcast 到 `Box<tch::CModule>` 原子换 `self.model`。
+    - **`CandleBackend::replace_session` Stage 6 之前的 `Err("not implemented")` 100% 删除**,改走两步:`build_session` 返回 `Box<CandleReloadState { path }>`(Candle 模型与 `self.device` / `self.config` 紧绑定,无法独立构造),`replace_session` downcast 后调 `self.load(&state.path)` 走完整 Candle 重建(通过 `Mutex<Option<Result<LoadedModel, _>>>` 缓存)。
+  - **`ModelHotReloader::reload` + `try_reload_static` 全部改走两步**(`crates/axon-inference/src/hot_reload.rs`):① sha256 算新文件校验和 → ② `backend.read().build_session(path)?` 预构造(只读锁)→ ③ `backend.write().replace_session(new)?` 原子替换(写锁)→ ④ `version.fetch_add(1) + watch::Sender.send(v)` 通知订阅者。任意步骤失败旧 session 不动,完全无破坏性。`sha2` 复用算 sha256(已存在)。
+  - **`ModelHotReloader::new_from_path(backend, path, num_threads)` 简化构造**:`hot_reload.rs` 新增方法,只接收 `path` + `num_threads`,其余 `ModelConfig` 字段用 defaults(backend 占位 Onnx、device Cpu、input_shape/output_dim 0 占位,实际热更新只看 path)。主要服务 Python 端简化构造。
+  - **Python 端**(`crates/axon-inference/src/python/`):
+    - `PyInferenceEngine` 新增 `config_path: String` + `num_threads: usize` 字段(在 `__new__` 时存),加 `#[getter] fn config_path()` 暴露给 Python;新增 `pub(crate) fn _shared_backend(&self) -> (Arc<...>, String, usize)` 给 `PyModelHotReloader` 共享 backend。`__repr__` 同步加 path(`InferenceEngine(backend=onnx, path=...)`)。
+    - `PyModelHotReloader::__new__(engine)` 走真实现(原 `PyRuntimeError("not available in Stage 6")` 100% 删除):`engine._shared_backend()` 拿 Arc + path + num_threads → `RustReloader::new_from_path(...)` 构造 → `Builder::new_current_thread().enable_all().build()` 创 tokio runtime(避免 `Runtime::new` 在 only-`rt` feature 下未暴露的兼容问题)。`reload` 走 `self.rt.block_on(self.inner.reload())` 同步包装 + 可选 `callback.call1(py, (path, version))` 调 Python 回调(错误仅 warn 不让 reload 失败)。
+  - **测试**:
+    - `cargo test -p axon-inference --features python`:**89/89 通过**(lib 43 + `tests/inference_test.rs` 40 + `tests/integration_test.rs` 4 + doctests 2):
+      - `candle_replace_session_wrong_type_returns_candle_error`:验证 downcast 失败路径(改自原"not implemented"测试)
+      - `candle_build_session_nonexistent_returns_model_not_found`:验证 build_session 路径不存在 → `ModelNotFound`
+      - `candle_build_session_returns_state`:验证 build_session 成功返回 `Box<CandleReloadState>`,可 downcast 回读
+      - `reloader_new_succeeds_with_engine`:验证 Python 端 `__new__` 成功 + `version() == 0` + `model_path` 非空(改自原 `reloader_new_returns_runtime_error`)
+      - `reloader_subscribe_and_unsubscribe`:验证 `subscribe/unsubscribe/has_callback` 三件套(用 `py.eval(c"lambda ...")` + `.unbind()` 适配 pyo3 0.28 `&CStr` API)
+    - `python/tests/test_inference_e2e.py` 新增 5 个 case,删 1 个 stub:**35 passed + 4 skipped**(已知 macOS ONNX runtime 加载非 ONNX 文件会 hang,4 个 onnx 工厂路径已 mark.skip,与本次热更新无关):
+      - `test_reloader_new_succeeds_with_engine` / `test_reloader_subscribe_and_unsubscribe` / `test_reloader_model_path_matches_engine` — 三个 reloader 基础属性
+      - `test_reloader_reload_nonexistent_returns_error_no_version_bump` — 验证 reload 失败时 `version() == 0` 不变,失败隔离语义
+      - `test_reloader_subscribe_callback_invoked_on_reload_or_silent_on_error` — 验证失败 reload 不触发 callback,避免误报
+  - **配套文档**:`docs/{zh,en}/reference/inference-hot-reload.md` 新建,覆盖两步原子路径设计 + Trait 抽象 + 各 backend 行为对比表 + Python/Rust 端订阅 API + 注意事项(阻塞时间、类型不匹配错误、Predict/Candle 差异) + 验收标准。
 - **EOD 强制平仓开关（Stage 3 阶段 D）**:`BacktestEngineConfig` 新增 `force_liquidate: bool` 字段(默认 `false`);`BacktestEngine` 新增 `with_force_liquidate(on: bool)` 链式 API 与 `liquidate_eod()` 内部方法,回测结束时遍历 `position_states`,对每个非零持仓发市价单(IOC,撮合引擎当前最优对手价),走 `apply_fill` 6 状态机正常扣手续费 + 算 realized_pnl + 记录 trades,把剩余持仓全部清仓后才算终态。`PyBacktestEngine` 暴露同名 Python 绑定。**应用层语义**:
   - `force_liquidate=false`(默认):保留策略意图,`final_nav` 用 `equity_curve` 末帧 mark 估值(浮盈浮亏计入)
   - `force_liquidate=true`:EOD 清仓,所有 PnL 转为已实现(适合日报/对账,但末日单若 PnL 不理想会污染结果,业内通常手动控制开关)
