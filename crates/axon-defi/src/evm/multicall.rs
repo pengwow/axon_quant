@@ -84,7 +84,7 @@ impl Call3 {
 /// 独立实现,不依赖 alloy,保证 `cargo build --no-default-features` 也能编译。
 fn hex_decode(s: &str) -> Vec<u8> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(s.len() / 2);
