@@ -50,7 +50,32 @@ sol! {
     }
 }
 
+/// 交易参数(not-evm 桩版本)
+///
+/// 0.3.0 `cargo build --no-default-features` 时需要同形参数类型给 `swap` stub 用。
+/// 与 evm 版本字段语义相同(都是 `token_in` / `token_out` / `fee` / `amount_in` / ...),
+/// 但底层地址用 `String` 表示(避免拉入 alloy)。
+#[cfg(not(feature = "evm"))]
+#[derive(Debug, Clone)]
+pub struct SwapParams {
+    /// 输入 token
+    pub token_in: String,
+    /// 输出 token
+    pub token_out: String,
+    /// fee tier (100/500/3000/10000)
+    pub fee: u32,
+    /// 接收者(默认 = 签名地址)
+    pub recipient: Option<String>,
+    /// 输入金额
+    pub amount_in: u128,
+    /// 最小输出(滑点保护)
+    pub min_amount_out: u128,
+    /// 价格限制(0 = 不限)
+    pub sqrt_price_limit_x96: u128,
+}
+
 /// 交易参数
+#[cfg(feature = "evm")]
 #[derive(Debug, Clone)]
 pub struct SwapParams {
     /// 输入 token
@@ -69,6 +94,7 @@ pub struct SwapParams {
     pub sqrt_price_limit_x96: U256,
 }
 
+#[cfg(feature = "evm")]
 impl SwapParams {
     /// 快速构造(无 recipient/价格限制)
     pub fn new(token_in: Address, token_out: Address, fee: u32, amount_in: U256) -> Self {
@@ -261,7 +287,7 @@ impl V3Router {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "evm"))]
 mod tests {
     use super::*;
 

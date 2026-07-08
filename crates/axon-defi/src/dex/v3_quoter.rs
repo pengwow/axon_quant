@@ -53,6 +53,7 @@ sol! {
 }
 
 /// 报价结果
+#[cfg(feature = "evm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuoteResult {
     /// 输出 token 数量

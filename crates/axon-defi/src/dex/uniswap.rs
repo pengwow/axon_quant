@@ -222,6 +222,7 @@ impl UniswapRouter {
 }
 
 /// 报价 + 元信息
+#[cfg(feature = "evm")]
 #[derive(Debug, Clone)]
 pub struct QuoteWithMeta {
     /// 输出 token 数量

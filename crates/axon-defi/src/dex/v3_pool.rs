@@ -7,16 +7,18 @@
 //! 注意:本模块不调工厂计算 pool address,而是接受 caller 提供的 pool 地址
 //! (生产场景:factories 已知 + 用 `getPool(tokenA, tokenB, fee)` 计算)。
 
-use crate::error::DefiError;
 use crate::evm::chain::Chain;
 use crate::evm::provider::EvmProvider;
 
+#[cfg(feature = "evm")]
+use crate::error::DefiError;
 #[cfg(feature = "evm")]
 use alloy::network::TransactionBuilder;
 #[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
 
 /// V3 池子 slot0 返回
+#[cfg(feature = "evm")]
 #[derive(Debug, Clone)]
 pub struct Slot0 {
     /// sqrtPriceX96(价)
@@ -26,6 +28,7 @@ pub struct Slot0 {
 }
 
 /// V3 池子状态
+#[cfg(feature = "evm")]
 #[derive(Debug, Clone)]
 pub struct PoolState {
     /// sqrtPriceX96(价)
@@ -209,9 +212,15 @@ impl V3Pool {
             (1.0 - out_f / in_f).max(0.0)
         }
     }
+
+    /// estimate_price_impact stub(evm feature 关闭时)
+    #[cfg(not(feature = "evm"))]
+    pub fn estimate_price_impact(&self, _amount_in: u128, _amount_out: u128) -> f64 {
+        0.0
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "evm"))]
 mod tests {
     use super::*;
     use crate::evm::provider::ProviderConfig;

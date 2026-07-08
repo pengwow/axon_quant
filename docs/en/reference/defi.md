@@ -13,7 +13,7 @@ Before 0.3.0 P0, the entire `axon-defi` crate was a "shell":`bridge_tokens` retu
 - [Supported Chains](#supported-chains)
 - [Core Components](#core-components)
 - [Quick Start](#quick-start)
-- [EVM Provider & Signer](#evm-provider--signer)
+- [EVM Provider & Signer](#evm-provider-signer)
 - [ERC-20 Client](#erc-20-client)
 - [Multicall3 Batch Queries](#multicall3-batch-queries)
 - [Uniswap V3 Integration](#uniswap-v3-integration)

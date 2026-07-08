@@ -112,6 +112,25 @@ pub struct MessagingParamsInput {
     pub pay_in_lz_token: bool,
 }
 
+/// `MessagingParamsInput` 的 not-evm 桩结构
+///
+/// 0.3.0 `cargo build --no-default-features` 时,MessagingParamsInput 整体 cfg-gate
+/// 在 `feature = "evm"` 下,需要为 stub 函数提供同形参数类型(本 crate 内可见,无外部语义)。
+#[cfg(not(feature = "evm"))]
+#[derive(Debug, Clone)]
+pub struct MessagingParamsInput {
+    /// 目标链 LayerZero EID
+    pub dst_eid: u32,
+    /// 接收者(bytes32,右 padded address)
+    pub receiver_bytes32: [u8; 32],
+    /// 编码后的 message
+    pub message: Vec<u8>,
+    /// LayerZero options
+    pub options: Vec<u8>,
+    /// 用 LZ token 付 fee
+    pub pay_in_lz_token: bool,
+}
+
 /// 跨链桥管理器
 #[derive(Debug, Clone)]
 pub struct BridgeManager {
@@ -197,7 +216,7 @@ impl BridgeManager {
     pub async fn estimate_fee(
         &self,
         _provider: &EvmProvider,
-        _params: &crate::bridge::MessagingParamsInput,
+        _params: &crate::bridge::layerzero::MessagingParamsInput,
     ) -> Result<String, DefiError> {
         Err(DefiError::ConfigError("evm feature not enabled".into()))
     }
@@ -279,7 +298,7 @@ impl BridgeManager {
         _signer: &LocalSigner,
         _provider: &EvmProvider,
         _dst_chain: &Chain,
-        _params: &crate::bridge::MessagingParamsInput,
+        _params: &crate::bridge::layerzero::MessagingParamsInput,
     ) -> Result<String, DefiError> {
         Err(DefiError::ConfigError("evm feature not enabled".into()))
     }

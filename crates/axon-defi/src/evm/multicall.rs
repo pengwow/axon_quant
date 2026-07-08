@@ -79,6 +79,49 @@ impl Call3 {
     }
 }
 
+/// hex 字符串 → bytes("0x" 前缀可选)
+///
+/// 独立实现,不依赖 alloy,保证 `cargo build --no-default-features` 也能编译。
+fn hex_decode(s: &str) -> Vec<u8> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if s.len() % 2 != 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = hex_nibble(bytes[i]);
+        let lo = hex_nibble(bytes[i + 1]);
+        match (hi, lo) {
+            (Some(h), Some(l)) => out.push((h << 4) | l),
+            _ => return Vec::new(),
+        }
+    }
+    out
+}
+
+/// bytes → hex 字符串("0x" 前缀)
+fn hex_encode(b: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(2 + b.len() * 2);
+    s.push_str("0x");
+    for byte in b {
+        s.push(HEX[(byte >> 4) as usize] as char);
+        s.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    s
+}
+
+/// 单个十六进制字符 → 0..=15
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// aggregate3 单条结果
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallResult {
@@ -198,6 +241,7 @@ impl Multicall {
     /// ERC-20 balanceOf 批量查询
     ///
     /// 1 次 RPC 拿 N 个 holder 的余额(对比 N 次单查)
+    #[cfg(feature = "evm")]
     pub async fn balance_of_batch(
         &self,
         token: &str,
@@ -245,7 +289,18 @@ impl Multicall {
         Ok(balances)
     }
 
+    /// balance_of_batch stub(evm feature 关闭时)
+    #[cfg(not(feature = "evm"))]
+    pub async fn balance_of_batch(
+        &self,
+        _token: &str,
+        _holders: &[String],
+    ) -> Result<Vec<String>, DefiError> {
+        Err(DefiError::ConfigError("evm feature not enabled".into()))
+    }
+
     /// ERC-20 decimals 批量查询
+    #[cfg(feature = "evm")]
     pub async fn decimals_batch(&self, tokens: &[&str]) -> Result<Vec<u8>, DefiError> {
         // decimals() selector = 0x313ce567
         let selector = alloy::primitives::hex::decode("313ce567").unwrap();
@@ -268,17 +323,12 @@ impl Multicall {
         }
         Ok(decimals)
     }
-}
 
-/// hex 字符串 → bytes("0x" 前缀可选)
-fn hex_decode(s: &str) -> Vec<u8> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    alloy::primitives::hex::decode(s).unwrap_or_default()
-}
-
-/// bytes → hex 字符串("0x" 前缀)
-fn hex_encode(b: &[u8]) -> String {
-    format!("0x{}", alloy::primitives::hex::encode(b))
+    /// decimals_batch stub(evm feature 关闭时)
+    #[cfg(not(feature = "evm"))]
+    pub async fn decimals_batch(&self, _tokens: &[&str]) -> Result<Vec<u8>, DefiError> {
+        Err(DefiError::ConfigError("evm feature not enabled".into()))
+    }
 }
 
 #[cfg(test)]

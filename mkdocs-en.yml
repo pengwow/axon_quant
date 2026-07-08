@@ -138,6 +138,7 @@ nav:
       - LLM Agent Trading: user-guide/llm-trading/oader.md
       - Production Deployment: user-guide/production.md
       - Traditional Strategy: user-guide/traditional-strategy.md
+      - RL Training: user-guide/rl-training.md
   - User Guide:
       - Architecture Overview: user-guide/architecture.md
       - AI-Native Design: user-guide/ai-native-design.md
@@ -153,6 +154,9 @@ nav:
       - Python Bindings: reference/python-bindings.md
       - Configuration: reference/configuration.md
       - Exchange Security: reference/exchange-security.md
+      - DeFi On-chain: reference/defi.md
+      - Inference Hot Reload: reference/inference-hot-reload.md
+      - Swarm Orchestration: reference/swarm-orchestration.md
   - Benchmark: benchmark.md
   - Architecture Decisions:
       - Index: adr/index.md
