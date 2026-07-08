@@ -1,6 +1,6 @@
 # `axon-inference` Model Hot Reload (0.3.0 P0 Stage 6 closure)
 
-> Version: `axon-inference` v0.2.0+
+> Version: `axon-inference` v0.3.0+
 > Status: **Implemented** (Stage 6 closure)
 > Plan ref: `.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` Workflow C
 

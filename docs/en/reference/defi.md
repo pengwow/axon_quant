@@ -481,7 +481,7 @@ Integration test pattern:probe `http://127.0.0.1:8545` for a 500ms response; if 
 | Class / Function | Source | Description |
 |------------------|--------|-------------|
 | `Chain` | `axon-defi::evm::chain` | 4-chain enum |
-| `EvmConfig` | `axon-defi::python::config` | EVM config (0.2.0 legacy API, kept) |
+| `EvmConfig` | `axon-defi::python::config` | EVM config (0.3.0 legacy API, kept) |
 | `DefiOrder` | `axon-defi::python::types` | DeFi order |
 | `SwapRoute` | `axon-defi::python::types` | Trade route |
 | `RiskCheckResult` | `axon-defi::python::types` | Risk result |

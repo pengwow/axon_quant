@@ -481,7 +481,7 @@ cargo test -p axon-defi --features evm --test evm_erc20_write
 | 类 / 函数 | 来源 | 说明 |
 |-----------|------|------|
 | `Chain` | `axon-defi::evm::chain` | 4 链枚举 |
-| `EvmConfig` | `axon-defi::python::config` | EVM 配置(0.2.0 旧 API,保留) |
+| `EvmConfig` | `axon-defi::python::config` | EVM 配置(0.3.0 旧 API,保留) |
 | `DefiOrder` | `axon-defi::python::types` | DeFi 订单 |
 | `SwapRoute` | `axon-defi::python::types` | 交易路由 |
 | `RiskCheckResult` | `axon-defi::python::types` | 风控结果 |

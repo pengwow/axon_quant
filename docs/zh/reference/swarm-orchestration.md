@@ -1,6 +1,6 @@
 # `axon-llm::swarm` 多 Agent 编排(0.3.0 P0 工作流 B 收口)
 
-> 适用版本:`axon-llm` v0.2.0+
+> 适用版本:`axon-llm` v0.3.0+
 > 状态:**已实现**(工作流 B Batch 1-4 全收口)
 > 上游 plan:`.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
 

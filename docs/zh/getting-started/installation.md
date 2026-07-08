@@ -44,7 +44,7 @@ pip install axon-quant[onnx]
 
 # 3. 验证安装
 python -c "import axon_quant; print(axon_quant.__version__)"
-# 预期输出: 0.2.0
+# 预期输出: 0.3.0
 ```
 
 !!! note "PyPI 包名说明"

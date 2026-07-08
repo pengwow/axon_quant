@@ -20,7 +20,7 @@ mod harness;
 /// AXON Quant Python 模块(原生扩展,由 __init__.py 导入并重新导出)
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__version__", "0.2.0")?;
+    m.add("__version__", "0.3.0")?;
 
     // 注册公共异常基类(必须先于各子模块的 `create_exception!`)
     error::register_exceptions(m)?;

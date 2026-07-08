@@ -1,6 +1,6 @@
 # LLM Trading Risk & Safety
 
-> Applicable version: axon-llm v0.2.0+
+> Applicable version: axon-llm v0.3.0+
 > Prerequisites: [overview.md](overview.md) §4
 
 This document details axon-llm's three risk control defense lines + failure modes + recovery strategies. All risk control is **fail-closed** (any stage failure immediately rejects, never enters backend).

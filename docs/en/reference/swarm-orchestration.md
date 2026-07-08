@@ -1,6 +1,6 @@
 # `axon-llm::swarm` Multi-Agent Orchestration (0.3.0 P0 Workflow B Wrap-up)
 
-> Applies to: `axon-llm` v0.2.0+
+> Applies to: `axon-llm` v0.3.0+
 > Status: **Implemented** (Workflow B Batch 1-4 fully wrapped up)
 > Plan: `.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
 
