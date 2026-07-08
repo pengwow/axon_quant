@@ -143,9 +143,7 @@ impl PyBridgeManager {
             }
             #[cfg(not(feature = "evm"))]
             {
-                Err::<(String, u64, bool, u64), _>(PyValueError::new_err(
-                    "evm feature not enabled",
-                ))
+                Err::<(String, u64, bool, u64), _>(PyValueError::new_err("evm feature not enabled"))
             }
         })
     }
@@ -226,9 +224,7 @@ fn extract_bytes(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Vec<u8>> {
 }
 
 /// `TransactionReceipt` → Python 元组(tx_hash, block_number, status, gas_used)
-fn receipt_to_dict(
-    receipt: &alloy::rpc::types::TransactionReceipt,
-) -> (String, u64, bool, u64) {
+fn receipt_to_dict(receipt: &alloy::rpc::types::TransactionReceipt) -> (String, u64, bool, u64) {
     (
         format!("{:?}", receipt.transaction_hash),
         receipt.block_number.unwrap_or(0),

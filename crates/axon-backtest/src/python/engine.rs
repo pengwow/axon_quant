@@ -73,8 +73,8 @@ use crate::engine::{BacktestEngine, BacktestEngineConfig, RunResult};
 use crate::matching::MatchingEngine;
 use crate::matching::engine::L1MatchingEngine;
 
-use crate::python::matching::PyMatchingEngine;
 use super::types::dict_to_order;
+use crate::python::matching::PyMatchingEngine;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 主类: PyBacktestEngine
@@ -189,12 +189,7 @@ impl PyBacktestEngine {
     ///   是 no-op(默认 trait 实现,见 `matching::engine::MatchingEngine`)。
     /// - `L1MatchingEngine` / `ImpactedMatchingEngine` 都重写了该方法,
     ///   提供完整实现。
-    fn with_seed_liquidity(
-        &mut self,
-        half_spread: f64,
-        depth_levels: usize,
-        size_per_level: f64,
-    ) {
+    fn with_seed_liquidity(&mut self, half_spread: f64, depth_levels: usize, size_per_level: f64) {
         self.inner
             .with_seed_liquidity(half_spread, depth_levels, size_per_level);
     }

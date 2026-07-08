@@ -17,6 +17,8 @@ use crate::evm::chain::Chain;
 use crate::evm::provider::EvmProvider;
 
 #[cfg(feature = "evm")]
+use alloy::network::TransactionBuilder;
+#[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
 #[cfg(feature = "evm")]
 use alloy::providers::Provider;
@@ -24,8 +26,6 @@ use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 #[cfg(feature = "evm")]
 use alloy::sol_types::SolValue;
-#[cfg(feature = "evm")]
-use alloy::network::TransactionBuilder;
 
 /// Multicall3 合约(Mudeb 部署,几乎所有 EVM 链同一地址)
 pub struct Multicall3;
@@ -35,8 +35,7 @@ impl Multicall3 {
     ///
     /// 在 Ethereum / Arbitrum / Optimism / Polygon 等绝大多数 EVM 链上同一地址:
     /// `0xcA11bde05977b3631167028862bE2a173976CA11`
-    pub const CANONICAL_ADDRESS: &'static str =
-        "0xcA11bde05977b3631167028862bE2a173976CA11";
+    pub const CANONICAL_ADDRESS: &'static str = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
     /// 该链是否部署了 Multicall3
     ///
@@ -146,10 +145,9 @@ impl Multicall {
         let mc_calls: Vec<IMulticall3Wrapper::Call> = {
             let mut acc = Vec::with_capacity(calls.len());
             for c in &calls {
-                let target: Address = c
-                    .target
-                    .parse()
-                    .map_err(|e| DefiError::ConfigError(format!("invalid target {}: {}", c.target, e)))?;
+                let target: Address = c.target.parse().map_err(|e| {
+                    DefiError::ConfigError(format!("invalid target {}: {}", c.target, e))
+                })?;
                 acc.push(IMulticall3Wrapper::Call {
                     target,
                     allowFailure: c.allow_failure,
@@ -176,12 +174,11 @@ impl Multicall {
         use alloy::sol_types::SolCall;
         type Aggregate3Return = <IMulticall3Wrapper::aggregate3Call as SolCall>::Return;
         let results: Aggregate3Return =
-            SolValue::abi_decode(&output)
-                .map_err(|e| DefiError::ContractError {
-                    address: Multicall3::CANONICAL_ADDRESS.to_string(),
-                    method: "aggregate3".into(),
-                    reason: format!("decode: {}", e),
-                })?;
+            SolValue::abi_decode(&output).map_err(|e| DefiError::ContractError {
+                address: Multicall3::CANONICAL_ADDRESS.to_string(),
+                method: "aggregate3".into(),
+                reason: format!("decode: {}", e),
+            })?;
 
         Ok(results
             .into_iter()

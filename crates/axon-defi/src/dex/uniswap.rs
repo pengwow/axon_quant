@@ -13,7 +13,7 @@ use crate::evm::chain::Chain;
 #[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
 
-pub use crate::dex::v3_quoter::{is_valid_fee_tier, V3Quoter, FEE_TIERS};
+pub use crate::dex::v3_quoter::{FEE_TIERS, V3Quoter, is_valid_fee_tier};
 
 /// Uniswap V3 合约地址
 #[derive(Debug, Clone)]
@@ -183,7 +183,10 @@ impl UniswapRouter {
     ) -> Result<SwapRoute, DefiError> {
         let mut best: Option<QuoteWithMeta> = None;
         for &fee in &FEE_TIERS {
-            match self.quote_swap(quoter, token_in, token_out, amount_in, fee).await {
+            match self
+                .quote_swap(quoter, token_in, token_out, amount_in, fee)
+                .await
+            {
                 Ok(q) => {
                     if best.as_ref().is_none_or(|b| q.amount_out > b.amount_out) {
                         best = Some(q);

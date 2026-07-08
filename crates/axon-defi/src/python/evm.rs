@@ -430,8 +430,9 @@ impl PyMulticall {
                 let holders: Result<Vec<Address>, _> = holders
                     .iter()
                     .map(|s| {
-                        s.parse::<Address>()
-                            .map_err(|e| PyValueError::new_err(format!("invalid holder {}: {}", s, e)))
+                        s.parse::<Address>().map_err(|e| {
+                            PyValueError::new_err(format!("invalid holder {}: {}", s, e))
+                        })
                     })
                     .collect();
                 let holders = holders?;
@@ -439,10 +440,7 @@ impl PyMulticall {
                     .balance_of_batch(&token, &holders)
                     .await
                     .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
-                Ok(bals
-                    .into_iter()
-                    .map(|b| b.to_string())
-                    .collect::<Vec<_>>())
+                Ok(bals.into_iter().map(|b| b.to_string()).collect::<Vec<_>>())
             }
             #[cfg(not(feature = "evm"))]
             {

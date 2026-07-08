@@ -16,15 +16,10 @@ const ANVIL_URL: &str = "http://127.0.0.1:8545";
 const USDC_WETH_POOL: &str = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(ANVIL_URL),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL)).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> EvmProvider {
@@ -40,10 +35,7 @@ fn v3_pool_constructs_with_lowercase_address() {
         Chain::Ethereum,
         "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
     );
-    assert_eq!(
-        pool.address(),
-        "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
-    );
+    assert_eq!(pool.address(), "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640");
 }
 
 // ---------- anvil 集成测试 ----------

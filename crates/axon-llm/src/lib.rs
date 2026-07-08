@@ -8,11 +8,11 @@
 
 pub mod agent;
 pub mod backend;
-pub mod declarative_agent;
 #[cfg(feature = "backends")]
 pub mod backends;
 pub mod config;
 pub mod context;
+pub mod declarative_agent;
 pub mod prompt;
 pub mod react_agent;
 pub mod swarm;

@@ -16,6 +16,8 @@ use crate::evm::provider::EvmProvider;
 use crate::evm::signer::LocalSigner;
 
 #[cfg(feature = "evm")]
+use alloy::network::{EthereumWallet, TransactionBuilder};
+#[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
 #[cfg(feature = "evm")]
 use alloy::rpc::types::TransactionReceipt;
@@ -25,8 +27,6 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 #[cfg(feature = "evm")]
 use alloy::sol_types::SolCall;
-#[cfg(feature = "evm")]
-use alloy::network::{EthereumWallet, TransactionBuilder};
 
 /// SwapRouter02 合约地址
 ///
@@ -140,7 +140,11 @@ impl V3Router {
     ///
     /// 供测试 / 离线构造 / 多签场景使用
     #[cfg(feature = "evm")]
-    pub fn build_tx(&self, signer: &LocalSigner, params: SwapParams) -> Result<TransactionRequest, DefiError> {
+    pub fn build_tx(
+        &self,
+        signer: &LocalSigner,
+        params: SwapParams,
+    ) -> Result<TransactionRequest, DefiError> {
         use alloy::primitives::U160;
         let router: Address = self
             .router_address
@@ -158,9 +162,8 @@ impl V3Router {
             tokenOut: params.token_out,
             fee: {
                 use alloy::primitives::Uint;
-                Uint::<24, 1>::try_from(params.fee).map_err(|e| {
-                    DefiError::ConfigError(format!("fee out of range: {}", e))
-                })?
+                Uint::<24, 1>::try_from(params.fee)
+                    .map_err(|e| DefiError::ConfigError(format!("fee out of range: {}", e)))?
             },
             recipient,
             amountIn: params.amount_in,
@@ -212,9 +215,8 @@ impl V3Router {
             tokenOut: params.token_out,
             fee: {
                 use alloy::primitives::Uint;
-                Uint::<24, 1>::try_from(params.fee).map_err(|e| {
-                    DefiError::ConfigError(format!("fee out of range: {}", e))
-                })?
+                Uint::<24, 1>::try_from(params.fee)
+                    .map_err(|e| DefiError::ConfigError(format!("fee out of range: {}", e)))?
             },
             recipient,
             amountIn: params.amount_in,
@@ -228,16 +230,22 @@ impl V3Router {
             .with_input(data)
             .with_nonce(nonce);
 
-        let pending = p.send_transaction(tx).await.map_err(|e| DefiError::RpcError {
-            url: self.provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
-        let receipt = pending.get_receipt().await.map_err(|e| DefiError::RpcError {
-            url: self.provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
+        let pending = p
+            .send_transaction(tx)
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: self.provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: self.provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
         Ok(receipt)
     }
 

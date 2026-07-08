@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use alloy_primitives::{Address, U256};
 
-use axon_defi::dex::v3_quoter::{is_valid_fee_tier, V3Quoter, FEE_TIERS};
+use axon_defi::dex::v3_quoter::{FEE_TIERS, V3Quoter, is_valid_fee_tier};
 use axon_defi::evm::chain::Chain;
 use axon_defi::evm::provider::{EvmProvider, ProviderConfig};
 
@@ -18,15 +18,10 @@ const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(ANVIL_URL),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL)).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> EvmProvider {
@@ -50,10 +45,7 @@ fn v3_quoter_with_custom_address() {
     let q = V3Quoter::new(provider(), Chain::Polygon)
         .with_quoter_address("0x61fFE014bA17989E743c5F6cB21bF9697530B56e");
     // 验证 lowercase 化
-    assert_eq!(
-        q.address(),
-        "0x61ffe014ba17989e743c5f6cb21bf9697530b56e"
-    );
+    assert_eq!(q.address(), "0x61ffe014ba17989e743c5f6cb21bf9697530b56e");
 }
 
 #[test]

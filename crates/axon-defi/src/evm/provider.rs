@@ -124,7 +124,10 @@ impl EvmProvider {
 
     /// 包装 alloy RPC 错误 → DefiError::RpcError 结构化
     #[cfg(feature = "evm")]
-    fn wrap_rpc_error(&self, e: alloy::transports::RpcError<alloy::transports::TransportErrorKind>) -> DefiError {
+    fn wrap_rpc_error(
+        &self,
+        e: alloy::transports::RpcError<alloy::transports::TransportErrorKind>,
+    ) -> DefiError {
         DefiError::RpcError {
             url: self.config.rpc_url.clone(),
             status: 0, // alloy 内部错误,无 HTTP status

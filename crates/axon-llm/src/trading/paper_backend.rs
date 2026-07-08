@@ -29,9 +29,11 @@ use parking_lot::Mutex;
 use crate::swarm::paper_trading::{PaperPortfolio, PaperTradingConfig};
 use crate::trading::backend::{TradingBackend, TradingError};
 use crate::trading::types::{
-    BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus,
-    PlaceOrderArgs, PortfolioSnapshot, PositionSnapshot,
+    BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
+    PositionSnapshot,
 };
+#[cfg(test)]
+use crate::trading::types::PortfolioSnapshot;
 
 /// 内部状态:`cash` + 持仓(symbol → (qty, entry_price))
 #[derive(Debug, Clone)]
@@ -97,11 +99,8 @@ impl PaperTradingBackend {
     /// 获取当前内部状态(`PaperPortfolio`)— 供测试 / 监控用
     pub fn portfolio(&self) -> PaperPortfolio {
         let st = self.state.lock();
-        let positions: HashMap<String, f64> = st
-            .positions
-            .iter()
-            .map(|(k, v)| (k.clone(), v.0))
-            .collect();
+        let positions: HashMap<String, f64> =
+            st.positions.iter().map(|(k, v)| (k.clone(), v.0)).collect();
         PaperPortfolio {
             cash: st.cash,
             positions,
@@ -142,10 +141,7 @@ impl TradingBackend for PaperTradingBackend {
         };
         // 兜底:Market 单如果没历史价,这里 fill_price = 0(避免除零)
         let fill_price = if fill_price <= 0.0 {
-            st.last_prices
-                .get(&req.symbol)
-                .copied()
-                .unwrap_or(50_000.0)
+            st.last_prices.get(&req.symbol).copied().unwrap_or(50_000.0)
         } else {
             fill_price
         };
@@ -156,11 +152,7 @@ impl TradingBackend for PaperTradingBackend {
         // 2. 校验并更新持仓
         // 先取出当前的 qty / entry(避免与 st.cash 借用冲突)
         let sym = req.symbol.clone();
-        let (cur_qty, cur_entry) = st
-            .positions
-            .get(&sym)
-            .copied()
-            .unwrap_or((0.0, 0.0));
+        let (cur_qty, cur_entry) = st.positions.get(&sym).copied().unwrap_or((0.0, 0.0));
         match req.side {
             OrderSide::Buy => {
                 if cost > st.cash {
@@ -314,7 +306,10 @@ mod tests {
     #[tokio::test]
     async fn test_place_limit_buy_deducts_cash_and_adds_position() {
         let backend = PaperTradingBackend::new(PaperTradingConfig::default());
-        let ack = backend.place_order(&mk_limit_buy(0.1, 50_000.0)).await.unwrap();
+        let ack = backend
+            .place_order(&mk_limit_buy(0.1, 50_000.0))
+            .await
+            .unwrap();
         assert_eq!(ack.symbol, "BTC-USDT");
         assert_eq!(ack.status.0, "Filled");
         // 滑点 5bps 作用在成交价上,手续费 10bps 作用在 notional 上,二者不合并:
@@ -368,7 +363,10 @@ mod tests {
     #[tokio::test]
     async fn test_buy_then_sell_round_trip() {
         let backend = PaperTradingBackend::new(PaperTradingConfig::default());
-        backend.place_order(&mk_limit_buy(0.1, 50_000.0)).await.unwrap();
+        backend
+            .place_order(&mk_limit_buy(0.1, 50_000.0))
+            .await
+            .unwrap();
         let bal_after_buy = backend.get_balance().await.unwrap().currencies[0].free;
 
         backend.place_order(&mk_market_sell(0.1)).await.unwrap();
@@ -386,7 +384,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_portfolio_combines_balance_and_positions() {
         let backend = PaperTradingBackend::new(PaperTradingConfig::default());
-        backend.place_order(&mk_limit_buy(0.1, 50_000.0)).await.unwrap();
+        backend
+            .place_order(&mk_limit_buy(0.1, 50_000.0))
+            .await
+            .unwrap();
         let snap: PortfolioSnapshot = backend.get_portfolio().await.unwrap();
         assert_eq!(snap.balance.currencies.len(), 1);
         assert_eq!(snap.positions.len(), 1);

@@ -421,7 +421,11 @@ impl BacktestEngine {
             return;
         };
         // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
-        if mid_price <= 0.0 || cfg.half_spread <= 0.0 || cfg.depth_levels == 0 || cfg.size_per_level <= 0.0 {
+        if mid_price <= 0.0
+            || cfg.half_spread <= 0.0
+            || cfg.depth_levels == 0
+            || cfg.size_per_level <= 0.0
+        {
             return;
         }
         // 1) 清空上一 bar 的种子挂单
@@ -674,7 +678,11 @@ impl BacktestEngine {
         }
 
         // ── 2. 6 状态机 ──────────────────────────────
-        let signed_qty = if side == Side::Buy { fill_qty } else { -fill_qty };
+        let signed_qty = if side == Side::Buy {
+            fill_qty
+        } else {
+            -fill_qty
+        };
         let pos = self
             .bt_state
             .position_states
@@ -697,8 +705,7 @@ impl BacktestEngine {
             (p, n) if p.signum() == n.signum() && p != 0.0 => {
                 let new_qty = p + n;
                 // 加权平均成本(ponytail:简化用 f64,累计误差可忽略)
-                pos.avg_cost =
-                    (p.abs() * pos.avg_cost + n.abs() * fill_price) / new_qty.abs();
+                pos.avg_cost = (p.abs() * pos.avg_cost + n.abs() * fill_price) / new_qty.abs();
                 pos.quantity = new_qty;
                 pos.entry_fee += fee;
             }
@@ -810,9 +817,7 @@ impl BacktestEngine {
 
         // log return:本次 nav / 上次 nav(仅在 prev>0 时记录)
         if self.bt_state.equity_curve.len() >= 2 {
-            let prev_nav = self.bt_state.equity_curve
-                [self.bt_state.equity_curve.len() - 2]
-                .1;
+            let prev_nav = self.bt_state.equity_curve[self.bt_state.equity_curve.len() - 2].1;
             if prev_nav > 0.0 {
                 let lr = (nav / prev_nav).ln();
                 self.bt_state
@@ -898,7 +903,10 @@ impl BacktestEngine {
         // 6. win_rate / sharpe_ratio 从 TradingMetrics 取
         //    默认年化因子:15m bar 一年 35040 根(24h * 4 * 365)
         let win_rate = self.bt_state.trading_metrics.win_rate();
-        let sharpe_ratio = self.bt_state.trading_metrics.sharpe_ratio(35_040_f64.sqrt());
+        let sharpe_ratio = self
+            .bt_state
+            .trading_metrics
+            .sharpe_ratio(35_040_f64.sqrt());
 
         RunResult {
             events_processed: self.stats.events_processed,

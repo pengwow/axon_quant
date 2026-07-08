@@ -84,7 +84,8 @@ impl BudgetGuard for SimpleBudgetGuard {
     }
 
     fn remaining(&self) -> u64 {
-        self.total_budget.saturating_sub(self.tokens_used.load(Ordering::Relaxed))
+        self.total_budget
+            .saturating_sub(self.tokens_used.load(Ordering::Relaxed))
     }
 
     fn snapshot(&self) -> BudgetState {

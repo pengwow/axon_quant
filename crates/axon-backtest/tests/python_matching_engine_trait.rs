@@ -67,7 +67,9 @@ fn py_matching_engine_accepts_python_class() {
         let engine_py = be_cls.call1((100_000.0_f64,)).unwrap();
 
         // with_matching_engine 真替换
-        engine_py.call_method1("with_matching_engine", (instance,)).unwrap();
+        engine_py
+            .call_method1("with_matching_engine", (instance,))
+            .unwrap();
 
         // 推一个 buy 单
         let order_dict = PyDict::new(py);
@@ -118,7 +120,9 @@ fn py_matching_engine_python_exception_does_not_crash() {
         let be_cls = module.getattr("BacktestEngine").unwrap();
         let engine_py = be_cls.call1((100_000.0_f64,)).unwrap();
         let instance = cls.call0().unwrap();
-        engine_py.call_method1("with_matching_engine", (instance,)).unwrap();
+        engine_py
+            .call_method1("with_matching_engine", (instance,))
+            .unwrap();
 
         let order_dict = PyDict::new(py);
         order_dict.set_item("id", 1u64).unwrap();
@@ -178,7 +182,9 @@ fn py_matching_engine_replace_default_l1() {
         let be_cls = module.getattr("BacktestEngine").unwrap();
         let engine_py = be_cls.call1((100_000.0_f64,)).unwrap();
         let instance = cls.call0().unwrap();
-        engine_py.call_method1("with_matching_engine", (instance,)).unwrap();
+        engine_py
+            .call_method1("with_matching_engine", (instance,))
+            .unwrap();
 
         let order_dict = PyDict::new(py);
         order_dict.set_item("id", 1u64).unwrap();

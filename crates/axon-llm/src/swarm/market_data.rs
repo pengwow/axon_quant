@@ -117,7 +117,7 @@ impl MarketDataSource for MockSourceAdapter {
 
     async fn next_tick(&mut self) -> Option<Tick> {
         if self.cursor < self.ticks.len() {
-            let tick = self.ticks[self.cursor].clone();
+            let tick = self.ticks[self.cursor];
             self.cursor += 1;
             Some(tick)
         } else {

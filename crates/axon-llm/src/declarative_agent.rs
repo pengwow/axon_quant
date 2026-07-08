@@ -118,7 +118,13 @@ impl DeclarativeAgent {
                 Err(e) => {
                     debug!("LLM 调用失败: {e}");
                     return HarnessResult::Rejected {
-                        intent: self.make_intent("", None, serde_json::Value::Null, 0.0, &e.to_string()),
+                        intent: self.make_intent(
+                            "",
+                            None,
+                            serde_json::Value::Null,
+                            0.0,
+                            &e.to_string(),
+                        ),
                         reason: format!("LLM 调用失败: {e}"),
                     };
                 }
@@ -159,11 +165,9 @@ impl DeclarativeAgent {
                 axon_harness::Adjudication::Approved => {
                     // 检查工具门控
                     if let Some(tool) = &intent.tool {
-                        let gate = self.harness.check_tool(
-                            tool,
-                            &self.config.agent_id,
-                            &intent.params,
-                        );
+                        let gate =
+                            self.harness
+                                .check_tool(tool, &self.config.agent_id, &intent.params);
                         match gate {
                             axon_harness::GateResult::Allowed => {
                                 self.harness.record_tool_call(
@@ -303,10 +307,17 @@ mod tests {
         struct MockBackend;
         #[async_trait::async_trait]
         impl LLMBackend for MockBackend {
-            async fn complete(&self, _messages: &[Message]) -> Result<crate::types::LLMResponse, crate::backend::LLMError> {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+            ) -> Result<crate::types::LLMResponse, crate::backend::LLMError> {
                 unimplemented!()
             }
-            async fn complete_with_tools(&self, _messages: &[Message], _tools: &[crate::backend::ToolDefinition]) -> Result<crate::types::LLMResponse, crate::backend::LLMError> {
+            async fn complete_with_tools(
+                &self,
+                _messages: &[Message],
+                _tools: &[crate::backend::ToolDefinition],
+            ) -> Result<crate::types::LLMResponse, crate::backend::LLMError> {
                 unimplemented!()
             }
             fn context_window_size(&self) -> usize {

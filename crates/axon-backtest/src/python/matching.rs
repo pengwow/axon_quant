@@ -137,7 +137,8 @@ fn match_fill_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<MatchFill> {
     let quantity: f64 = dict_field!(dict, "quantity", f64);
     let taker_side_str: String = dict_field!(dict, "taker_side", String);
     let taker_side = parse_side(&taker_side_str)?;
-    let timestamp: i64 = dict.get_item("timestamp")
+    let timestamp: i64 = dict
+        .get_item("timestamp")
         .ok()
         .flatten()
         .and_then(|v| v.extract::<i64>().ok())
@@ -197,7 +198,10 @@ impl MatchingEngine for PyMatchingEngine {
     fn depth(
         &self,
         _levels: usize,
-    ) -> (Vec<crate::matching::types::OrderBookLevel>, Vec<crate::matching::types::OrderBookLevel>) {
+    ) -> (
+        Vec<crate::matching::types::OrderBookLevel>,
+        Vec<crate::matching::types::OrderBookLevel>,
+    ) {
         (Vec::new(), Vec::new())
     }
 
@@ -324,7 +328,11 @@ mod tests {
                 "BTCUSDT"
             );
             assert_eq!(
-                d.get_item("side").unwrap().unwrap().extract::<String>().unwrap(),
+                d.get_item("side")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
                 "buy"
             );
             assert_eq!(

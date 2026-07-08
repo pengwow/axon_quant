@@ -150,7 +150,12 @@ impl MarketAgent {
     /// `prev_price`:上一个 tick 的价格(首次为 `None` → 产 Hold 信号作为基线)
     /// `symbol`:tick 对应的 symbol(`Tick` 类型本身无 symbol 字段,需由调用方注入)
     /// 返回:`MarketSignal`(已基于价格变动方向 + 阈值决策)
-    pub fn tick_to_signal(&self, symbol: &str, tick: &Tick, prev_price: Option<f64>) -> MarketSignal {
+    pub fn tick_to_signal(
+        &self,
+        symbol: &str,
+        tick: &Tick,
+        prev_price: Option<f64>,
+    ) -> MarketSignal {
         Self::build_signal(symbol, tick, prev_price, self.price_change_threshold)
     }
 
@@ -223,7 +228,7 @@ impl MarketAgent {
             None => {
                 return Err(SwarmError::Other(
                     "MarketAgent has no data_source attached".into(),
-                ))
+                ));
             }
         };
 
@@ -253,9 +258,10 @@ impl MarketAgent {
                 content: MessageContent::MarketAnalysis(signal),
                 timestamp: chrono::Utc::now().timestamp(),
             };
-            self.outbox.send(msg).await.map_err(|e| {
-                SwarmError::MessageSendFailed(format!("outbox send failed: {e}"))
-            })?;
+            self.outbox
+                .send(msg)
+                .await
+                .map_err(|e| SwarmError::MessageSendFailed(format!("outbox send failed: {e}")))?;
             count += 1;
         }
         self.signals_produced += count;
@@ -437,7 +443,8 @@ mod tests {
         });
 
         // inbox_rx → agent,outbox_tx → agent,src → data_source
-        let mut agent = MarketAgent::with_data_source(id, config, inbox_rx, outbox_tx, Box::new(src));
+        let mut agent =
+            MarketAgent::with_data_source(id, config, inbox_rx, outbox_tx, Box::new(src));
         agent.set_price_change_threshold(0.01);
 
         let n = agent.run_market_loop().await.unwrap();
@@ -455,13 +462,11 @@ mod tests {
         for _ in 0..6 {
             let msg = outbox_rx.recv().await.expect("must have msg");
             match msg.content {
-                MessageContent::MarketAnalysis(sig) => {
-                    match sig.signal_type {
-                        SignalType::Buy => buy_count += 1,
-                        SignalType::Sell => sell_count += 1,
-                        SignalType::Hold => hold_count += 1,
-                    }
-                }
+                MessageContent::MarketAnalysis(sig) => match sig.signal_type {
+                    SignalType::Buy => buy_count += 1,
+                    SignalType::Sell => sell_count += 1,
+                    SignalType::Hold => hold_count += 1,
+                },
                 _ => panic!("expected MarketAnalysis"),
             }
         }

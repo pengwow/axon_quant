@@ -100,7 +100,11 @@ async fn local_signer_can_transfer_eth_on_anvil() {
         .expect("valid address");
 
     let receipt = signer
-        .transfer_eth(&provider, to, alloy_primitives::U256::from(1_000_000_000_000_000u128)) // 0.001 ETH in wei
+        .transfer_eth(
+            &provider,
+            to,
+            alloy_primitives::U256::from(1_000_000_000_000_000u128),
+        ) // 0.001 ETH in wei
         .await
         .expect("transfer should succeed on anvil");
 
@@ -110,13 +114,12 @@ async fn local_signer_can_transfer_eth_on_anvil() {
 }
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(format!("{ANVIL_URL}")),
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            reqwest::get(ANVIL_URL.to_string()),
+        )
+        .await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }

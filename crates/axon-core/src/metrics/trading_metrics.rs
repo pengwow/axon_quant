@@ -72,7 +72,8 @@ impl TradingMetrics {
         let n_f = n as f64;
         let mean = self.log_return_sum.load(Ordering::Relaxed) as f64 / 1e9 / n_f;
         // sum_sq 单位是 1e18,所以 sum_sq / 1e18 / n = E[lr²]
-        let var = (self.log_return_sq_sum.load(Ordering::Relaxed) as f64 / 1e18 / n_f) - mean * mean;
+        let var =
+            (self.log_return_sq_sum.load(Ordering::Relaxed) as f64 / 1e18 / n_f) - mean * mean;
         if var <= 0.0 {
             return 0.0;
         }
@@ -127,14 +128,22 @@ mod tests {
         let s = m.sharpe_ratio(252.0);
         let n = m.trade_count.load(std::sync::atomic::Ordering::Relaxed);
         let sum_lr = m.log_return_sum.load(std::sync::atomic::Ordering::Relaxed);
-        let sum_sq = m.log_return_sq_sum.load(std::sync::atomic::Ordering::Relaxed);
+        let sum_sq = m
+            .log_return_sq_sum
+            .load(std::sync::atomic::Ordering::Relaxed);
         let mean = sum_lr as f64 / 1e9 / n as f64;
         let e_lr2 = sum_sq as f64 / 1e18 / n as f64;
         let var = e_lr2 - mean * mean;
         assert!(
             s > 0.0,
             "正收益的 sharpe 应该 > 0,实际 {} (n={} sum_lr={} sum_sq={} mean={} e_lr2={} var={})",
-            s, n, sum_lr, sum_sq, mean, e_lr2, var
+            s,
+            n,
+            sum_lr,
+            sum_sq,
+            mean,
+            e_lr2,
+            var
         );
     }
 

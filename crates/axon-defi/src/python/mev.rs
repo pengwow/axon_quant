@@ -5,7 +5,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::mev::share::{MevShareClient as RustMevShareClient, MevShareConfig as RustMevShareConfig};
+use crate::mev::share::{
+    MevShareClient as RustMevShareClient, MevShareConfig as RustMevShareConfig,
+};
 
 /// MEV-Share 配置
 #[pyclass(name = "MevShareConfig", from_py_object)]

@@ -124,10 +124,7 @@ impl InferenceEngine for OnnxBackend {
         Ok(actions)
     }
 
-    fn build_session(
-        &self,
-        path: &Path,
-    ) -> Result<Box<dyn Any + Send + Sync>, InferenceError> {
+    fn build_session(&self, path: &Path) -> Result<Box<dyn Any + Send + Sync>, InferenceError> {
         if !path.exists() {
             return Err(InferenceError::ModelNotFound {
                 path: path.to_path_buf(),

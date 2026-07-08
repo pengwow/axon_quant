@@ -23,15 +23,10 @@ const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(ANVIL_URL),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL)).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> EvmProvider {
@@ -58,10 +53,7 @@ fn v3_router_constructs_with_default_address() {
 fn v3_router_with_custom_address() {
     let r = V3Router::new(provider(), Chain::Polygon)
         .with_router_address("0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45");
-    assert_eq!(
-        r.address(),
-        "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45"
-    );
+    assert_eq!(r.address(), "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45");
 }
 
 #[test]
@@ -80,11 +72,7 @@ fn build_tx_constructs_with_correct_target() {
     };
     assert_eq!(
         to_addr,
-        Address::parse_checksummed(
-            "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
-            None
-        )
-        .unwrap()
+        Address::parse_checksummed("0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45", None).unwrap()
     );
     // input 应是 exactInputSingle ABI 编码
     let input = tx.input.into_input().unwrap();
@@ -108,10 +96,7 @@ async fn swap_usdc_to_weth_succeeds_on_anvil() {
     let weth = Address::parse_checksummed(WETH, None).unwrap();
     let params = SwapParams::new(usdc, weth, 3000, U256::from(1_000_000u64));
 
-    let receipt = r
-        .swap(&signer, &token_in, params)
-        .await
-        .expect("swap ok");
+    let receipt = r.swap(&signer, &token_in, params).await.expect("swap ok");
     assert!(receipt.status(), "swap tx should succeed");
     assert!(!receipt.transaction_hash.is_zero());
 }

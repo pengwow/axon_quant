@@ -15,6 +15,8 @@ use crate::error::DefiError;
 use crate::evm::provider::EvmProvider;
 
 #[cfg(feature = "evm")]
+use alloy::network::TransactionBuilder;
+#[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
 #[cfg(feature = "evm")]
 use alloy::providers::Provider;
@@ -24,8 +26,6 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 #[cfg(feature = "evm")]
 use alloy::sol_types::{SolCall, SolEvent, SolValue};
-#[cfg(feature = "evm")]
-use alloy::network::TransactionBuilder;
 
 #[cfg(feature = "evm")]
 sol! {
@@ -133,10 +133,8 @@ impl Erc20Client {
         let tx = TransactionRequest::default()
             .with_to(addr)
             .with_input(input);
-        let output: alloy::primitives::Bytes = p
-            .call(tx)
-            .await
-            .map_err(|e| self.wrap_rpc_error(e))?;
+        let output: alloy::primitives::Bytes =
+            p.call(tx).await.map_err(|e| self.wrap_rpc_error(e))?;
         // ABI 编码 uint8:32 字节 padded,值在最后一字节
         if output.len() < 32 {
             return Err(DefiError::ContractError {
@@ -174,7 +172,8 @@ impl Erc20Client {
         let tx = TransactionRequest::default()
             .with_to(addr)
             .with_input(input);
-        let output: alloy::primitives::Bytes = p.call(tx).await.map_err(|e| self.wrap_rpc_error(e))?;
+        let output: alloy::primitives::Bytes =
+            p.call(tx).await.map_err(|e| self.wrap_rpc_error(e))?;
         // alloy 1.6:String::abi_decode 接受单参(默认 validate)
         let result = String::abi_decode(&output).map_err(|e| DefiError::ContractError {
             address: self.info.address.clone(),
@@ -210,7 +209,8 @@ impl Erc20Client {
         let tx = TransactionRequest::default()
             .with_to(token)
             .with_input(input);
-        let output: alloy::primitives::Bytes = p.call(tx).await.map_err(|e| self.wrap_rpc_error(e))?;
+        let output: alloy::primitives::Bytes =
+            p.call(tx).await.map_err(|e| self.wrap_rpc_error(e))?;
         // alloy 1.6:U256::abi_decode 接受单参
         let result = U256::abi_decode(&output).map_err(|e| DefiError::ContractError {
             address: self.info.address.clone(),
@@ -247,11 +247,7 @@ impl Erc20Client {
 
     /// 写路径 - transfer(需要 signer)
     #[cfg(feature = "evm")]
-    pub fn transfer_tx(
-        &self,
-        to: Address,
-        amount: U256,
-    ) -> Result<TransactionRequest, DefiError> {
+    pub fn transfer_tx(&self, to: Address, amount: U256) -> Result<TransactionRequest, DefiError> {
         let token: Address = self
             .info
             .address
@@ -297,16 +293,22 @@ impl Erc20Client {
             .with_input(data)
             .with_nonce(nonce);
 
-        let pending = p.send_transaction(tx).await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
-        let receipt = pending.get_receipt().await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
+        let pending = p
+            .send_transaction(tx)
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
         Ok(receipt)
     }
 
@@ -341,16 +343,22 @@ impl Erc20Client {
             .with_input(data)
             .with_nonce(nonce);
 
-        let pending = p.send_transaction(tx).await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
-        let receipt = pending.get_receipt().await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
+        let pending = p
+            .send_transaction(tx)
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
         Ok(receipt)
     }
 
@@ -391,7 +399,10 @@ impl Erc20Client {
 
     /// 包装 alloy RPC 错误
     #[cfg(feature = "evm")]
-    fn wrap_rpc_error(&self, e: alloy::transports::RpcError<alloy::transports::TransportErrorKind>) -> DefiError {
+    fn wrap_rpc_error(
+        &self,
+        e: alloy::transports::RpcError<alloy::transports::TransportErrorKind>,
+    ) -> DefiError {
         DefiError::RpcError {
             url: self.provider.config().rpc_url.clone(),
             status: 0,
@@ -408,10 +419,7 @@ mod tests {
     #[test]
     fn token_info_lowercases_address() {
         let info = TokenInfo::new("0xA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48");
-        assert_eq!(
-            info.address,
-            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-        );
+        assert_eq!(info.address, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48");
     }
 
     #[test]

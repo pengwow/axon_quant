@@ -86,10 +86,7 @@ impl MevShareClient {
     /// 改走 `eth_sendBundle` JSON-RPC。
     ///
     /// 入参 `signed_tx_hex` 是 1 笔或多笔已签名交易的 raw hex(0x 前缀)
-    pub async fn submit_transaction(
-        &self,
-        signed_tx_hex: &str,
-    ) -> Result<String, DefiError> {
+    pub async fn submit_transaction(&self, signed_tx_hex: &str) -> Result<String, DefiError> {
         if signed_tx_hex.is_empty() {
             return Err(DefiError::ConfigError("signed tx hex is empty".into()));
         }
@@ -134,13 +131,12 @@ impl MevShareClient {
             });
         }
         // 解析 JSON-RPC response
-        let json: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
-            DefiError::RpcError {
+        let json: serde_json::Value =
+            serde_json::from_str(&body_text).map_err(|e| DefiError::RpcError {
                 url: self.config.rpc_url.clone(),
                 status: status.as_u16(),
                 body: DefiError::truncated_body(&format!("decode: {}", e)),
-            }
-        })?;
+            })?;
         if let Some(err) = json.get("error") {
             return Err(DefiError::ContractError {
                 address: self.config.rpc_url.clone(),

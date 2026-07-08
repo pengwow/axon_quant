@@ -37,8 +37,8 @@ use std::sync::Arc as StdArc;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc;
 
 use crate::swarm::agent::{AgentId, AgentRole as RustAgentRole, AgentStatus as RustAgentStatus};
 use crate::swarm::agents::execution_agent::{
@@ -50,9 +50,7 @@ use crate::swarm::message::{
     AgentMessage, MarketSignal as RustMarketSignal, MessageContent, SignalType as RustSignalType,
     VoteProposal as RustVoteProposal, VoteResult as RustVoteResult, VoteType as RustVoteType,
 };
-use crate::swarm::orchestrator::{
-    AgentHandle, SwarmConfig as RustSwarmConfig, SwarmOrchestrator,
-};
+use crate::swarm::orchestrator::{AgentHandle, SwarmConfig as RustSwarmConfig, SwarmOrchestrator};
 use crate::swarm::vote::VoteResponse;
 
 use super::trading::{PyPlaceOrderTool, PyQueryPortfolioTool};
@@ -458,7 +456,8 @@ impl PySwarmOrchestrator {
     fn unregister_agent(&self, agent_id: &str) -> bool {
         self.runtime.block_on(async {
             let mut g = self.inner.lock().await;
-            g.unregister_agent(&AgentId::from_string(agent_id)).is_some()
+            g.unregister_agent(&AgentId::from_string(agent_id))
+                .is_some()
         })
     }
 
@@ -514,10 +513,7 @@ impl PySwarmOrchestrator {
         let (inbox_tx, inbox_rx) = mpsc::channel::<AgentMessage>(64);
         let (outbox_tx, mut outbox_rx) = mpsc::channel::<AgentMessage>(64);
         // 挂载 mock 数据源(后续可通过 attach_data_source 替换)
-        let data = MockSourceAdapter::from_ticks(
-            format!("{}_data", agent_id),
-            vec![],
-        );
+        let data = MockSourceAdapter::from_ticks(format!("{}_data", agent_id), vec![]);
         let agent = MarketAgent::with_data_source(
             AgentId::from_string(agent_id),
             cfg,
@@ -532,11 +528,9 @@ impl PySwarmOrchestrator {
         self.ensure_runtime()?;
         let orch_inbox_tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         self.runtime.block_on(async {
             let mut g = self.inner.lock().await;
@@ -573,11 +567,9 @@ impl PySwarmOrchestrator {
         self.ensure_runtime()?;
         let orch_inbox_tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         self.runtime.block_on(async {
             let mut g = self.inner.lock().await;
@@ -611,22 +603,15 @@ impl PySwarmOrchestrator {
             Some(t) => ExecutionAgentConfig::with_tools(t.inner.clone()),
             None => ExecutionAgentConfig::default(),
         };
-        let agent = ExecutionAgent::new(
-            AgentId::from_string(agent_id),
-            cfg,
-            inbox_rx,
-            outbox_tx,
-        );
+        let agent = ExecutionAgent::new(AgentId::from_string(agent_id), cfg, inbox_rx, outbox_tx);
         let runner: StdArc<dyn crate::swarm::agent_runner::DeclarativeAgentRunner> =
             StdArc::new(agent);
         self.ensure_runtime()?;
         let orch_inbox_tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         self.runtime.block_on(async {
             let mut g = self.inner.lock().await;
@@ -662,11 +647,9 @@ impl PySwarmOrchestrator {
         self.ensure_runtime()?;
         let orch_inbox_tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         self.runtime.block_on(async {
             let mut g = self.inner.lock().await;
@@ -738,9 +721,9 @@ impl PySwarmOrchestrator {
         // drop inject_tx 在 rt 离开作用域时自动发生 → run_loop 会退出
         drop(rt.inject_tx);
         // 等 task 结束(2s 超时,避免 Python 卡死)
-        let _ = self
-            .runtime
-            .block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), rt.handle).await });
+        let _ = self.runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), rt.handle).await
+        });
         Ok(())
     }
 
@@ -753,11 +736,9 @@ impl PySwarmOrchestrator {
     fn inject_market_signal(&self, signal: &PyMarketSignal) -> PyResult<()> {
         let tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         let msg = AgentMessage {
             id: crate::swarm::message::MessageId::new(),
@@ -783,11 +764,9 @@ impl PySwarmOrchestrator {
     ) -> PyResult<()> {
         let tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         let response = VoteResponse {
             proposal_id: proposal_id.to_string(),
@@ -811,23 +790,22 @@ impl PySwarmOrchestrator {
             timestamp: chrono::Utc::now().timestamp(),
         };
         // 同时把 response 写进 consensus(让 orchestrator 投票统计生效)
-        self.runtime.block_on(async {
-            let mut g = self.inner.lock().await;
-            g.submit_vote(response);
-            tx.send(msg).await
-        })
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+        self.runtime
+            .block_on(async {
+                let mut g = self.inner.lock().await;
+                g.submit_vote(response);
+                tx.send(msg).await
+            })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
 
     /// 触发 Shutdown(stop() 的"软"版本,不 join task)
     fn inject_shutdown(&self) -> PyResult<()> {
         let tx = {
             let g = self.runtime_state.lock();
-            g.as_ref()
-                .map(|r| r.inject_tx.clone())
-                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-                    "SwarmOrchestrator not started",
-                ))?
+            g.as_ref().map(|r| r.inject_tx.clone()).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("SwarmOrchestrator not started")
+            })?
         };
         let msg = AgentMessage {
             id: crate::swarm::message::MessageId::new(),

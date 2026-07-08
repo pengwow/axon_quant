@@ -22,27 +22,27 @@ pub mod policy;
 pub mod types;
 
 // 安全组件（从 axon-safety 合并）
-pub mod circuit_breaker;
 pub mod audit;
+pub mod circuit_breaker;
 pub mod position;
 
 // 核心组件
 pub mod default_policy;
-pub mod simple_budget;
-pub mod rbac_gate;
 pub mod observer;
+pub mod rbac_gate;
+pub mod simple_budget;
 
 pub use bridge::HarnessBridge;
 pub use policy::{BudgetGuard, HarnessPolicy, ToolGate};
 pub use types::*;
 
 // 安全组件导出
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, BreakerState};
 pub use audit::{AuditChain, AuditEntry};
+pub use circuit_breaker::{BreakerState, CircuitBreaker, CircuitBreakerConfig};
 pub use position::PositionGuard;
 
 // 核心组件导出
 pub use default_policy::DefaultPolicy;
-pub use simple_budget::SimpleBudgetGuard;
+pub use observer::{DecisionRecord, HarnessMetrics, HarnessObserver};
 pub use rbac_gate::RBACToolGate;
-pub use observer::{HarnessObserver, DecisionRecord, HarnessMetrics};
+pub use simple_budget::SimpleBudgetGuard;

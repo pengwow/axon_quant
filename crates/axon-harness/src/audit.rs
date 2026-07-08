@@ -42,23 +42,15 @@ impl AuditChain {
     }
 
     /// 记录事件，返回 entry_id
-    pub fn record(
-        &mut self,
-        event_type: &str,
-        agent_id: &str,
-        action: &str,
-        details: &str,
-    ) -> u64 {
+    pub fn record(&mut self, event_type: &str, agent_id: &str, action: &str, details: &str) -> u64 {
         let entry_id = self.entries.len() as u64;
         let timestamp = now_secs();
-        let prev_hash = self
-            .entries
-            .last()
-            .map(|e| e.hash)
-            .unwrap_or([0u8; 16]);
+        let prev_hash = self.entries.last().map(|e| e.hash).unwrap_or([0u8; 16]);
 
         let details_hash = blake3_hash(details);
-        let hash = blake3_chain(entry_id, timestamp, event_type, agent_id, action, details, prev_hash);
+        let hash = blake3_chain(
+            entry_id, timestamp, event_type, agent_id, action, details, prev_hash,
+        );
 
         self.entries.push(AuditEntry {
             entry_id,

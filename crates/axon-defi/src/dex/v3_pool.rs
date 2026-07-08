@@ -12,9 +12,9 @@ use crate::evm::chain::Chain;
 use crate::evm::provider::EvmProvider;
 
 #[cfg(feature = "evm")]
-use alloy::primitives::{Address, U256};
-#[cfg(feature = "evm")]
 use alloy::network::TransactionBuilder;
+#[cfg(feature = "evm")]
+use alloy::primitives::{Address, U256};
 
 /// V3 池子 slot0 返回
 #[derive(Debug, Clone)]
@@ -110,12 +110,13 @@ impl V3Pool {
 
         // 解码 (uint160, int24, uint16, uint16, uint16, uint32, bool) tuple
         type Slot0Return = (U256, i32, u16, u16, u16, u32, bool);
-        let ret: Slot0Return = alloy::sol_types::SolValue::abi_decode(&output)
-            .map_err(|e| DefiError::ContractError {
+        let ret: Slot0Return = alloy::sol_types::SolValue::abi_decode(&output).map_err(|e| {
+            DefiError::ContractError {
                 address: self.pool_address.clone(),
                 method: "slot0".into(),
                 reason: format!("decode: {}", e),
-            })?;
+            }
+        })?;
         let (sqrt_price_x96, tick, _, _, _, _, _) = ret;
         // uint160 -> U256 转换
         let sqrt_price_x96_u256 = {
@@ -193,11 +194,7 @@ impl V3Pool {
     ///
     /// 当前 token 价格 = 1 (简化假设);调用方可在生产前用 oracle 价格校正
     #[cfg(feature = "evm")]
-    pub fn estimate_price_impact(
-        &self,
-        amount_in: U256,
-        amount_out: U256,
-    ) -> f64 {
+    pub fn estimate_price_impact(&self, amount_in: U256, amount_out: U256) -> f64 {
         if amount_in.is_zero() {
             return 0.0;
         }
@@ -230,10 +227,7 @@ mod tests {
             Chain::Ethereum,
             "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", // USDC/WETH 0.05%
         );
-        assert_eq!(
-            pool.address(),
-            "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"
-        );
+        assert_eq!(pool.address(), "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640");
         assert_eq!(pool.chain(), Chain::Ethereum);
     }
 
@@ -243,7 +237,11 @@ mod tests {
             Chain::Ethereum,
             "http://localhost:8545",
         ));
-        let pool = V3Pool::new(provider, Chain::Ethereum, "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
+        let pool = V3Pool::new(
+            provider,
+            Chain::Ethereum,
+            "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+        );
         let impact = pool.estimate_price_impact(U256::ZERO, U256::ZERO);
         assert_eq!(impact, 0.0);
     }
@@ -254,12 +252,13 @@ mod tests {
             Chain::Ethereum,
             "http://localhost:8545",
         ));
-        let pool = V3Pool::new(provider, Chain::Ethereum, "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640");
-        // 假设 1000 in 换 997 out(0.3% 手续费 + 0% 滑点)
-        let impact = pool.estimate_price_impact(
-            U256::from(1000u64),
-            U256::from(997u64),
+        let pool = V3Pool::new(
+            provider,
+            Chain::Ethereum,
+            "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
         );
+        // 假设 1000 in 换 997 out(0.3% 手续费 + 0% 滑点)
+        let impact = pool.estimate_price_impact(U256::from(1000u64), U256::from(997u64));
         // 0.3% 价格冲击 (简化)
         assert!(impact > 0.0 && impact < 0.01, "got {}", impact);
     }

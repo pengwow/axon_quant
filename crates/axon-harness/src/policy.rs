@@ -2,7 +2,9 @@
 
 use axon_core::harness_types::{AgentIntent, TaskContext};
 
-use crate::types::{Adjudication, BudgetState, BudgetZone, CompressionHint, GateResult, ModelChoice};
+use crate::types::{
+    Adjudication, BudgetState, BudgetZone, CompressionHint, GateResult, ModelChoice,
+};
 
 /// 编排策略（最核心 trait）
 pub trait HarnessPolicy: Send + Sync {

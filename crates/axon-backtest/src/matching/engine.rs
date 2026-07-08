@@ -1148,10 +1148,7 @@ mod tests {
         // 限价 100 < 100.5 不撮合（限价单不穿越价差）
         let buy_under_ask = make_limit_order(100, Side::Buy, 100.0, 1.0, 10_000);
         let r1 = engine.submit(buy_under_ask);
-        assert!(
-            r1.fills.is_empty(),
-            "mid 限价买单 vs ask@100.5 不应成交"
-        );
+        assert!(r1.fills.is_empty(), "mid 限价买单 vs ask@100.5 不应成交");
 
         // 策略买单 @ 100.6 vs 卖盘 100.5：成交 1.0（吃掉最优卖）
         let buy_cross = make_limit_order(101, Side::Buy, 100.6, 1.0, 11_000);
@@ -1204,8 +1201,8 @@ mod tests {
     #[test]
     fn test_impacted_engine_seed_liquidity_wraps_l1() {
         use crate::impact::ImpactedMatchingEngine;
-        use axon_core::impact::create_model;
         use axon_core::impact::ImpactModelConfig;
+        use axon_core::impact::create_model;
 
         let config = ImpactModelConfig::Linear {
             coefficient: 0.0,
@@ -1291,7 +1288,11 @@ mod tests {
 
         // 清空后必须完全归零
         engine.clear_book();
-        assert_eq!(engine.active_order_count(), 0, "active_order_count 必须为 0");
+        assert_eq!(
+            engine.active_order_count(),
+            0,
+            "active_order_count 必须为 0"
+        );
         assert!(engine.best_bid().is_none(), "best_bid 必须为 None");
         assert!(engine.best_ask().is_none(), "best_ask 必须为 None");
         // 索引 len 必须为 0(通过 active_order_count 间接验证)

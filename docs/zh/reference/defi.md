@@ -1,7 +1,7 @@
 # DeFi 链上交易 (Python 绑定)
 
 > 适用版本:AXON v0.3.0+(`axon-defi` 0.3.0 P0 Batch 1-4 完整交付)
-> 上游:[axon-defi Rust crate](../../crates/axon-defi/) + [axon_quant.defi 顶层 wrapper](../../python/axon_quant/defi.py)
+> 上游:[axon-defi Rust crate](https://github.com/pengwow/axon_quant/blob/main/crates/axon-defi/) + [axon_quant.defi 顶层 wrapper](https://github.com/pengwow/axon_quant/blob/main/python/axon_quant/defi.py)
 > 设计文档:[DeFi 链上交易架构设计](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-defi-onchain-trading-design.md)
 > 完整可运行示例:`examples/17_python_bindings/python_bindings_demo.py` 中的 defi 段
 

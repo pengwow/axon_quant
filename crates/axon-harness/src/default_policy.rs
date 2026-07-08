@@ -9,7 +9,9 @@ use axon_core::harness_types::{AgentIntent, TaskContext};
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use crate::policy::HarnessPolicy;
-use crate::types::{Adjudication, BudgetState, BudgetZone, CompressionHint, HarnessConfig, ModelChoice};
+use crate::types::{
+    Adjudication, BudgetState, BudgetZone, CompressionHint, HarnessConfig, ModelChoice,
+};
 
 /// 默认裁决策略
 ///

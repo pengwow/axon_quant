@@ -243,9 +243,7 @@ impl PyInferenceEngine {
 impl PyInferenceEngine {
     /// 0.3.0 P0 Stage 6 收口:供 `PyModelHotReloader` 拿
     /// backend 句柄 + config_path + num_threads(走 `pub(crate)`,Python 端不可见)。
-    pub(crate) fn _shared_backend(
-        &self,
-    ) -> (Arc<RwLock<dyn RustEngine>>, String, usize) {
+    pub(crate) fn _shared_backend(&self) -> (Arc<RwLock<dyn RustEngine>>, String, usize) {
         (
             self.inner.clone(),
             self.config_path.clone(),
@@ -322,7 +320,10 @@ mod tests {
         let eng = PyInferenceEngine::new(cfg).expect("Onnx backend should be available");
         assert_eq!(eng.backend(), "onnx");
         // __repr__ 含 backend + path(0.3.0 P0 Stage 6 收口)
-        assert_eq!(eng.__repr__(), "InferenceEngine(backend=onnx, path=/tmp/m.onnx)");
+        assert_eq!(
+            eng.__repr__(),
+            "InferenceEngine(backend=onnx, path=/tmp/m.onnx)"
+        );
     }
 
     /// `__new__` 在 `Tch` backend 时返回明确错误(Stage 6 暂不暴露)。

@@ -2,9 +2,9 @@
 
 use axon_core::harness_types::{AgentIntent, TaskContext};
 use axon_harness::{
-    Adjudication, BudgetGuard, BudgetZone, CircuitBreaker, CircuitBreakerConfig,
-    GateResult, HarnessBridge, HarnessConfig, HarnessObserver, DecisionRecord,
-    RBACToolGate, SimpleBudgetGuard, ToolGate,
+    Adjudication, BudgetGuard, BudgetZone, CircuitBreaker, CircuitBreakerConfig, DecisionRecord,
+    GateResult, HarnessBridge, HarnessConfig, HarnessObserver, RBACToolGate, SimpleBudgetGuard,
+    ToolGate,
 };
 
 fn test_config() -> HarnessConfig {

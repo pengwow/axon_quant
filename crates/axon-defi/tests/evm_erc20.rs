@@ -10,25 +10,18 @@ use axon_defi::evm::provider::ProviderConfig;
 
 const ANVIL_URL: &str = "http://127.0.0.1:8545";
 
-// anvil fork mainnet 的 USDC / USDT / DAI / WETH 地址
+// anvil fork mainnet 的 USDC / WETH 地址
 const USDC_ADDR: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-const USDT_ADDR: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
-const DAI_ADDR: &str = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 const WETH_ADDR: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 // vitalik.eth 地址(mainnet 上有多个 token 余额)
 const VITALIK_ADDR: &str = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(format!("{ANVIL_URL}")),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL.to_string())).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> axon_defi::evm::provider::EvmProvider {
@@ -61,10 +54,7 @@ async fn erc20_client_usdc_decimals_returns_6() {
 async fn erc20_client_usdc_symbol_returns_usdc() {
     // 期望:USDC symbol = "USDC"
     let client = Erc20Client::new(USDC_ADDR, provider());
-    let s = client
-        .symbol()
-        .await
-        .expect("USDC symbol should succeed");
+    let s = client.symbol().await.expect("USDC symbol should succeed");
     assert_eq!(s, "USDC");
 }
 
@@ -83,10 +73,7 @@ async fn erc20_client_weth_decimals_returns_18() {
 async fn erc20_client_weth_symbol_returns_weth() {
     // 期望:WETH symbol = "WETH"
     let client = Erc20Client::new(WETH_ADDR, provider());
-    let s = client
-        .symbol()
-        .await
-        .expect("WETH symbol should succeed");
+    let s = client.symbol().await.expect("WETH symbol should succeed");
     assert_eq!(s, "WETH");
 }
 

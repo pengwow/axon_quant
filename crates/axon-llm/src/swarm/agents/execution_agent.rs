@@ -26,10 +26,10 @@ use crate::swarm::message::{AgentMessage, MessageContent, TradeOrder, TradeResul
 use crate::tools::Tool;
 use crate::trading::place_order_tool::PlaceOrderTool;
 use crate::trading::query_portfolio_tool::QueryPortfolioTool;
+use crate::trading::types::OrderSide as TradingOrderSide;
 use crate::trading::types::{
     OrderAck, OrderKind, PlaceOrderArgs, PortfolioSnapshot, QueryPortfolioArgs, TimeInForce,
 };
-use crate::trading::types::OrderSide as TradingOrderSide;
 
 use crate::swarm::message::OrderSide as SwarmOrderSide;
 
@@ -44,10 +44,7 @@ pub struct TradingTools {
 
 impl TradingTools {
     /// 构造(常用入口)
-    pub fn new(
-        place_order: Arc<PlaceOrderTool>,
-        query_portfolio: Arc<QueryPortfolioTool>,
-    ) -> Self {
+    pub fn new(place_order: Arc<PlaceOrderTool>, query_portfolio: Arc<QueryPortfolioTool>) -> Self {
         Self {
             place_order,
             query_portfolio,
@@ -275,9 +272,7 @@ impl ExecutionAgent {
             .await
             .map_err(|e| SwarmError::Other(format!("QueryPortfolioTool 失败: {e}")))?;
         let snap: PortfolioSnapshot = serde_json::from_str(&json).map_err(|e| {
-            SwarmError::Other(format!(
-                "反序列化 PortfolioSnapshot 失败: {e} (raw={json})"
-            ))
+            SwarmError::Other(format!("反序列化 PortfolioSnapshot 失败: {e} (raw={json})"))
         })?;
         Ok(snap)
     }
@@ -530,10 +525,7 @@ mod tests {
         assert_eq!(agent.queried_count(), 1);
 
         // symbol 过滤
-        let snap2 = agent
-            .query_portfolio(Some("BTC-USDT"))
-            .await
-            .unwrap();
+        let snap2 = agent.query_portfolio(Some("BTC-USDT")).await.unwrap();
         assert_eq!(snap2.positions.len(), 1);
         assert_eq!(snap2.positions[0].symbol, "BTC-USDT");
         assert_eq!(agent.queried_count(), 2);

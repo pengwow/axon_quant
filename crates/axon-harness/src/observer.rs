@@ -20,7 +20,7 @@ pub struct DecisionRecord {
 }
 
 /// Harness 性能指标
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HarnessMetrics {
     /// 总决策数
     pub total_decisions: u64,
@@ -32,18 +32,6 @@ pub struct HarnessMetrics {
     pub circuit_break_count: u64,
     /// 平均延迟 (纳秒)
     pub avg_latency_ns: u64,
-}
-
-impl Default for HarnessMetrics {
-    fn default() -> Self {
-        Self {
-            total_decisions: 0,
-            approved_count: 0,
-            rejected_count: 0,
-            circuit_break_count: 0,
-            avg_latency_ns: 0,
-        }
-    }
 }
 
 /// Harness 可观测性组件
@@ -76,8 +64,8 @@ impl HarnessObserver {
         }
 
         // 更新平均延迟
-        let total_latency = self.metrics.avg_latency_ns * (self.metrics.total_decisions - 1)
-            + record.latency_ns;
+        let total_latency =
+            self.metrics.avg_latency_ns * (self.metrics.total_decisions - 1) + record.latency_ns;
         self.metrics.avg_latency_ns = total_latency / self.metrics.total_decisions;
 
         self.decisions.push(record);

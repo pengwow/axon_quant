@@ -17,20 +17,14 @@ const ANVIL_URL: &str = "http://127.0.0.1:8545";
 // vitalik.eth 等多 holder(任选,仅用于 multicall 批量演示)
 const VITALIK: &str = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 const HOLDER_A: &str = "0x0000000000000000000000000000000000000001";
-const HOLDER_B: &str = "0x0000000000000000000000000000000000000002";
 
 const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(ANVIL_URL),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL)).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> EvmProvider {
@@ -128,10 +122,10 @@ async fn multicall_aggregate3_single_call() {
             .as_slice(),
     );
 
-    let calls = vec![Call3::strict(USDC, &format!(
-        "0x{}",
-        alloy::primitives::hex::encode(&data)
-    ))];
+    let calls = vec![Call3::strict(
+        USDC,
+        &format!("0x{}", alloy::primitives::hex::encode(&data)),
+    )];
     let results = mc.aggregate3(calls).await.expect("aggregate3 ok");
     assert_eq!(results.len(), 1);
     assert!(results[0].success, "single call should succeed");
@@ -204,10 +198,7 @@ async fn multicall_decimals_batch_returns_6_for_usdc() {
     let usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
     let usdt = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
     let tokens = vec![usdc, usdt];
-    let decimals_list = mc
-        .decimals_batch(&tokens)
-        .await
-        .expect("decimals batch ok");
+    let decimals_list = mc.decimals_batch(&tokens).await.expect("decimals batch ok");
     assert_eq!(decimals_list.len(), 2);
     assert_eq!(decimals_list[0], 6);
     assert_eq!(decimals_list[1], 6);

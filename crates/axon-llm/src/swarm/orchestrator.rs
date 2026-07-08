@@ -24,8 +24,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc;
 
 use axon_core::harness_types::{AgentIntent, TaskContext};
 use axon_harness::{Adjudication, HarnessBridge};
@@ -344,7 +344,7 @@ impl SwarmOrchestrator {
         if let Some(r) = self.runners.get(agent_id) {
             return Some(r.runner.status());
         }
-        self.agents.get(agent_id).map(|h| h.status.clone())
+        self.agents.get(agent_id).map(|h| h.status)
     }
 
     /// 发送消息给指定 Agent(runner 优先,回退到旧版 agents)
@@ -556,7 +556,7 @@ impl SwarmOrchestrator {
                         tracing::warn!("run_loop_arc dispatch error: {e}");
                     }
                 }
-                Ok(None) => break, // channel 关闭
+                Ok(None) => break,  // channel 关闭
                 Err(_) => continue, // timeout,再次检查 shutdown
             }
         }
@@ -585,27 +585,31 @@ impl SwarmOrchestrator {
                         timestamp: chrono::Utc::now().timestamp(),
                     };
                     // 找第一个 Execution agent
-                    if let Some(r) = self.runners.values().find(|r| r.role == AgentRole::Execution)
+                    if let Some(r) = self
+                        .runners
+                        .values()
+                        .find(|r| r.role == AgentRole::Execution)
                     {
-                        r.sender.send(exec_msg).await.map_err(|e| {
-                            SwarmError::MessageSendFailed(e.to_string())
-                        })?;
+                        r.sender
+                            .send(exec_msg)
+                            .await
+                            .map_err(|e| SwarmError::MessageSendFailed(e.to_string()))?;
                     }
                 } else {
                     // 不通过 → 通知 Audit 记录拒绝
-                    self.broadcast_to_role(AgentRole::Audit, MessageContent::RiskAssessment(signal))
-                        .await?;
+                    self.broadcast_to_role(
+                        AgentRole::Audit,
+                        MessageContent::RiskAssessment(signal),
+                    )
+                    .await?;
                 }
                 Ok(())
             }
             MessageContent::ExecutionResult(result) => {
                 self.stats.execution_results += 1;
                 // 转发给 Audit
-                self.broadcast_to_role(
-                    AgentRole::Audit,
-                    MessageContent::ExecutionResult(result),
-                )
-                .await?;
+                self.broadcast_to_role(AgentRole::Audit, MessageContent::ExecutionResult(result))
+                    .await?;
                 Ok(())
             }
             MessageContent::VoteResponse(vr) => {
@@ -628,8 +632,10 @@ impl SwarmOrchestrator {
                         Adjudication::Approved => {
                             self.stats.harness_approved += 1;
                             // 转发给 Execution agent
-                            if let Some(r) =
-                                self.runners.values().find(|r| r.role == AgentRole::Execution)
+                            if let Some(r) = self
+                                .runners
+                                .values()
+                                .find(|r| r.role == AgentRole::Execution)
                             {
                                 let order = TradeOrder {
                                     symbol: "BTC-USDT".into(),
@@ -647,18 +653,15 @@ impl SwarmOrchestrator {
                                     content: MessageContent::ExecutionRequest(order),
                                     timestamp: chrono::Utc::now().timestamp(),
                                 };
-                                r.sender.send(exec_msg).await.map_err(|e| {
-                                    SwarmError::MessageSendFailed(e.to_string())
-                                })?;
+                                r.sender
+                                    .send(exec_msg)
+                                    .await
+                                    .map_err(|e| SwarmError::MessageSendFailed(e.to_string()))?;
                             }
                         }
                         Adjudication::Rejected(reason) => {
                             self.stats.harness_rejected += 1;
-                            tracing::info!(
-                                "harness rejected vote {}: {}",
-                                vr.proposal_id,
-                                reason
-                            );
+                            tracing::info!("harness rejected vote {}: {}", vr.proposal_id, reason);
                             // 广播给 Audit 记录拒绝原因
                             self.broadcast_to_role(
                                 AgentRole::Audit,
@@ -852,12 +855,10 @@ mod tests {
     /// `run_loop_arc`:Arc 共享版 — Shutdown 消息后退出,且其他 owner 可读 stats
     #[tokio::test]
     async fn test_run_loop_arc_handles_shutdown() {
-        let orchestrator = Arc::new(TokioMutex::new(SwarmOrchestrator::new(
-            SwarmConfig {
-                loop_tick_ms: 10,
-                ..Default::default()
-            },
-        )));
+        let orchestrator = Arc::new(TokioMutex::new(SwarmOrchestrator::new(SwarmConfig {
+            loop_tick_ms: 10,
+            ..Default::default()
+        })));
         let (tx, rx) = mpsc::channel(8);
         let orch_clone = Arc::clone(&orchestrator);
         let handle = tokio::spawn(async move {
@@ -890,12 +891,10 @@ mod tests {
     /// `run_loop_arc`:派发 MarketAnalysis 时创建投票(经 Arc 共享 self)
     #[tokio::test]
     async fn test_run_loop_arc_dispatches_market_signal() {
-        let orchestrator = Arc::new(TokioMutex::new(SwarmOrchestrator::new(
-            SwarmConfig {
-                loop_tick_ms: 10,
-                ..Default::default()
-            },
-        )));
+        let orchestrator = Arc::new(TokioMutex::new(SwarmOrchestrator::new(SwarmConfig {
+            loop_tick_ms: 10,
+            ..Default::default()
+        })));
         let (tx, rx) = mpsc::channel(8);
         let orch_clone = Arc::clone(&orchestrator);
         let handle = tokio::spawn(async move {
@@ -997,10 +996,7 @@ mod tests {
             fn status(&self) -> AgentStatus {
                 self.status
             }
-            async fn run_step(
-                &mut self,
-                _msg: AgentMessage,
-            ) -> Result<RunnerOutput, SwarmError> {
+            async fn run_step(&mut self, _msg: AgentMessage) -> Result<RunnerOutput, SwarmError> {
                 Ok(RunnerOutput::None)
             }
         }
@@ -1048,14 +1044,15 @@ mod tests {
         assert_eq!(orchestrator.stats().harness_approved, 1);
         assert_eq!(orchestrator.stats().harness_rejected, 0);
         // Execution agent 应该收到 ExecutionRequest
-        let exec_msg = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            exec_inbox_rx.recv(),
-        )
-        .await
-        .expect("timeout")
-        .expect("must have msg");
-        assert!(matches!(exec_msg.content, MessageContent::ExecutionRequest(_)));
+        let exec_msg =
+            tokio::time::timeout(std::time::Duration::from_millis(200), exec_inbox_rx.recv())
+                .await
+                .expect("timeout")
+                .expect("must have msg");
+        assert!(matches!(
+            exec_msg.content,
+            MessageContent::ExecutionRequest(_)
+        ));
         assert_eq!(exec_msg.correlation_id.as_deref(), Some("vote_passed_1"));
     }
 

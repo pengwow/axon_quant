@@ -95,8 +95,8 @@ pub trait DeclarativeAgentRunner: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::swarm::agent::AgentId;
     use crate::swarm::message::MessageContent;

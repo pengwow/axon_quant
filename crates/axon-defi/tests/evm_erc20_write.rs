@@ -28,15 +28,10 @@ const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const RECIPIENT: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 async fn anvil_running() -> bool {
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        reqwest::get(ANVIL_URL),
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL)).await,
+        Ok(Ok(_))
     )
-    .await
-    {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
 }
 
 fn provider() -> EvmProvider {
@@ -87,9 +82,10 @@ fn parse_approval_log_with_correct_signature() {
 
     // IERC20::Approval event signature =
     // keccak256("Approval(address,address,uint256)") = 0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925
-    let sig_bytes =
-        alloy::primitives::hex::decode("8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925")
-            .unwrap();
+    let sig_bytes = alloy::primitives::hex::decode(
+        "8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+    )
+    .unwrap();
     let mut sig = [0u8; 32];
     sig.copy_from_slice(&sig_bytes);
 
@@ -120,9 +116,10 @@ fn parse_transfer_log_with_correct_signature() {
 
     // IERC20::Transfer event signature =
     // keccak256("Transfer(address,address,uint256)") = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
-    let sig_bytes =
-        alloy::primitives::hex::decode("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
-            .unwrap();
+    let sig_bytes = alloy::primitives::hex::decode(
+        "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    )
+    .unwrap();
     let mut sig = [0u8; 32];
     sig.copy_from_slice(&sig_bytes);
 

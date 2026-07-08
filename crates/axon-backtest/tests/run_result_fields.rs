@@ -322,7 +322,11 @@ fn win_rate_mixed_pnl() {
     let result = engine.run();
 
     // 2 笔 trade:1 win + 1 loss → win_rate = 0.5
-    assert_eq!(result.trades.len(), 2, "2 轮完全平仓应 push 2 个 TradeRecord");
+    assert_eq!(
+        result.trades.len(),
+        2,
+        "2 轮完全平仓应 push 2 个 TradeRecord"
+    );
     assert!(
         (result.win_rate - 0.5).abs() < 1e-9,
         "expected win_rate=0.5, got {}",

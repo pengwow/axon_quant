@@ -3,8 +3,8 @@
 //! 0.3.0 P0 新增:LocalSigner 包装 alloy `PrivateKeySigner`,
 //! 提供 nonce 原子分配 + EIP-1559 fee 估算 + transfer_eth 写路径。
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::evm::chain::Chain;
 
@@ -205,9 +205,7 @@ impl LocalSigner {
         _to: String,
         _value_wei: String,
     ) -> Result<(), SignerError> {
-        Err(SignerError::TxSendFailed(
-            "evm feature not enabled".into(),
-        ))
+        Err(SignerError::TxSendFailed("evm feature not enabled".into()))
     }
 }
 

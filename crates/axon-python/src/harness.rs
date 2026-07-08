@@ -70,7 +70,8 @@ impl PyHarnessBridge {
 
     /// 工具门控检查
     fn check_tool(&self, tool: &str, agent: &str, params: &str) -> String {
-        let params_value: serde_json::Value = serde_json::from_str(params).unwrap_or(serde_json::Value::Null);
+        let params_value: serde_json::Value =
+            serde_json::from_str(params).unwrap_or(serde_json::Value::Null);
         match self.inner.check_tool(tool, agent, &params_value) {
             axon_harness::GateResult::Allowed => "allowed".into(),
             axon_harness::GateResult::Denied(reason) => format!("denied: {reason}"),
@@ -80,50 +81,111 @@ impl PyHarnessBridge {
 
     /// 记录工具调用
     fn record_tool_call(&self, tool: &str, agent: &str, params: &str, result: &str) {
-        let params_value: serde_json::Value = serde_json::from_str(params).unwrap_or(serde_json::Value::Null);
-        self.inner.record_tool_call(tool, agent, &params_value, result);
+        let params_value: serde_json::Value =
+            serde_json::from_str(params).unwrap_or(serde_json::Value::Null);
+        self.inner
+            .record_tool_call(tool, agent, &params_value, result);
     }
 
     /// 裁决 Agent 意图
     fn adjudicate(&self, intent: &str, ctx: &str) -> String {
-        let intent_value: serde_json::Value = serde_json::from_str(intent).unwrap_or(serde_json::Value::Null);
-        let ctx_value: serde_json::Value = serde_json::from_str(ctx).unwrap_or(serde_json::Value::Null);
-        
+        let intent_value: serde_json::Value =
+            serde_json::from_str(intent).unwrap_or(serde_json::Value::Null);
+        let ctx_value: serde_json::Value =
+            serde_json::from_str(ctx).unwrap_or(serde_json::Value::Null);
+
         // 简化实现：将 JSON 转换为 Rust 类型
         let agent_intent = axon_core::harness_types::AgentIntent {
-            action: intent_value.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            tool: intent_value.get("tool").and_then(|v| v.as_str()).map(String::from),
-            params: intent_value.get("params").cloned().unwrap_or(serde_json::Value::Null),
-            confidence: intent_value.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5),
-            reasoning: intent_value.get("reasoning").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            estimated_tokens: intent_value.get("estimated_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            action: intent_value
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            tool: intent_value
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            params: intent_value
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            confidence: intent_value
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5),
+            reasoning: intent_value
+                .get("reasoning")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            estimated_tokens: intent_value
+                .get("estimated_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
         };
         let task_ctx = axon_core::harness_types::TaskContext {
             step: ctx_value.get("step").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            tokens_used: ctx_value.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0),
-            task_description: ctx_value.get("task_description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            current_agent: ctx_value.get("current_agent").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            started_at: ctx_value.get("started_at").and_then(|v| v.as_u64()).unwrap_or(0),
-            metadata: ctx_value.get("metadata").cloned().unwrap_or(serde_json::Value::Null),
+            tokens_used: ctx_value
+                .get("tokens_used")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            task_description: ctx_value
+                .get("task_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            current_agent: ctx_value
+                .get("current_agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            started_at: ctx_value
+                .get("started_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            metadata: ctx_value
+                .get("metadata")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         };
         match self.inner.adjudicate(&agent_intent, &task_ctx) {
             axon_harness::Adjudication::Approved => "approved".into(),
             axon_harness::Adjudication::Rejected(reason) => format!("rejected: {reason}"),
-            axon_harness::Adjudication::NeedRevision(feedback) => format!("need_revision: {feedback}"),
+            axon_harness::Adjudication::NeedRevision(feedback) => {
+                format!("need_revision: {feedback}")
+            }
             axon_harness::Adjudication::CircuitBreak => "circuit_break".into(),
         }
     }
 
     /// 检查任务是否可以继续
     fn can_proceed(&self, ctx: &str) -> bool {
-        let ctx_value: serde_json::Value = serde_json::from_str(ctx).unwrap_or(serde_json::Value::Null);
+        let ctx_value: serde_json::Value =
+            serde_json::from_str(ctx).unwrap_or(serde_json::Value::Null);
         let task_ctx = axon_core::harness_types::TaskContext {
             step: ctx_value.get("step").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            tokens_used: ctx_value.get("tokens_used").and_then(|v| v.as_u64()).unwrap_or(0),
-            task_description: ctx_value.get("task_description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            current_agent: ctx_value.get("current_agent").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            started_at: ctx_value.get("started_at").and_then(|v| v.as_u64()).unwrap_or(0),
-            metadata: ctx_value.get("metadata").cloned().unwrap_or(serde_json::Value::Null),
+            tokens_used: ctx_value
+                .get("tokens_used")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            task_description: ctx_value
+                .get("task_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            current_agent: ctx_value
+                .get("current_agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            started_at: ctx_value
+                .get("started_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            metadata: ctx_value
+                .get("metadata")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
         };
         self.inner.can_proceed(&task_ctx)
     }

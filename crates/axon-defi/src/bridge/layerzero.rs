@@ -17,21 +17,20 @@ use crate::evm::provider::EvmProvider;
 use crate::evm::signer::LocalSigner;
 
 #[cfg(feature = "evm")]
+use alloy::network::{EthereumWallet, TransactionBuilder};
+#[cfg(feature = "evm")]
 use alloy::primitives::{Address, U256};
+#[cfg(feature = "evm")]
+use alloy::providers::Provider;
 #[cfg(feature = "evm")]
 use alloy::rpc::types::TransactionReceipt;
 #[cfg(feature = "evm")]
 use alloy::sol;
-#[cfg(feature = "evm")]
-use alloy::network::{EthereumWallet, TransactionBuilder};
-#[cfg(feature = "evm")]
-use alloy::providers::Provider;
 
 /// LayerZero V2 EndpointV2 通用地址
 ///
 /// mainnet / Arbitrum / Optimism / Polygon / Base 等同一地址(Canonical by LayerZero Labs)
-pub const LZ_ENDPOINT_V2_ADDRESS: &str =
-    "0x1a44076050125825900e736c501f859c50fE728c";
+pub const LZ_ENDPOINT_V2_ADDRESS: &str = "0x1a44076050125825900e736c501f859c50fE728c";
 
 #[cfg(feature = "evm")]
 sol! {
@@ -184,13 +183,12 @@ impl BridgeManager {
             })?;
         // 返回值是 (uint256 nativeFee, uint256 lzTokenFee)
         type FeeReturn = (U256, U256);
-        let fee: FeeReturn = SolValue::abi_decode(&output).map_err(|e| {
-            DefiError::ContractError {
+        let fee: FeeReturn =
+            SolValue::abi_decode(&output).map_err(|e| DefiError::ContractError {
                 address: self.config.endpoint.clone(),
                 method: "quote".into(),
                 reason: format!("decode: {}", e),
-            }
-        })?;
+            })?;
         Ok(fee.0) // nativeFee
     }
 
@@ -255,16 +253,22 @@ impl BridgeManager {
             .with_nonce(nonce)
             .with_value(native_fee); // 必带 native fee
 
-        let pending = p.send_transaction(tx).await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
-        let receipt = pending.get_receipt().await.map_err(|e| DefiError::RpcError {
-            url: provider.config().rpc_url.clone(),
-            status: 0,
-            body: DefiError::truncated_body(&format!("{}", e)),
-        })?;
+        let pending = p
+            .send_transaction(tx)
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| DefiError::RpcError {
+                url: provider.config().rpc_url.clone(),
+                status: 0,
+                body: DefiError::truncated_body(&format!("{}", e)),
+            })?;
         Ok(receipt)
     }
 

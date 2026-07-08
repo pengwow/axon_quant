@@ -190,7 +190,7 @@ orch.stop()
 
 ### 4.2 Full Pipeline Demo
 
-See [`examples/18_harness/swarm_demo.py`](../../../examples/18_harness/swarm_demo.py).
+See [`examples/18_harness/swarm_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/18_harness/swarm_demo.py).
 
 ## 5. Test Coverage
 

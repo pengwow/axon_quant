@@ -11,7 +11,11 @@ authors.workspace = true
 description = "DeFi 链上交易：EVM 链适配器、Uniswap V3、MEV-Share、LayerZero 跨链"
 
 [features]
-default = []
+# 默认启用 evm:axon-defi 的核心价值是 EVM 真链交互,默认关会导致
+# `cargo clippy --workspace --all-targets` 在 default 模式下编译失败
+# (lib.rs 的 mod evm/bridge/dex/mev 都引用了 alloy,必须在某个 feature 下编译)。
+# 下游依赖:axon-python 通过 `features = ["python"]` 隐含 evm,无重复编译成本。
+default = ["evm"]
 # EVM 真链接入:引入 alloy-rs,启用 `evm` feature 后才能用 evm::* 模块
 evm = ["dep:alloy", "dep:alloy-primitives"]
 # Python 绑定:自动启用 evm,使 `#[cfg(feature = "evm")]` 走真链分支,

@@ -59,22 +59,20 @@ impl Default for RBACToolGate {
     fn default() -> Self {
         let mut permissions = HashMap::new();
         // 默认权限
-        permissions.insert("market".to_string(), HashSet::from([
-            "query_market".to_string(),
-            "analyze_trend".to_string(),
-        ]));
-        permissions.insert("execution".to_string(), HashSet::from([
-            "place_order".to_string(),
-            "cancel_order".to_string(),
-        ]));
-        permissions.insert("risk".to_string(), HashSet::from([
-            "check_risk".to_string(),
-            "query_portfolio".to_string(),
-        ]));
+        permissions.insert(
+            "market".to_string(),
+            HashSet::from(["query_market".to_string(), "analyze_trend".to_string()]),
+        );
+        permissions.insert(
+            "execution".to_string(),
+            HashSet::from(["place_order".to_string(), "cancel_order".to_string()]),
+        );
+        permissions.insert(
+            "risk".to_string(),
+            HashSet::from(["check_risk".to_string(), "query_portfolio".to_string()]),
+        );
 
-        let approval_required = HashSet::from([
-            "place_order".to_string(),
-        ]);
+        let approval_required = HashSet::from(["place_order".to_string()]);
 
         Self::new(permissions, approval_required)
     }
@@ -83,10 +81,10 @@ impl Default for RBACToolGate {
 impl ToolGate for RBACToolGate {
     fn check(&self, tool: &str, agent: &str, _params: &serde_json::Value) -> GateResult {
         // 1. 检查角色权限
-        if let Some(tools) = self.permissions.get(agent) {
-            if !tools.contains(tool) {
-                return GateResult::Denied(format!("角色 {agent} 无权使用工具 {tool}"));
-            }
+        if let Some(tools) = self.permissions.get(agent)
+            && !tools.contains(tool)
+        {
+            return GateResult::Denied(format!("角色 {agent} 无权使用工具 {tool}"));
         }
 
         // 2. 检查是否需要审批

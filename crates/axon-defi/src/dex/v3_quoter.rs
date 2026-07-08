@@ -13,6 +13,8 @@ use crate::evm::chain::Chain;
 use crate::evm::provider::EvmProvider;
 
 #[cfg(feature = "evm")]
+use alloy::network::TransactionBuilder;
+#[cfg(feature = "evm")]
 use alloy::primitives::{Address, U160, U256};
 #[cfg(feature = "evm")]
 use alloy::providers::Provider;
@@ -22,8 +24,6 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
 #[cfg(feature = "evm")]
 use alloy::sol_types::{SolCall, SolValue};
-#[cfg(feature = "evm")]
-use alloy::network::TransactionBuilder;
 
 /// QuoterV2 合约地址
 ///
@@ -136,9 +136,8 @@ impl V3Quoter {
                 amountIn: amount_in,
                 fee: {
                     use alloy::primitives::Uint;
-                    Uint::<24, 1>::try_from(fee).map_err(|e| {
-                        DefiError::ConfigError(format!("fee out of range: {}", e))
-                    })?
+                    Uint::<24, 1>::try_from(fee)
+                        .map_err(|e| DefiError::ConfigError(format!("fee out of range: {}", e)))?
                 },
                 sqrtPriceLimitX96: sqrt_price_limit_x160,
             },
@@ -156,13 +155,12 @@ impl V3Quoter {
 
         // alloy 1.6:解 ABI 编码的 (U256, U160, u32, U256) tuple
         type QuoteReturn = (U256, U160, u32, U256);
-        let ret: QuoteReturn = SolValue::abi_decode(&output).map_err(|e| {
-            DefiError::ContractError {
+        let ret: QuoteReturn =
+            SolValue::abi_decode(&output).map_err(|e| DefiError::ContractError {
                 address: self.quoter_address.clone(),
                 method: "quoteExactInputSingle".into(),
                 reason: format!("decode: {}", e),
-            }
-        })?;
+            })?;
         let (amount_out, sqrt_price_x160, ticks, gas) = ret;
 
         // U160 -> U256 转换(用于对外统一类型)

@@ -19,10 +19,7 @@ pub trait InferenceEngine: Send + Sync {
     /// - Onnx:返回 `Box<ort::Session>`(已 commit 的 session)
     /// - Candle:返回 `Box<CandleReloadState>`,内含 path,`replace_session` 触发重新 `load`
     /// - Tch:返回 `Box<tch::CModule>`(已 load 的 CModule)
-    fn build_session(
-        &self,
-        path: &Path,
-    ) -> Result<Box<dyn Any + Send + Sync>, InferenceError>;
+    fn build_session(&self, path: &Path) -> Result<Box<dyn Any + Send + Sync>, InferenceError>;
     /// 替换当前 backend 的 session(详见 hot-update spec §3.1)
     ///
     /// - 状态变更:需要独占修改 backend 内部 session,故接收 `&mut self`

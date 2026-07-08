@@ -9,9 +9,7 @@
 
 use std::time::Duration;
 
-use axon_defi::bridge::layerzero::{
-    BridgeManager, MessagingParamsInput, LZ_ENDPOINT_V2_ADDRESS,
-};
+use axon_defi::bridge::layerzero::{BridgeManager, LZ_ENDPOINT_V2_ADDRESS, MessagingParamsInput};
 use axon_defi::evm::chain::Chain;
 use axon_defi::evm::provider::{EvmProvider, ProviderConfig};
 use axon_defi::evm::signer::LocalSigner;
@@ -114,7 +112,10 @@ async fn estimate_fee_returns_positive_on_anvil() {
         .expect("estimate_fee ok on anvil fork");
     // 不管 fee 多大,只要非空值就证明 RPC 真发到 EndpointV2 合约
     // (estimate_fee 返回 U256,非零即说明链上有响应)
-    eprintln!("[bridge] estimate_fee on anvil returned non-zero value (fee={})", fee);
+    eprintln!(
+        "[bridge] estimate_fee on anvil returned non-zero value (fee={})",
+        fee
+    );
 }
 
 #[tokio::test]
