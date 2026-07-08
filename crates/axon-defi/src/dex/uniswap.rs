@@ -1,9 +1,9 @@
 //! Uniswap V3 路由(0.3.0 P0 Batch 3 重写)
 //!
 //! 0.3.0 改造点:
-//! - `quote_swap` 不再是 `amount_in * fee_factor` 模拟,改走 [V3Quoter] 真链报价
+//! - `quote_swap` 不再是 `amount_in * fee_factor` 模拟,改走 `V3Quoter` 真链报价
 //! - `get_best_route` 扫描 4 个 fee tier(100/500/3000/10000)选最优
-//! - 新增 [estimate_price_impact] / [pool_depth] 走池子 `slot0()` + `liquidity()`
+//! - 新增 `estimate_price_impact` / `pool_depth` 走池子 `slot0()` + `liquidity()`
 
 use serde::{Deserialize, Serialize};
 

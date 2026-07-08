@@ -1,7 +1,7 @@
 //! LayerZero V2 跨链桥(0.3.0 P0 Batch 4 / T1.11)
 //!
 //! 0.3.0 改造:`bridge_tokens` 不再返回 `format!("0x{:064x}", 67890)` 假 hash,
-//! 改走 [LayerZeroV2Endpoint] `quote()` + `send()` 真链交互。
+//! 改走 `LayerZeroV2Endpoint` `quote()` + `send()` 真链交互。
 //!
 //! 关键设计:
 //! - LayerZero V2 EndpointV2 4 链共用同一地址:`0x1a44076050125825900e736c501f859c50fE728c`

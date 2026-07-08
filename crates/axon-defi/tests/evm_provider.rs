@@ -20,7 +20,11 @@ const ANVIL_URL: &str = "http://127.0.0.1:8545";
 /// 检测 anvil 是否在运行
 async fn anvil_running() -> bool {
     matches!(
-        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL.to_string())).await,
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            reqwest::get(ANVIL_URL.to_string())
+        )
+        .await,
         Ok(Ok(_))
     )
 }

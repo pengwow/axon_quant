@@ -28,12 +28,12 @@ use parking_lot::Mutex;
 
 use crate::swarm::paper_trading::{PaperPortfolio, PaperTradingConfig};
 use crate::trading::backend::{TradingBackend, TradingError};
+#[cfg(test)]
+use crate::trading::types::PortfolioSnapshot;
 use crate::trading::types::{
     BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
     PositionSnapshot,
 };
-#[cfg(test)]
-use crate::trading::types::PortfolioSnapshot;
 
 /// 内部状态:`cash` + 持仓(symbol → (qty, entry_price))
 #[derive(Debug, Clone)]

@@ -19,7 +19,11 @@ const VITALIK_ADDR: &str = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
 async fn anvil_running() -> bool {
     matches!(
-        tokio::time::timeout(Duration::from_millis(500), reqwest::get(ANVIL_URL.to_string())).await,
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            reqwest::get(ANVIL_URL.to_string())
+        )
+        .await,
         Ok(Ok(_))
     )
 }
