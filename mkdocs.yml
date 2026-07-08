@@ -160,6 +160,9 @@ nav:
       - Python 绑定: reference/python-bindings.md
       - 配置参考: reference/configuration.md
       - 交易所安全: reference/exchange-security.md
+      - DeFi 链上交易: reference/defi.md
+      - Inference 热更新: reference/inference-hot-reload.md
+      - Swarm 编排: reference/swarm-orchestration.md
   - 基准测试: benchmark.md
   - 架构决策:
       - 索引: adr/index.md

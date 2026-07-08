@@ -6,7 +6,7 @@
 > - [`examples/03_hpo/`](https://github.com/pengwow/axon_quant/blob/main/examples/03_hpo/) — Hyperparameter optimization
 > - [`examples/08_walk_forward/`](https://github.com/pengwow/axon_quant/blob/main/examples/08_walk_forward/) — Walk-Forward validation
 
-This document demonstrates how to complete a full strategy development pipeline on the AXON quantitative platform, covering 7 key steps from data preparation to model deployment. Each step is based on AXON `0.2.0` real source code and shows "how the output of one step becomes the input of the next".
+This document demonstrates how to complete a full strategy development pipeline on the AXON quantitative platform, covering 7 key steps from data preparation to model deployment. Each step is based on AXON `0.3.0` real source code and shows "how the output of one step becomes the input of the next".
 
 ---
 

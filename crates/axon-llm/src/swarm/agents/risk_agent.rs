@@ -1,8 +1,10 @@
 //! RiskAgent - 风控 Agent
 
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::swarm::agent::{AgentId, AgentRole, AgentStatus};
+use crate::swarm::agent_runner::{DeclarativeAgentRunner, RunnerOutput};
 use crate::swarm::error::SwarmError;
 use crate::swarm::message::{AgentMessage, MessageContent, RiskSignal, TradeOrder};
 
@@ -34,6 +36,8 @@ pub struct RiskAgent {
     #[allow(dead_code)]
     inbox: mpsc::Receiver<AgentMessage>,
     outbox: mpsc::Sender<AgentMessage>,
+    /// 已发送消息计数(测试可观察)
+    sent_count: usize,
 }
 
 impl RiskAgent {
@@ -50,7 +54,13 @@ impl RiskAgent {
             config,
             inbox,
             outbox,
+            sent_count: 0,
         }
+    }
+
+    /// 获取已发送消息数(测试 / 监控用)
+    pub fn sent_count(&self) -> usize {
+        self.sent_count
     }
 
     /// 获取 Agent ID
@@ -112,6 +122,7 @@ impl RiskAgent {
                     timestamp: chrono::Utc::now().timestamp(),
                 };
                 let _ = self.outbox.send(response).await;
+                self.sent_count += 1;
                 self.status = AgentStatus::Idle;
             }
             MessageContent::Heartbeat => {
@@ -126,6 +137,30 @@ impl RiskAgent {
         }
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl DeclarativeAgentRunner for RiskAgent {
+    fn id(&self) -> &AgentId {
+        &self.id
+    }
+    fn role(&self) -> AgentRole {
+        AgentRole::Risk
+    }
+    fn status(&self) -> AgentStatus {
+        self.status
+    }
+    async fn run_step(&mut self, msg: AgentMessage) -> Result<RunnerOutput, SwarmError> {
+        // `ExecutionRequest` 会经 outbox 发出 `RiskAssessment`;其他消息无下游产出。
+        // 用消息内容判断 forwarded 数,避免依赖 mpsc::Sender 的容量 / 计数 API。
+        let forwarded = matches!(msg.content, MessageContent::ExecutionRequest(_)) as usize;
+        self.handle_message(msg).await?;
+        if forwarded > 0 {
+            Ok(RunnerOutput::Forwarded { forwarded })
+        } else {
+            Ok(RunnerOutput::None)
+        }
     }
 }
 
@@ -212,5 +247,51 @@ mod tests {
         let signal = agent.check_order_risk(&order);
         assert!(!signal.approved);
         assert!(signal.violations.iter().any(|v| v.contains("positive")));
+    }
+
+    /// `RiskAgent` 实现 `DeclarativeAgentRunner`:
+    /// - 收到 `ExecutionRequest` → 产 `RunnerOutput::Forwarded{1}`(经 outbox 发出 RiskAssessment,sent_count +1)
+    /// - 收到 `Heartbeat` → 产 `RunnerOutput::None`(sent_count 不变)
+    #[tokio::test]
+    async fn test_risk_agent_runner_trait_impl() {
+        let (tx, rx) = mpsc::channel(10);
+        let id = AgentId::from_string("risk_0");
+        let config = RiskAgentConfig::default();
+        let mut agent = RiskAgent::new(id, config, rx, tx);
+
+        // 收到 ExecutionRequest
+        let order = TradeOrder {
+            symbol: "BTC-USDT".into(),
+            side: OrderSide::Buy,
+            quantity: 0.1,
+            order_type: "limit".into(),
+            price: Some(50000.0),
+            reason: "Test".into(),
+        };
+        let msg = AgentMessage {
+            id: crate::swarm::message::MessageId::new(),
+            from: AgentId::from_string("orchestrator"),
+            to: AgentId::from_string("risk_0"),
+            correlation_id: None,
+            content: MessageContent::ExecutionRequest(order),
+            timestamp: 1000,
+        };
+        let out = agent.run_step(msg).await.unwrap();
+        assert!(matches!(out, RunnerOutput::Forwarded { forwarded: 1 }));
+        assert_eq!(agent.sent_count(), 1);
+        assert_eq!(agent.status(), AgentStatus::Idle);
+
+        // 收到 Heartbeat → None,sent_count 不变
+        let hb = AgentMessage {
+            id: crate::swarm::message::MessageId::new(),
+            from: AgentId::from_string("orchestrator"),
+            to: AgentId::from_string("risk_0"),
+            correlation_id: None,
+            content: MessageContent::Heartbeat,
+            timestamp: 1000,
+        };
+        let out = agent.run_step(hb).await.unwrap();
+        assert!(matches!(out, RunnerOutput::None));
+        assert_eq!(agent.sent_count(), 1); // 不变
     }
 }

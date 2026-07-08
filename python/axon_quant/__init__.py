@@ -136,6 +136,7 @@ from ._native import (  # noqa: F401
     __version__,  # noqa: F401
     backtest,      # Stage 2:axon-backtest 暴露
     data,           # Stage 1:axon-data 暴露
+    defi,           # 0.3.0 P0 Batch 4:axon-defi 暴露
     distributed,
     exchange,       # Stage 5:axon-exchange 暴露
     hpo,
@@ -147,6 +148,23 @@ from ._native import (  # noqa: F401
     tracker,
     walk_forward,
 )
+
+# 将 PyO3 native-only 子模块注册到 sys.modules。
+# 否则 `from axon_quant.rl import TradingEnv` 之类的导入会因 sys.modules
+# 缺少 `axon_quant.<subname>` 缓存、Python import 系统无法定位 spec 而
+# ModuleNotFoundError。
+#
+# 注意:backtest/data/risk/oms/exchange/inference/explain/ensemble/compliance
+#      /llm/trading 都有同名 .py 包装,Python import 系统会从 .py 加载,
+#      sys.modules 也会被自动设置,这里不重复处理(否则会覆盖 .py 包装)。
+#      defi 同样有 .py 包装,见 `python/axon_quant/defi.py`。
+import sys as _sys
+for _sub_name in (
+    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward",
+):
+    _sub_mod = globals().get(_sub_name)
+    if _sub_mod is not None:
+        _sys.modules.setdefault(f"axon_quant.{_sub_name}", _sub_mod)
 
 # 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
 from .backtest import (  # noqa: F401
@@ -229,6 +247,31 @@ from .compliance import (  # noqa: F401
     load_config_from_toml,
 )
 
+# 重新导出 defi 顶层 Python API(包装 _native.defi,0.3.0 P0 Batch 4)
+from .defi import (  # noqa: F401
+    BridgeConfig,
+    BridgeManager,
+    Chain,
+    DefiError,
+    DefiOrder,
+    Erc20Client,
+    EvmConfig,
+    EvmProvider,
+    LocalSigner,
+    MevShareClient,
+    MevShareConfig,
+    Multicall,
+    ProviderConfig,
+    RiskCheckResult,
+    SwapRoute,
+    UniswapV3Contracts,
+    V3Quoter,
+    V3Router,
+    erc20_client,
+    evm_provider,
+    local_signer,
+)
+
 # 重新导出 inference 顶层 Python API(包装 _native.inference,Stage 6)
 from .inference import (  # noqa: F401
     Action,
@@ -309,6 +352,7 @@ __all__ = [  # noqa: F405
     "distributed",
     "llm",
     "trading",
+    "defi",        # 0.3.0 P0 Batch 4:axon-defi 暴露
     "AxonError",   # Stage 1:异常基类
     "DataError",   # Stage 1:数据服务异常
     # Stage 2:backtest 顶层 API
@@ -421,4 +465,26 @@ __all__ = [  # noqa: F405
     "TradeStatus",
     "AuditEventType",
     "TradeRecord",
+    # 0.3.0 P0 Batch 4:defi 顶层 API
+    "Chain",
+    "EvmConfig",
+    "DefiOrder",
+    "SwapRoute",
+    "RiskCheckResult",
+    "UniswapV3Contracts",
+    "ProviderConfig",
+    "EvmProvider",
+    "LocalSigner",
+    "Erc20Client",
+    "V3Quoter",
+    "V3Router",
+    "Multicall",
+    "BridgeConfig",
+    "BridgeManager",
+    "MevShareConfig",
+    "MevShareClient",
+    "DefiError",
+    "evm_provider",
+    "local_signer",
+    "erc20_client",
 ]

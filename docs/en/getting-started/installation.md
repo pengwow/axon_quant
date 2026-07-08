@@ -3,7 +3,7 @@
 > **Quick start**: [`examples/01_getting_started/00_all_in_one.py`](https://github.com/pengwow/axon_quant/blob/main/examples/01_getting_started/00_all_in_one.py)
 > One command, covers all 6 stages with built-in offline data. No extra setup needed.
 
-> Applicable version: AXON v0.2.0+
+> Applicable version: AXON v0.3.0+
 
 This document describes how to install AXON.
 

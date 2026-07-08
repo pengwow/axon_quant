@@ -36,6 +36,7 @@ pub mod fee;
 pub mod impact;
 pub mod latency;
 pub mod market;
+pub mod metrics;
 pub mod order;
 pub mod portfolio;
 pub mod queue;
@@ -43,6 +44,9 @@ pub mod scheduler;
 pub mod time;
 pub mod types;
 pub mod volatility;
+
+/// Harness 编排系统核心类型（AgentIntent / TaskContext / HarnessResult）
+pub mod harness_types;
 
 /// Python 绑定工具宏（py_exception! / parse_py_enum! / dict_field!）
 #[cfg(feature = "python-utils")]
@@ -65,6 +69,9 @@ pub use types::{Price, Quantity, Symbol};
 
 // 时间类型 re-export
 pub use time::{MonotonicClock, TimePrecision, Timestamp};
+
+// 交易指标 re-export
+pub use metrics::TradingMetrics;
 
 // 订单类型 re-export
 pub use order::{

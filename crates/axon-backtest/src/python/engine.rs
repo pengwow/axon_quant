@@ -60,7 +60,7 @@
 
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use axon_core::event::{EventBuilder, FillEvent, OrderEvent};
 use axon_core::market::{Side as CoreSide, Trade};
@@ -74,6 +74,7 @@ use crate::matching::MatchingEngine;
 use crate::matching::engine::L1MatchingEngine;
 
 use super::types::dict_to_order;
+use crate::python::matching::PyMatchingEngine;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 主类: PyBacktestEngine
@@ -109,6 +110,10 @@ impl PyBacktestEngine {
             matching_engine: matching,
             impact_model: None,
             initial_cash,
+            fee_config: crate::engine::FeeConfig::default(),
+            // Stage 3 阶段 C(强制平仓):默认关闭,需 Python 端显式调
+            // `with_force_liquidate(True)` 启用,避免误触发末日单污染 PnL
+            force_liquidate: false,
         };
         Ok(Self {
             inner: BacktestEngine::new(config, EventQueue::new()),
@@ -116,24 +121,93 @@ impl PyBacktestEngine {
         })
     }
 
-    /// 注入撮合引擎
+    /// 注入撮合引擎(Stage 3:真替换,不再仅校验方法存在性)
     ///
-    /// 注:当前 Stage 2 简化实现仅支持 `L1MatchingEngine` / `L2MatchingEngine`,
-    /// 复杂 Engine(`Impacted` / `MultiAsset`)因持有自定义字段,需要
-    /// Stage 3 引入 `PyMatchingEngine` trait 抽象后扩展。
-    /// 这里用 `PyAny` 接收,运行时校验方法存在性。
+    /// 接受任何含 `submit(dict) -> dict` 方法的 Python 对象(包括
+    /// `L1MatchingEngine` / `L2MatchingEngine` / `ImpactedMatchingEngine` /
+    /// 用户自定义的撮合引擎类)。通过 `PyMatchingEngine` 桥接成
+    /// Rust `MatchingEngine` trait object,**真替换**引擎内部默认的
+    /// `L1MatchingEngine`。
     fn with_matching_engine(&mut self, py_engine: &Bound<'_, PyAny>) -> PyResult<()> {
-        // 校验:必须包含 `submit(dict) -> dict` 方法(L1/L2 的最小契约)
-        if py_engine.getattr("submit").is_err() {
-            return Err(PyValueError::new_err(
-                "matching engine must implement submit(dict) -> dict",
-            ));
-        }
-        // 因 pyo3 0.28 的 trait object 桥接限制,这里**仅做语义校验**,
-        // 实际内部仍保留默认的 L1MatchingEngine。完整自定义留待 Stage 3。
-        // 提示用户:可通过 `with_impacted_engine` 走 ImpactedMatchingEngine 路径。
-        let _ = py_engine; // 静默 unused 警告
+        let py_matcher = PyMatchingEngine::new(py_engine)?;
+        self.inner.replace_matching_engine(Box::new(py_matcher));
         Ok(())
+    }
+
+    /// 注入手续费配置(Stage 3 阶段 B 任务 B4)
+    ///
+    /// Args:
+    /// - `taker_rate`: Taker 手续费率(0.001 = 0.1%)。`notional * taker_rate` 按每笔 fill 累计。
+    ///
+    /// 不传任何参数时使用 `FeeConfig::default()`(0.1%)。
+    ///
+    /// Returns:
+    /// - `&mut Self` 供链式调用(如 `engine.with_fee_config(0.001).with_force_liquidate(True)`)
+    fn with_fee_config<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        taker_rate: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_fee_config(taker_rate);
+        Ok(slf)
+    }
+
+    /// EOD 强制平仓开关(Stage 3 阶段 C 新增)
+    ///
+    /// - `on=False` (默认):保留策略意图,`final_nav` 用 `equity_curve` 末帧 mark 估值
+    ///   (回测更"忠实"于策略信号,但未平仓单子的浮盈浮亏会计入 total_pnl)
+    /// - `on=True`:回测结束时遍历 `position_states`,对每个非零持仓发市价单
+    ///   (IOC,撮合引擎当前最优对手价),把剩余持仓全部清仓后才算终态。
+    ///   适合需要"每日盈亏都转为已实现"的对账/报表场景
+    ///   (注意:末日单若 PnL 不理想会污染结果,业内通常在回测脚本里手动控制开关)
+    ///
+    /// Args:
+    /// - `on`:True 启用强制平仓,False 关闭
+    ///
+    /// Returns:
+    /// - `&mut Self` 供链式调用(如 `engine.with_force_liquidate(True).with_fee_config(0.001)`)
+    fn with_force_liquidate<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        on: bool,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_force_liquidate(on);
+        Ok(slf)
+    }
+
+    /// 启用虚拟流动性种子(回测"瞬时对手盘"语义)
+    ///
+    /// 启用后,应用层每根 bar 调用 `begin_bar(price, symbol)` 即可触发
+    /// 撮合引擎的 `clear_book + seed_liquidity`,让策略单"瞬时有对手盘"成交。
+    /// 不启用时,BacktestEngine 是纯订单簿撮合(无对手盘,buy 单 → fills=0)。
+    ///
+    /// Args:
+    /// - `half_spread`: 每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
+    /// - `depth_levels`: 每侧挂单层数(典型 5~20)
+    /// - `size_per_level`: 每层挂单数量
+    ///
+    /// 注意:
+    /// - 撮合引擎必须实现 `MatchingEngine::seed_liquidity` 方法,否则 seed
+    ///   是 no-op(默认 trait 实现,见 `matching::engine::MatchingEngine`)。
+    /// - `L1MatchingEngine` / `ImpactedMatchingEngine` 都重写了该方法,
+    ///   提供完整实现。
+    fn with_seed_liquidity(&mut self, half_spread: f64, depth_levels: usize, size_per_level: f64) {
+        self.inner
+            .with_seed_liquidity(half_spread, depth_levels, size_per_level);
+    }
+
+    /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
+    ///
+    /// 必须在 `push_event("order_submitted", ...)` **之前**调用 —— 让对手盘先就位。
+    /// 同步执行不入事件队列,纯配置侧操作。
+    ///
+    /// Args:
+    /// - `price`: 当前 bar 的中间价(通常为 `bar.close`)
+    /// - `symbol`: 交易品种(如 `"BTC-USDT"`)
+    ///
+    /// 行为:
+    /// - 若未调 `with_seed_liquidity`:no-op(纯订单簿撮合,buy 单 → fills=0)
+    /// - 若已调:`matcher.clear_book()` + `seed_liquidity(price, ...)` 自动执行
+    fn begin_bar(&mut self, price: f64, symbol: &str) {
+        self.inner.begin_bar(price, Symbol::from(symbol));
     }
 
     /// 推入单个事件(从 Python dict 转 [`Event`])
@@ -334,6 +408,80 @@ impl PyRunResult {
         self.inner.final_time.nanos
     }
 
+    // ── Stage 3 阶段 B 新增字段 ─────────────────────────────
+
+    /// 完整交易记录(开/平仓配对的 TradeRecord 列表)
+    #[getter]
+    fn trades<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        // ponytail:简化为 dict 列表(每个 TradeRecord → 8 字段 dict)
+        // 若 quantcell 需要 Arrow / numpy 可后续加 trades_arrow
+        let list = PyList::empty(py);
+        for tr in &self.inner.trades {
+            let d = PyDict::new(py);
+            d.set_item("timestamp_ns", tr.trade.timestamp.nanos)?;
+            d.set_item("price", tr.trade.price.as_f64())?;
+            d.set_item("quantity", tr.trade.quantity.as_f64())?;
+            d.set_item("buyer_order_id", tr.trade.buyer_order_id)?;
+            d.set_item("seller_order_id", tr.trade.seller_order_id)?;
+            d.set_item("realized_pnl", tr.realized_pnl as f64 / 1e6)?;
+            d.set_item("commission", tr.commission as f64 / 1e6)?;
+            d.set_item("net_quantity", tr.net_quantity as f64 / 1e6)?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
+    /// 累计手续费(f64,按 fill 累计扣除)
+    #[getter]
+    fn total_fees(&self) -> f64 {
+        self.inner.total_fees
+    }
+
+    /// NAV 曲线(`[(timestamp_ns, nav), ...]`)
+    #[getter]
+    fn equity_curve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for (ts, nav) in &self.inner.equity_curve {
+            let tup = (ts.nanos, *nav);
+            list.append(tup)?;
+        }
+        Ok(list)
+    }
+
+    /// NAV 历史峰值(用于 max_drawdown_pct)
+    #[getter]
+    fn nav_peak(&self) -> f64 {
+        self.inner.nav_peak
+    }
+
+    /// 最大回撤百分比(0~1)
+    #[getter]
+    fn max_drawdown_pct(&self) -> f64 {
+        self.inner.max_drawdown_pct
+    }
+
+    /// 胜率(盈利平仓笔数 / 总平仓笔数)
+    #[getter]
+    fn win_rate(&self) -> f64 {
+        self.inner.win_rate
+    }
+
+    /// 夏普比率(基于 log return 年化,15m bar 因子 sqrt(35040))
+    #[getter]
+    fn sharpe_ratio(&self) -> f64 {
+        self.inner.sharpe_ratio
+    }
+
+    /// 终态持仓快照(`{symbol: qty}`)
+    #[getter]
+    fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (sym, qty) in &self.inner.positions {
+            d.set_item(sym, *qty)?;
+        }
+        Ok(d)
+    }
+
     /// 序列化为 Python `dict`(便于 JSON 序列化)
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
@@ -348,13 +496,22 @@ impl PyRunResult {
         d.set_item("final_nav", self.inner.final_nav)?;
         d.set_item("duration_secs", self.inner.duration.as_secs_f64())?;
         d.set_item("final_time_ns", self.inner.final_time.nanos)?;
+        // 阶段 B 新增
+        d.set_item("total_fees", self.inner.total_fees)?;
+        d.set_item("nav_peak", self.inner.nav_peak)?;
+        d.set_item("max_drawdown_pct", self.inner.max_drawdown_pct)?;
+        d.set_item("win_rate", self.inner.win_rate)?;
+        d.set_item("sharpe_ratio", self.inner.sharpe_ratio)?;
+        d.set_item("trades_count", self.inner.trades.len())?;
+        d.set_item("equity_curve_points", self.inner.equity_curve.len())?;
+        d.set_item("positions", self.positions(py)?)?;
         Ok(d)
     }
 
     fn __repr__(&self) -> String {
         format!(
             "RunResult(events={}, accepted={}, rejected={}, fills={}, \
-             pnl={:.2}, drawdown={:.2}, nav={:.2})",
+             pnl={:.2}, drawdown={:.2}, nav={:.2}, fees={:.4}, win_rate={:.2}%, sharpe={:.2})",
             self.inner.events_processed,
             self.inner.orders_accepted,
             self.inner.orders_rejected,
@@ -362,6 +519,9 @@ impl PyRunResult {
             self.inner.total_pnl,
             self.inner.max_drawdown,
             self.inner.final_nav,
+            self.inner.total_fees,
+            self.inner.win_rate * 100.0,
+            self.inner.sharpe_ratio,
         )
     }
 }

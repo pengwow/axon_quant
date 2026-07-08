@@ -4,7 +4,7 @@
 
 **AI 原生量化交易框架**
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.96%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.2.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.96%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.3.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
 
 **[English](./README.md)** | 中文
 
@@ -15,7 +15,7 @@
 
 Rust 实现高性能内核，Python 提供 RL 训练接口，一套代码贯穿回测、训练、优化、验证、生产的完整链路。
 
-[在线文档](https://pengwow.github.io/axon_quant/) · [设计文档](./axon-design/) · [ADR](./docs/adr/) · [更新日志](./CHANGELOG.md) · [示例](./examples/)
+[在线文档](https://pengwow.github.io/axon_quant/) · [示例](./examples/)
 
 ## 设计哲学
 

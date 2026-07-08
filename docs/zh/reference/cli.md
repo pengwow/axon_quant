@@ -1,6 +1,6 @@
 # CLI 命令
 
-> 适用版本:axon-cli v0.2.0+
+> 适用版本:axon-cli v0.3.0+
 > 安装:`cargo install --path crates/axon-cli --locked`
 
 axon-cli 是 AXON 的命令行入口,提供回测、训练、优化、验证、追踪等子命令。

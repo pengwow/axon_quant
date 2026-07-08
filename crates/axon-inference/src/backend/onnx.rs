@@ -124,6 +124,23 @@ impl InferenceEngine for OnnxBackend {
         Ok(actions)
     }
 
+    fn build_session(&self, path: &Path) -> Result<Box<dyn Any + Send + Sync>, InferenceError> {
+        if !path.exists() {
+            return Err(InferenceError::ModelNotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        let session = ort::session::Session::builder()
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?
+            .with_intra_threads(self.config.num_threads)
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?
+            .commit_from_file(path)
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        Ok(Box::new(session))
+    }
+
     fn replace_session(
         &mut self,
         new_session: Box<dyn Any + Send + Sync>,

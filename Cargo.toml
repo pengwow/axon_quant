@@ -22,13 +22,14 @@ members = [
     "crates/axon-oms",
     "crates/axon-monitor",
     "crates/axon-defi",
+    "crates/axon-harness",
     "crates/axon-integration-tests",
     "crates/axon-python",
 ]
 
 # 统一的目标目录，加速增量编译
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.96.0"
 license = "Apache-2.0"
@@ -64,6 +65,8 @@ axon-compliance = { path = "crates/axon-compliance" }
 axon-risk = { path = "crates/axon-risk" }
 # Stage 1:数据服务(数据源、缓存、Arrow IPC)
 axon-data = { path = "crates/axon-data" }
+# Harness 编排系统 trait 接口 + 安全组件
+axon-harness = { path = "crates/axon-harness" }
 
 # 错误处理
 thiserror = "1.0"

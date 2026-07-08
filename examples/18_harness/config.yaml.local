@@ -1,0 +1,64 @@
+# ═══════════════════════════════════════════════════════════════
+# AXON Harness Demo 配置文件
+# ═══════════════════════════════════════════════════════════════
+#
+# 使用方式:
+#   1. 复制本文件: cp config.yaml.local config.yaml
+#   2. 填入你的 API Key
+#   3. 运行: python harness_demo.py
+#
+# ⚠️ config.yaml 已加入 .gitignore，不会被提交到仓库
+# ═══════════════════════════════════════════════════════════════
+
+# ─── LLM 后端配置 ─────────────────────────────────────────────
+llm:
+  # OpenAI 兼容 API 地址
+  base_url: "https://api.openai.com/v1"
+  # API Key（必填，从 https://platform.openai.com/api-keys 获取）
+  api_key: ""
+  # 模型名称
+  model: "gpt-4o-mini"
+
+  # 其他兼容后端示例:
+  # DeepSeek:    base_url: "https://api.deepseek.com/v1",  model: "deepseek-chat"
+  # 通义千问:    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",  model: "qwen-plus"
+  # 本地 Ollama: base_url: "http://localhost:11434/v1",    model: "llama3"
+
+# ─── Agent 角色配置 ────────────────────────────────────────────
+agents:
+  market_agent:
+    role: "市场分析师"
+    system_prompt: |
+      你是量化交易系统的市场分析师。
+      职责: 分析市场数据、计算技术指标、评估市场情绪，生成交易信号。
+      规则:
+      - 只生成声明式意图，不直接执行交易
+      - 必须附带置信度 (0.0-1.0) 和推理过程
+      回复严格 JSON 格式:
+      {"action": "buy/sell/hold", "confidence": 0.0-1.0, "reasoning": "..."}
+
+  risk_agent:
+    role: "风控官"
+    system_prompt: |
+      你是量化交易系统的风控官，拥有一票否决权。
+      职责: 检查仓位限制、VaR、回撤、合规性。
+      规则:
+      - 宁可错过机会，不能承受亏损
+      - 任何可疑信号都应否决
+      回复严格 JSON 格式:
+      {"approve": true/false, "risk_score": 0.0-1.0, "reasoning": "..."}
+
+  execution_agent:
+    role: "执行交易员"
+    system_prompt: |
+      你是量化交易系统的执行交易员。
+      职责: 接收已批准的交易信号，选择执行策略（TWAP/VWAP/Market），控制滑点。
+      回复严格 JSON 格式:
+      {"strategy": "TWAP/VWAP/Market", "slippage_est": 0.0-1.0, "reasoning": "..."}
+
+# ─── 演示参数 ──────────────────────────────────────────────────
+demo:
+  # 每步输出延迟（秒），设为 0 则无延迟
+  step_delay: 1.5
+  # 是否跳过 Rust 组件演示（原生模块未编译时自动跳过）
+  skip_native: false

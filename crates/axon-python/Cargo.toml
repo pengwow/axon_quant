@@ -24,6 +24,8 @@ crate-type = ["rlib"]
 default = []
 python = [
     "dep:pyo3",
+    "dep:serde_json",
+    "dep:axon-core",
     "dep:axon-rl",
     "dep:axon-tracker",
     "dep:axon-registry",
@@ -50,6 +52,9 @@ python = [
     "dep:axon-compliance",
     # `axon-defi` 暴露为 `_native.defi` 子模块
     "dep:axon-defi",
+    # `axon-harness` 暴露为 `_native.harness` 子模块
+    # 包含 HarnessBridge / CircuitBreaker / AuditChain / PositionGuard 等类型。
+    "dep:axon-harness",
 ]
 
 [dependencies]
@@ -57,6 +62,8 @@ python = [
 # 以保证 `cargo build --workspace` 在缺少 Python 工具链时也能成功。
 # 启用 `python` feature 时再拉入 pyo3 与各上游 crate 的 python bindings。
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
+serde_json = { workspace = true, optional = true }
+axon-core = { workspace = true, optional = true }
 axon-rl = { workspace = true, optional = true, features = ["python"] }
 axon-tracker = { workspace = true, optional = true, features = ["python", "http"] }
 axon-registry = { workspace = true, optional = true, features = ["python"] }
@@ -106,3 +113,6 @@ axon-compliance = { workspace = true, optional = true, features = ["python"] }
 # `axon-defi` 暴露为 `_native.defi` 子模块
 # 包含 EvmAdapter + UniswapRouter + MevShareClient + BridgeManager。
 axon-defi = { workspace = true, optional = true, features = ["python"] }
+# `axon-harness` 暴露为 `_native.harness` 子模块
+# 包含 HarnessBridge / CircuitBreaker / AuditChain / PositionGuard。
+axon-harness = { workspace = true, optional = true }

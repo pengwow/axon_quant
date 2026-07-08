@@ -121,6 +121,16 @@ impl InferenceEngine for TchBackend {
         Ok(actions)
     }
 
+    fn build_session(&self, path: &Path) -> Result<Box<dyn Any + Send + Sync>, InferenceError> {
+        if !path.exists() {
+            return Err(InferenceError::ModelNotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        let module = tch::CModule::load(path).map_err(|e| InferenceError::Tch(e.to_string()))?;
+        Ok(Box::new(module))
+    }
+
     fn replace_session(
         &mut self,
         new_session: Box<dyn Any + Send + Sync>,

@@ -6,7 +6,7 @@
 > - [`examples/03_hpo/`](https://github.com/pengwow/axon_quant/blob/main/examples/03_hpo/) — 超参数优化
 > - [`examples/08_walk_forward/`](https://github.com/pengwow/axon_quant/blob/main/examples/08_walk_forward/) — Walk-Forward 验证
 
-本文档演示如何在 AXON 量化平台中完成一条完整的策略研发流水线，涵盖从数据准备到模型上线的 7 个关键步骤。每个步骤均基于 AXON `0.2.0` 版本的真实源代码，并展示"上一步的输出如何成为下一步的输入"。
+本文档演示如何在 AXON 量化平台中完成一条完整的策略研发流水线，涵盖从数据准备到模型上线的 7 个关键步骤。每个步骤均基于 AXON `0.3.0` 版本的真实源代码，并展示"上一步的输出如何成为下一步的输入"。
 
 ---
 

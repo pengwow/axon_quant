@@ -19,6 +19,7 @@
 .env
 .env.local
 *.local.toml
+examples/18_harness/config.yaml
 
 # 临时目录（删除文件 mv 目标）
 /.trash/

@@ -110,7 +110,8 @@ parse_py_enum!(parse_tif, TimeInForce, [
 /// [`MatchFill`] → Python dict
 ///
 /// 字段:`fill_id` / `taker_order_id` / `maker_order_id` / `price` /
-/// `quantity` / `taker_side`(`"Buy"` / `"Sell"` 字符串,便于 JSON 序列化)
+/// `quantity` / `taker_side`(`"Buy"` / `"Sell"` 字符串,便于 JSON 序列化)/
+/// `timestamp_ns`(纳秒时间戳,供应用层按时序配对开/平仓、计算夏普比率等)
 pub fn match_fill_to_dict<'py>(py: Python<'py>, fill: &MatchFill) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("fill_id", fill.fill_id)?;
@@ -122,6 +123,8 @@ pub fn match_fill_to_dict<'py>(py: Python<'py>, fill: &MatchFill) -> PyResult<Bo
     // 与 Stage 1 `axon_data` 的 JSON 风格一致(全大写 enum tag)
     // —— 实际上保持 Display 的全大写形式,便于 Python 端 `assert d["taker_side"] == "BUY"`。
     dict.set_item("taker_side", format!("{}", fill.taker_side))?;
+    // 纳秒时间戳:应用层据此做开/平仓配对、净值曲线采样、夏普计算
+    dict.set_item("timestamp_ns", fill.timestamp.nanos)?;
     Ok(dict)
 }
 
@@ -165,6 +168,7 @@ pub fn register(_parent: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3::exceptions::PyKeyError;
 
     /// `dict_to_order` 全部字段合法时返回正确 `Order`
     #[test]

@@ -11,8 +11,16 @@ authors.workspace = true
 description = "DeFi 链上交易：EVM 链适配器、Uniswap V3、MEV-Share、LayerZero 跨链"
 
 [features]
-default = []
-python = ["dep:pyo3", "axon-core/python-utils"]
+# 默认启用 evm:axon-defi 的核心价值是 EVM 真链交互,默认关会导致
+# `cargo clippy --workspace --all-targets` 在 default 模式下编译失败
+# (lib.rs 的 mod evm/bridge/dex/mev 都引用了 alloy,必须在某个 feature 下编译)。
+# 下游依赖:axon-python 通过 `features = ["python"]` 隐含 evm,无重复编译成本。
+default = ["evm"]
+# EVM 真链接入:引入 alloy-rs,启用 `evm` feature 后才能用 evm::* 模块
+evm = ["dep:alloy", "dep:alloy-primitives"]
+# Python 绑定:自动启用 evm,使 `#[cfg(feature = "evm")]` 走真链分支,
+# 避免依赖方忘了写 `features = ["python", "evm"]`
+python = ["dep:pyo3", "dep:pyo3-async-runtimes", "evm", "axon-core/python-utils"]
 
 [dependencies]
 # 内部依赖
@@ -36,8 +44,28 @@ chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = "0.1"
 
+# EVM 真链交互(可选,feature-gated)
+alloy = { version = "1.0", optional = true, features = [
+    "providers",
+    "signers",
+    "signer-local",
+    "contract",
+    "rpc-types-eth",
+    "transports",
+    "eips",
+    "sol-types",
+] }
+alloy-primitives = { version = "1.0", optional = true }
+url = "2.5"
+
 # Python 绑定（可选）
 pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
+# 异步 Python 绑定 helper:future_into_py
+pyo3-async-runtimes = { version = "0.28", optional = true, default-features = false, features = ["tokio-runtime"] }
+
+# HTTP 客户端:MEV-Share / Flashbots relay `eth_sendBundle` 走 reqwest
+# 走生产依赖(不只 dev)因为 `mev::share::submit_transaction` 是真生产代码
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
