@@ -174,43 +174,43 @@ impl ComplianceModule {
             .iter()
             .filter(|t| {
                 // 按交易对过滤
-                if let Some(ref symbol) = filter.symbol {
-                    if t.symbol != *symbol {
-                        return false;
-                    }
+                if let Some(ref symbol) = filter.symbol
+                    && t.symbol != *symbol
+                {
+                    return false;
                 }
 
                 // 按策略 ID 过滤
-                if let Some(ref strategy_id) = filter.strategy_id {
-                    if t.strategy_id != *strategy_id {
-                        return false;
-                    }
+                if let Some(ref strategy_id) = filter.strategy_id
+                    && t.strategy_id != *strategy_id
+                {
+                    return false;
                 }
 
                 // 按交易方向过滤
-                if let Some(ref side) = filter.side {
-                    if t.side != *side {
-                        return false;
-                    }
+                if let Some(ref side) = filter.side
+                    && t.side != *side
+                {
+                    return false;
                 }
 
                 // 按时间范围过滤
-                if let Some(start) = filter.start_time {
-                    if t.execution_time < start {
-                        return false;
-                    }
+                if let Some(start) = filter.start_time
+                    && t.execution_time < start
+                {
+                    return false;
                 }
-                if let Some(end) = filter.end_time {
-                    if t.execution_time > end {
-                        return false;
-                    }
+                if let Some(end) = filter.end_time
+                    && t.execution_time > end
+                {
+                    return false;
                 }
 
                 // 按最小名义价值过滤
-                if let Some(min_notional) = filter.min_notional {
-                    if t.notional_value < min_notional {
-                        return false;
-                    }
+                if let Some(min_notional) = filter.min_notional
+                    && t.notional_value < min_notional
+                {
+                    return false;
                 }
 
                 true

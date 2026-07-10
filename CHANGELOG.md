@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-08
+
+### Changed
+- **版本号统一为单一来源管理**:从 0.2.0 → 0.3.0 → 0.3.1 升级过程中曾出现 4 处硬编码遗漏
+  (axon-python `_native.__version__` 字符串 / 3 个 Python 辅助包 `__version__` 硬编码 /
+  axon-compliance 独立 `version = "0.0.1"` 不继承 workspace)。本次整改后:
+  - `[workspace.package] version` 是 Rust 全部 23 个 crate 的权威源(axon-compliance
+    补齐 workspace inheritance,与 22 个其他 crate 对齐)
+  - `pyproject.toml [project].version` 是 Python 包的权威源
+  - `_native.__version__` 改用 `env!("CARGO_PKG_VERSION")` 编译时注入,跟 Cargo 自动同步
+  - 3 个 Python 辅助包(axon_hpo / axon_registry / axon_walk_forward)`__version__` 改用
+    `importlib.metadata.version("axon-quant")` 读已安装 wheel 元数据(PEP 621 规范)
+- **CI 校验**:`make version-check` 校验 Cargo.toml / pyproject.toml / Cargo.lock 三源一致
+
+### Tools
+- **`make version-bump VERSION=x.y.z`**:一处修改 Cargo.toml + pyproject.toml,自动重生
+  Cargo.lock,提示更新 CHANGELOG,后续 `cargo build` / `maturin build` 自动用新版本号
+- **`make version-check`**:校验 Cargo.toml / pyproject.toml / Cargo.lock 三源一致
+
+### Fixed
+- **axon-compliance 不再独立于 workspace**:`version = "0.0.1"` + `edition = "2021"`
+  改为继承 workspace,后续与 workspace 保持一致(0.3.1 / edition 2024 / rust-version 1.96.0)
+
 ### Added
 - **axon-llm::swarm 0.3.0 P0 工作流 B 收口完成 — 4-Agent 闭环 + PyO3 绑定 + Python E2E**:`SwarmOrchestrator` 4-Agent pipeline (Market / Risk / Execution / Audit) 跑通,Python 端可直接构造 4 类 agent + 启动 `run_loop` + 注入 MarketSignal / VoteResponse + 读 stats。**核心改动**:
   - **`DeclarativeAgentRunner` trait 抽取**(`crates/axon-llm/src/swarm/agent_runner.rs`):统一 4 类 agent 接口(`id() / role() / status() / handle_message()`),orchestrator 用 `Arc<dyn DeclarativeAgentRunner>` 统一管理异构 agent,Object safety + Sync 约束允许跨 task 持有。

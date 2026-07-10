@@ -180,6 +180,61 @@ bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
 verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
 	@echo "✅ 所有本地检查通过"
 
+# ==================== 版本管理(单一来源) ====================
+# 策略:
+#   - Cargo.toml   [workspace.package].version  = Rust 全部 23 个 crate 权威源
+#   - pyproject.toml [project].version         = Python wheel 权威源
+#   - CHANGELOG.md                              = 人类可读发布日志
+#   - _native.__version__    = env!("CARGO_PKG_VERSION")(编译时注入)
+#   - 3 个 Python 辅助包       = importlib.metadata.version("axon-quant")
+# `version-check` 校验三源对齐,`version-bump` 一处改三处,杜绝遗漏
+
+.PHONY: version-check
+version-check: ## 校验 Cargo.toml / pyproject.toml / Cargo.lock 版本号一致
+	@CARGO_VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	PYPROJECT_VERSION=$$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	LOCK_VERSION=$$(awk '/^name = "axon-backtest"/{flag=1; next} flag && /^version = /{print; exit}' Cargo.lock | sed 's/.*"\(.*\)".*/\1/'); \
+	echo "Cargo.toml:    $$CARGO_VERSION"; \
+	echo "pyproject:     $$PYPROJECT_VERSION"; \
+	echo "Cargo.lock:    $$LOCK_VERSION (axon-backtest)"; \
+	STATUS=0; \
+	if [ "$$CARGO_VERSION" != "$$PYPROJECT_VERSION" ]; then \
+		echo "❌ Cargo.toml 与 pyproject.toml 版本号不一致"; \
+		STATUS=1; \
+	fi; \
+	if [ "$$CARGO_VERSION" != "$$LOCK_VERSION" ]; then \
+		echo "❌ Cargo.toml 与 Cargo.lock 版本号不一致(请先 cargo build)"; \
+		STATUS=1; \
+	fi; \
+	if [ $$STATUS -eq 0 ]; then \
+		echo "✅ 版本号三源对齐"; \
+	else \
+		exit 1; \
+	fi
+
+.PHONY: version-bump
+version-bump: ## 升级版本号(用法:make version-bump VERSION=0.3.2)
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make version-bump VERSION=<new-version>"; \
+		echo "  e.g. make version-bump VERSION=0.3.2"; \
+		exit 1; \
+	fi
+	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	echo "==> 升级版本: $$OLD -> $(VERSION)"; \
+	echo "==> 改 Cargo.toml [workspace.package].version"; \
+	sed -i '' 's/^version = "'$$OLD'"/version = "$(VERSION)"/' Cargo.toml; \
+	echo "==> 改 pyproject.toml [project].version"; \
+	sed -i '' 's/^version = "'$$OLD'"/version = "$(VERSION)"/' pyproject.toml; \
+	echo "==> 重新生成 Cargo.lock"; \
+	cargo build --workspace >/dev/null 2>&1 || cargo build --workspace; \
+	echo ""; \
+	echo "✅ Cargo.toml + pyproject.toml + Cargo.lock 已同步到 $(VERSION)"; \
+	echo ""; \
+	echo "接下来请:"; \
+	echo "  1. 编辑 CHANGELOG.md:在 [Unreleased] 之下新增 ## [$(VERSION)] - $$(date +%Y-%m-%d) 节"; \
+	echo "  2. 运行 make version-check 校验三源对齐"; \
+	echo "  3. git add -A && git commit -m 'bump: $(VERSION)'"
+
 # ==================== 文档站(mkdocs + Material) ====================
 # 部署到 GitHub Pages 由 .github/workflows/docs.yml 处理
 # 本地命令:docs-install / docs-serve / docs-build / docs-validate / docs-clean

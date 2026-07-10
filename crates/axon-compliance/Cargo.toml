@@ -1,7 +1,13 @@
 [package]
 name = "axon-compliance"
-version = "0.0.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
 description = "金融交易合规审计模块"
 
 [dependencies]
