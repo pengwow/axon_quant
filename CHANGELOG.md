@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-11
+
 ### Added
 - **axon-backtest 流式回测链路 S-1 + S-2 实装完成 — 解锁 9 个 e2e 测试**:打通 `StreamingEngine ↔ StreamingStrategy ↔ StreamDataSource` 端到端,2 个测试文件共 9 个测试全过(`cargo test -p axon-backtest --tests` 298 通过/0 失败,`cargo test --workspace` 2695 通过/0 失败,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告)。本次实现 0.3.2 中标为 0.4.0 后续的 v1 计划缺口:
   - **`src/streaming/strategy.rs`** 新建:`StreamingStrategy` trait(`on_tick(&Symbol, price) -> Vec<StrategyAction>`,`Send` 约束供后续 PyO3 `#[pyclass]`)+ `StrategyAction` enum 三态(`Submit(Order) / Cancel(u64) / Hold`)。提供 `FixedStrategy` + `SmaCrossover` 2 个测试用 strategy
