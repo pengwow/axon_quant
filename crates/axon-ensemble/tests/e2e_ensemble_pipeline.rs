@@ -110,7 +110,7 @@ fn ensemble_dynamic_weight_update() {
     manager.register_model(sell_policy("m2"));
 
     // 预测并记录历史
-    let action1 = manager.predict(&test_observation(), 3000);
+    let _action1 = manager.predict(&test_observation(), 3000);
     assert_eq!(manager.history_len(), 1);
 
     // 更新权重（manager 内部）
