@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **axon-backtest 流式回测链路 S-1 + S-2 实装完成 — 解锁 9 个 e2e 测试**:打通 `StreamingEngine ↔ StreamingStrategy ↔ StreamDataSource` 端到端,2 个测试文件共 9 个测试全过(`cargo test -p axon-backtest --tests` 298 通过/0 失败,`cargo test --workspace` 2695 通过/0 失败,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告)。本次实现 0.3.2 中标为 0.4.0 后续的 v1 计划缺口:
+  - **`src/streaming/strategy.rs`** 新建:`StreamingStrategy` trait(`on_tick(&Symbol, price) -> Vec<StrategyAction>`,`Send` 约束供后续 PyO3 `#[pyclass]`)+ `StrategyAction` enum 三态(`Submit(Order) / Cancel(u64) / Hold`)。提供 `FixedStrategy` + `SmaCrossover` 2 个测试用 strategy
+  - **`src/streaming/data_source.rs`** 扩展:`MarketDataEvent` 三态(`Tick / Heartbeat / Disconnected`),`StreamDataSource` async trait(`subscribe / next_event / is_connected / name`),2 个内置实现:
+    - `ExchangeStreamSource`:`Mutex<VecDeque<MarketDataEvent>>` 缓冲 + `try_push` 同步推入(给测试 / 外部 WS 适配层)
+    - `ReplayStreamSource`:`with_ticks(symbol, Vec<Tick>)` 注入 + FIFO 回放 + `remaining() / consumed()` 计数
+  - **`src/streaming/engine.rs`** 扩展:`StreamingEngine::on_market_event(MarketDataEvent) -> Vec<Event>` 主回路(tick → portfolio mark → strategy.on_tick → actions 应用 → L1 撮合 → portfolio 更新 → fill event 返回),`TradingMode::PaperTrading` 自动构造 `PaperTradingEngine` 并对**限价单**应用 1bps 滑点(Buy 上浮/Sell 下浮),`Market` 单无 limit_price 跳过滑点;`with_strategy(Box<dyn StreamingStrategy>)` builder + `submit_order` / `portfolio_mut` / `snapshot` 等辅助 API
+  - **`src/streaming/mod.rs`** 重新导出 `MarketDataEvent` / `ExchangeStreamSource` / `ReplayStreamSource` / `StreamDataSource` / `StreamError` / `StrategyAction` / `StreamingStrategy` / `PaperTradingEngine` / `SimulatedExchange`
+  - **`tests/e2e_streaming_paper.rs`**(5 测试, B.2 维度):`paper_buy_limit_slippage_makes_taker_more_aggressive` / `paper_sell_limit_slippage_makes_taker_more_aggressive` 验证 Buy/Sell 限价 1bps 滑点精确撮合 maker;`paper_market_order_not_slipped` 验证 Market 单无滑点;`paper_roundtrip_buy_then_sell_yields_pnl_minus_commission` 验证 Buy 100 → Sell 200 价差 100 - 2×commission(0.1%+0.2%)= 99.7 的 PnL 数学 + 仓位闭环;`paper_hold_action_emits_no_fill` 验证 Hold action 路径不产生 fill
+  - **`tests/replay_source_integration.rs`**(4 测试, C.4 维度):`replay_source_replays_ticks_through_streaming_engine_in_fifo_order` 验证 ReplayStreamSource → engine 链路的 FIFO 顺序;`replay_source_drains_to_none_after_all_ticks_consumed` 验证耗尽后 `next_event` 持续返回 None;`replay_source_with_strategy_drives_fills_end_to_end` 验证 strategy + ReplaySource 端到端产生 fill + 持仓;`replay_source_remaining_and_consumed_track_progress` 验证 `remaining() / consumed()` 计数在消费过程中逐步变化
+  - **依赖**:`async-trait 0.1` / `tokio` (workspace,features `macros,rt,rt-multi-thread,time`) 已为 dev-dep,0 增量;`axum` / `serde` / `thiserror` 0 增量
+
 ## [0.3.2] - 2026-07-11
 
 ### Added
