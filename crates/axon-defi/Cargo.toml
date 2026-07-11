@@ -22,6 +22,25 @@ evm = ["dep:alloy", "dep:alloy-primitives"]
 # 避免依赖方忘了写 `features = ["python", "evm"]`
 python = ["dep:pyo3", "dep:pyo3-async-runtimes", "evm", "axon-core/python-utils"]
 
+# ----------------------------------------------------------------------------
+# 已知 future-incompat 警告(2026-07-11 跟踪)
+# ----------------------------------------------------------------------------
+# 编译时会触发:
+#   warning: the following packages contain code that will be rejected by a
+#            future version of Rust: proc-macro-error2 v2.0.1
+# 原因:`alloy-sol-macro` (→ alloy → axon-defi/evm) 依赖 `proc-macro-error2 ^2`,
+#       其 src/lib.rs:494 `pub use proc_macro;` 触发了 rust-lang/rust#127909
+#       (extern crate 私有 re-export 在未来 Rust 版本会变 hard error)。
+# 跟踪状态:
+#   - `proc-macro-error2` 上游已 archived (2026-06-07),无新版本
+#   - 替代品 `proc-macro-error3 v3.0.2` 已修复,但 alloy-sol-macro 1.6.0 仍硬钉
+#     `proc-macro-error2 ^2`,alloy 短期内不会切
+#   - 目前是 warning,不影响 CI(`-D warnings` 不针对 compiler future-incompat)
+# 处理策略:不做任何处理,等 alloy 升级后再 bump。
+# 下次重评:每 6 个月(2026-12 / 2027-06)或 alloy 切到 proc-macro-error3 时
+# 重新评估,必要时用 `[patch.crates-io]` 临时绕过。
+# ----------------------------------------------------------------------------
+
 [dependencies]
 # 内部依赖
 axon-core = { path = "../axon-core" }

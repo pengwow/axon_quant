@@ -185,9 +185,41 @@ bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
 	cargo bench -p $(CRATE) -- $(BENCH)
 
 # ==================== 验证完整流程 ====================
+# `verify` 与 `ci-check` 是同一目标的两个别名,任选其一即可。
+# 它们等价于 GitHub Actions 的 .github/workflows/validation.yml 关键 job,
+# 提交前必跑,避免"本地通过、CI 失败"的漂移。
+
+# 检查本地 stable 距离 latest stable 是否超过 14 天。
+# 若过期则警告(不阻断),提醒 `rustup update stable`。
+.PHONY: toolchain-check
+toolchain-check: ## 检查本地 stable 是否过期(>14 天则警告)
+	@if command -v rustc >/dev/null 2>&1; then \
+		LOCAL_DATE=$$(rustc --version 2>/dev/null | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | head -1); \
+		if [ -z "$$LOCAL_DATE" ]; then \
+			echo "⚠️  无法读取本地 rustc 日期,跳过检查"; \
+		else \
+			NOW=$$(date +%s); \
+			LOCAL_TS=$$(date -j -f '%Y-%m-%d' "$$LOCAL_DATE" +%s 2>/dev/null || date -d "$$LOCAL_DATE" +%s 2>/dev/null || echo "$$NOW"); \
+			DAYS=$$(((NOW - LOCAL_TS) / 86400)); \
+			echo "==> 本地 rustc 发布日期: $$LOCAL_DATE ($$DAYS 天前)"; \
+			if [ $$DAYS -gt 14 ]; then \
+				echo ""; \
+				echo "⚠️  本地 rustc 已 $$DAYS 天未更新,CI 使用的是最新 stable"; \
+				echo "⚠️  建议运行: rustup update stable"; \
+				echo ""; \
+			fi; \
+		fi; \
+	else \
+		echo "⚠️  未检测到 rustc,跳过 toolchain 检查"; \
+	fi
+
 .PHONY: verify
-verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
+verify: toolchain-check fmt-check clippy test build ## 完整本地验证（等价于 CI）
 	@echo "✅ 所有本地检查通过"
+
+.PHONY: ci-check
+ci-check: verify ## ci-check 是 verify 的别名,提交前必跑,等价于 GitHub Actions
+	@echo "✅ ci-check 通过,可以 push"
 
 # ==================== 版本管理(单一来源) ====================
 # 策略:
