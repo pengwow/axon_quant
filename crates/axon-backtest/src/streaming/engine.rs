@@ -34,7 +34,7 @@ use super::strategy::{StrategyAction, StreamingStrategy};
 pub const DEFAULT_PERIODS_PER_YEAR: f64 = 252.0;
 
 /// 交易模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TradingMode {
     /// 回测模式：使用历史数据回放
     Backtest,
@@ -63,7 +63,7 @@ pub struct EngineSnapshot {
 ///
 /// 字段对齐 `BacktestEngine::RunResult` 关键指标,
 /// 用户切换 batch / streaming 引擎无需学新 schema。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StreamingSnapshot {
     /// 投资组合净值(× 1e6 定点,旧 EngineSnapshot 字段)
     pub portfolio_nav: i64,
@@ -356,6 +356,11 @@ impl StreamingEngine {
     /// 权益曲线副本(0.4.0 新增)— 每笔 fill 后采样的 NAV 时间序列
     pub fn equity_curve(&self) -> Vec<EquityPoint> {
         self.metrics.equity_curve().to_vec()
+    }
+
+    /// 构造流式报告(0.4.0+1 新增)— 组合 snapshot + equity_curve,支持 JSON / CSV / HTML 导出
+    pub fn report(&self) -> super::report::StreamingReport {
+        super::report::StreamingReport::from_engine(self)
     }
 
     /// 纯 metrics 视图(0.4.0 新增)— 不含 portfolio 状态 / mode 等

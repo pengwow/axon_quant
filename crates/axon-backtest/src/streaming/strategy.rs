@@ -62,6 +62,72 @@ pub trait StreamingStrategy: Send {
     fn on_tick(&mut self, symbol: &Symbol, price: f64) -> Vec<StrategyAction>;
 }
 
+/// SMA 均线交叉策略
+///
+/// 维护 short/long 两个滑动窗口,当 short > long 时返回 Buy(开仓),
+/// 否则返回 Hold。**简化**:不跟踪已有持仓,持续产生 Buy(实战应加 state)。
+///
+/// 用途:streaming 链路端到端验证 + 示例策略。
+pub struct SmaCrossover {
+    /// 短期均线窗口大小
+    pub short_win: usize,
+    /// 长期均线窗口大小
+    pub long_win: usize,
+    /// 价格滑动窗口(最多保留 `long_win` 个元素)
+    pub closes: std::collections::VecDeque<f64>,
+    /// 下一个可分配的订单 id(自增)
+    pub next_order_id: u64,
+}
+
+impl SmaCrossover {
+    /// 创建 SMA 均线交叉策略
+    ///
+    /// `short_win` 和 `long_win` 分别为短期和长期均线的窗口大小。
+    /// 当 `short_win >= long_win` 时策略退化(永远 Hold)。
+    pub fn new(short_win: usize, long_win: usize) -> Self {
+        Self {
+            short_win,
+            long_win,
+            closes: std::collections::VecDeque::with_capacity(long_win),
+            next_order_id: 1,
+        }
+    }
+
+    fn sma(&self, win: usize) -> Option<f64> {
+        if self.closes.len() < win {
+            return None;
+        }
+        let sum: f64 = self.closes.iter().rev().take(win).sum();
+        Some(sum / win as f64)
+    }
+}
+
+impl StreamingStrategy for SmaCrossover {
+    fn on_tick(&mut self, symbol: &Symbol, price: f64) -> Vec<StrategyAction> {
+        self.closes.push_back(price);
+        if self.closes.len() > self.long_win {
+            self.closes.pop_front();
+        }
+        let short = self.sma(self.short_win);
+        let long = self.sma(self.long_win);
+        match (short, long) {
+            (Some(s), Some(l)) if s > l => {
+                let order = Order::new(
+                    self.next_order_id,
+                    symbol.clone(),
+                    axon_core::market::Side::Buy,
+                    axon_core::order::OrderType::Market,
+                    axon_core::types::Quantity::from_f64(0.1),
+                    axon_core::order::TimeInForce::IOC,
+                );
+                self.next_order_id += 1;
+                vec![StrategyAction::Submit(order)]
+            }
+            _ => vec![StrategyAction::Hold],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,62 +147,6 @@ mod tests {
     impl StreamingStrategy for FixedStrategy {
         fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
             std::mem::take(&mut self.next)
-        }
-    }
-
-    /// 简单"sma crossover"策略(供 e2e 测试用)
-    ///
-    /// 维护 short/long 两个滑动窗口,当 short > long 时返回 Buy(开仓),
-    /// 否则返回 Hold。**简化**:不跟踪已有持仓,持续产生 Buy(实战应加 state)。
-    pub struct SmaCrossover {
-        pub short_win: usize,
-        pub long_win: usize,
-        pub closes: std::collections::VecDeque<f64>,
-        pub next_order_id: u64,
-    }
-
-    impl SmaCrossover {
-        pub fn new(short_win: usize, long_win: usize) -> Self {
-            Self {
-                short_win,
-                long_win,
-                closes: std::collections::VecDeque::with_capacity(long_win),
-                next_order_id: 1,
-            }
-        }
-
-        fn sma(&self, win: usize) -> Option<f64> {
-            if self.closes.len() < win {
-                return None;
-            }
-            let sum: f64 = self.closes.iter().rev().take(win).sum();
-            Some(sum / win as f64)
-        }
-    }
-
-    impl StreamingStrategy for SmaCrossover {
-        fn on_tick(&mut self, symbol: &Symbol, price: f64) -> Vec<StrategyAction> {
-            self.closes.push_back(price);
-            if self.closes.len() > self.long_win {
-                self.closes.pop_front();
-            }
-            let short = self.sma(self.short_win);
-            let long = self.sma(self.long_win);
-            match (short, long) {
-                (Some(s), Some(l)) if s > l => {
-                    let order = Order::new(
-                        self.next_order_id,
-                        symbol.clone(),
-                        axon_core::market::Side::Buy,
-                        axon_core::order::OrderType::Market,
-                        axon_core::types::Quantity::from_f64(0.1),
-                        axon_core::order::TimeInForce::IOC,
-                    );
-                    self.next_order_id += 1;
-                    vec![StrategyAction::Submit(order)]
-                }
-                _ => vec![StrategyAction::Hold],
-            }
         }
     }
 

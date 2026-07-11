@@ -8,9 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned (0.4.0+1)
-- **WebSocket 真接入**: 通过 `axon-exchange` 的 `BinanceAdapter` / `OkxAdapter` 接入实时行情流，替换 CSV 回放用于实盘验证
-- **SmaCrossover 实盘验证**: 在 Binance 测试网上端到端验证 `SmaCrossover` 策略从行情接收到下单撮合的完整链路
 - **Streaming 报告导出**: 为 `StreamingMetricsSnapshot` / `StreamingSnapshot` 添加 JSON / CSV / HTML 导出能力
+
+### Added
+- **9 个 crate 补充 e2e 测试(37 个测试)**:全面覆盖核心模块端到端链路,`cargo test --workspace` 全部通过:
+  - **axon-exchange**(`tests/e2e_adapter_parsing.rs`,5 测试):ExchangeConfig 序列化 roundtrip、OrderLifecycleManager 注册→终态归档、TokenBucketRateLimiter 容量+补充、WebSocketManager 连接/熔断状态转换
+  - **axon-ensemble**(`tests/e2e_ensemble_pipeline.rs`,4 测试):HardVote/SoftVote 投票管线、动态调权+权重读取、模型多样性度量
+  - **axon-oms**(`tests/e2e_order_lifecycle.rs`,4 测试):订单 submit→Acknowledged→Filled 完整流转、取消路径、多订单并发管理、snapshot 一致性
+  - **axon-compliance**(`tests/e2e_report_generation.rs`,4 测试):记录交易→日报生成、JSON 导出 roundtrip、月报生成、审计完整性验证
+  - **axon-harness**(`tests/e2e_harness_pipeline.rs`,3 测试):DefaultPolicy 正常预算裁决、RBACToolGate 权限允许/拒绝、CircuitBreaker 连续失败触发熔断
+  - **axon-hpo**(`tests/e2e_hpo_pipeline.rs`,6 测试):TOML→HPOConfig 序列化 roundtrip、6 种参数类型构造+校验+序列化、Pareto front→hypervolume 管线、TOML 文件加载、多目标配置、混合方向 dominates
+  - **axon-rl**(`tests/e2e_rl_pipeline.rs`,5 测试):TradingEnv reset→多步 step、离散动作空间 index roundtrip、PnL 奖励函数盈利/亏损、EnvConfig 序列化、episode 完成到 max_steps
+  - **axon-walk-forward**(`tests/e2e_walk_forward_pipeline.rs`,5 测试):Rolling/Expanding 窗口 split、leakage 检测(有/无泄漏)、purge+embargo 索引清洗、aggregate+deflated sharpe
+  - **axon-data**(`tests/e2e_data_pipeline.rs`,5 测试):DataService load→缓存命中→stats、Dataset iter_rows→checksum、FeaturePipeline fit_transform、DataRequest 序列化、多源注册+选择查询
+- **SmaCrossover 策略导出**:将 `SmaCrossover` 从 `#[cfg(test)]` 移出为 pub,`mod.rs` 新增 `pub use strategy::SmaCrossover`,供 e2e 测试和外部使用
+- **axon-backtest streaming 补充 e2e 测试(8 个测试)**:
+  - `tests/e2e_sma_crossover.rs`(4 测试):SmaCrossover 策略走完 engine 全链路——递增/递减/混合价格序列触发 Buy/Hold、订单 id 自增
+  - `tests/e2e_exchange_stream_source.rs`(4 测试):ExchangeStreamSource push→consume→engine 串联、多 symbol 分发、subscribe+buffered 计数、空 buffer 返回 None
+- **axon-backtest streaming 报告导出**:新增 `src/streaming/report.rs` 模块,`StreamingReport` 支持 JSON/CSV/HTML 三格式导出;`StreamingSnapshot`/`StreamingMetricsSnapshot`/`TradingMode`/`EquityPoint` 加 `Serialize,Deserialize` derive;`StreamingEngine::report()` 便捷方法(5 个 e2e 测试)
+- **README 更新**:版本徽章 0.3.0→0.4.0,回测引擎特性新增 Streaming Engine + Paper Trading 描述
 
 ## [0.4.0] - 2026-07-11
 

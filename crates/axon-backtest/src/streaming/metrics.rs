@@ -27,7 +27,7 @@ use axon_core::metrics::TradingMetrics;
 use axon_core::time::Timestamp;
 
 /// 权益曲线采样点
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EquityPoint {
     /// 采样时间戳
     pub timestamp: Timestamp,
@@ -195,7 +195,7 @@ impl StreamingMetrics {
 /// `StreamingMetrics::snapshot` 的产物 — 纯 metrics 视图
 ///
 /// 与 `StreamingSnapshot`(在 `engine.rs`)的区别:不包含 portfolio nav / mode / active_orders 等运行时字段
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StreamingMetricsSnapshot {
     /// 总 PnL(`final_nav - initial_cash`)
     pub total_pnl: f64,

@@ -24,6 +24,7 @@ mod data_source;
 mod engine;
 mod metrics;
 mod paper_trading;
+mod report;
 mod strategy;
 
 pub use data_source::{
@@ -33,4 +34,5 @@ pub use data_source::{
 pub use engine::{EngineSnapshot, StreamingEngine, StreamingSnapshot, TradingMode};
 pub use metrics::{EquityPoint, StreamingMetrics, StreamingMetricsSnapshot};
 pub use paper_trading::{PaperTradingEngine, SimulatedExchange};
-pub use strategy::{StrategyAction, StreamingStrategy};
+pub use report::{ReportError, ReportFormat, StreamingReport};
+pub use strategy::{SmaCrossover, StrategyAction, StreamingStrategy};
