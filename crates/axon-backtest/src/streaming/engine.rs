@@ -327,7 +327,7 @@ impl StreamingEngine {
 
     /// 获取完整流式快照(含 metrics 字段,0.4.0 新增)
     ///
-    /// `periods_per_year` 默认 [`DEFAULT_PERIODS_PER_YEAR`] = 252(bar 频率)
+    /// `periods_per_year` 默认 252(bar 频率)
     pub fn metrics_snapshot(&self) -> StreamingSnapshot {
         self.metrics_snapshot_with(DEFAULT_PERIODS_PER_YEAR)
     }
