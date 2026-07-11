@@ -137,9 +137,9 @@ impl StreamingReport {
             format!("{:.6}", self.snapshot.final_nav),
             self.snapshot.equity_curve_len.to_string(),
         ];
-        wtr.write_record(&headers)
+        wtr.write_record(headers)
             .map_err(|e| ReportError::SerializeError(e.to_string()))?;
-        wtr.write_record(&values)
+        wtr.write_record(values)
             .map_err(|e| ReportError::SerializeError(e.to_string()))?;
 
         // equity_curve 独立输出(补齐空字段以匹配 snapshot 列数)
