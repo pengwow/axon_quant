@@ -32,8 +32,8 @@ py_exception!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyo3::prelude::*;
     use pyo3::Python;
+    use pyo3::prelude::*;
 
     #[test]
     fn to_py_err_invalid_trade_preserves_code() {

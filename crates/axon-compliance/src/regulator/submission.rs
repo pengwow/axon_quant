@@ -5,9 +5,9 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::ComplianceConfig;
 use crate::error::{ComplianceError, ComplianceResult};
 use crate::types::TradeRecord;
-use crate::ComplianceConfig;
 
 use super::metrics::RegulatoryMetricsCalculator;
 use super::{RegulatorFormat, RegulatorySubmission, SubmissionType};

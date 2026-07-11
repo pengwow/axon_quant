@@ -35,14 +35,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use uuid::Uuid;
 
+use crate::ComplianceModule as RustModule;
 use crate::types::{
     ComplianceConfig as RustConfig, TradeFilter as RustFilter, TradeRecord as RustTradeRecord,
 };
-use crate::ComplianceModule as RustModule;
 
 use super::error::to_py_err;
 use super::types::{
-    parse_liquidity, parse_order_type, parse_side, parse_status, PyComplianceConfig,
+    PyComplianceConfig, parse_liquidity, parse_order_type, parse_side, parse_status,
 };
 
 #[allow(unused_imports)]
