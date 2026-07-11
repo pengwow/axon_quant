@@ -27,8 +27,10 @@ mod paper_trading;
 mod strategy;
 
 pub use data_source::{
-    ExchangeStreamSource, MarketDataEvent, ReplayStreamSource, StreamDataSource, StreamError,
+    CsvMapping, ExchangeStreamSource, MarketDataEvent, ReplayStreamSource, StreamDataSource,
+    StreamError, TimestampUnit,
 };
-pub use engine::{EngineSnapshot, StreamingEngine, TradingMode};
+pub use engine::{EngineSnapshot, StreamingEngine, StreamingSnapshot, TradingMode};
+pub use metrics::{EquityPoint, StreamingMetrics, StreamingMetricsSnapshot};
 pub use paper_trading::{PaperTradingEngine, SimulatedExchange};
 pub use strategy::{StrategyAction, StreamingStrategy};

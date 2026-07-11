@@ -7,6 +7,7 @@
 //! 2. 调注入的 `StreamingStrategy::on_tick` 拿到 `Vec<StrategyAction>`
 //! 3. 按顺序应用 actions:`Submit` → 撮合 → `Event::Fill` 返回;`Cancel` → L1 取消;`Hold` → 跳过
 //! 4. PaperTrading 模式下,限价单先按 `SimulatedExchange` 滑点上浮/下浮再撮合
+//! 5. 0.4.0:每笔 fill 调 `StreamingMetrics::record_fill` 推进 metrics(equity_curve / max_dd / sharpe / win_rate)
 //!
 //! ## 退化语义
 //!
@@ -25,8 +26,12 @@ use axon_core::types::{Price, Quantity, Symbol};
 use crate::matching::{L1MatchingEngine, MatchingEngine};
 
 use super::data_source::MarketDataEvent;
+use super::metrics::{EquityPoint, StreamingMetrics, StreamingMetricsSnapshot};
 use super::paper_trading::PaperTradingEngine;
 use super::strategy::{StrategyAction, StreamingStrategy};
+
+/// 流式回测年化因子(默认 252 日,bar 频率)
+pub const DEFAULT_PERIODS_PER_YEAR: f64 = 252.0;
 
 /// 交易模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +44,9 @@ pub enum TradingMode {
     LiveTrading,
 }
 
-/// 引擎状态快照
+/// 引擎状态快照(基础视图,向后兼容)
+///
+/// 0.4.0:扩展为 `StreamingSnapshot`(包含 metrics 字段),`EngineSnapshot` 仍保留作为基础视图
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
     /// 投资组合净值
@@ -50,6 +57,40 @@ pub struct EngineSnapshot {
     pub total_trades: usize,
     /// 交易模式
     pub mode: TradingMode,
+}
+
+/// 流式回测完整快照(0.4.0 新增,包含 metrics)
+///
+/// 字段对齐 `BacktestEngine::RunResult` 关键指标,
+/// 用户切换 batch / streaming 引擎无需学新 schema。
+#[derive(Debug, Clone)]
+pub struct StreamingSnapshot {
+    /// 投资组合净值(× 1e6 定点,旧 EngineSnapshot 字段)
+    pub portfolio_nav: i64,
+    /// 活跃订单数(旧 EngineSnapshot 字段)
+    pub active_orders: usize,
+    /// 总成交数(旧 EngineSnapshot 字段)
+    pub total_trades: usize,
+    /// 交易模式(旧 EngineSnapshot 字段)
+    pub mode: TradingMode,
+    /// 总 PnL(`final_nav - initial_cash`)
+    pub total_pnl: f64,
+    /// 总手续费
+    pub total_fees: f64,
+    /// 胜率(0~1)
+    pub win_rate: f64,
+    /// 夏普比率(年化,默认 252)
+    pub sharpe_ratio: f64,
+    /// 最大回撤(USD 绝对值)
+    pub max_drawdown: f64,
+    /// 最大回撤百分比(0~1)
+    pub max_drawdown_pct: f64,
+    /// NAV 历史峰值
+    pub nav_peak: f64,
+    /// 终态 NAV(f64)
+    pub final_nav: f64,
+    /// equity_curve 采样点数
+    pub equity_curve_len: usize,
 }
 
 /// 流式回测引擎
@@ -70,6 +111,8 @@ pub struct StreamingEngine {
     strategy: Option<Box<dyn StreamingStrategy>>,
     /// paper 模式引擎(`None` = 非 PaperTrading 模式,不做滑点)
     paper: Option<PaperTradingEngine>,
+    /// 0.4.0:实时指标收集器(equity_curve / max_dd / sharpe / win_rate)
+    metrics: StreamingMetrics,
 }
 
 impl StreamingEngine {
@@ -95,6 +138,7 @@ impl StreamingEngine {
             next_order_id: AtomicU64::new(1),
             strategy: None,
             paper,
+            metrics: StreamingMetrics::new(),
         }
     }
 
@@ -113,6 +157,16 @@ impl StreamingEngine {
     /// ```
     pub fn with_strategy(mut self, strategy: Box<dyn StreamingStrategy>) -> Self {
         self.strategy = Some(strategy);
+        self
+    }
+
+    /// 注入自定义 paper 引擎(0.4.0 新增)— 用于在 paper 模式下覆写默认配置
+    ///
+    /// 仅在 `mode == PaperTrading` 时生效;其他模式会丢弃注入(避免歧义)
+    pub fn with_paper_engine(mut self, paper: PaperTradingEngine) -> Self {
+        if matches!(self.mode, TradingMode::PaperTrading) {
+            self.paper = Some(paper);
+        }
         self
     }
 
@@ -148,13 +202,32 @@ impl StreamingEngine {
                     match action {
                         StrategyAction::Submit(mut order) => {
                             // 3a. paper 模式:对限价单应用滑点
-                            if let Some(paper) = &self.paper
+                            if let Some(paper) = self.paper.as_ref()
                                 && let Some(limit_p) = order.order_type.limit_price()
                             {
                                 let slip = paper.apply_slippage(limit_p.as_f64(), order.side);
                                 order.order_type = OrderType::Limit {
                                     price: Price::from_f64(slip),
                                 };
+                            }
+                            // 3a-partial. paper 模式:partial fill 裁决(0.4.0)
+                            // 先取决策,避免与后续 engines 借用冲突
+                            let (should_fill, fill_ratio) = if let Some(paper) =
+                                self.paper.as_mut()
+                            {
+                                (paper.should_fill(), paper.fill_ratio())
+                            } else {
+                                // 非 paper 模式:永远 100% 整笔成交
+                                (true, 1.0_f64)
+                            };
+                            if !should_fill {
+                                // 拒单:跳过本笔 submit(模拟"未成交")
+                                continue;
+                            }
+                            // 按 fill_ratio 缩减 quantity
+                            if fill_ratio < 1.0 {
+                                let scaled = order.quantity.as_f64() * fill_ratio;
+                                order.quantity = Quantity::from_f64(scaled);
                             }
                             // 3b. 撮合(走 L1)
                             if let Some(engine) = self.engines.get_mut(&symbol) {
@@ -169,10 +242,24 @@ impl StreamingEngine {
                                         fill.taker_order_id,
                                         fill.maker_order_id,
                                     );
+                                    // 0.4.0:记录 fill 前后 realized_pnl 差值(包含 realized - commission)
+                                    let pnl_before = self.portfolio.total_realized_pnl();
                                     let _ = self.portfolio.apply_trade(
                                         &symbol,
                                         &trade,
                                         fill.taker_side,
+                                        fill.timestamp,
+                                    );
+                                    let pnl_delta = self.portfolio.total_realized_pnl() - pnl_before;
+                                    // 0.4.0:记录 metrics(equity_curve / max_dd / sharpe)
+                                    let current_nav =
+                                        self.portfolio.nav() as f64 / 1_000_000.0;
+                                    // pnl_delta 已含 realized - commission,但 trading_metrics 单独
+                                    // 累加 fees 用于报告 → 拆 fee ≈ 0 简化(commission 已在 pnl_delta 中)
+                                    self.metrics.record_fill(
+                                        pnl_delta,
+                                        0, // fees 已计入 pnl_delta,避免重复扣
+                                        current_nav,
                                         fill.timestamp,
                                     );
                                     // 3d. 推回 fill event
@@ -237,6 +324,57 @@ impl StreamingEngine {
             total_trades: self.total_trades,
             mode: self.mode,
         }
+    }
+
+    /// 获取完整流式快照(含 metrics 字段,0.4.0 新增)
+    ///
+    /// `periods_per_year` 默认 [`DEFAULT_PERIODS_PER_YEAR`] = 252(bar 频率)
+    pub fn metrics_snapshot(&self) -> StreamingSnapshot {
+        self.metrics_snapshot_with(DEFAULT_PERIODS_PER_YEAR)
+    }
+
+    /// 自定义年化因子的 metrics snapshot
+    pub fn metrics_snapshot_with(&self, periods_per_year: f64) -> StreamingSnapshot {
+        let current_nav = self.portfolio.nav() as f64 / 1_000_000.0;
+        let m = self.metrics.snapshot(current_nav, periods_per_year);
+        StreamingSnapshot {
+            portfolio_nav: self.portfolio.nav(),
+            active_orders: self.engines.values().map(|e| e.active_order_count()).sum(),
+            total_trades: self.total_trades,
+            mode: self.mode,
+            total_pnl: m.total_pnl,
+            total_fees: m.total_fees,
+            win_rate: m.win_rate,
+            sharpe_ratio: m.sharpe_ratio,
+            max_drawdown: m.max_drawdown,
+            max_drawdown_pct: m.max_drawdown_pct,
+            nav_peak: m.nav_peak,
+            final_nav: m.final_nav,
+            equity_curve_len: m.equity_curve_len,
+        }
+    }
+
+    /// 权益曲线副本(0.4.0 新增)— 每笔 fill 后采样的 NAV 时间序列
+    pub fn equity_curve(&self) -> Vec<EquityPoint> {
+        self.metrics.equity_curve().to_vec()
+    }
+
+    /// 纯 metrics 视图(0.4.0 新增)— 不含 portfolio 状态 / mode 等
+    pub fn metrics_snapshot_only(&self) -> StreamingMetricsSnapshot {
+        let current_nav = self.portfolio.nav() as f64 / 1_000_000.0;
+        self.metrics.snapshot(current_nav, DEFAULT_PERIODS_PER_YEAR)
+    }
+
+    /// 设置初始资金(0.4.0 新增)— 决定 `total_pnl = current_nav - initial_cash` 派生基准
+    ///
+    /// 通常在 `portfolio_mut().deposit(...)` 后调用,让 metrics 知道 PnL 起点
+    pub fn set_initial_cash(&mut self, cash: f64) {
+        self.metrics.set_initial_cash(cash);
+    }
+
+    /// 底层 StreamingMetrics 引用(0.4.0 新增)— 给监控 / 报告模块用
+    pub fn metrics(&self) -> &StreamingMetrics {
+        &self.metrics
     }
 
     /// 获取投资组合引用
