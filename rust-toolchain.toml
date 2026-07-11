@@ -1,6 +1,6 @@
 # 工具链固定
 # - channel: 开发时使用 stable（保证 edition2024 等新特性可用）
-# - MSRV 仍为 1.96.0，由 CI 中 msrv job 强制校验
+# - MSRV 仍为 1.97.0，由 CI 中 msrv job 强制校验
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy", "rust-src"]

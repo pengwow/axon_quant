@@ -14,11 +14,11 @@ AXON 采用 Rust + Python 双语言架构，需要以下环境：
 | 组件 | 最低版本 | 说明 |
 |------|---------|------|
 | Python | 3.12 | 支持 3.12 / 3.13 / 3.14（`pyproject.toml` 限定 `<3.15`） |
-| Rust | 1.96.0 | 通过 `rustup` 安装，详见 [rustup.rs](https://rustup.rs) |
+| Rust | 1.97.0 | 通过 `rustup` 安装，详见 [rustup.rs](https://rustup.rs) |
 | maturin | 1.0+ | Python Wheel 构建工具（`pip install maturin`） |
 
 !!! warning "Rust 版本严格匹配"
-    AXON 使用 Rust 2024 Edition，要求编译器版本 `>= 1.96.0`。请通过 `rustc --version` 确认，若版本过低请执行 `rustup update`。
+    AXON 使用 Rust 2024 Edition，要求编译器版本 `>= 1.97.0`。请通过 `rustc --version` 确认，若版本过低请执行 `rustup update`。
 
 !!! note "操作系统支持"
     - Linux / macOS：完整支持（含 CPU 亲和性绑定）
@@ -290,10 +290,10 @@ print("✅ 验收通过：AXON 环境运行正常！")
 ### Q: Rust 编译报错 `edition 2024 is unstable`
 
 !!! warning "解决方案"
-    Rust 2024 Edition 需要 `>= 1.96.0`。执行：
+    Rust 2024 Edition 需要 `>= 1.97.0`。执行：
     ```bash
     rustup update stable
-    rustc --version   # 确认 >= 1.96.0
+    rustc --version   # 确认 >= 1.97.0
     ```
 
 ### Q: macOS 上编译提示 `ld: library not found for -lpython3.12`

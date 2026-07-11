@@ -688,19 +688,19 @@ AXON 当前版本为 `0.3.0`，各 crate 版本统一：
 
 | Crate | 版本 | 最低 Rust 版本 |
 |-------|------|---------------|
-| axon-core | 0.3.0 | 1.96.0 |
-| axon-rl | 0.3.0 | 1.96.0 |
-| axon-llm | 0.3.0 | 1.96.0 |
-| axon-inference | 0.3.0 | 1.96.0 |
-| axon-exchange | 0.3.0 | 1.96.0 |
-| axon-ensemble | 0.3.0 | 1.96.0 |
-| axon-explain | 0.3.0 | 1.96.0 |
-| axon-backtest | 0.3.0 | 1.96.0 |
-| axon-hpo | 0.3.0 | 1.96.0 |
-| axon-walk-forward | 0.3.0 | 1.96.0 |
-| axon-tracker | 0.3.0 | 1.96.0 |
-| axon-registry | 0.3.0 | 1.96.0 |
-| axon-distributed | 0.3.0 | 1.96.0 |
-| axon-monitor | 0.3.0 | 1.96.0 |
-| axon-risk | 0.3.0 | 1.96.0 |
-| axon-compliance | 0.3.0 | 1.96.0 |
+| axon-core | 0.3.0 | 1.97.0 |
+| axon-rl | 0.3.0 | 1.97.0 |
+| axon-llm | 0.3.0 | 1.97.0 |
+| axon-inference | 0.3.0 | 1.97.0 |
+| axon-exchange | 0.3.0 | 1.97.0 |
+| axon-ensemble | 0.3.0 | 1.97.0 |
+| axon-explain | 0.3.0 | 1.97.0 |
+| axon-backtest | 0.3.0 | 1.97.0 |
+| axon-hpo | 0.3.0 | 1.97.0 |
+| axon-walk-forward | 0.3.0 | 1.97.0 |
+| axon-tracker | 0.3.0 | 1.97.0 |
+| axon-registry | 0.3.0 | 1.97.0 |
+| axon-distributed | 0.3.0 | 1.97.0 |
+| axon-monitor | 0.3.0 | 1.97.0 |
+| axon-risk | 0.3.0 | 1.97.0 |
+| axon-compliance | 0.3.0 | 1.97.0 |

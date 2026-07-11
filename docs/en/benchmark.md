@@ -5,7 +5,7 @@ This document presents the performance benchmark results for the AXON quantitati
 ## Test Environment
 
 - **Operating System**: macOS (Apple Silicon)
-- **Rust Version**: 1.96.0+
+- **Rust Version**: 1.97.0+
 - **Build Mode**: Release (optimized)
 
 ## Core Performance Metrics

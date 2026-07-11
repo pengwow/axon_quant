@@ -5,7 +5,7 @@
 ## 测试环境
 
 - **操作系统**: macOS (Apple Silicon)
-- **Rust 版本**: 1.96.0+
+- **Rust 版本**: 1.97.0+
 - **构建模式**: Release (optimized)
 
 ## 核心性能指标

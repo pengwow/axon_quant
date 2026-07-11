@@ -13,7 +13,7 @@ This document describes how to install AXON.
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **Rust** | 1.96.0+ | Enforced by `rust-toolchain.toml` |
+| **Rust** | 1.97.0+ | Enforced by `rust-toolchain.toml` |
 | **Git** | 2.30+ | Clone source code |
 
 ### 1.2 Optional
@@ -30,7 +30,7 @@ If using `rustup`, simply enter the repository root to trigger automatic install
 
 ```bash
 cd axon_quant
-rustup show  # Automatically downloads 1.96.0
+rustup show  # Automatically downloads 1.97.0
 ```
 
 ## 3. Clone and Build
