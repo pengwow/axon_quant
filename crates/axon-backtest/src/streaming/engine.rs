@@ -80,7 +80,9 @@ impl StreamingEngine {
     /// - 其他模式 `paper = None`,strategy 提交的限价单按原价撮合
     pub fn new(mode: TradingMode) -> Self {
         let paper = if mode == TradingMode::PaperTrading {
-            Some(PaperTradingEngine::new(super::paper_trading::SimulatedExchange::default()))
+            Some(PaperTradingEngine::new(
+                super::paper_trading::SimulatedExchange::default(),
+            ))
         } else {
             None
         };
@@ -107,7 +109,7 @@ impl StreamingEngine {
     /// use axon_backtest::streaming::{StreamingEngine, StreamingStrategy, TradingMode};
     ///
     /// let engine = StreamingEngine::new(TradingMode::PaperTrading)
-    ///     .with_strategy(Box::my_strategy));
+    ///     .with_strategy(Box::new(my_strategy));
     /// ```
     pub fn with_strategy(mut self, strategy: Box<dyn StreamingStrategy>) -> Self {
         self.strategy = Some(strategy);
@@ -176,7 +178,9 @@ impl StreamingEngine {
                                     // 3d. 推回 fill event
                                     let seq = self.fill_seq.fetch_add(1, Ordering::Relaxed);
                                     events.push(Event::Fill(FillEvent::new(
-                                        seq, fill.timestamp, trade,
+                                        seq,
+                                        fill.timestamp,
+                                        trade,
                                     )));
                                 }
                             }
@@ -343,8 +347,8 @@ mod tests {
             }
         }
 
-        let engine = StreamingEngine::new(TradingMode::Backtest)
-            .with_strategy(Box::new(NoopStrategy));
+        let engine =
+            StreamingEngine::new(TradingMode::Backtest).with_strategy(Box::new(NoopStrategy));
         assert!(engine.has_strategy());
     }
 }

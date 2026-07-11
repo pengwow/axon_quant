@@ -300,8 +300,8 @@ mod tests {
 
     #[tokio::test]
     async fn replay_source_drains_to_none_after_last_tick() {
-        let mut src = ReplayStreamSource::new("/tmp/nonexistent.csv")
-            .with_ticks(sym(), vec![tick(100.0)]);
+        let mut src =
+            ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(sym(), vec![tick(100.0)]);
         let _ = src.subscribe(&[sym()]).await;
         let _ = src.next_event().await.expect("first");
         let none = src.next_event().await;

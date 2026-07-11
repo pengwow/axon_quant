@@ -28,7 +28,7 @@
 use std::collections::VecDeque;
 
 use axon_backtest::streaming::{
-    MarketDataEvent, StreamingEngine, StreamingStrategy, StrategyAction, TradingMode,
+    MarketDataEvent, StrategyAction, StreamingEngine, StreamingStrategy, TradingMode,
 };
 use axon_core::event::Event;
 use axon_core::market::{Side, Tick};
@@ -122,7 +122,12 @@ fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
         tick: make_tick(100.0),
     });
 
-    assert_eq!(events.len(), 1, "Buy 滑点后应成交 1 笔,实为 {}", events.len());
+    assert_eq!(
+        events.len(),
+        1,
+        "Buy 滑点后应成交 1 笔,实为 {}",
+        events.len()
+    );
     match &events[0] {
         Event::Fill(fill) => {
             let p = fill.trade.price.as_f64();
@@ -156,7 +161,12 @@ fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
         tick: make_tick(100.0),
     });
 
-    assert_eq!(events.len(), 1, "Sell 滑点后应成交 1 笔,实为 {}", events.len());
+    assert_eq!(
+        events.len(),
+        1,
+        "Sell 滑点后应成交 1 笔,实为 {}",
+        events.len()
+    );
     match &events[0] {
         Event::Fill(fill) => {
             let p = fill.trade.price.as_f64();

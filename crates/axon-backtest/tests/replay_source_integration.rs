@@ -25,8 +25,8 @@
 use std::collections::VecDeque;
 
 use axon_backtest::streaming::{
-    MarketDataEvent, ReplayStreamSource, StreamDataSource, StreamingEngine, StreamingStrategy,
-    StrategyAction, TradingMode,
+    MarketDataEvent, ReplayStreamSource, StrategyAction, StreamDataSource, StreamingEngine,
+    StreamingStrategy, TradingMode,
 };
 use axon_core::event::Event;
 use axon_core::market::{Side, Tick};
@@ -206,10 +206,7 @@ async fn replay_source_with_strategy_drives_fills_end_to_end() {
     assert_eq!(consumed, 6, "应消费 6 个 tick");
 
     // 验证 portfolio:买入 0.1 @2000 → 持仓 0.1 BTC,cash 减少 200
-    let pos = engine
-        .portfolio()
-        .position(&btc())
-        .expect("应有持仓");
+    let pos = engine.portfolio().position(&btc()).expect("应有持仓");
     assert!(
         (pos.quantity.as_f64() - 0.1).abs() < 1e-9,
         "持仓 0.1 BTC,实为 {}",
