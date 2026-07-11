@@ -59,3 +59,4 @@ python/axon_quant/*/__pycache__/
 docs/en/report/*
 docs/zh/report/*
 .axon-internal/*
+.mimocode/*

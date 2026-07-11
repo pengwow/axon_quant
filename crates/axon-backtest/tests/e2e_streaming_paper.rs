@@ -104,12 +104,12 @@ fn btc() -> Symbol {
 /// 0.4.0:在 paper 模式下注入 `fill_probability=1.0` 的 paper engine,
 /// 让"是否成交"完全确定(默认 0.95 会引入随机性,让 roundtrip 测试不稳定)
 fn deterministic_paper_engine() -> StreamingEngine {
-    StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(
-        PaperTradingEngine::new(SimulatedExchange {
+    StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(PaperTradingEngine::new(
+        SimulatedExchange {
             fill_probability: 1.0,
             ..SimulatedExchange::default()
-        }),
-    )
+        },
+    ))
 }
 
 // ── 1. Buy 限价 1bps 上浮 → 撮合到 maker @100.01 ─────────────────────

@@ -212,8 +212,7 @@ impl StreamingEngine {
                             }
                             // 3a-partial. paper 模式:partial fill 裁决(0.4.0)
                             // 先取决策,避免与后续 engines 借用冲突
-                            let (should_fill, fill_ratio) = if let Some(paper) =
-                                self.paper.as_mut()
+                            let (should_fill, fill_ratio) = if let Some(paper) = self.paper.as_mut()
                             {
                                 (paper.should_fill(), paper.fill_ratio())
                             } else {
@@ -250,10 +249,10 @@ impl StreamingEngine {
                                         fill.taker_side,
                                         fill.timestamp,
                                     );
-                                    let pnl_delta = self.portfolio.total_realized_pnl() - pnl_before;
+                                    let pnl_delta =
+                                        self.portfolio.total_realized_pnl() - pnl_before;
                                     // 0.4.0:记录 metrics(equity_curve / max_dd / sharpe)
-                                    let current_nav =
-                                        self.portfolio.nav() as f64 / 1_000_000.0;
+                                    let current_nav = self.portfolio.nav() as f64 / 1_000_000.0;
                                     // pnl_delta 已含 realized - commission,但 trading_metrics 单独
                                     // 累加 fees 用于报告 → 拆 fee ≈ 0 简化(commission 已在 pnl_delta 中)
                                     self.metrics.record_fill(

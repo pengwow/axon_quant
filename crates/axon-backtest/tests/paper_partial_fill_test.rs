@@ -166,7 +166,11 @@ fn partial_fill_min_ratio_lt_one_scales_quantity() {
     engine.submit_order(maker).expect("submit maker");
 
     // strategy: Buy Market qty 10
-    let strategy = FixedStrategy::new(vec![StrategyAction::Submit(make_market(1, Side::Buy, 10.0))]);
+    let strategy = FixedStrategy::new(vec![StrategyAction::Submit(make_market(
+        1,
+        Side::Buy,
+        10.0,
+    ))]);
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let events = engine.on_market_event(MarketDataEvent::Tick {
@@ -175,7 +179,11 @@ fn partial_fill_min_ratio_lt_one_scales_quantity() {
     });
 
     // 1 笔 fill, quantity 落在 [5.0, 10.0]
-    assert_eq!(events.len(), 1, "fill_probability=1.0 + 有 maker → 必有 1 fill");
+    assert_eq!(
+        events.len(),
+        1,
+        "fill_probability=1.0 + 有 maker → 必有 1 fill"
+    );
     let fill_qty = match &events[0] {
         Event::Fill(f) => f.trade.quantity.as_f64(),
         other => panic!("期望 Event::Fill,实为 {other:?}"),
@@ -209,6 +217,10 @@ fn seed_determinism_same_seed_same_decisions() {
             b.should_fill(),
             "同 seed 应产生同 should_fill 序列"
         );
-        assert_eq!(a.fill_ratio(), b.fill_ratio(), "同 seed 应产生同 fill_ratio 序列");
+        assert_eq!(
+            a.fill_ratio(),
+            b.fill_ratio(),
+            "同 seed 应产生同 fill_ratio 序列"
+        );
     }
 }

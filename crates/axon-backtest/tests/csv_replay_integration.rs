@@ -119,10 +119,7 @@ fn csv_malformed_line_returns_parse_error() {
         Err(StreamError::ParseError(msg)) => {
             // 错误信息应包含行号 2 + price 字段
             assert!(msg.contains("line 2"), "msg 应包含 'line 2',实为 {msg}");
-            assert!(
-                msg.contains("price"),
-                "msg 应指明 price 字段,实为 {msg}"
-            );
+            assert!(msg.contains("price"), "msg 应指明 price 字段,实为 {msg}");
         }
         other => panic!("期望 ParseError,实为 {other:?}"),
     }

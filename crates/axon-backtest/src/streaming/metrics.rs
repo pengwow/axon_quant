@@ -107,8 +107,7 @@ impl StreamingMetrics {
         {
             let lr = (nav / prev).ln();
             // lr 通常在 [-1, 1],× 1e9 仍在 i64 安全范围
-            self.trading_metrics
-                .record_log_return((lr * 1e9) as i64);
+            self.trading_metrics.record_log_return((lr * 1e9) as i64);
         }
 
         // 3. NAV 峰值实时维护
@@ -178,11 +177,7 @@ impl StreamingMetrics {
     ///
     /// `current_nav` 由调用方传入(通常为 `portfolio.nav()`);
     /// `periods_per_year` 默认 252(bar 频率,本工程主用日级)
-    pub fn snapshot(
-        &self,
-        current_nav: f64,
-        periods_per_year: f64,
-    ) -> StreamingMetricsSnapshot {
+    pub fn snapshot(&self, current_nav: f64, periods_per_year: f64) -> StreamingMetricsSnapshot {
         StreamingMetricsSnapshot {
             total_pnl: self.total_pnl(current_nav),
             total_fees: self.trading_metrics.total_fees_f64(),

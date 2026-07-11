@@ -260,10 +260,7 @@ impl ReplayStreamSource {
     ///
     /// - 文件不存在 → `StreamError::FileNotFound`
     /// - 数字/方向解析失败 → `StreamError::ParseError("line N: ...")`
-    pub fn from_csv(
-        path: impl Into<PathBuf>,
-        symbol: Symbol,
-    ) -> Result<Self, StreamError> {
+    pub fn from_csv(path: impl Into<PathBuf>, symbol: Symbol) -> Result<Self, StreamError> {
         Self::from_csv_with_mapping(path, symbol, CsvMapping::default())
     }
 
@@ -281,9 +278,7 @@ impl ReplayStreamSource {
         let mut reader = csv::ReaderBuilder::new()
             .has_headers(mapping.has_header)
             .from_path(&path)
-            .map_err(|e| {
-                StreamError::ParseError(format!("open {}: {e}", path.display()))
-            })?;
+            .map_err(|e| StreamError::ParseError(format!("open {}: {e}", path.display())))?;
 
         let mut events = Vec::new();
         for (zero_based, record) in reader.records().enumerate() {
@@ -295,9 +290,8 @@ impl ReplayStreamSource {
                 zero_based + 1
             };
 
-            let record = record.map_err(|e| {
-                StreamError::ParseError(format!("line {line_no}: {e}"))
-            })?;
+            let record =
+                record.map_err(|e| StreamError::ParseError(format!("line {line_no}: {e}")))?;
 
             let ts_str = record
                 .get(mapping.timestamp_col)
@@ -325,9 +319,7 @@ impl ReplayStreamSource {
                 })?
                 .trim();
             let price: f64 = price_str.parse().map_err(|e| {
-                StreamError::ParseError(format!(
-                    "line {line_no}: price '{price_str}' not f64: {e}"
-                ))
+                StreamError::ParseError(format!("line {line_no}: price '{price_str}' not f64: {e}"))
             })?;
 
             let qty_str = record
@@ -355,9 +347,7 @@ impl ReplayStreamSource {
                 })?
                 .trim();
             let side = parse_side(side_str).ok_or_else(|| {
-                StreamError::ParseError(format!(
-                    "line {line_no}: side '{side_str}' not buy/sell"
-                ))
+                StreamError::ParseError(format!("line {line_no}: side '{side_str}' not buy/sell"))
             })?;
 
             events.push(MarketDataEvent::Tick {

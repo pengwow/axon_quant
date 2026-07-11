@@ -60,12 +60,12 @@ fn make_tick(price: f64) -> Tick {
 /// paper 模式:fill_probability=1.0 让"是否成交"完全确定,
 /// 避免 0.95 默认值引入随机性破坏 win_rate / roundtrip 断言
 fn deterministic_paper_engine() -> StreamingEngine {
-    StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(
-        PaperTradingEngine::new(SimulatedExchange {
+    StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(PaperTradingEngine::new(
+        SimulatedExchange {
             fill_probability: 1.0,
             ..SimulatedExchange::default()
-        }),
-    )
+        },
+    ))
 }
 
 /// 一次 buy + sell roundtrip(价差 spread=100,扣 commission 后净赚 99.7)
@@ -98,8 +98,7 @@ fn run_roundtrip(spread: f64) -> StreamingEngine {
             TimeInForce::IOC,
         )),
     ];
-    let mut engine =
-        engine.with_strategy(Box::new(FixedStrategy::new(strategy)));
+    let mut engine = engine.with_strategy(Box::new(FixedStrategy::new(strategy)));
 
     // tick1: Market Buy → 撮合 maker1 @100
     let _ = engine.on_market_event(MarketDataEvent::Tick {
@@ -180,7 +179,10 @@ fn metrics_snapshot_reflects_single_fill() {
     let curve = engine.equity_curve();
     assert_eq!(curve.len(), 2);
     assert!(curve[0].nav > 0.0);
-    assert!(curve[1].nav >= curve[0].nav, "roundtrip 价差 100 应 NAV 上升");
+    assert!(
+        curve[1].nav >= curve[0].nav,
+        "roundtrip 价差 100 应 NAV 上升"
+    );
 }
 
 // ── 3. set_initial_cash 后 total_pnl 派生正确 ───────────────────────
@@ -271,5 +273,12 @@ fn metrics_equity_curve_records_one_point_per_fill() {
     // 也通过 metrics() 直接访问
     let m = engine.metrics();
     assert_eq!(m.equity_curve().len(), 2);
-    assert_eq!(m.nav_peak(), engine.equity_curve().iter().map(|p| p.nav).fold(0.0_f64, f64::max));
+    assert_eq!(
+        m.nav_peak(),
+        engine
+            .equity_curve()
+            .iter()
+            .map(|p| p.nav)
+            .fold(0.0_f64, f64::max)
+    );
 }
