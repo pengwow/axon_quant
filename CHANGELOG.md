@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned (0.4.0+1)
+- **Streaming 报告导出**: 为 `StreamingMetricsSnapshot` / `StreamingSnapshot` 添加 JSON / CSV / HTML 导出能力
+
+### Added
+- **9 个 crate 补充 e2e 测试(37 个测试)**:全面覆盖核心模块端到端链路,`cargo test --workspace` 全部通过:
+  - **axon-exchange**(`tests/e2e_adapter_parsing.rs`,5 测试):ExchangeConfig 序列化 roundtrip、OrderLifecycleManager 注册→终态归档、TokenBucketRateLimiter 容量+补充、WebSocketManager 连接/熔断状态转换
+  - **axon-ensemble**(`tests/e2e_ensemble_pipeline.rs`,4 测试):HardVote/SoftVote 投票管线、动态调权+权重读取、模型多样性度量
+  - **axon-oms**(`tests/e2e_order_lifecycle.rs`,4 测试):订单 submit→Acknowledged→Filled 完整流转、取消路径、多订单并发管理、snapshot 一致性
+  - **axon-compliance**(`tests/e2e_report_generation.rs`,4 测试):记录交易→日报生成、JSON 导出 roundtrip、月报生成、审计完整性验证
+  - **axon-harness**(`tests/e2e_harness_pipeline.rs`,3 测试):DefaultPolicy 正常预算裁决、RBACToolGate 权限允许/拒绝、CircuitBreaker 连续失败触发熔断
+  - **axon-hpo**(`tests/e2e_hpo_pipeline.rs`,6 测试):TOML→HPOConfig 序列化 roundtrip、6 种参数类型构造+校验+序列化、Pareto front→hypervolume 管线、TOML 文件加载、多目标配置、混合方向 dominates
+  - **axon-rl**(`tests/e2e_rl_pipeline.rs`,5 测试):TradingEnv reset→多步 step、离散动作空间 index roundtrip、PnL 奖励函数盈利/亏损、EnvConfig 序列化、episode 完成到 max_steps
+  - **axon-walk-forward**(`tests/e2e_walk_forward_pipeline.rs`,5 测试):Rolling/Expanding 窗口 split、leakage 检测(有/无泄漏)、purge+embargo 索引清洗、aggregate+deflated sharpe
+  - **axon-data**(`tests/e2e_data_pipeline.rs`,5 测试):DataService load→缓存命中→stats、Dataset iter_rows→checksum、FeaturePipeline fit_transform、DataRequest 序列化、多源注册+选择查询
+- **SmaCrossover 策略导出**:将 `SmaCrossover` 从 `#[cfg(test)]` 移出为 pub,`mod.rs` 新增 `pub use strategy::SmaCrossover`,供 e2e 测试和外部使用
+- **axon-backtest streaming 补充 e2e 测试(8 个测试)**:
+  - `tests/e2e_sma_crossover.rs`(4 测试):SmaCrossover 策略走完 engine 全链路——递增/递减/混合价格序列触发 Buy/Hold、订单 id 自增
+  - `tests/e2e_exchange_stream_source.rs`(4 测试):ExchangeStreamSource push→consume→engine 串联、多 symbol 分发、subscribe+buffered 计数、空 buffer 返回 None
+- **axon-backtest streaming 报告导出**:新增 `src/streaming/report.rs` 模块,`StreamingReport` 支持 JSON/CSV/HTML 三格式导出;`StreamingSnapshot`/`StreamingMetricsSnapshot`/`TradingMode`/`EquityPoint` 加 `Serialize,Deserialize` derive;`StreamingEngine::report()` 便捷方法(5 个 e2e 测试)
+- **README 更新**:版本徽章 0.3.0→0.4.0,回测引擎特性新增 Streaming Engine + Paper Trading 描述
+
+## [0.4.0] - 2026-07-11
+
 ### Added
 - **axon-backtest 流式回测链路 S-1 + S-2 实装完成 — 解锁 9 个 e2e 测试**:打通 `StreamingEngine ↔ StreamingStrategy ↔ StreamDataSource` 端到端,2 个测试文件共 9 个测试全过(`cargo test -p axon-backtest --tests` 298 通过/0 失败,`cargo test --workspace` 2695 通过/0 失败,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告)。本次实现 0.3.2 中标为 0.4.0 后续的 v1 计划缺口:
   - **`src/streaming/strategy.rs`** 新建:`StreamingStrategy` trait(`on_tick(&Symbol, price) -> Vec<StrategyAction>`,`Send` 约束供后续 PyO3 `#[pyclass]`)+ `StrategyAction` enum 三态(`Submit(Order) / Cancel(u64) / Hold`)。提供 `FixedStrategy` + `SmaCrossover` 2 个测试用 strategy
@@ -18,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`tests/e2e_streaming_paper.rs`**(5 测试, B.2 维度):`paper_buy_limit_slippage_makes_taker_more_aggressive` / `paper_sell_limit_slippage_makes_taker_more_aggressive` 验证 Buy/Sell 限价 1bps 滑点精确撮合 maker;`paper_market_order_not_slipped` 验证 Market 单无滑点;`paper_roundtrip_buy_then_sell_yields_pnl_minus_commission` 验证 Buy 100 → Sell 200 价差 100 - 2×commission(0.1%+0.2%)= 99.7 的 PnL 数学 + 仓位闭环;`paper_hold_action_emits_no_fill` 验证 Hold action 路径不产生 fill
   - **`tests/replay_source_integration.rs`**(4 测试, C.4 维度):`replay_source_replays_ticks_through_streaming_engine_in_fifo_order` 验证 ReplayStreamSource → engine 链路的 FIFO 顺序;`replay_source_drains_to_none_after_all_ticks_consumed` 验证耗尽后 `next_event` 持续返回 None;`replay_source_with_strategy_drives_fills_end_to_end` 验证 strategy + ReplaySource 端到端产生 fill + 持仓;`replay_source_remaining_and_consumed_track_progress` 验证 `remaining() / consumed()` 计数在消费过程中逐步变化
   - **依赖**:`async-trait 0.1` / `tokio` (workspace,features `macros,rt,rt-multi-thread,time`) 已为 dev-dep,0 增量;`axum` / `serde` / `thiserror` 0 增量
+  - **流式回测链路 S-3 补齐 — CSV 真实回放 / 实时指标 / Paper partial fill**,新增 28 个测试(16 e2e + 6 metrics 单元 + 6 paper 单元),`cargo test -p axon-backtest` 现 326 通过/0 失败,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告:
+    - **CSV 真实回放**:`ReplayStreamSource::from_csv(path, symbol)` / `from_csv_with_mapping(path, symbol, CsvMapping)` 一次性预加载 CSV 到 `Vec<MarketDataEvent>`,回放期间无 I/O 阻塞;`CsvMapping` 灵活配置列号 + `TimestampUnit::{Nanos,Micros,Millis,Secs}` 时间戳单位 + `has_header` 标识;`StreamError::{FileNotFound,ParseError}` 提供精确错误信息(含行号)
+    - **实时指标采集**:`src/streaming/metrics.rs` 新模块,`StreamingMetrics` 跟踪 equity_curve / nav_peak / total_pnl / win_rate / sharpe_ratio / max_drawdown,复用 `axon_core::metrics::TradingMetrics`(无锁原子);`StreamingEngine::metrics_snapshot() -> StreamingSnapshot` 拼装 12 个字段(对齐 `BacktestEngine::RunResult` schema),`set_initial_cash(cash)` 设置 PnL 基准,`equity_curve() -> Vec<EquityPoint>` 返回完整时间序列,`metrics() -> &StreamingMetrics` 给监控 / 报告模块用
+    - **Paper partial fill**:`SimulatedExchange::{fill_probability, seed, partial_fill_min_ratio}` 三参数化裁决;`PaperTradingEngine::should_fill() -> bool` 二元裁决(默认 0.95 概率),`fill_ratio() -> f64` 缩量系数(默认 1.0 = 不缩量,旧行为);`StreamingEngine` 在 `TradingMode::PaperTrading` 下每笔 `Submit` 限价单先裁决 should_fill,再按 fill_ratio 缩量 quantity 再撮合;`with_seed(seed)` 化 rng 让测试可重复
+    - **`src/streaming/mod.rs`** 补导出 `StreamingSnapshot` / `StreamingMetrics` / `StreamingMetricsSnapshot` / `EquityPoint` / `CsvMapping` / `TimestampUnit`
+    - **`src/streaming/data_source.rs`** 修:`ExchangeStreamSource` / `ReplayStreamSource` 加 `#[derive(Debug)]` 供测试 `{:?}` 输出
+    - **`tests/csv_replay_integration.rs`**(5 测试):`csv_default_format_4_columns` / `csv_with_header_row` 验证默认 4 列格式;`csv_custom_mapping_and_timestamp_unit_micros` 验证自定义列映射 + 微秒单位换算;`csv_missing_file_returns_file_not_found` 验证文件不存在;`csv_malformed_line_returns_parse_error` 验证数字列含字母时 `ParseError` 含行号 + 字段名
+    - **`tests/streaming_metrics_e2e.rs`**(6 测试):`metrics_initial_state_all_zero` 验证初始全 0;`metrics_snapshot_reflects_single_fill` 验证 1 轮 roundtrip 后 equity_curve_len=2 + total_pnl≈99.7(价差 100 - commission);`metrics_snapshot_with_initial_cash` 验证 set_initial_cash 后 total_pnl = nav - initial;`metrics_win_rate_after_two_roundtrips` 验证 buy 开仓 pnl=0 算中性 → 1 轮 roundtrip win_rate=0.5;`metrics_max_drawdown_tracks_peak_to_trough` 直接驱动 StreamingMetrics 验证 6 点 NAV 序列的最大回撤 100 = 250→100;`metrics_equity_curve_records_one_point_per_fill` 验证每笔 fill 推进 1 个 equity_point 且时间戳非递减
+    - **`tests/paper_partial_fill_test.rs`**(5 测试):`default_config_full_fill_unchanged` 验证默认 0.95 概率下跑 1000 次拒单率 < 5%;`fill_probability_zero_rejects_everything` 验证 0.0 → 100% 拒单;`fill_probability_full_accepts_everything` 验证 1.0 → 100% 全成;`partial_fill_min_ratio_lt_one_scales_quantity` 验证 partial_fill_min_ratio=0.5 时 engine 路径上 fill qty ∈ [5.0, 10.0];`seed_determinism_same_seed_same_decisions` 验证同 seed → 1000 次 should_fill + fill_ratio 序列完全一致
+    - **依赖**:`csv 1.3` 与 axon-data 同版本可复用编译缓存;`rand = { workspace = true }` seed 化 rng;dev-deps 增 `tempfile` (workspace) 给 CSV 测试 + `futures 0.3`(`features = ["std", "executor"]`)给 `futures::executor::block_on` 在同步测试中跑 `async fn next_event`
 
 ## [0.3.2] - 2026-07-11
 

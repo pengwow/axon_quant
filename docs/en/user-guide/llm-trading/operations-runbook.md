@@ -12,7 +12,7 @@ axon-llm is a library with no standalone server process. This document assumes t
 
 ### 1.1 System Requirements
 
-- **Rust**: 1.96.0+ (enforced by `rust-toolchain.toml`)
+- **Rust**: 1.97.0+ (enforced by `rust-toolchain.toml`)
 - **Python**: 3.14.6 (default, pyenv managed; only for Python bindings)
 - **CPU**: At least 4 cores
 - **Memory**: Development 4GB / Production 8GB+

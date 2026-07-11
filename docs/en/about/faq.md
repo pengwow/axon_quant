@@ -13,7 +13,7 @@ This document collects common questions and answers for the AXON quantitative tr
 
 **A:** AXON framework minimum requirements:
 
-- **Rust version**: 1.96.0 or higher (check with `rustc --version`)
+- **Rust version**: 1.97.0 or higher (check with `rustc --version`)
 - **Python version**: 3.9 or higher (if using Python bindings)
 - **Operating System**: Linux (Ubuntu 22.04+ recommended), macOS 13+, Windows 11+
 - **Memory**: Minimum 8GB, 16GB recommended (for training large models)
@@ -82,11 +82,11 @@ make verify
 
 ### Q4: I get "Rust edition 2024 is unstable" error
 
-**A:** AXON requires Rust 1.96.0+. Update your toolchain:
+**A:** AXON requires Rust 1.97.0+. Update your toolchain:
 
 ```bash
 rustup update stable
-rustc --version  # Should show 1.96.0+
+rustc --version  # Should show 1.97.0+
 ```
 
 ### Q5: ONNX Runtime linking fails on Linux

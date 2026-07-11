@@ -4,7 +4,7 @@
 
 **AI-Native Quantitative Trading Framework**
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.96%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.3.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE) [![Rust](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB.svg)](https://www.python.org/) [![Version](https://img.shields.io/badge/Version-0.4.0-green.svg)](./CHANGELOG.md) [![CI](https://img.shields.io/github/actions/workflow/status/pengwow/axon_quant/validation.yml?label=CI)](https://github.com/pengwow/axon_quant/actions) [![Tests](https://img.shields.io/badge/Tests-2300%2B-brightgreen.svg)](./crates/)
 
 English | **[中文](./README_CN.md)**
 
@@ -37,6 +37,8 @@ Rust core for high-performance, Python interface for RL training, one codebase f
 - **Impact Models**: Almgren-Chriss permanent/temporary impact + probabilistic latency + tiered fees
 - **Deterministic Replay**: `SimulatedClock` + crossbeam-channel bounded 100K event queue
 - **Columnar Storage**: Arrow/Parquet, 1M tick read/write < 15ms
+- **Streaming Engine**: Real-time tick ingestion via `StreamDataSource` trait, CSV replay / exchange simulation / future WebSocket; `StreamingStrategy` trait for tick-driven strategies; `StreamingMetrics` tracks equity curve, Sharpe, max drawdown, win rate in real time
+- **Paper Trading**: Simulated exchange with configurable slippage, fill probability, and partial fill ratio; deterministic RNG seeding for reproducible tests
 
 ### RL Environment
 
