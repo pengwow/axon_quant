@@ -36,6 +36,15 @@ build-cli: ## 编译 CLI 工具
 test: ## 运行单元测试
 	cargo test --workspace
 
+.PHONY: test-release
+test-release: ## Release 模式跑 axon-backtest 测试(含 #[ignore] perf gate)
+	@echo "==> Release 模式跑 axon-backtest 全套测试 + perf gate"
+	cargo test -p axon-backtest --tests --release -- --include-ignored
+
+.PHONY: test-fast
+test-fast: ## Debug 模式快速跑 axon-backtest 测试(跳过 #[ignore] perf gate,默认行为)
+	cargo test -p axon-backtest --tests
+
 .PHONY: test-doc
 test-doc: ## 运行文档测试
 	cargo test --workspace --doc

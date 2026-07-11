@@ -370,7 +370,8 @@ fn sma_crossover_loses_in_downtrend() {
 
     // 下跌趋势策略空仓 → 无成交
     assert_eq!(
-        result.fills, 0,
+        result.fills,
+        0,
         "下跌趋势策略应空仓,fills={}, trades.len()={}",
         result.fills,
         result.trades.len()

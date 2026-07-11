@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-11
+
+### Added
+- **axon-backtest 测试薄弱场景优化 v2 — 收尾 + 增量**:`cargo test -p axon-backtest --tests --release -- --include-ignored` 全套 278 测试通过(179 unit + 99 integration),`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告。本次在 v1 计划(16 个文件)基础上补 2 个文件 + 1 个 README:
+  - **`tests/l3_snapshot_restore.rs`**(5 测试, P2-6): 验证 `MultiAssetMatchingEngine::snapshot/restore` 在不同 batch_mode 下的保留语义 — `asset_registration` / `cross_pair_list` / `batch_mode` 全部保留,`pending_batch` / `dark_orders` / `bid_depth` 在 restore 时清空(已知限制,见 `engine_l3.rs:407-421`)
+  - **`tests/perf_1000_bar_replay.rs`**(4 测试, 2 `#[ignore]`, P2-5): 1000 根震荡 bar + SMA(5,20) crossover,`release` 模式 138µs 跑完(perf gate < 1s);另含扩缩放测试(100/500/1000/2000 bar 耗时比例 < 30x)
+  - **`tests/README.md`**: 20 个集成测试文件的"场景矩阵"验收清单(5 维度:A 端到端 / B 状态机 / C 边界 / D 集成 / E 性能),新增测试 checklist
+  - **`make test-release`** / **`make test-fast`**: 显式区分 release 含 perf gate(25s)和 debug 跳过 perf gate(< 1s)的两种模式
+
+### Changed
+- **axon-backtest 测试覆盖维度升级**: 从 v0.3.0 的「机械行为验证」扩展到 5 维度(端到端 + 状态机 + 边界 + 集成 + 性能)。v1 计划 16 个文件全部完成 14 个,缺 B.2(streaming_paper)与 C.4(replay_source_integration),两者阻塞于 `streaming/data_source.rs::next_event` 与 `StreamingEngine::on_market_event` 的 stub 实现,本次不补(0.4.0 单独实装)
+
+### Fixed
+- **L2 `SubmitResult` API 误用**: `tests/l2_engine_e2e.rs` 等文件曾假设 `L2.submit` 返回 `Result<SubmitResult>`,实际返回 `SubmitResult` 直接(无 Result 包装)。已修正,统一用 `.fills` 字段访问
+
 ## [0.3.1] - 2026-07-08
 
 ### Changed
