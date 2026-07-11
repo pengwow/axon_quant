@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned (0.4.0+1)
+- **WebSocket 真接入**: 通过 `axon-exchange` 的 `BinanceAdapter` / `OkxAdapter` 接入实时行情流，替换 CSV 回放用于实盘验证
+- **SmaCrossover 实盘验证**: 在 Binance 测试网上端到端验证 `SmaCrossover` 策略从行情接收到下单撮合的完整链路
+- **Streaming 报告导出**: 为 `StreamingMetricsSnapshot` / `StreamingSnapshot` 添加 JSON / CSV / HTML 导出能力
+
 ## [0.4.0] - 2026-07-11
 
 ### Added
