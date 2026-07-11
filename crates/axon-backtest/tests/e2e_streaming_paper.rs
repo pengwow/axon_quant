@@ -28,7 +28,8 @@
 use std::collections::VecDeque;
 
 use axon_backtest::streaming::{
-    MarketDataEvent, StrategyAction, StreamingEngine, StreamingStrategy, TradingMode,
+    MarketDataEvent, PaperTradingEngine, SimulatedExchange, StrategyAction, StreamingEngine,
+    StreamingStrategy, TradingMode,
 };
 use axon_core::event::Event;
 use axon_core::market::{Side, Tick};
@@ -100,11 +101,22 @@ fn btc() -> Symbol {
     Symbol::from("BTC-USDT")
 }
 
+/// 0.4.0:在 paper 模式下注入 `fill_probability=1.0` 的 paper engine,
+/// 让"是否成交"完全确定(默认 0.95 会引入随机性,让 roundtrip 测试不稳定)
+fn deterministic_paper_engine() -> StreamingEngine {
+    StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(
+        PaperTradingEngine::new(SimulatedExchange {
+            fill_probability: 1.0,
+            ..SimulatedExchange::default()
+        }),
+    )
+}
+
 // ── 1. Buy 限价 1bps 上浮 → 撮合到 maker @100.01 ─────────────────────
 
 #[test]
 fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
-    let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
+    let mut engine = deterministic_paper_engine();
     engine.register_symbol(btc());
 
     // 对手盘:Sell Limit @100.01(模拟"市场深度恰好 1bps 之外")
@@ -144,7 +156,7 @@ fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
 
 #[test]
 fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
-    let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
+    let mut engine = deterministic_paper_engine();
     engine.register_symbol(btc());
 
     // 对手盘:Buy Limit @99.99
@@ -183,7 +195,7 @@ fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
 
 #[test]
 fn paper_market_order_not_slipped() {
-    let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
+    let mut engine = deterministic_paper_engine();
     engine.register_symbol(btc());
 
     // 对手盘:Sell Limit @100(Market Buy 直接吃 maker)
@@ -229,7 +241,7 @@ fn paper_market_order_not_slipped() {
 /// - 期望 PnL = (200 - 100) - 2 * commission ≈ 99.97
 #[test]
 fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
-    let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
+    let mut engine = deterministic_paper_engine();
     engine.register_symbol(btc());
     // 入金 100k(回测初始资金),保证买得起
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
@@ -310,7 +322,7 @@ fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
 
 #[test]
 fn paper_hold_action_emits_no_fill() {
-    let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
+    let mut engine = deterministic_paper_engine();
     engine.register_symbol(btc());
 
     let strategy = FixedStrategy::new(vec![StrategyAction::Hold, StrategyAction::Hold]);

@@ -38,6 +38,10 @@ thiserror = { workspace = true }
 toml = "0.8"
 tracing = { workspace = true }
 async-trait = "0.1"
+# 0.4.0:CSV 真实回放(axon-data 已用同版本,workspace 命中可复用编译缓存)
+csv = "1.3"
+# 0.4.0:PaperTradingEngine partial fill 裁决用(seed 化 rng)
+rand = { workspace = true }
 
 # Stage 2:列式存储桥(arrow 57,workspace 统一)
 # `optional = true` 让非 `python` feature 时不引入,避免对纯 Rust 用户造成编译开销
@@ -65,6 +69,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # tokio 宏 + runtime,给 `#[tokio::test]` 异步测试用
 # (streaming 模块的 data_source.rs 用 async fn next_event,需要 tokio runtime)
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+# 0.4.0:CSV 回放测试用临时文件
+tempfile = { workspace = true }
+# 0.4.0:`futures::executor::block_on` 用于在同步测试中跑 async fn
+# (csv_replay_integration.rs 的 `next_event().await` 在 `#[test]` 块中跑)
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 
 # 同时生成 cdylib（供 Python `import axon_backtest` 使用）和 rlib（供 Rust crate 引用）
 [lib]
