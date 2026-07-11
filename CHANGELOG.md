@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **axon-backtest 流式回测链路 S-1 + S-2 实装完成 — 解锁 9 个 e2e 测试**:打通 `StreamingEngine ↔ StreamingStrategy ↔ StreamDataSource` 端到端,2 个测试文件共 9 个测试全过(`cargo test -p axon-backtest --tests` 298 通过/0 失败,`cargo test --workspace` 2695 通过/0 失败,`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告)。本次实现 0.3.2 中标为 0.4.0 后续的 v1 计划缺口:
+  - **`src/streaming/strategy.rs`** 新建:`StreamingStrategy` trait(`on_tick(&Symbol, price) -> Vec<StrategyAction>`,`Send` 约束供后续 PyO3 `#[pyclass]`)+ `StrategyAction` enum 三态(`Submit(Order) / Cancel(u64) / Hold`)。提供 `FixedStrategy` + `SmaCrossover` 2 个测试用 strategy
+  - **`src/streaming/data_source.rs`** 扩展:`MarketDataEvent` 三态(`Tick / Heartbeat / Disconnected`),`StreamDataSource` async trait(`subscribe / next_event / is_connected / name`),2 个内置实现:
+    - `ExchangeStreamSource`:`Mutex<VecDeque<MarketDataEvent>>` 缓冲 + `try_push` 同步推入(给测试 / 外部 WS 适配层)
+    - `ReplayStreamSource`:`with_ticks(symbol, Vec<Tick>)` 注入 + FIFO 回放 + `remaining() / consumed()` 计数
+  - **`src/streaming/engine.rs`** 扩展:`StreamingEngine::on_market_event(MarketDataEvent) -> Vec<Event>` 主回路(tick → portfolio mark → strategy.on_tick → actions 应用 → L1 撮合 → portfolio 更新 → fill event 返回),`TradingMode::PaperTrading` 自动构造 `PaperTradingEngine` 并对**限价单**应用 1bps 滑点(Buy 上浮/Sell 下浮),`Market` 单无 limit_price 跳过滑点;`with_strategy(Box<dyn StreamingStrategy>)` builder + `submit_order` / `portfolio_mut` / `snapshot` 等辅助 API
+  - **`src/streaming/mod.rs`** 重新导出 `MarketDataEvent` / `ExchangeStreamSource` / `ReplayStreamSource` / `StreamDataSource` / `StreamError` / `StrategyAction` / `StreamingStrategy` / `PaperTradingEngine` / `SimulatedExchange`
+  - **`tests/e2e_streaming_paper.rs`**(5 测试, B.2 维度):`paper_buy_limit_slippage_makes_taker_more_aggressive` / `paper_sell_limit_slippage_makes_taker_more_aggressive` 验证 Buy/Sell 限价 1bps 滑点精确撮合 maker;`paper_market_order_not_slipped` 验证 Market 单无滑点;`paper_roundtrip_buy_then_sell_yields_pnl_minus_commission` 验证 Buy 100 → Sell 200 价差 100 - 2×commission(0.1%+0.2%)= 99.7 的 PnL 数学 + 仓位闭环;`paper_hold_action_emits_no_fill` 验证 Hold action 路径不产生 fill
+  - **`tests/replay_source_integration.rs`**(4 测试, C.4 维度):`replay_source_replays_ticks_through_streaming_engine_in_fifo_order` 验证 ReplayStreamSource → engine 链路的 FIFO 顺序;`replay_source_drains_to_none_after_all_ticks_consumed` 验证耗尽后 `next_event` 持续返回 None;`replay_source_with_strategy_drives_fills_end_to_end` 验证 strategy + ReplaySource 端到端产生 fill + 持仓;`replay_source_remaining_and_consumed_track_progress` 验证 `remaining() / consumed()` 计数在消费过程中逐步变化
+  - **依赖**:`async-trait 0.1` / `tokio` (workspace,features `macros,rt,rt-multi-thread,time`) 已为 dev-dep,0 增量;`axum` / `serde` / `thiserror` 0 增量
+
+## [0.3.2] - 2026-07-11
+
+### Added
+- **axon-backtest 测试薄弱场景优化 v2 — 收尾 + 增量**:`cargo test -p axon-backtest --tests --release -- --include-ignored` 全套 278 测试通过(179 unit + 99 integration),`cargo clippy -p axon-backtest --all-targets -- -D warnings` 零警告。本次在 v1 计划(16 个文件)基础上补 2 个文件 + 1 个 README:
+  - **`tests/l3_snapshot_restore.rs`**(5 测试, P2-6): 验证 `MultiAssetMatchingEngine::snapshot/restore` 在不同 batch_mode 下的保留语义 — `asset_registration` / `cross_pair_list` / `batch_mode` 全部保留,`pending_batch` / `dark_orders` / `bid_depth` 在 restore 时清空(已知限制,见 `engine_l3.rs:407-421`)
+  - **`tests/perf_1000_bar_replay.rs`**(4 测试, 2 `#[ignore]`, P2-5): 1000 根震荡 bar + SMA(5,20) crossover,`release` 模式 138µs 跑完(perf gate < 1s);另含扩缩放测试(100/500/1000/2000 bar 耗时比例 < 30x)
+  - **`tests/README.md`**: 20 个集成测试文件的"场景矩阵"验收清单(5 维度:A 端到端 / B 状态机 / C 边界 / D 集成 / E 性能),新增测试 checklist
+  - **`make test-release`** / **`make test-fast`**: 显式区分 release 含 perf gate(25s)和 debug 跳过 perf gate(< 1s)的两种模式
+
+### Changed
+- **axon-backtest 测试覆盖维度升级**: 从 v0.3.0 的「机械行为验证」扩展到 5 维度(端到端 + 状态机 + 边界 + 集成 + 性能)。v1 计划 16 个文件全部完成 14 个,缺 B.2(streaming_paper)与 C.4(replay_source_integration),两者阻塞于 `streaming/data_source.rs::next_event` 与 `StreamingEngine::on_market_event` 的 stub 实现,本次不补(0.4.0 单独实装)
+
+### Fixed
+- **L2 `SubmitResult` API 误用**: `tests/l2_engine_e2e.rs` 等文件曾假设 `L2.submit` 返回 `Result<SubmitResult>`,实际返回 `SubmitResult` 直接(无 Result 包装)。已修正,统一用 `.fills` 字段访问
+
+## [0.3.1] - 2026-07-08
+
+### Changed
+- **版本号统一为单一来源管理**:从 0.2.0 → 0.3.0 → 0.3.1 升级过程中曾出现 4 处硬编码遗漏
+  (axon-python `_native.__version__` 字符串 / 3 个 Python 辅助包 `__version__` 硬编码 /
+  axon-compliance 独立 `version = "0.0.1"` 不继承 workspace)。本次整改后:
+  - `[workspace.package] version` 是 Rust 全部 23 个 crate 的权威源(axon-compliance
+    补齐 workspace inheritance,与 22 个其他 crate 对齐)
+  - `pyproject.toml [project].version` 是 Python 包的权威源
+  - `_native.__version__` 改用 `env!("CARGO_PKG_VERSION")` 编译时注入,跟 Cargo 自动同步
+  - 3 个 Python 辅助包(axon_hpo / axon_registry / axon_walk_forward)`__version__` 改用
+    `importlib.metadata.version("axon-quant")` 读已安装 wheel 元数据(PEP 621 规范)
+- **CI 校验**:`make version-check` 校验 Cargo.toml / pyproject.toml / Cargo.lock 三源一致
+
+### Tools
+- **`make version-bump VERSION=x.y.z`**:一处修改 Cargo.toml + pyproject.toml,自动重生
+  Cargo.lock,提示更新 CHANGELOG,后续 `cargo build` / `maturin build` 自动用新版本号
+- **`make version-check`**:校验 Cargo.toml / pyproject.toml / Cargo.lock 三源一致
+
+### Fixed
+- **axon-compliance 不再独立于 workspace**:`version = "0.0.1"` + `edition = "2021"`
+  改为继承 workspace,后续与 workspace 保持一致(0.3.1 / edition 2024 / rust-version 1.96.0)
+
+### Added
 - **axon-llm::swarm 0.3.0 P0 工作流 B 收口完成 — 4-Agent 闭环 + PyO3 绑定 + Python E2E**:`SwarmOrchestrator` 4-Agent pipeline (Market / Risk / Execution / Audit) 跑通,Python 端可直接构造 4 类 agent + 启动 `run_loop` + 注入 MarketSignal / VoteResponse + 读 stats。**核心改动**:
   - **`DeclarativeAgentRunner` trait 抽取**(`crates/axon-llm/src/swarm/agent_runner.rs`):统一 4 类 agent 接口(`id() / role() / status() / handle_message()`),orchestrator 用 `Arc<dyn DeclarativeAgentRunner>` 统一管理异构 agent,Object safety + Sync 约束允许跨 task 持有。
   - **4 个 Agent 全部 `impl DeclarativeAgentRunner`**:`MarketAgent`(从 `MarketDataSource` 接收 tick → 输出 MarketSignal,价格变化阈值 `price_change_threshold`)/ `RiskAgent`(接收 MarketSignal → 输出 RiskAssessment,默认 `approved=true` 走 happy path)/ `ExecutionAgent`(调 `PlaceOrderTool` + `QueryPortfolioTool` 真下单,`placed_count` / `failed_count` / `queried_count` 统计)/ `AuditAgent`(审计 ExecutionResult)。

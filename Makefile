@@ -36,6 +36,15 @@ build-cli: ## 编译 CLI 工具
 test: ## 运行单元测试
 	cargo test --workspace
 
+.PHONY: test-release
+test-release: ## Release 模式跑 axon-backtest 测试(含 #[ignore] perf gate)
+	@echo "==> Release 模式跑 axon-backtest 全套测试 + perf gate"
+	cargo test -p axon-backtest --tests --release -- --include-ignored
+
+.PHONY: test-fast
+test-fast: ## Debug 模式快速跑 axon-backtest 测试(跳过 #[ignore] perf gate,默认行为)
+	cargo test -p axon-backtest --tests
+
 .PHONY: test-doc
 test-doc: ## 运行文档测试
 	cargo test --workspace --doc
@@ -176,9 +185,96 @@ bench-one: ## 跑单个 bench(需 CRATE + BENCH 参数)
 	cargo bench -p $(CRATE) -- $(BENCH)
 
 # ==================== 验证完整流程 ====================
+# `verify` 与 `ci-check` 是同一目标的两个别名,任选其一即可。
+# 它们等价于 GitHub Actions 的 .github/workflows/validation.yml 关键 job,
+# 提交前必跑,避免"本地通过、CI 失败"的漂移。
+
+# 检查本地 stable 距离 latest stable 是否超过 14 天。
+# 若过期则警告(不阻断),提醒 `rustup update stable`。
+.PHONY: toolchain-check
+toolchain-check: ## 检查本地 stable 是否过期(>14 天则警告)
+	@if command -v rustc >/dev/null 2>&1; then \
+		LOCAL_DATE=$$(rustc --version 2>/dev/null | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' | head -1); \
+		if [ -z "$$LOCAL_DATE" ]; then \
+			echo "⚠️  无法读取本地 rustc 日期,跳过检查"; \
+		else \
+			NOW=$$(date +%s); \
+			LOCAL_TS=$$(date -j -f '%Y-%m-%d' "$$LOCAL_DATE" +%s 2>/dev/null || date -d "$$LOCAL_DATE" +%s 2>/dev/null || echo "$$NOW"); \
+			DAYS=$$(((NOW - LOCAL_TS) / 86400)); \
+			echo "==> 本地 rustc 发布日期: $$LOCAL_DATE ($$DAYS 天前)"; \
+			if [ $$DAYS -gt 14 ]; then \
+				echo ""; \
+				echo "⚠️  本地 rustc 已 $$DAYS 天未更新,CI 使用的是最新 stable"; \
+				echo "⚠️  建议运行: rustup update stable"; \
+				echo ""; \
+			fi; \
+		fi; \
+	else \
+		echo "⚠️  未检测到 rustc,跳过 toolchain 检查"; \
+	fi
+
 .PHONY: verify
-verify: fmt-check clippy test build ## 完整本地验证（等价于 CI）
+verify: toolchain-check fmt-check clippy test build ## 完整本地验证（等价于 CI）
 	@echo "✅ 所有本地检查通过"
+
+.PHONY: ci-check
+ci-check: verify ## ci-check 是 verify 的别名,提交前必跑,等价于 GitHub Actions
+	@echo "✅ ci-check 通过,可以 push"
+
+# ==================== 版本管理(单一来源) ====================
+# 策略:
+#   - Cargo.toml   [workspace.package].version  = Rust 全部 23 个 crate 权威源
+#   - pyproject.toml [project].version         = Python wheel 权威源
+#   - CHANGELOG.md                              = 人类可读发布日志
+#   - _native.__version__    = env!("CARGO_PKG_VERSION")(编译时注入)
+#   - 3 个 Python 辅助包       = importlib.metadata.version("axon-quant")
+# `version-check` 校验三源对齐,`version-bump` 一处改三处,杜绝遗漏
+
+.PHONY: version-check
+version-check: ## 校验 Cargo.toml / pyproject.toml / Cargo.lock 版本号一致
+	@CARGO_VERSION=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	PYPROJECT_VERSION=$$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	LOCK_VERSION=$$(awk '/^name = "axon-backtest"/{flag=1; next} flag && /^version = /{print; exit}' Cargo.lock | sed 's/.*"\(.*\)".*/\1/'); \
+	echo "Cargo.toml:    $$CARGO_VERSION"; \
+	echo "pyproject:     $$PYPROJECT_VERSION"; \
+	echo "Cargo.lock:    $$LOCK_VERSION (axon-backtest)"; \
+	STATUS=0; \
+	if [ "$$CARGO_VERSION" != "$$PYPROJECT_VERSION" ]; then \
+		echo "❌ Cargo.toml 与 pyproject.toml 版本号不一致"; \
+		STATUS=1; \
+	fi; \
+	if [ "$$CARGO_VERSION" != "$$LOCK_VERSION" ]; then \
+		echo "❌ Cargo.toml 与 Cargo.lock 版本号不一致(请先 cargo build)"; \
+		STATUS=1; \
+	fi; \
+	if [ $$STATUS -eq 0 ]; then \
+		echo "✅ 版本号三源对齐"; \
+	else \
+		exit 1; \
+	fi
+
+.PHONY: version-bump
+version-bump: ## 升级版本号(用法:make version-bump VERSION=0.3.2)
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make version-bump VERSION=<new-version>"; \
+		echo "  e.g. make version-bump VERSION=0.3.2"; \
+		exit 1; \
+	fi
+	@OLD=$$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'); \
+	echo "==> 升级版本: $$OLD -> $(VERSION)"; \
+	echo "==> 改 Cargo.toml [workspace.package].version"; \
+	sed -i '' 's/^version = "'$$OLD'"/version = "$(VERSION)"/' Cargo.toml; \
+	echo "==> 改 pyproject.toml [project].version"; \
+	sed -i '' 's/^version = "'$$OLD'"/version = "$(VERSION)"/' pyproject.toml; \
+	echo "==> 重新生成 Cargo.lock"; \
+	cargo build --workspace >/dev/null 2>&1 || cargo build --workspace; \
+	echo ""; \
+	echo "✅ Cargo.toml + pyproject.toml + Cargo.lock 已同步到 $(VERSION)"; \
+	echo ""; \
+	echo "接下来请:"; \
+	echo "  1. 编辑 CHANGELOG.md:在 [Unreleased] 之下新增 ## [$(VERSION)] - $$(date +%Y-%m-%d) 节"; \
+	echo "  2. 运行 make version-check 校验三源对齐"; \
+	echo "  3. git add -A && git commit -m 'bump: $(VERSION)'"
 
 # ==================== 文档站(mkdocs + Material) ====================
 # 部署到 GitHub Pages 由 .github/workflows/docs.yml 处理

@@ -2,8 +2,8 @@
 //!
 //! 从交易记录生成年报，计算年度统计指标。
 
-use crate::report::monthly::compute_sharpe_ratio;
 use crate::report::AnnualReport;
+use crate::report::monthly::compute_sharpe_ratio;
 use crate::types::TradeRecord;
 
 /// 年报生成器
@@ -193,9 +193,11 @@ mod tests {
 
         let report = AnnualReportGenerator::generate(2026, "test", 100000.0, &trade_refs, 12);
 
-        assert!(report
-            .regulatory_notes
-            .iter()
-            .any(|n| n.contains("胜率异常")));
+        assert!(
+            report
+                .regulatory_notes
+                .iter()
+                .any(|n| n.contains("胜率异常"))
+        );
     }
 }

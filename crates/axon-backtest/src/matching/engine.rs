@@ -219,7 +219,7 @@ impl L1MatchingEngine {
             Side::Buy => {
                 // 买单：按卖价升序累加可成交量
                 let mut available = 0.0;
-                for (_, orders) in self.asks.iter() {
+                for orders in self.asks.values() {
                     if let Some(taker_price) = Self::limit_price(taker)
                         && taker_price.as_f64() < orders_price(orders)
                     {
@@ -239,7 +239,7 @@ impl L1MatchingEngine {
             Side::Sell => {
                 // 卖单：按买价降序累加可成交量
                 let mut available = 0.0;
-                for (_, orders) in self.bids.iter().rev() {
+                for orders in self.bids.values().rev() {
                     if let Some(taker_price) = Self::limit_price(taker)
                         && taker_price.as_f64() > orders_price(orders)
                     {

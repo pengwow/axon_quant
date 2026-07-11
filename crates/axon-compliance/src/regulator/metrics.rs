@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use crate::types::{TradeRecord, TradeSide};
 use crate::ComplianceConfig;
+use crate::types::{TradeRecord, TradeSide};
 
 use super::{ConcentrationCheck, LargeTradeReport, PositionLimit, RegulatoryData};
 

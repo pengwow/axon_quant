@@ -58,3 +58,4 @@ python/axon_quant/*/__pycache__/
 /.cache/
 docs/en/report/*
 docs/zh/report/*
+.axon-internal/*
