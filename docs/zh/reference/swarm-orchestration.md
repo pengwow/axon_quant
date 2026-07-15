@@ -199,9 +199,19 @@ orch.stop()
 
 **总测试数**:322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 全过**。
 
-## 6. 已知遗留(留作 0.3.x)
+## 6. 现状与未实现项(基于 0.4.1)
 
-- `PlaceOrderTool` 默认 `dry_run` 模式,`direct` / `two_phase` 模式需要外部触发两步确认
-- `RiskAgent` 默认 `approved=true` 走 happy path,真风控逻辑(波动率 / VaR / 限额)留作 0.3.x
-- 4-Agent pipeline 跨进程协调(分布式 swarm)留作 0.4.0
-- 真实交易所接入(`axon-llm::trading::exchange` 8 处 `unimplemented!()`)留作 0.3.x
+### 已完成的 0.3.x / 0.4.x 路线图
+
+- **`PlaceOrderTool` 三模式**: `DryRun` / `TwoPhase` / `Direct` 三种 `SafetyMode` 全部实现。
+  - `DryRun` 为默认安全模式(有意设计,防止 LLM 直发订单)。
+  - `TwoPhase` 内部用 `pending: Mutex<HashMap<token, PendingOrder>>` 跟踪待确认订单,4 个 e2e 测试覆盖:首调用返回 `confirm_token` / 二次带 token 真发 / 错误 token 拒绝 / token 单次消费。
+  - `Direct` 直接调 backend 无拦截。
+- **`RiskAgent` 基础限额**: 已实现 `max_order_notional` + `quantity > 0` 检查;合规时 `approved=true` + `risk_score=0.1` + 空 `violations`,违规时附带违规列表。
+- **真实交易所接入**: `ExchangeTradingBackend`(`crates/axon-llm/src/trading/exchange.rs`)完整实现,把 `ExchangeAdapter`(Binance / OKX)适配为 `TradingBackend`;依赖 `trading-exchange` feature,`SymbolMap` 提供 LLM symbol ↔ 交易所 symbol 双向映射。注:同文件测试模块里有 8 处 `unimplemented!()`,是 `#[cfg(test)]` 内的 `MockAdapter` stub(测试路径不调用),非生产代码缺口。
+
+### 未实现(0.5.0+ 路线图)
+
+- **`RiskAgent` 高级风控**: `RiskAgentConfig` 已定义 `max_position` / `max_drawdown` 字段但**未做检查**;`risk_score` 目前只是二元(0.1 / 0.9);波动率 / VaR / 历史回撤窗口 / 仓位集中度等指标**未实现**。计划在 0.5.0 接入 `axon-risk` 的 `DefaultRiskEngine`(12ns 检查链、circuit breaker、VaR 95/99、实时 metrics)替换 happy path。
+- **4-Agent pipeline 跨进程协调(分布式 swarm)**: 当前 `SwarmOrchestrator` 是单进程内 mpsc 通道;跨进程协调、共识状态机 `ConsensusManager` 持久化、`axon-distributed` 的 Ray Actor 化包装**未实现**。计划在 0.6.0+ 路线图。
+- **单 Agent 跨进程复用**: `MarketAgent` / `RiskAgent` / `AuditAgent` 目前以独立 `tokio::task::spawn` 运行,跨进程调度 / 共享 LLM client / 全局 prompt cache 仍待设计。

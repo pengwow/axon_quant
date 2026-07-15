@@ -202,9 +202,19 @@ See [`examples/18_harness/swarm_demo.py`](https://github.com/pengwow/axon_quant/
 
 **Total**: 322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 all pass**.
 
-## 6. Known Limitations (deferred to 0.3.x)
+## 6. Current Status and Unimplemented Items (as of 0.4.1)
 
-- `PlaceOrderTool` defaults to `dry_run` mode; `direct` / `two_phase` modes need external two-step confirmation
-- `RiskAgent` defaults to `approved=true` (happy path); real risk logic (volatility / VaR / limits) deferred to 0.3.x
-- Cross-process coordination (distributed swarm) deferred to 0.4.0
-- Live exchange integration (`axon-llm::trading::exchange` 8 `unimplemented!()` sites) deferred to 0.3.x
+### Completed Roadmap Items (0.3.x / 0.4.x)
+
+- **`PlaceOrderTool` three modes**: `DryRun` / `TwoPhase` / `Direct` all implemented as `SafetyMode` variants.
+  - `DryRun` is the default safety mode (intentional design, prevents LLM from sending orders directly).
+  - `TwoPhase` uses `pending: Mutex<HashMap<token, PendingOrder>>` to track unconfirmed orders; 4 e2e tests cover: first call returns `confirm_token` / second call with token sends order / unknown token rejected / token consumed once.
+  - `Direct` calls backend without interception.
+- **`RiskAgent` basic limits**: `max_order_notional` + `quantity > 0` checks implemented; compliant orders get `approved=true` + `risk_score=0.1` + empty `violations`, non-compliant orders include violation list.
+- **Live exchange integration**: `ExchangeTradingBackend` (`crates/axon-llm/src/trading/exchange.rs`) fully implemented; adapts `ExchangeAdapter` (Binance / OKX) to `TradingBackend`; gated by `trading-exchange` feature, with `SymbolMap` providing bidirectional LLM symbol ↔ exchange symbol mapping. Note: 8 `unimplemented!()` sites in the same file are stubs inside a `#[cfg(test)]` `MockAdapter` (not invoked by tests), not production code gaps.
+
+### Unimplemented (0.5.0+ Roadmap)
+
+- **`RiskAgent` advanced risk logic**: `RiskAgentConfig` defines `max_position` / `max_drawdown` fields but **does not check them**; `risk_score` is currently binary (0.1 / 0.9); volatility / VaR / historical drawdown window / position concentration **not implemented**. Planned for 0.5.0: integrate `axon-risk::DefaultRiskEngine` (12ns check chain, circuit breaker, VaR 95/99, real-time metrics) to replace the happy-path logic.
+- **4-Agent cross-process coordination (distributed swarm)**: Current `SwarmOrchestrator` uses single-process mpsc channels; cross-process coordination, `ConsensusManager` state-machine persistence, and Ray Actor wrapping via `axon-distributed` **not implemented**. Planned for 0.6.0+ roadmap.
+- **Single-agent cross-process reuse**: `MarketAgent` / `RiskAgent` / `AuditAgent` currently run as independent `tokio::task::spawn` instances; cross-process scheduling / shared LLM client / global prompt cache design still TBD.
