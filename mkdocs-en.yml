@@ -127,28 +127,29 @@ markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
 
-# Navigation
+# Navigation (organized as "Start → Architecture → Scenarios → Module Reference → API → About")
 nav:
   - Home: index.md
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quickstart.md
-  - Use Cases:
-      - Strategy Development: user-guide/strategy-development.md
-      - LLM Agent Trading: user-guide/llm-trading/oader.md
-      - Production Deployment: user-guide/production.md
-      - Traditional Strategy: user-guide/traditional-strategy.md
-      - RL Training: user-guide/rl-training.md
   - User Guide:
       - Architecture Overview: user-guide/architecture.md
-      - AI-Native Design: user-guide/ai-native-design.md
-      - LLM Trading:
-          - Overview: user-guide/llm-trading/overview.md
+      - AI-Native Core Design: user-guide/ai-native-design.md
+      - Strategy Development: user-guide/strategy-development.md
+      - RL Training: user-guide/rl-training.md
+      - Traditional Strategy: user-guide/traditional-strategy.md
+      - LLM Agent Trading:
+          - Scenario: user-guide/llm-trading/oader.md
+          - Architecture Overview: user-guide/llm-trading/overview.md
           - Risk & Safety: user-guide/llm-trading/risk-safety.md
           - Metrics & Alerting: user-guide/llm-trading/metrics-alerting.md
           - Operations: user-guide/llm-trading/operations-runbook.md
+      - Production Deployment: user-guide/production.md
+  - Module Reference:
+      - 23 Crates in Detail: user-guide/modules.md
   - Reference:
-      - API Reference: reference/api-reference.md
+      - API Overview: reference/api-reference.md
       - API Docs: reference/api.md
       - CLI Commands: reference/cli.md
       - Python Bindings: reference/python-bindings.md
