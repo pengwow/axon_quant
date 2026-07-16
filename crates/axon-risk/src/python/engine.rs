@@ -75,8 +75,8 @@ use super::metrics::risk_metrics_to_dict;
 /// - 失败容错:`import warnings` 失败时用 `eprintln!` 兜底,
 ///   避免主流程因 warning 发射失败而崩溃
 fn emit_default_config_warning(py: Python<'_>) {
-    use pyo3::exceptions::PyUserWarning;
     use pyo3::PyTypeInfo;
+    use pyo3::exceptions::PyUserWarning;
     let msg = "DefaultRiskEngine constructed with default RiskConfig; \
                this is a lenient preset (max_order_value=50_000, max_leverage=5, \
                max_drawdown=15%, max_daily_loss=10_000). For production, pass an \
@@ -926,9 +926,9 @@ mod tests {
     #[test]
     fn engine_construct_with_none_emits_real_user_warning() {
         Python::attach(|py| {
+            use pyo3::PyTypeInfo;
             use pyo3::exceptions::PyUserWarning;
             use pyo3::types::{PyDict, PyList};
-            use pyo3::PyTypeInfo;
             let warnings_mod = py.import("warnings").expect("import warnings");
             // catch_warnings(record=True) 是 keyword-only 参数
             let kwargs = PyDict::new(py);
@@ -938,9 +938,7 @@ mod tests {
                 .expect("catch_warnings(record=True)");
             // Python 3.11+: __enter__ 返回 log list(record=True 时)
             //                __exit__ 永远返回 None
-            let records_obj = mgr
-                .call_method0("__enter__")
-                .expect("__enter__");
+            let records_obj = mgr.call_method0("__enter__").expect("__enter__");
             warnings_mod
                 .call_method1("simplefilter", ("always",))
                 .expect("simplefilter('always')");
@@ -951,9 +949,8 @@ mod tests {
             // __exit__ 恢复 warnings 状态(不返回值,忽略)
             let _ = mgr.call_method0("__exit__").expect("__exit__");
 
-            let records: &Bound<'_, PyList> = records_obj
-                .cast::<PyList>()
-                .expect("records is list");
+            let records: &Bound<'_, PyList> =
+                records_obj.cast::<PyList>().expect("records is list");
             let user_warning_cls_bound = {
                 #[allow(deprecated)]
                 let bound = PyUserWarning::type_object(py);
@@ -1019,12 +1016,12 @@ mod tests {
                 .expect("simplefilter('always')");
 
             // 显式传 config,不应触发 warning
-            let _engine = PyDefaultRiskEngine::new(py, Some(config_bound)).expect("construct with Some");
+            let _engine =
+                PyDefaultRiskEngine::new(py, Some(config_bound)).expect("construct with Some");
 
             let _ = mgr.call_method0("__exit__").expect("__exit__");
-            let records: &Bound<'_, PyList> = records_obj
-                .cast::<PyList>()
-                .expect("records is list");
+            let records: &Bound<'_, PyList> =
+                records_obj.cast::<PyList>().expect("records is list");
             assert_eq!(
                 records.len(),
                 0,
