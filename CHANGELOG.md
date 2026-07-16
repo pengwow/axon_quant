@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-15
+
+### Changed
+- **版本号 bump**: `axon-quant` 与 23 个 `axon-*` crate 从 `0.4.0` 升级到 `0.4.1`(语义化 patch 级别,纯文档 + 元数据变更)
+
+### Documentation
+- **docs 目录结构整理**: 删除 `docs/` 顶层 6 个孤儿目录(`about/`、`adr/`、`getting-started/`、`reference/`、`user-guide/`、`index.md`),与 `docs/zh/` 重复且略旧;mkdocs 配置 `docs_dir: docs/zh` / `docs_dir: docs/en` 实际只读子目录,顶层文件从未被引用
+- **新增「模块参考」页面**: 在 `docs/zh/user-guide/modules.md` 与 `docs/en/user-guide/modules.md` 同步发布 23 个 crate 详解,按 `核心职责 / 代码位置 / 核心机制 / 适用场景 / 不适用场景 / 怎么用 / 关键依赖` 7 字段结构组织,Python 优先 + Rust 底层参考,2314 行(中) / 2316 行(英)双版本
+- **MkDocs 导航重组**: 两个 `mkdocs.yml` 的 `nav` 合并「使用场景」与「用户指南」为单一「用户指南」分类,新增「模块参考」一级分类收纳 `modules.md`;LLM 智能体交易收纳为子菜单(`场景 / 架构 / 风控 / 指标 / 运维`)
+- **`make docs-serve` 本地构建验证通过**: `mkdocs build -f mkdocs.yml --strict` 与 `mkdocs build -f mkdocs-en.yml --strict` 均零错误,`site/{zh,en}/user-guide/modules/index.html` 已生成
+
 ### Planned (0.4.0+1)
 - **Streaming 报告导出**: 为 `StreamingMetricsSnapshot` / `StreamingSnapshot` 添加 JSON / CSV / HTML 导出能力
 

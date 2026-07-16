@@ -165,6 +165,7 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [LLM 智能体驱动交易](user-guide/llm-trading/oader.md)
 - [生产部署与监控](user-guide/production.md)
 - [传统策略迁移](user-guide/traditional-strategy.md)
+- [模块参考（23 个 crate 详解）](user-guide/modules.md)
 - [API 参考](reference/api-reference.md)
 - [常见问题](about/faq.md)
 

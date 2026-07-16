@@ -133,28 +133,29 @@ markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
 
-# 导航
+# 导航(按"开始 → 架构 → 场景 → 模块参考 → API → 关于"组织)
 nav:
   - 首页: index.md
   - 快速开始:
-      - 安装与快速入门: getting-started/installation.md
+      - 安装: getting-started/installation.md
       - 5 分钟跑通: getting-started/quickstart.md
-  - 使用场景:
-      - 策略研发全流程: user-guide/strategy-development.md
-      - LLM 智能体驱动交易: user-guide/llm-trading/oader.md
-      - 生产部署与监控: user-guide/production.md
-      - 传统策略迁移: user-guide/traditional-strategy.md
-      - RL 训练: user-guide/rl-training.md
   - 用户指南:
       - 架构总览: user-guide/architecture.md
       - AI 原生核心设计: user-guide/ai-native-design.md
-      - LLM 交易:
+      - 策略研发全流程: user-guide/strategy-development.md
+      - RL 训练: user-guide/rl-training.md
+      - 传统策略迁移: user-guide/traditional-strategy.md
+      - LLM 智能体交易:
+          - 场景: user-guide/llm-trading/oader.md
           - 架构总览: user-guide/llm-trading/overview.md
           - 风控与安全: user-guide/llm-trading/risk-safety.md
           - 指标与告警: user-guide/llm-trading/metrics-alerting.md
           - 运维手册: user-guide/llm-trading/operations-runbook.md
-  - 参考:
-      - API 参考: reference/api-reference.md
+      - 生产部署与监控: user-guide/production.md
+  - 模块参考:
+      - 23 个 crate 详解: user-guide/modules.md
+  - API 参考:
+      - API 总览: reference/api-reference.md
       - API 文档: reference/api.md
       - CLI 命令: reference/cli.md
       - Python 绑定: reference/python-bindings.md

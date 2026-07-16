@@ -1,6 +1,6 @@
 [project]
 name = "axon-quant"
-version = "0.4.0"
+version = "0.4.1"
 description = "AI-native quantitative trading framework — high-performance Rust core with Python RL training interface, covering backtesting, training, optimization, validation and production in a single codebase."
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"

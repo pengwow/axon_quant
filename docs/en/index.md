@@ -167,6 +167,7 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [LLM Agent Trading](user-guide/llm-trading/oader.md)
 - [Production Deployment](user-guide/production.md)
 - [Traditional Strategy Migration](user-guide/traditional-strategy.md)
+- [Module Reference (23 crates)](user-guide/modules.md)
 - [API Reference](reference/api-reference.md)
 - [FAQ](about/faq.md)
 
