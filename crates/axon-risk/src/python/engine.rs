@@ -45,11 +45,47 @@ use axon_core::parse_py_enum;
 use axon_core::portfolio::{Currency, Portfolio, Position};
 use axon_core::types::{Price, Quantity, Symbol};
 
+use crate::config::RiskConfig as RustConfig;
 use crate::engine::{DefaultRiskEngine as RustEngine, RiskEngine as RustTrait};
 use crate::error::{AlertSeverity, RiskAlert, RiskReason as RustReason, RiskResult as RustResult};
 
 use super::config::PyRiskConfig;
 use super::metrics::risk_metrics_to_dict;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 辅助函数
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 当 `DefaultRiskEngine` 用默认 `RiskConfig` 构造时,emit Python `UserWarning`。
+///
+/// 通过 `warnings.warn(..., UserWarning, stacklevel=2)` 调用,确保:
+/// - `stacklevel=2`:warning 指向 `DefaultRiskEngine(...)` 的**调用方**,而非
+///   本辅助函数,符合 `warnings` 库的常规约定
+/// - 走 `warnings` 模块而非 `print`,可被 `filterwarnings` 静默
+/// - 失败容错:`import warnings` 失败时(`PyErr`)用 `eprintln!` 兜底,
+///   避免主流程因 warning 发射失败而崩溃
+fn emit_default_config_warning(py: Python<'_>) {
+    let msg = "DefaultRiskEngine constructed with default RiskConfig; \
+               this is a lenient preset (max_order_value=50_000, max_leverage=5, \
+               max_drawdown=15%, max_daily_loss=10_000). For production, pass an \
+               explicit RiskConfig with tightened limits. Use \
+               warnings.filterwarnings('ignore', category=UserWarning, module='axon_quant') \
+               to silence in tests/prototypes.";
+    match py.import("warnings") {
+        Ok(warnings) => {
+            if let Err(e) = warnings.call_method(
+                "warn",
+                (msg, "UserWarning", 2_u32),
+                None,
+            ) {
+                eprintln!("axon_quant.risk: failed to emit default-config warning: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("axon_quant.risk: failed to import 'warnings' module: {e}");
+        }
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 主类: PyDefaultRiskEngine
@@ -61,8 +97,8 @@ use super::metrics::risk_metrics_to_dict;
 /// `RiskResult` 字典化输出。
 ///
 /// 注:本类不实现 `Clone`(`DefaultRiskEngine` 内部 `Mutex` 不支持),
-/// 所以**不**用 `from_py_object`,改为 `new(config: &Bound<PyAny>)`
-/// 接收任意 Python 对象,内部 `extract::<PyRiskConfig>()`。
+/// 所以**不**用 `from_py_object`,改为 `new(config: Option<&Bound<PyAny>>)`
+/// 接收可选的任意 Python 对象,内部 `extract::<PyRiskConfig>()`。
 #[pyclass(name = "DefaultRiskEngine", skip_from_py_object)]
 pub struct PyDefaultRiskEngine {
     /// Rust 端 `DefaultRiskEngine`(持有 config + circuit_breaker + daily_pnl 等)
@@ -74,13 +110,45 @@ impl PyDefaultRiskEngine {
     /// 构造风控引擎
     ///
     /// Args:
-    /// - `config`:`RiskConfig` 配置对象(必填,Python 端传入)
+    /// - `config`:可选的 `RiskConfig` 配置对象。传 `None`(或不传)时使用
+    ///   Rust 端 `RiskConfig::default()` **宽松默认**(`max_order_value=50_000`,
+    ///   `max_leverage=5`,`max_drawdown=15%` 等),并 emit `UserWarning` 提醒
+    ///   生产环境应显式传收紧的配置。
+    ///
+    /// Warning:
+    /// - 显式 `DefaultRiskEngine()` 不传 config 会触发 `warnings.warn` →
+    ///   `UserWarning: DefaultRiskEngine constructed with default RiskConfig; ...`。
+    /// - 可用 `warnings.filterwarnings("ignore", ...)` 在测试/原型中静默。
+    ///
+    /// Example:
+    /// ```python
+    /// from axon_quant.risk import DefaultRiskEngine, RiskConfig
+    ///
+    /// # 显式传收紧配置(生产推荐)
+    /// engine = DefaultRiskEngine(RiskConfig(
+    ///     max_order_value=10_000.0,
+    ///     max_leverage=2.0,
+    ///     max_drawdown=0.05,
+    ///     max_daily_loss=2_000.0,
+    /// ))
+    ///
+    /// # 零参构造(原型/测试,会触发 UserWarning)
+    /// engine = DefaultRiskEngine()
+    /// ```
     #[new]
-    fn new(config: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let py_config = config.extract::<PyRiskConfig>()?;
-        Ok(Self {
-            inner: RustEngine::new(py_config.inner),
-        })
+    #[pyo3(signature = (config=None))]
+    fn new(py: Python<'_>, config: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let inner = match config {
+            Some(c) => {
+                let py_config: PyRiskConfig = c.extract()?;
+                RustEngine::new(py_config.inner)
+            }
+            None => {
+                emit_default_config_warning(py);
+                RustEngine::new(RustConfig::default())
+            }
+        };
+        Ok(Self { inner })
     }
 
     /// 预交易风控检查(主入口)
@@ -827,7 +895,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             let s = engine.__repr__();
             assert!(s.contains("DefaultRiskEngine"), "got: {s}");
         });
@@ -840,7 +908,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
 
             let order = PyDict::new(py);
             order.set_item("id", 1u64).unwrap();
@@ -871,7 +939,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 1000.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
 
             let order = PyDict::new(py);
             order.set_item("id", 1u64).unwrap();
@@ -913,7 +981,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             // 累计日内 PnL 触发熔断
             engine.update_daily_pnl(-1_500.0);
 
@@ -948,7 +1016,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(500.0);
             engine.update_daily_pnl(-200.0);
 
@@ -980,7 +1048,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(-1_500.0);
             engine.reset_daily();
 
@@ -1029,7 +1097,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(-2_000.0); // 触发 daily_pnl_limit 警报
 
             let portfolio = PyDict::new(py);

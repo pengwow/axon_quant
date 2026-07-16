@@ -525,3 +525,70 @@ def test_risk_error_inherits_exception():
     """RiskError 继承 Exception(可被 ``except Exception`` 捕获)。"""
     # 注:RiskError 继承 builtin PyException,而非 AxonError(避免 cargo 循环)
     assert issubclass(RiskError, Exception)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 无参构造 → UserWarning 行为(0.4.1 新增)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_engine_no_args_emits_user_warning():
+    """`DefaultRiskEngine()` 无参构造 → emit UserWarning 提示用了宽松默认。"""
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        engine = DefaultRiskEngine()  # noqa: F841  — 仅触发 warning
+    # 应当恰好触发 1 条 UserWarning
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(user_warnings) == 1, (
+        f"expected 1 UserWarning, got {len(user_warnings)}: "
+        f"{[str(w.message) for w in caught]}"
+    )
+    msg = str(user_warnings[0].message)
+    # 提示信息应包含关键提醒字段
+    assert "default RiskConfig" in msg
+    assert "lenient" in msg or "production" in msg
+
+
+def test_engine_explicit_config_no_warning():
+    """显式传 `RiskConfig` → 不触发任何 UserWarning。"""
+    import warnings as _warnings
+
+    cfg = make_risk_config(max_order_value=10_000.0, max_leverage=2.0)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        engine = DefaultRiskEngine(cfg)  # noqa: F841
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert user_warnings == [], (
+        f"expected 0 UserWarning with explicit config, got: "
+        f"{[str(w.message) for w in user_warnings]}"
+    )
+
+
+def test_engine_explicit_none_same_as_no_args():
+    """`DefaultRiskEngine(None)` 与 `DefaultRiskEngine()` 等价:都触发 warning。"""
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        engine = DefaultRiskEngine(None)  # noqa: F841
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(user_warnings) == 1
+
+
+def test_engine_warning_can_be_filtered():
+    """用 `warnings.filterwarnings('ignore')` 静默 → 构造仍成功。"""
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.filterwarnings("ignore", category=UserWarning)
+        # 静默模式下应不抛错
+        engine = DefaultRiskEngine()
+    # 引擎可正常用(说明无参路径也完整构造)
+    portfolio = make_portfolio(base_currency="USD", cash={"USD": 100_000.0})
+    order = make_order(id=1, symbol="BTC-USDT", side="Buy",
+                       type="limit", price=100.0, quantity=1.0)
+    result = engine.check_order(order, portfolio)
+    # 默认 max_order_value=50_000, 单笔 100 < 阈值, 应当 Allow
+    assert result.is_allow(), f"expected Allow with default config, got: {result}"

@@ -1832,70 +1832,99 @@ oms.update_status(id, OrderStatus::Acknowledged)?;
 
 ### 怎么用
 
-**Python 侧（主用法，3 类用途）：**
+> **重要：`axon-monitor` 故意不暴露到 Python（非疏漏，是设计约束）。**
+> Python 用户需要监控能力时走两条等价路径，见下方「Python 端等价能力」一节。
+
+#### 为什么不在 Python 中暴露
+
+| 维度 | `axon-monitor` 的设计 | 暴露到 Python 会破坏什么 |
+|------|----------------------|------------------------|
+| **性能** | Counter inc **1.6ns** / Gauge set **464ps** / Histogram observe **6.5ns** / Alert check **4.8ns** | PyO3 跨语言调用本身 **~100ns+**，会让单次 inc 从 1.6ns 退化为 100ns+（60x 退化），破坏原子无锁特性 |
+| **用途定位** | 撮合 / 订单 / 热路径内嵌监控原语，纳秒级埋点 | Python 不应参与热路径（会污染 P99 交易延迟） |
+| **输出去向** | Rust 端写 → `axum` HTTP `/metrics` 端点 → Prometheus 抓取 | Python 端用 `prometheus_client` 直接 scrape，无需走 PyO3 |
+| **Python 等价物** | — | 已有 `axon-tracker` 承担训练/实验监控（`MLflow` / `WandB` / `Local` / `Memory` backends） |
+
+代码层确认（`0.4.1` 状态）：
+
+- `crates/axon-monitor/Cargo.toml` **无 `python` feature**
+- `crates/axon-monitor/src/` **无 `python/` 子模块**（`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` 都无 `#[pyclass]`）
+- `crates/axon-python/Cargo.toml` 的 python feature 列表**不含 `dep:axon-monitor`**
+- `crates/axon-python/src/lib.rs` 的 `_native` 函数**无 `monitor` 子模块**注册（对比 `backtest` / `risk` / `oms` 等都已注册）
+
+#### Python 端等价能力（已存在）
 
 ```python
-from axon_quant.monitor import (
-    MetricsRegistry, AtomicCounter, AtomicGauge, LatencyHistogram,
-    AlertRule, AlertSeverity, ThresholdCondition,
-    HealthService, ComponentHealth, expose_prometheus,
-    MonitorError,
-)
+# 方案 A：训练 / 实验指标 —— 用 axon-tracker（已暴露）
+from axon_quant.tracker import MemoryTracker, WandBTracker, MLflowTracker
 
-# 1) 注册指标(原子,纳秒级)
-reg = MetricsRegistry()
-order_count = reg.register_counter("orders_total", labels=["side", "symbol"])
-order_latency = reg.register_histogram("order_latency_ns",
-                                        buckets=(1000, 10_000, 100_000, 1_000_000, 10_000_000))
-nav_gauge = reg.register_gauge("portfolio_nav")
+tracker = MemoryTracker(experiment_name="ppo_btc_v1")
+tracker.log_metric("sharpe", 1.23, step=1000)
+tracker.log_metric("max_drawdown", -0.08, step=1000)
+tracker.log_param("lr", 3e-4)
+tracker.finish()
 
-# 2) 业务代码中埋点
-order_count.inc(labels={"side": "buy", "symbol": "BTCUSDT"})
-order_latency.observe(150_000.0)               # 150µs
-nav_gauge.set(102_345.67)
+# 方案 B：生产服务指标 —— 从 Rust 端 /metrics 端点 scrape
+import requests
+from prometheus_client.parser import text_string_to_metric_families
 
-# 3) 注册告警规则
-reg.add_alert_rule(AlertRule.Threshold(
-    metric_name="order_latency_ns",
-    condition=ThresholdCondition.GreaterThan(10_000_000.0),   # 10ms
-    severity=AlertSeverity.Warning,
-    message="order latency P99 > 10ms",
-))
-# 实时触发
-alerts = reg.check_alerts("order_latency_ns", value=15_000_000.0)
-for a in alerts:
-    print(f"[{a.severity}] {a.message}")
-
-# 4) 健康检查(Kubernetes liveness/readiness)
-health = HealthService()
-health.register("oms", lambda: ComponentHealth(status="ok",
-                                                latency_ms=oms.active_count()))
-health.register("exchange", lambda: adapter.health_check())
-status = health.check_all()
-# 暴露给 K8s:
-# livenessProbe:  http://localhost:9090/health
-# readinessProbe: http://localhost:9090/ready
-
-# 5) Prometheus 暴露
-from http.server import HTTPServer
-expose_prometheus(reg, port=9090)              # /metrics 端点
-# 接入 Prometheus / Grafana 做面板
+resp = requests.get("http://trading-host:9090/metrics")
+for family in text_string_to_metric_families(resp.text):
+    for sample in family.samples:
+        print(sample.name, sample.labels, sample.value)
+        # e.g. orders_total {side="buy", symbol="BTCUSDT"} 1234
 ```
 
-**Rust 侧（开发新指标类型 / 嵌入 oms/exchange 内部埋点时使用）：**
+#### Rust 侧（开发新指标类型 / 嵌入 oms/exchange 内部埋点时使用）
 
 ```rust
-use axon_monitor::{MetricsRegistry, AlertRule, AlertSeverity, ThresholdCondition};
+use axon_monitor::{
+    MetricsRegistry, AlertRule, AlertSeverity, ThresholdCondition,
+    HealthService, HealthStatus, ComponentHealth,
+};
+use axum::{routing::get, Router};
 
+// 1) 启动时构造注册中心
+// 注：register_* 实际只接受 name,无 labels / 自定义桶参数
+//     （设计上保持指标 KISS 原则，labels 由 Prometheus exporter 阶段注入）
 let mut reg = MetricsRegistry::new();
-let latency = reg.register_histogram("order_latency_ns");
-latency.observe(150_000.0);
+let order_count = reg.register_counter("orders_total");
+let order_latency = reg.register_histogram("order_latency_ns");  // 默认桶
+let nav_gauge = reg.register_gauge("portfolio_nav");
+
+// 2) 业务热路径埋点（纳秒级，无锁）
+order_count.inc();                       // +1
+order_count.inc_by(3);                  // +3
+order_latency.observe(150_000.0);       // 150µs,单位约定为 ns
+nav_gauge.set(102_345.67);
+
+// 3) 告警规则（check_alerts 触发并记录,get_alerts 拉取）
 reg.add_alert_rule(AlertRule::Threshold {
     metric_name: "order_latency_ns".into(),
-    condition: ThresholdCondition::GreaterThan(10_000_000.0),
+    condition: ThresholdCondition::GreaterThan(10_000_000.0),  // 10ms
     severity: AlertSeverity::Warning,
-    message: "order latency > 10ms".into(),
+    message: "order latency P99 > 10ms".into(),
 });
+// 在订单路径里:reg.check_alerts("order_latency_ns", observed_value);
+// 在 health 端点里:let alerts = reg.get_alerts();
+
+// 4) 健康检查（K8s liveness / readiness 探针）
+// 注：HealthService 实际 API 是 `check(Vec<ComponentHealth>) -> HealthCheck`,
+//     由调用方收集各组件当前状态后一次性聚合（无注册/回调机制），
+//     这样不绑异步运行时（tokio / async-std 都可），保持 0 依赖。
+let health = HealthService::new();
+let report = health.check(vec![
+    ComponentHealth { name: "oms".into(),      status: HealthStatus::Healthy, message: "ok".into() },
+    ComponentHealth { name: "exchange".into(), status: HealthStatus::Healthy, message: "ok".into() },
+]);
+// report.status / report.components / report.uptime_secs 可直接 JSON 序列化
+
+// 5) 暴露 axum 路由（Prometheus scrape + K8s 探针）
+// 注：axon-monitor 不绑 HTTP 框架（避免与 axum / actix 版本锁定），
+//     Prometheus 文本格式输出 与 health JSON 响应由调用方实现。
+let app = Router::new()
+    .route("/metrics", get(/* prometheus exporter 实现 */ async { "" }))
+    .route("/health",  get(/* health JSON 实现 */       async { "" }))
+    .route("/ready",   get(/* readiness 实现 */          async { "" }));
 ```
 
 ### 关键依赖
