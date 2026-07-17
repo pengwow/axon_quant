@@ -143,6 +143,30 @@ impl Instrument {
     pub fn label(&self) -> String {
         format!("{}/{}", self.base().as_str(), self.quote().as_str())
     }
+
+    /// 0.5.0 新增:从 `Symbol` 派生 `Instrument`(兼容旧 API)
+    ///
+    /// `Symbol` 格式约定:
+    /// - `"BTC-USDT"` 或 `"BTC/USDT"` → base=`BTC`, quote=`USDT`,kind=Spot(默认)
+    /// - 其它(空 / 无法解析)→ `Instrument::default()`(空 Spot)
+    ///
+    /// 用于 `Portfolio::apply_trade(symbol, ...)` 兼容路径;新代码请直接
+    /// 构造 `Instrument::Spot` / `Instrument::Swap` 显式指定。
+    pub fn from_symbol(symbol: &Symbol) -> Self {
+        let raw = symbol.as_str();
+        // 兼容 "/"(惯例)和 "-"(旧 OMS 格式)两种分隔符
+        let normalized = raw.replace('-', "/");
+        let parts: Vec<&str> = normalized.splitn(2, '/').collect();
+        match parts.as_slice() {
+            [base, quote] if !base.is_empty() && !quote.is_empty() => {
+                Instrument::Spot(SpotInstrument {
+                    base: Symbol::from(*base),
+                    quote: Symbol::from(*quote),
+                })
+            }
+            _ => Instrument::default(),
+        }
+    }
 }
 
 #[cfg(test)]
