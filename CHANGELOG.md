@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-17
+
+### BREAKING CHANGES
+
+⚠️ **Order API breaking change — `Order::new` → `Order::spot` / `Order::swap`**
+
+0.5.0 引入 `Instrument` 抽象以支持多 leg 回测(spot + perp delta-neutral 套利),
+`Order` 不再通过 `new()` 隐式接受 `Symbol`,而是显式通过 `Order::spot` / `Order::swap`
+工厂区分品种类型。**这是 minor 版本号(0.4.x → 0.5.x)的根本原因**。
+
+迁移指南:
+- 旧: `Order::new(id, "BTC/USDT", Side::Buy, OrderType::Limit { price }, qty, TIF)`
+- 新 spot: `Order::spot(id, "BTC", "USDT", Side::Buy, OrderType::Limit { price }, qty, TIF)`
+- 新 swap: `Order::swap(id, "BTC", "USDT", SwapSettle::UsdMargin, 1.0 /* contract_size */, side, order_type, qty, tif)`
+
+影响面:
+- `Order` 不再含 `symbol: Symbol` 字段(改 `instrument: Instrument`)
+- `PositionState` 等键类型从 `String` 改为 `Instrument`(0.5.0 已消除 transient `BASE/QUOTE` 字符串编解码)
+- `TradeRecord` 新增 `instrument: Instrument` 字段(per-instrument audit 必备)
+- `Portfolio` / `RiskEngine` 等 `HashMap<Symbol, _>` 暂保留,但 key 走 `format!("{base}/{quote}")` transient 桥接(0.6.0 全面迁移)
+
+### Added
+
+- **`Instrument` 抽象(`axon-core`)**:`Instrument` enum 区分 `Spot(SpotInstrument { base, quote })` 和 `Swap(SwapInstrument { base, quote, settle, contract_size })`,手写 `Hash` / `Eq` / `Default` 实现(因 `f64` 不实现 trait,`contract_size` 用 `f64::to_bits()` bitwise 比较);`SwapSettle` enum 区分 `UsdMargin` / `CoinMargin`
+- **`MarkEvent` 事件类型**:`axon-core::event::mark::MarkEvent` 携带 `instrument + mark_price + timestamp`,供 funding 结算 / 未实现 PnL 估值用
+- **`BacktestEngine` 多 leg 路由**(0.5.0 核心):
+  - `RunResult.positions: HashMap<Instrument, f64>` — 每 instrument 独立累计仓位(替代旧 String 键)
+  - `RunResult.leg_targets: HashMap<Instrument, f64>` — 策略目标仓位快照
+  - `RunResult.marks: HashMap<Instrument, f64>` — 每 instrument 最新 mark 价
+  - `set_target_position(instrument, target)` / `get_target_position(instrument) -> Option<f64>` API
+  - `get_position(instrument) -> f64` 读当前仓位
+  - `push_mark(instrument, price, ts_ns)` 写入 mark cache(后到覆盖)
+  - `begin_bar(price, instrument)` 改用 `Instrument` 触发该 leg 的种子流动性
+- **`L1MatchingEngine` 多 instrument 路由**:`L1Book` 抽出 struct 封装单品种 order book(bids/asks/order_index),`L1MatchingEngine` 持 `HashMap<Instrument, L1Book>` 路由订单到对应 book;`L1Book::match_against_asks` / `match_against_bids` 迁为关联函数(借 `trade_sequence: &AtomicU64`)消除 borrow-check 冲突
+- **Python `Instrument` 工厂**(`python/axon_quant/backtest.py`):
+  - `spot_instrument(base, quote) -> dict` — 返回 `{"kind": "spot", "base": "BTC", "quote": "USDT"}`
+  - `swap_instrument(base, quote, settle, contract_size) -> dict` — settle 接受 `"usd_margin"` / `"coin_margin"`(大小写不敏感),contract_size 默认 1.0
+  - `limit_order` / `market_order` 改接受 `instrument` dict(替代 `symbol` 字符串)
+  - 非法 instrument / 空 base/quote / 非法 settle / 非正 contract_size 抛 `ValueError`
+- **Python `BacktestEngine` 多 leg 绑定**(`crates/axon-backtest/src/python/engine.rs`):
+  - `set_target_position(instrument, target)` / `get_target_position(instrument)` 透传
+  - `get_position(instrument)` 透传
+  - `push_mark(instrument, price, timestamp_ns)` 透传
+  - `begin_bar(price, instrument)` 改 instrument 参数
+  - `RunResult.to_dict` 增 `positions` / `leg_targets` / `marks` 字段
+
+### Tests
+
+- **`axon-integration-tests/src/delta_neutral_arb.rs`** 新建(5 测试,0.5.0 核心回归):
+  - `two_legs_spot_match_only_spot_fills` — spot fill 不影响 perp book
+  - `two_legs_orders_route_to_independent_books` — spot + perp 同时挂单互不干扰
+  - `leg_target_position_independent_per_instrument` — `set/get_target_position` 跨 leg 隔离 + 后到覆盖
+  - `leg_marks_independent_and_last_wins` — mark cache per-instrument + 后到覆盖
+  - `delta_neutral_entry_orders_isolated` — funding > 0 真实 delta 中性入场(spot long + perp short,positions 方向相反)
+- **`python/tests/test_backtest_e2e.py`** 新增 6 测试(0.5.0 多 leg):
+  - `spot_instrument_factory` / `swap_instrument_factory` + 各种校验
+  - `begin_bar` per-instrument 独立播种 + 两 leg 各自撮合
+  - `set_and_get_target_position` 跨 leg 隔离
+  - `get_position_default_zero`
+  - `push_mark_updates_cache` (last-wins)
+  - `two_legs_isolated_positions` (spot long + perp short = delta neutral)
+  - `leg_targets_persist` in `RunResult`
+- 现有 `Order::new` 调用方全部迁移到 `Order::spot` / `Order::swap`(axon-rl / axon-hpo / axon-walk-forward / axon-llm / axon-data / axon-backtest streaming 等),`cargo test --workspace` 全部通过
+
+### Documentation
+
+- **`docs/superpowers/specs/2026-07-17-spot-perp-two-leg-backtest-design.md`** — 设计 spec:Instrument 抽象动机、Order API 迁移方案、多 leg 路由架构、funding 结算边界(0.6.0 后续)
+- **`docs/superpowers/plans/2026-07-17-spot-perp-two-leg-backtest.md`** — 实施 plan:6 阶段 / ~35 任务清单 + 进度标记
+
+### Known Limitations (0.6.0 Roadmap)
+
+- **Funding 结算未实现**:delta-neutral 套利只验证腿隔离 / 目标位结构层正确性,perp 端每期 funding 收支 / 净值曲线留待 0.6.0
+- **BacktestEngine 自动 leg 平衡未实现**:`set_target_position` 仅记录目标,不自动发市价单推仓位到目标;策略层需手动发单
+- **Portfolio / RiskEngine 仍用 `HashMap<Symbol, _>`**:`Symbol` 通过 `format!("{base}/{quote}")` transient 桥接到 `Instrument`;0.6.0 全面迁 `HashMap<Instrument, _>`
+
 ## [0.4.1] - 2026-07-15
 
 ### Changed

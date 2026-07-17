@@ -164,6 +164,7 @@ nav:
       - DeFi 链上交易: reference/defi.md
       - Inference 热更新: reference/inference-hot-reload.md
       - Swarm 编排: reference/swarm-orchestration.md
+      - 多 Leg 回测(spot + perp): reference/multi-leg-backtest.md
   - 基准测试: benchmark.md
   - 架构决策:
       - 索引: adr/index.md

@@ -43,25 +43,30 @@ python -c "import axon_quant; print(axon_quant.__version__)"
 | `ImpactedMatchingEngine` | 冲击感知撮合(支持 linear / power_law 模型 + Python 自定义模型) |
 | `ImpactedMatchingEngineBuilder` | 链式构造冲击感知引擎 |
 | `BacktestEngine` | 事件驱动回测主循环(`order_submitted` / `order_cancelled` / `order_modified` / `fill` 4 种事件) |
-| `RunResult` / `RunStats` | 回测结果(events_processed / fills / PnL / drawdown / final_nav) |
+| `RunResult` / `RunStats` | 回测结果(events_processed / fills / PnL / drawdown / final_nav,以及 0.5.0 新增 `positions` / `leg_targets` / `marks` 三个 per-instrument dict) |
 | `BacktestError` | 撮合异常(继承 `Exception`,**不**继承 `AxonError`,避免 cargo 循环) |
 | `OrderBookEntry` | L2 订单簿条目(用于 `from_entries` 导入) |
 | `DarkOrder` / `CrossPair` / `AuctionResult` / `ArbitrageOpportunity` | L3 暗池 / 跨资产 / 拍卖 / 套利数据结构 |
-| `limit_order(id, symbol, side, price, quantity, tif="GTC")` | 工厂函数,返回限价单 dict |
-| `market_order(id, symbol, side, quantity)` | 工厂函数,返回市价单 dict(tif 强制 IOC) |
+| `limit_order(id, instrument, side, price, quantity, tif="GTC")` | 工厂函数,返回限价单 dict(`0.5.0` 起 `instrument` dict 取代旧 `symbol` 字符串) |
+| `market_order(id, instrument, side, quantity)` | 工厂函数,返回市价单 dict(tif 强制 IOC) |
+| `spot_instrument(base, quote)` | 工厂函数,返回 spot instrument dict(`{"kind": "spot", "base": ..., "quote": ...}`) |
+| `swap_instrument(base, quote, settle, contract_size)` | 工厂函数,返回 swap instrument dict(settle=`"usd_margin"`/`"coin_margin"`,contract_size 默认 1.0) |
 
 #### 示例:基础撮合 + 冲击感知
 
 ```python
 from axon_quant.backtest import (
     L1MatchingEngine, ImpactedMatchingEngineBuilder,
-    BacktestEngine, limit_order,
+    BacktestEngine, limit_order, spot_instrument,
 )
+
+# 0.5.0 起:用 spot_instrument() 工厂构造 instrument dict 取代旧 "BTC-USDT" 字符串
+btc_spot = spot_instrument("BTC", "USDT")
 
 # 1) 基础撮合
 engine = L1MatchingEngine()
-engine.submit(limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0))
-result = engine.submit(limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0))
+engine.submit(limit_order(1, btc_spot, "Sell", 100.0, 1.0))
+result = engine.submit(limit_order(2, btc_spot, "Buy", 100.0, 1.0))
 print(result["is_filled"], len(result["fills"]))  # True, 1
 
 # 2) 冲击感知(Builder 链式)
@@ -70,7 +75,7 @@ ie = (ImpactedMatchingEngineBuilder()
       .coefficient(0.1)
       .depth_levels(5)
       .build())
-ie.submit(limit_order(3, "BTC-USDT", "Buy", 100.0, 1.0))
+ie.submit(limit_order(3, btc_spot, "Buy", 100.0, 1.0))
 print(ie.permanent_offset())  # 累计永久冲击偏移
 
 # 3) 事件驱动回测
@@ -78,16 +83,18 @@ bt = BacktestEngine(initial_cash=100_000.0)
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000,
-    "order": limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0),
+    "order": limit_order(1, btc_spot, "Sell", 100.0, 1.0),
 })
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 2_000,
-    "order": limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0),
+    "order": limit_order(2, btc_spot, "Buy", 100.0, 1.0),
 })
 result = bt.run()
 print(result.events_processed, result.fills, result.final_nav)
 ```
+
+> 📖 **0.5.0 多 leg 回测(spot + perp delta-neutral 套利)**:见 [multi-leg-backtest.md](multi-leg-backtest.md)。
 
 #### 提交订单返回 dict 协议
 

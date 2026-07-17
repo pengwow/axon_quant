@@ -158,6 +158,7 @@ nav:
       - DeFi On-chain: reference/defi.md
       - Inference Hot Reload: reference/inference-hot-reload.md
       - Swarm Orchestration: reference/swarm-orchestration.md
+      - Multi-Leg Backtest (spot + perp): reference/multi-leg-backtest.md
   - Benchmark: benchmark.md
   - Architecture Decisions:
       - Index: adr/index.md

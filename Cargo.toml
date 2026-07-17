@@ -27,9 +27,9 @@ members = [
     "crates/axon-python",
 ]
 
-# 统一的目标目录，加速增量编译
+# 统一的目标目录,加速增量编译
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"

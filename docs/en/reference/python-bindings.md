@@ -448,25 +448,30 @@ Backtest engine with L1/L2/L3 matching engines, market impact modeling, and even
 | `ImpactedMatchingEngine` | Impact-aware matching (linear / power_law models + Python custom models) |
 | `ImpactedMatchingEngineBuilder` | Builder-style construction of impact-aware engine |
 | `BacktestEngine` | Event-driven backtest main loop (`order_submitted` / `order_cancelled` / `order_modified` / `fill`) |
-| `RunResult` / `RunStats` | Backtest results (events_processed / fills / PnL / drawdown / final_nav) |
+| `RunResult` / `RunStats` | Backtest results (events_processed / fills / PnL / drawdown / final_nav, plus 0.5.0-new `positions` / `leg_targets` / `marks` per-instrument dicts) |
 | `BacktestError` | Matching exception (inherits `Exception`, **not** `AxonError`, to avoid cargo cycle) |
 | `OrderBookEntry` | L2 order book entry (for `from_entries` import) |
 | `DarkOrder` / `CrossPair` / `AuctionResult` / `ArbitrageOpportunity` | L3 dark pool / cross-asset / auction / arbitrage data types |
-| `limit_order(id, symbol, side, price, quantity, tif="GTC")` | Factory returning a limit order dict |
-| `market_order(id, symbol, side, quantity)` | Factory returning a market order dict (tif forced to IOC) |
+| `limit_order(id, instrument, side, price, quantity, tif="GTC")` | Factory returning a limit order dict (`0.5.0`: `instrument` dict replaces old `symbol` string) |
+| `market_order(id, instrument, side, quantity)` | Factory returning a market order dict (tif forced to IOC) |
+| `spot_instrument(base, quote)` | Factory returning a spot instrument dict (`{"kind": "spot", "base": ..., "quote": ...}`) |
+| `swap_instrument(base, quote, settle, contract_size)` | Factory returning a swap instrument dict (settle=`"usd_margin"`/`"coin_margin"`, contract_size default 1.0) |
 
 #### Example: Basic matching + impact
 
 ```python
 from axon_quant.backtest import (
     L1MatchingEngine, ImpactedMatchingEngineBuilder,
-    BacktestEngine, limit_order,
+    BacktestEngine, limit_order, spot_instrument,
 )
+
+# 0.5.0+: use spot_instrument() factory to build instrument dict (replaces old "BTC-USDT" string)
+btc_spot = spot_instrument("BTC", "USDT")
 
 # 1) Basic matching
 engine = L1MatchingEngine()
-engine.submit(limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0))
-result = engine.submit(limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0))
+engine.submit(limit_order(1, btc_spot, "Sell", 100.0, 1.0))
+result = engine.submit(limit_order(2, btc_spot, "Buy", 100.0, 1.0))
 print(result["is_filled"], len(result["fills"]))  # True, 1
 
 # 2) Impact-aware (builder chain)
@@ -475,7 +480,7 @@ ie = (ImpactedMatchingEngineBuilder()
       .coefficient(0.1)
       .depth_levels(5)
       .build())
-ie.submit(limit_order(3, "BTC-USDT", "Buy", 100.0, 1.0))
+ie.submit(limit_order(3, btc_spot, "Buy", 100.0, 1.0))
 print(ie.permanent_offset())  # Cumulative permanent impact offset
 
 # 3) Event-driven backtest
@@ -483,16 +488,18 @@ bt = BacktestEngine(initial_cash=100_000.0)
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000,
-    "order": limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0),
+    "order": limit_order(1, btc_spot, "Sell", 100.0, 1.0),
 })
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 2_000,
-    "order": limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0),
+    "order": limit_order(2, btc_spot, "Buy", 100.0, 1.0),
 })
 result = bt.run()
 print(result.events_processed, result.fills, result.final_nav)
 ```
+
+> 📖 **0.5.0 multi-leg backtest (spot + perp delta-neutral arbitrage)**: see [multi-leg-backtest.md](multi-leg-backtest.md).
 
 #### Submit Order Return Protocol
 
