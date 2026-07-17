@@ -304,10 +304,10 @@ mod tests {
     #[test]
     fn order_to_dict_contains_required_fields() {
         Python::attach(|py| {
-            let order = Order::new(
-                42,
-                Symbol::from("BTCUSDT"),
-                Side::Buy,
+            let order = Order::spot(
+42,
+"BTCUSDT",
+"USDT",Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(100.0),
                 },

@@ -3,15 +3,15 @@ use std::sync::Arc;
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::{Currency, Portfolio};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, RiskReason, RiskResult};
 
 fn make_limit_order(side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
-        1,
-        Symbol::from("BTC-USDT"),
-        side,
+    Order::spot(
+1,
+"BTC",
+"USDT",side,
         OrderType::Limit {
             price: Price::from_f64(price),
         },

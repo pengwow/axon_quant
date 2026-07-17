@@ -12,7 +12,7 @@ use std::hint::black_box;
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::{Currency, Portfolio};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 use axon_monitor::{LatencyHistogram, MetricsRegistry};
 use axon_oms::{OrderManager, OrderStatus};
@@ -21,10 +21,10 @@ use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine};
 use criterion::{Criterion, criterion_group, criterion_main};
 
 fn make_limit_order(price: f64, qty: f64) -> Order {
-    Order::new(
-        1,
-        Symbol::from("BTC-USDT"),
-        Side::Buy,
+    Order::spot(
+1,
+"BTC",
+"USDT",Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(price),
         },

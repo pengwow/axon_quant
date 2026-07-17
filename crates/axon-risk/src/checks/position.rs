@@ -1,6 +1,7 @@
 use axon_core::market::Side;
 use axon_core::order::Order;
 use axon_core::portfolio::Portfolio;
+use axon_core::types::{Instrument, Symbol};
 
 use crate::config::RiskConfig;
 use crate::error::{RiskReason, RiskResult};
@@ -11,9 +12,12 @@ pub fn check_position_limit(
     portfolio: &Portfolio,
     config: &RiskConfig,
 ) -> RiskResult {
+    // portfolio.positions() keyed by Symbol; convert via key string for
+    // compat with existing Portfolio API (T2.2 transitional state).
+    let key = instrument_to_key(&order.instrument);
     let current_qty = portfolio
         .positions()
-        .get(&order.symbol)
+        .get(&Symbol::from(key))
         .map(|p| p.quantity.as_f64())
         .unwrap_or(0.0);
 
@@ -25,24 +29,30 @@ pub fn check_position_limit(
 
     if new_qty > config.max_position_per_instrument {
         return RiskResult::Reject(RiskReason::PositionLimitExceeded {
-            instrument: order.symbol.to_string(),
+            instrument: format!("{}/{}", order.instrument.base().as_str(), order.instrument.quote().as_str()),
             limit: config.max_position_per_instrument,
         });
     }
     RiskResult::Allow
 }
 
+/// Transitionally convert an Instrument to the BASE/QUOTE String used by
+/// `Portfolio.positions()` keys. T3.5 will replace with direct Instrument key.
+fn instrument_to_key(inst: &Instrument) -> String {
+    format!("{}/{}", inst.base().as_str(), inst.quote().as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axon_core::order::{OrderType, TimeInForce};
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     fn make_order(side: Side, qty: f64) -> Order {
-        Order::new(
-            1,
-            Symbol::from("BTC-USDT"),
-            side,
+        Order::spot(
+1,
+"BTC",
+"USDT",side,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
             },

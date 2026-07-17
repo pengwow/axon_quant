@@ -509,9 +509,15 @@ impl PyDarkOrder {
             "FAK" => TimeInForce::FAK,
             _ => unreachable!("`new` 已校验过 tif 合法性"),
         };
-        let order = Order::new(
+        // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
+        let (base, quote) = match self.symbol.split_once('-') {
+            Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+            None => (Symbol::from(&self.symbol), Symbol::from("USDT")),
+        };
+        let order = Order::spot(
             self.order_id,
-            Symbol::from(self.symbol.clone()),
+            base,
+            quote,
             side,
             order_type,
             Quantity::from_f64(self.quantity),

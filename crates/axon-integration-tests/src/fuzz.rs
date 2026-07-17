@@ -98,10 +98,10 @@ fn order_strategy(side: Side, base_price: f64) -> impl Strategy<Value = Order> {
         .prop_map(move |(id, price_off, qty)| {
             let p = Price::from_f64((base_price + price_off as f64 * 0.001).max(0.01));
             let q = Quantity::from_f64(qty as f64 * 0.001);
-            Order::new(
-                id,
-                Symbol::from("FUZZ"),
-                side,
+            Order::spot(
+id,
+"FUZZ",
+"USDT",side,
                 OrderType::Limit { price: p },
                 q,
                 TimeInForce::GTC,
@@ -360,16 +360,20 @@ proptest! {
     ) {
         let mut engine = L1MatchingEngine::with_symbol(Symbol::from("FUZZ"));
         // 卖单在更优价格
-        let ask = Order::new(
-            0, Symbol::from("FUZZ"), Side::Sell,
+        let ask = Order::spot(
+0,
+"FUZZ",
+"USDT",Side::Sell,
             OrderType::Limit { price: Price::from_f64(limit_price - 1.0) },
             Quantity::from_f64(100.0), TimeInForce::GTC,
         );
         engine.submit(ask);
 
         // 限价买单，价格 < 卖价 ⇒ 无成交
-        let buy = Order::new(
-            1, Symbol::from("FUZZ"), Side::Buy,
+        let buy = Order::spot(
+1,
+"FUZZ",
+"USDT",Side::Buy,
             OrderType::Limit { price: Price::from_f64(limit_price) },
             Quantity::from_f64(qty as f64), TimeInForce::GTC,
         );
@@ -388,16 +392,20 @@ proptest! {
     ) {
         let mut engine = L1MatchingEngine::with_symbol(Symbol::from("FUZZ"));
         // 买单在更优价格
-        let bid = Order::new(
-            0, Symbol::from("FUZZ"), Side::Buy,
+        let bid = Order::spot(
+0,
+"FUZZ",
+"USDT",Side::Buy,
             OrderType::Limit { price: Price::from_f64(limit_price + 1.0) },
             Quantity::from_f64(100.0), TimeInForce::GTC,
         );
         engine.submit(bid);
 
         // 限价卖单，价格 > 买价 ⇒ 无成交
-        let sell = Order::new(
-            1, Symbol::from("FUZZ"), Side::Sell,
+        let sell = Order::spot(
+1,
+"FUZZ",
+"USDT",Side::Sell,
             OrderType::Limit { price: Price::from_f64(limit_price) },
             Quantity::from_f64(qty as f64), TimeInForce::GTC,
         );
@@ -414,8 +422,10 @@ proptest! {
     ) {
         let mut engine = L1MatchingEngine::with_symbol(Symbol::from("FUZZ"));
         for i in 0..n_orders {
-            let order = Order::new(
-                i as u64, Symbol::from("FUZZ"), Side::Buy,
+            let order = Order::spot(
+i as u64,
+"FUZZ",
+"USDT",Side::Buy,
                 OrderType::Limit { price: Price::from_f64(100.0 + i as f64) },
                 Quantity::from_f64(1.0), TimeInForce::GTC,
             );
@@ -553,8 +563,10 @@ proptest! {
     ) {
         let mut engine = L1MatchingEngine::with_symbol(Symbol::from("FUZZ"));
         let s = if side { Side::Buy } else { Side::Sell };
-        let order = Order::new(
-            0, Symbol::from("FUZZ"), s,
+        let order = Order::spot(
+0,
+"FUZZ",
+"USDT",s,
             OrderType::Limit { price: Price::from_f64(100.0) },
             Quantity::from_f64(0.0), TimeInForce::GTC,
         );
@@ -567,8 +579,10 @@ proptest! {
     fn prop_matching_zero_price_no_fills(side in prop::bool::ANY) {
         let mut engine = L1MatchingEngine::with_symbol(Symbol::from("FUZZ"));
         let s = if side { Side::Buy } else { Side::Sell };
-        let order = Order::new(
-            0, Symbol::from("FUZZ"), s,
+        let order = Order::spot(
+0,
+"FUZZ",
+"USDT",s,
             OrderType::Limit { price: Price::from_f64(0.0) },
             Quantity::from_f64(1.0), TimeInForce::GTC,
         );
@@ -596,8 +610,10 @@ proptest! {
         let mut engine = MultiAssetMatchingEngine::new();
         engine.register_asset(Symbol::from("FUZZ"));
         let s = if side { Side::Buy } else { Side::Sell };
-        let order = Order::new(
-            0, Symbol::from("FUZZ"), s,
+        let order = Order::spot(
+0,
+"FUZZ",
+"USDT",s,
             OrderType::Limit { price: Price::from_f64(price) },
             Quantity::from_f64(qty), TimeInForce::GTC,
         );
@@ -631,8 +647,10 @@ proptest! {
 
         let mut total_fills = 0usize;
         for i in 0..n_orders {
-            let order = Order::new(
-                i as u64, Symbol::from("FUZZ"), Side::Buy,
+            let order = Order::spot(
+i as u64,
+"FUZZ",
+"USDT",Side::Buy,
                 OrderType::Limit { price: Price::from_f64(100.0) },
                 Quantity::from_f64(1.0), TimeInForce::GTC,
             );
@@ -651,15 +669,18 @@ proptest! {
         let mut engine2 = MultiAssetMatchingEngine::new();
 
         for i in 0..n_assets {
-            let sym = Symbol::from(format!("SYM_{}", i));
+            // T2.2: 资产 key 用 base/quote 格式(与 Order::spot 产生的 instrument key 一致)
+            let sym = Symbol::from(format!("SYM_{}/USDT", i));
             engine1.register_asset(sym.clone());
             engine2.register_asset(sym);
         }
 
         // 提交相同订单
         for i in 0..5u64 {
-            let order = Order::new(
-                i, Symbol::from("SYM_0"), Side::Buy,
+            let order = Order::spot(
+i,
+"SYM_0",
+"USDT",Side::Buy,
                 OrderType::Limit { price: Price::from_f64(100.0 + i as f64) },
                 Quantity::from_f64(1.0), TimeInForce::GTC,
             );

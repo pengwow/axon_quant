@@ -617,9 +617,15 @@ fn dict_to_order(dict: &Bound<'_, PyDict>) -> PyResult<CoreOrder> {
         }
     };
 
-    Ok(CoreOrder::new(
+    // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
+    let (base, quote) = match symbol.split_once('-') {
+        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+        None => (Symbol::from(&symbol), Symbol::from("USDT")),
+    };
+    Ok(CoreOrder::spot(
         id,
-        Symbol::from(symbol),
+        base,
+        quote,
         side,
         order_type,
         Quantity::from_f64(quantity),

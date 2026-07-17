@@ -23,13 +23,13 @@ mod tests {
     use super::*;
     use axon_core::market::Side;
     use axon_core::order::{OrderType, TimeInForce};
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     fn make_limit_order(price: f64, qty: f64) -> Order {
-        Order::new(
-            1,
-            Symbol::from("BTC-USDT"),
-            Side::Buy,
+        Order::spot(
+1,
+"BTC",
+"USDT",Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(price),
             },
@@ -39,10 +39,10 @@ mod tests {
     }
 
     fn make_market_order(qty: f64) -> Order {
-        Order::new(
-            1,
-            Symbol::from("BTC-USDT"),
-            Side::Buy,
+        Order::spot(
+1,
+"BTC",
+"USDT",Side::Buy,
             OrderType::Market,
             Quantity::from_f64(qty),
             TimeInForce::GTC,
