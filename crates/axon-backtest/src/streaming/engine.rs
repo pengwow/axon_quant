@@ -187,8 +187,10 @@ impl StreamingEngine {
                 let tick_ts = tick.timestamp;
                 let tick_side = tick.side;
 
-                // 1. 更新 portfolio mark-to-market
-                self.portfolio.update_market_price(&symbol, tick_price);
+                // 1. 更新 portfolio mark-to-market(0.5.0:instrument-based)
+                let inst = Instrument::from_symbol(&symbol);
+                self.portfolio
+                    .update_market_price_instrument(&inst, tick_price);
 
                 // 2. 调 strategy 拿 actions(无 strategy 则空)
                 let actions = match &mut self.strategy {

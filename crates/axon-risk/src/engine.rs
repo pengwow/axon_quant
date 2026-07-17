@@ -143,9 +143,9 @@ impl RiskEngine for DefaultRiskEngine {
 
         let mut concentration_map = HashMap::new();
         if nav > 0.0 {
-            for (symbol, pos) in portfolio.positions() {
+            for (instrument, pos) in portfolio.positions() {
                 if let Some(mv) = pos.market_value() {
-                    concentration_map.insert(symbol.to_string(), mv as f64 / 1_000_000.0 / nav);
+                    concentration_map.insert(instrument.label(), mv as f64 / 1_000_000.0 / nav);
                 }
             }
         }
