@@ -12,7 +12,7 @@ use super::trade_record::TradeRecord;
 use crate::event::FillEvent;
 use crate::market::{Side, Trade};
 use crate::time::Timestamp;
-use crate::types::{Instrument, Price, Quantity, Symbol};
+use crate::types::{Instrument, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
 
 /// 投资组合
 ///
@@ -141,6 +141,10 @@ impl Portfolio {
                 Price::from_f64(0.0),
             )
         });
+        // 0.5.0 兼容:若旧调用方用 `apply_trade(symbol, ...)` 没指定 instrument,
+        // Position.instrument 是 Instrument::default()(空币种)。新代码用
+        // `apply_trade_instrument(&Instrument, ...)` 自动填充 instrument。
+        let _ = &position.instrument;
 
         let old_qty = position.quantity.as_f64();
         let new_qty = old_qty + qty_f;
@@ -208,6 +212,47 @@ impl Portfolio {
         ));
 
         Ok(())
+    }
+
+    /// 0.5.0 新增:用 `Instrument` 调用 `apply_trade`,自动派生 symbol 并填充
+    /// `Position::instrument` 字段(避免 spot+perp 共享 Symbol 的 key 碰撞)
+    ///
+    /// 与 [`Self::apply_trade`] 的区别:
+    /// - 旧 `apply_trade(symbol, ...)`:用传入的 Symbol 作 key,`Position::instrument = Instrument::default()`
+    /// - 新 `apply_trade_instrument(&Instrument, ...)`:用 `instrument.label()` 作 key
+    ///   并把 instrument 写进 `Position.instrument`,使 [`Self::instrument_positions`]
+    ///   能正确区分 spot / perp
+    ///
+    /// 内部仍走 `positions[Symbol]` 索引(OMS 聚合不变),但新 `Position.instrument`
+    /// 字段让 risk engine 能识别 spot/perp。
+    pub fn apply_trade_instrument(
+        &mut self,
+        instrument: &Instrument,
+        trade: &Trade,
+        taker_side: Side,
+        timestamp: Timestamp,
+    ) -> PortfolioResult<()> {
+        let symbol = Symbol::from(instrument.label());
+        // 先按 symbol 走完所有聚合(cash / realized / trades 等)走原 apply_trade
+        self.apply_trade(&symbol, trade, taker_side, timestamp)?;
+        // 关键修复:把 instrument 写进 Position,否则 instrument_positions() 拿不到
+        if let Some(pos) = self.positions.get_mut(&symbol) {
+            pos.instrument = instrument.clone();
+        }
+        Ok(())
+    }
+
+    /// 0.5.0 新增:返回按 instrument 索引的持仓视图(`HashMap<Instrument, &Position>`)
+    ///
+    /// **delta-neutral 多 leg 风险检查的关键 API**。
+    /// 当 spot leg 和 perp leg base/quote 相同时,`positions()`(按 Symbol)
+    /// 只能看到合并的净持仓;此方法按 `Instrument` 提供独立视图,使 risk engine
+    /// 能区分 spot 持仓和 perp 持仓(否则 delta-neutral 会被错算为 0 持仓)。
+    pub fn instrument_positions(&self) -> HashMap<Instrument, &Position> {
+        self.positions
+            .values()
+            .map(|p| (p.instrument.clone(), p))
+            .collect()
     }
 
     /// 移除空仓
@@ -688,5 +733,76 @@ mod tests {
         let p = Portfolio::new(Currency::USDT, 0.001);
         assert_eq!(p.base_currency(), Currency::USDT);
         assert!((p.commission_rate() - 0.001).abs() < 1e-9);
+    }
+
+    // ─── 0.5.0 新增:apply_trade_instrument + instrument_positions ─────────
+    // 验证 spot+perp 同 base/quote 不再被 HashMap<Symbol, _> 错合并。
+
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+    fn btc_perp() -> Instrument {
+        Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        })
+    }
+
+    #[test]
+    fn test_apply_trade_instrument_spot_perp_no_collision() {
+        // delta-neutral 套利入场:spot long 0.5 + perp short 0.3(故意不均衡,
+        // 避免两 leg 完全对销成 0 后被 `Position::is_empty()` 清理)
+        let mut p = Portfolio::new(Currency::USD, 0.0);
+        p.deposit(Currency::USD, 200_000.0);
+
+        let spot = btc_spot();
+        let perp = btc_perp();
+
+        // spot leg buy 0.5
+        let trade_spot = make_trade(1, 2, 50_000.0, 0.5);
+        p.apply_trade_instrument(&spot, &trade_spot, Side::Buy, Timestamp::from_nanos(1_000))
+            .unwrap();
+
+        // perp leg sell 0.3(主动卖出方 = 开空 0.3)
+        let trade_perp = make_trade(2, 1, 50_000.0, 0.3);
+        p.apply_trade_instrument(&perp, &trade_perp, Side::Sell, Timestamp::from_nanos(1_500))
+            .unwrap();
+
+        // ⚠ 旧 portfolio.positions() 按 Symbol key 看到 1 个**净**持仓
+        //   (+0.5 + -0.3 = +0.2),spot/perp 信息被错合并。这是 0.5.0 修复的 footgun。
+        let merged = p.positions();
+        assert_eq!(merged.len(), 1, "Symbol 视角合并为 1 个 key");
+        assert_eq!(
+            merged[&Symbol::from("BTC/USDT")].quantity,
+            Quantity::from_f64(0.2),
+            "Symbol 视角错误地把 spot+perp 净成 +0.2(实际 spot=+0.5 perp=-0.3)"
+        );
+
+        // ✅ 新 portfolio.instrument_positions() 按 Instrument key 看到 2 个独立持仓
+        let by_inst = p.instrument_positions();
+        assert_eq!(by_inst.len(), 2, "Instrument 视角应区分 spot / perp");
+        assert_eq!(by_inst[&spot].quantity, Quantity::from_f64(0.5));
+        assert_eq!(by_inst[&spot].instrument.kind(), "spot");
+        assert_eq!(by_inst[&perp].quantity, Quantity::from_f64(-0.3));
+        assert_eq!(by_inst[&perp].instrument.kind(), "swap");
+    }
+
+    #[test]
+    fn test_position_with_instrument_factory() {
+        // 验证 Position::with_instrument 工厂 + instrument() getter
+        let spot = btc_spot();
+        let pos = Position::with_instrument(
+            spot.clone(),
+            Quantity::from_f64(0.3),
+            Price::from_f64(50_000.0),
+        );
+        assert_eq!(pos.instrument(), &spot);
+        assert_eq!(pos.instrument.kind(), "spot");
+        assert_eq!(pos.symbol, Symbol::from("BTC/USDT"));
     }
 }

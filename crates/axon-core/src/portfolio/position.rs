@@ -3,30 +3,85 @@
 use serde::{Deserialize, Serialize};
 
 use crate::market::Side;
-use crate::types::{Price, Quantity, Symbol};
+use crate::types::{Instrument, Price, Quantity, Symbol};
 
 /// 单资产持仓
 ///
-/// 数量符号表示方向：正数=多头，负数=空头。
+/// 数量符号表示方向:正数=多头,负数=空头。
+///
+/// # 0.5.0 字段扩展
+///
+/// 增加 `instrument: Instrument` 字段以支持多 leg 回测(spot + perp)区分。
+/// 在 0.5.0 之前,spot 和 perp 共享同一 `Symbol`(如 `"BTC/USDT"`),
+/// 会导致 `HashMap<Symbol, _>` key 碰撞,把 delta-neutral 双 leg 净持仓错算为 0。
+/// `instrument` 字段提供 spot/perp 区分,使 risk engine / multi-leg backtest 能正确处理。
+///
+/// 与 `symbol` 字段关系:`symbol` 保留为人类可读 label(`"BTC/USDT"`),
+/// `instrument` 是结构化区分(`Spot` / `Swap` variant)。两者并存,调用方可任选。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
-    /// 标的代码
+    /// 标的代码(人类可读 label,如 `"BTC/USDT"`,保留以兼容旧 API)
     pub symbol: Symbol,
-    /// 持仓数量（正数=多头，负数=空头）
+    /// 0.5.0 新增:品种结构化区分(Spot / Swap),用于消除 spot+perp key 碰撞
+    pub instrument: Instrument,
+    /// 持仓数量(正数=多头,负数=空头)
     pub quantity: Quantity,
     /// 加权平均成本
     pub avg_cost: Price,
-    /// 最新市场价格（用于未实现盈亏计算）
+    /// 最新市场价格(用于未实现盈亏计算)
     pub market_price: Option<Price>,
-    /// 已实现盈亏累计（单位：f64 × 1e6）
+    /// 已实现盈亏累计(单位:f64 × 1e6)
     pub realized_pnl: i64,
-    /// 持仓方向（数量为 0 时默认为 Buy）
+    /// 持仓方向(数量为 0 时默认为 Buy)
     pub side: Side,
 }
 
 impl Position {
-    /// 创建新持仓
+    /// 创建新持仓(从 symbol 派生 instrument,0.5.0 兼容 API)
+    ///
+    /// `instrument` 由 `symbol` 通过 `Instrument::default_for(symbol)` 派生(空 Instrument),
+    /// 保留以兼容旧调用方;**新代码**请用 [`Position::with_instrument`] 显式指定 instrument。
     pub fn new(symbol: Symbol, quantity: Quantity, avg_cost: Price) -> Self {
+        let side = if quantity.as_f64() >= 0.0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        // 0.5.0 兼容:从 symbol 派生 instrument(空 Instrument,标记为"未指定品种")。
+        // 0.5.0 之前只有 Symbol 没有 Instrument,这里给一个"无 Instrument"的占位值,
+        // 不破坏旧调用方;新代码用 `with_instrument` 显式注入。
+        Self {
+            symbol,
+            instrument: Instrument::default(),
+            quantity,
+            avg_cost,
+            market_price: None,
+            realized_pnl: 0,
+            side,
+        }
+    }
+
+    /// 0.5.0 新增:从 instrument 创建持仓(推荐用法)
+    ///
+    /// 与 [`Position::new`] 的区别:用 `instrument` 作为结构化区分,
+    /// 避免 spot/perp key 碰撞;`symbol` 字段从 `instrument` 派生(`"{base}/{quote}"`)。
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use axon_core::portfolio::Position;
+    /// use axon_core::types::{Instrument, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
+    /// use axon_core::market::Side;
+    ///
+    /// let spot = Position::with_instrument(
+    ///     Instrument::Spot(SpotInstrument { base: Symbol::from("BTC"), quote: Symbol::from("USDT") }),
+    ///     Quantity::from_f64(0.5),
+    ///     Price::from_f64(50_000.0),
+    /// );
+    /// assert_eq!(spot.instrument.kind(), "spot");
+    /// ```
+    pub fn with_instrument(instrument: Instrument, quantity: Quantity, avg_cost: Price) -> Self {
+        let symbol = Symbol::from(instrument.label());
         let side = if quantity.as_f64() >= 0.0 {
             Side::Buy
         } else {
@@ -34,12 +89,19 @@ impl Position {
         };
         Self {
             symbol,
+            instrument,
             quantity,
             avg_cost,
             market_price: None,
             realized_pnl: 0,
             side,
         }
+    }
+
+    /// 0.5.0 新增:返回 instrument 引用(便捷访问)
+    #[inline]
+    pub fn instrument(&self) -> &Instrument {
+        &self.instrument
     }
 
     /// 持仓市值（quantity × market_price）

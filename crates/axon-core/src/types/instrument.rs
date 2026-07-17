@@ -125,6 +125,24 @@ impl Instrument {
             Instrument::Swap(s) => &s.quote,
         }
     }
+
+    /// 0.5.0 新增:品种 kind(用于 RiskEngine / Portfolio 区分 spot vs swap)
+    ///
+    /// 返回 `"spot"` 或 `"swap"`,字符串字面量便于跨语言/序列化比较。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Instrument::Spot(_) => "spot",
+            Instrument::Swap(_) => "swap",
+        }
+    }
+
+    /// 0.5.0 新增:人类可读 label(`"BTC/USDT"`),用于 `Position::symbol` 字段填充
+    ///
+    /// 格式:`{base}/{quote}`(不区分 spot/swap;Symbol 字段只是 human-readable label,
+    /// 真正的结构化区分在 `kind`)。
+    pub fn label(&self) -> String {
+        format!("{}/{}", self.base().as_str(), self.quote().as_str())
+    }
 }
 
 #[cfg(test)]
