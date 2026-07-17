@@ -953,15 +953,13 @@ impl BacktestEngine {
         }
 
         // ── 3. NAV 采样 + log return ─────────────────
-        // ponytail:用本次 fill_price 作为 mark 简化(实际场景可用 bar close 等更准的 mark)
-        let mark = fill_price;
-        let position_value: f64 = self
-            .bt_state
-            .position_states
-            .values()
-            .map(|p| p.quantity * mark)
-            .sum();
-        let nav = self.bt_state.cash + position_value;
+        // Phase B 改(0.5.0):mark-to-market 用 `mark_cache[instrument]` 而非 fill_price
+        //   - 本次 fill 的 instrument 用 `mark_cache[instrument]`(若已缓存)
+        //   - 其他 instrument 用各自的 `mark_cache` 值(若已缓存),否则 0
+        //   - 都没缓存时,fallback 到 fill_price(回测无 mark 数据的旧场景)
+        // 效果:多 leg 持仓时 NAV 反映每个 leg 各自的 mark 价,unrealized PnL
+        //   正确进 equity_curve 和 total_pnl。
+        let nav = self.compute_nav(timestamp, fill_price);
         if nav > self.bt_state.nav_peak {
             self.bt_state.nav_peak = nav;
         }
@@ -1010,6 +1008,57 @@ impl BacktestEngine {
         self.bt_state
             .mark_cache
             .insert(mark.instrument, mark.mark_price);
+
+        // Phase B 改(0.5.0):Mark 事件现在也触 NAV 重采样,让 equity_curve
+        // 反映 mark 价变化对未实现 PnL 的影响。频率受用户 push 节奏控制
+        // (8h funding tick / 1m mark / 1h bar close 等场景),不会过热。
+        // 跨 leg 净值才能正确算 e.g. spot long 0.5 + perp short 0.5,中间
+        // mark 价从 50k 涨到 51k 时,unrealized PnL 应反映 spot +500,perp -500 = 0。
+        let timestamp = mark.timestamp;
+        let nav = self.compute_nav(timestamp, mark.mark_price.as_f64());
+        if nav > self.bt_state.nav_peak {
+            self.bt_state.nav_peak = nav;
+        }
+        // 避免连续 mark 在同一纳秒戳重复推 equity_curve
+        if self
+            .bt_state
+            .equity_curve
+            .last()
+            .map(|(t, _)| *t == timestamp)
+            .unwrap_or(false)
+        {
+            // 同时间戳已有帧 → 覆盖最后一帧(取最新 mark 估的 NAV)
+            if let Some(last) = self.bt_state.equity_curve.last_mut() {
+                last.1 = nav;
+            }
+        } else {
+            self.bt_state.equity_curve.push((timestamp, nav));
+        }
+    }
+
+    /// Phase B 新增(0.5.0):按 instrument 各自的 `mark_cache` 价计算 mark-to-market NAV
+    ///
+    /// 公式:`NAV = cash + Σ(quantity[instrument] × mark[instrument])`
+    /// - `mark_cache[instrument]` 若有,用缓存的 mark 价
+    /// - 若无,**fallback_mark** 给定(通常是本次 fill_price,旧场景无 mark 数据)
+    /// - 既无 mark 也无 fallback 的 instrument 用其 `avg_cost` 占位(避免
+    ///   没 mark 时 NAV 看起来是 0,误导回测)
+    fn compute_nav(&self, _timestamp: Timestamp, fallback_mark: f64) -> f64 {
+        let position_value: f64 = self
+            .bt_state
+            .position_states
+            .iter()
+            .map(|(inst, pos)| {
+                let mark = self
+                    .bt_state
+                    .mark_cache
+                    .get(inst)
+                    .map(|m| m.as_f64())
+                    .unwrap_or(fallback_mark);
+                pos.quantity * mark
+            })
+            .sum();
+        self.bt_state.cash + position_value
     }
 
     /// 构造最终 RunResult
