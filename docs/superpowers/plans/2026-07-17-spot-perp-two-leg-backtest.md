@@ -95,6 +95,8 @@ Create `crates/axon-core/src/types/instrument.rs`:
 //!                               "settle": "UsdMargin", "contract_size": 1.0}}
 //! ```
 
+use std::hash::{Hash, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 use super::Symbol;
@@ -102,9 +104,15 @@ use super::Symbol;
 /// 交易品种
 ///
 /// `Clone` 而非 `Copy`:因为 `SpotInstrument` / `SwapInstrument` 内含
-/// `Symbol(String)`,是堆分配。详见 spec §4.1。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "details")]
+/// `Symbol(String)`,是堆分配。详见 spec §4.1.
+///
+/// `Hash` / `Eq` 手动实现:`SwapInstrument.contract_size: f64` 不可派生
+/// `Hash` / `Eq`(`f64` 含 NaN,无法满足 `Eq` 律)。我们对 `f64` 用
+/// `to_bits()` 转成 `u64` 后再比较和 hash,语义上"位级相等即相等",
+/// NaN 与 NaN 比较也会相等(因为位相同),这在 HashMap key 场景下
+/// 是合理选择(不期望不同 NaN 表示"不同的 instrument")。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "details", rename_all = "lowercase")]
 pub enum Instrument {
     /// 现货
     Spot(SpotInstrument),
@@ -112,24 +120,65 @@ pub enum Instrument {
     Swap(SwapInstrument),
 }
 
+/// 现货交易品种
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SpotInstrument {
+    /// 基础币种(如 `BTC` 表示一个 `BTC`)
     pub base: Symbol,
+    /// 计价币种(如 `USDT` 表示价格以 USDT 计价)
     pub quote: Symbol,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// 永续合约交易品种
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SwapInstrument {
+    /// 基础币种(如 `BTC`)
     pub base: Symbol,
+    /// 计价币种(如 `USDT`)
     pub quote: Symbol,
+    /// 结算方式(USD 保证金 / 币本位)
     pub settle: SwapSettle,
+    /// 合约乘数(每张合约代表多少基础币种)
     pub contract_size: f64,
 }
 
+/// 永续合约结算方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SwapSettle {
+    /// USD 保证金合约(quote 币种作为保证金)
     UsdMargin,
+    /// 币本位合约(base 币种作为保证金)
     CoinMargin,
+}
+
+impl Eq for SwapInstrument {}
+
+impl Hash for SwapInstrument {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.base.hash(state);
+        self.quote.hash(state);
+        self.settle.hash(state);
+        self.contract_size.to_bits().hash(state);
+    }
+}
+
+// 手动实现 `Instrument` 的 `Hash`:同 `SwapInstrument` 的考量 ——
+// 直接 derive `Hash` 在含有 `f64` 变体时无法编译,而我们已经为
+// `SwapInstrument` 提供了位级 Hash,因此 enum 也需要手动实现以保持一致。
+impl Hash for Instrument {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // 先用变体判别符区分,再委托给各变体的 Hash 实现
+        match self {
+            Instrument::Spot(s) => {
+                0u8.hash(state);
+                s.hash(state);
+            }
+            Instrument::Swap(s) => {
+                1u8.hash(state);
+                s.hash(state);
+            }
+        }
+    }
 }
 
 impl Instrument {
@@ -153,6 +202,7 @@ impl Instrument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_spot_instrument_creation() {
@@ -189,11 +239,33 @@ mod tests {
         });
         assert_eq!(a, b);
         assert_ne!(a, c);
-        let mut set = std::collections::HashSet::new();
+        let mut set = HashSet::new();
         set.insert(a);
         set.insert(b);
         set.insert(c);
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_swap_instrument_hash_via_bits() {
+        // contract_size = 1.0 和 1.0(位相同)应当相等
+        let a = Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        });
+        let b = Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        });
+        assert_eq!(a, b);
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        assert_eq!(set.len(), 1, "相同 contract_size bits 应 hash 到同一 slot");
     }
 
     #[test]
@@ -246,7 +318,7 @@ pub use symbol::Symbol;
 - [ ] **Step 3: Run tests**
 
 Run: `cargo test -p axon-core instrument::`
-Expected: 5 tests pass.
+Expected: 6 tests pass.
 
 - [ ] **Step 4: Run clippy**
 
