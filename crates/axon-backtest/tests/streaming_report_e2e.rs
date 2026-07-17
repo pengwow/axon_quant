@@ -44,12 +44,13 @@ fn engine_with_fills() -> StreamingEngine {
     }
     impl StreamingStrategy for BuyStrategy {
         fn on_tick(&mut self, symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
-            // T2.2: split Symbol "BASE-QUOTE" -> (base, quote) for Order::spot
+            // T3.2 改:按 '/' 拆 "BASE/QUOTE" 为 base/quote,送 Order::spot
+            // (新 L1MatchingEngine 按 `Instrument` 路由,base/quote 必须对齐;
+            //  否则 maker(基地=BTC,quote=USDT)和 taker(基地=BTC/USDT,quote=USDT)
+            //  落到不同 book 不成交 —— 这是 T3.2 暴露的旧测试 bug。)
             let (base, quote) = {
                 let s = symbol.as_str();
-                let mut parts = s.splitn(2, '-');
-                let b = parts.next().unwrap_or("BTC");
-                let q = parts.next().unwrap_or("USDT");
+                let (b, q) = s.split_once('/').unwrap_or((s, "USDT"));
                 (b.to_string(), q.to_string())
             };
             let order = Order::spot(

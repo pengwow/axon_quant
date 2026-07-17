@@ -100,12 +100,13 @@ impl L2MatchingEngine {
     }
 
     /// 创建绑定交易品种的 L2 撮合引擎
-    pub fn with_symbol(symbol: Symbol) -> Self {
-        Self {
-            inner: L1MatchingEngine::with_symbol(symbol),
-            order_index: HashMap::new(),
-            stats: MatchingStats::default(),
-        }
+    ///
+    /// T3.2 改:**参数已忽略**。L1 现在是 `HashMap<Instrument, L1Book>` 多
+    /// book 路由,首次 `submit` 时按 `order.instrument` 自动建 book,
+    /// 不再需要预绑定 symbol。保留方法仅为兼容既有调用方(`axon-llm`、
+    /// Python `__init__(symbol=...)` 等)。
+    pub fn with_symbol(_symbol: Symbol) -> Self {
+        Self::new()
     }
 
     /// 提交订单（与 L1 语义一致），并更新统计
@@ -355,10 +356,16 @@ mod tests {
     }
 
     #[test]
-    fn test_l2_with_symbol() {
+    fn test_l2_with_symbol_compat() {
+        // T3.2 改:原 `test_l2_with_symbol` 验证 L2::with_symbol 预绑定
+        // symbol 的行为。新语义下 `with_symbol` 参数被忽略,L2 改为按
+        // `order.instrument` 自动建 book。此处保留测试以验证向后兼容
+        // (调用方传入任意 symbol 不会 panic,返回的引擎可正常用)。
         let e = L2MatchingEngine::with_symbol(sym());
-        // 内部 L1 已绑定 symbol
+        // 内部 L1 仍可访问(空 book 状态)
         let _ = e.inner.best_bid();
+        // 没下任何订单,active_order_count 应为 0
+        assert_eq!(e.active_order_count(), 0);
     }
 
     #[test]

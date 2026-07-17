@@ -24,31 +24,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 use super::error::{MatchingError, MatchingResult};
 use super::types::{MatchFill, OrderBookLevel, SubmitResult};
-/// 把 `Symbol` (如 `"BTC-USDT"`) 拆为 `(base, quote)` `(T2.2 过渡 helper)`
-///
-/// L1 撮合引擎单 instrument 语义下,`with_symbol` / `seed_liquidity` 等接口
-/// 仍按 `Symbol` 暴露;但 `Order::spot` 接收 `base/quote` 两个参数,因此需要
-/// 在调用边界把单个 symbol 字符串拆开。
-///
-/// - 含 `-`:  视作 `BASE-QUOTE` 格式,按第一个 `-` 切分(如 `"BTC-USDT"` → `("BTC", "USDT")`)
-/// - 不含 `-`: 视作 base 单 token,quote 默认填充 `"USDT"`
-///
-/// T2.3 计划用真正的 multi-instrument book + `Instrument` 路由替换此逻辑,
-/// 届时此 helper 会被删除。
-fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
-    let s = sym.as_str();
-    // 接受 "BASE-QUOTE" (L1 测试) 和 "BASE/QUOTE" (L3 测试/CoinGecko 风格) 两种格式
-    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
-        (Symbol::from(base), Symbol::from(quote))
-    } else {
-        // 兜底: 单 token 视为 base,quote 默认 USDT
-        (sym.clone(), Symbol::from("USDT"))
-    }
-}
 
 /// 撮合引擎 trait
 ///
@@ -128,7 +107,7 @@ pub trait MatchingEngine: Send + Sync {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _instrument: Instrument,    // 改: 原 _symbol: Symbol (T2.3)
+        _instrument: Instrument, // 改: 原 _symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         // ponytail:默认 no-op 实现,适配 L2/L3/自定义撮合引擎。
@@ -145,154 +124,91 @@ pub type PriceLevel = VecDeque<Order>;
 /// 订单簿一侧：`价格 -> 价格级别`
 pub type OrderBookSide = BTreeMap<Price, PriceLevel>;
 
-/// L1 撮合引擎
-pub struct L1MatchingEngine {
-    /// 买单簿（BTreeMap 升序，最优买价在末尾）
-    bids: OrderBookSide,
-    /// 卖单簿（BTreeMap 升序，最优卖价在开头）
-    asks: OrderBookSide,
-    /// 成交序列号（单调递增）
-    trade_sequence: AtomicU64,
-    /// 活跃订单索引：`order_id -> (side, price)` 快速定位
-    order_index: HashMap<u64, (Side, Price)>,
-    /// 引擎绑定的 instrument(确保只处理单一 instrument, T2.2 升级自 Symbol)
-    instrument: Option<Instrument>,
+/// 单品种的订单簿(bids/asks/index)
+///
+/// 把 L1 撮合引擎的内部分量抽出来,使 L1MatchingEngine 可以持有
+/// `HashMap<Instrument, L1Book>`,实现多品种路由。
+///
+/// T3.1 新增:从 L1MatchingEngine 抽出,每个 Instrument 一个独立 book,
+/// 撮合互不干扰(delta 中性套利的基础)。
+#[derive(Debug, Default)]
+pub struct L1Book {
+    /// 买单簿(BTreeMap 升序,最优买价在末尾)
+    pub bids: OrderBookSide,
+    /// 卖单簿(BTreeMap 升序,最优卖价在开头)
+    pub asks: OrderBookSide,
+    /// 活跃订单索引:`order_id -> (side, price)` 快速定位
+    pub order_index: HashMap<u64, (Side, Price)>,
 }
 
-impl Default for L1MatchingEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl L1MatchingEngine {
-    /// 创建 L1 撮合引擎
+impl L1Book {
+    /// 创建空 book
     pub fn new() -> Self {
-        Self {
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
-            trade_sequence: AtomicU64::new(0),
-            order_index: HashMap::new(),
-            instrument: None,
-        }
+        Self::default()
     }
 
-    /// 绑定交易品种
-    pub fn with_symbol(symbol: Symbol) -> Self {
-        // T2.2: 构造 Instrument(Spot) from Symbol
-        let (base, quote) = split_symbol_to_base_quote(&symbol);
-        Self {
-            instrument: Some(Instrument::Spot(SpotInstrument { base, quote })),
-            ..Self::new()
-        }
+    /// 清空 book(bids/asks/index)
+    pub fn clear(&mut self) {
+        self.bids.clear();
+        self.asks.clear();
+        self.order_index.clear();
     }
 
-    /// 获取当前已分配的成交 ID 数量
-    pub fn fill_count(&self) -> u64 {
-        self.trade_sequence.load(Ordering::Relaxed)
-    }
-
-    /// 获取下一个成交 ID（兼容辅助方法；内部循环中直接使用原子以避免借用冲突）
-    #[allow(dead_code)]
+    /// 当前活跃订单数
     #[inline]
-    fn next_fill_id(&self) -> u64 {
-        self.trade_sequence.fetch_add(1, Ordering::Relaxed)
+    pub fn active_order_count(&self) -> usize {
+        self.order_index.len()
     }
 
-    /// 提取订单的限价（市价单返回 `None`）
-    #[inline]
-    fn limit_price(order: &Order) -> Option<Price> {
-        order.order_type.limit_price()
+    /// 最优买价(末尾 key)
+    pub fn best_bid(&self) -> Option<Price> {
+        self.bids.keys().next_back().copied()
     }
 
-    /// 验证订单基础参数
-    fn validate(&self, order: &Order) -> MatchingResult<()> {
-        // 限价单价格必须 > 0
-        if let Some(p) = Self::limit_price(order)
-            && p.as_f64() <= 0.0
-        {
-            return Err(MatchingError::InvalidPrice { price: p });
-        }
-        if order.quantity.as_f64() <= 0.0 {
-            return Err(MatchingError::InvalidQuantity {
-                quantity: order.quantity,
-            });
-        }
-        if let Some(ref expected) = self.instrument
-            && &order.instrument != expected
-        {
-            return Err(MatchingError::InvalidModification {
-                reason: format!(
-                    "instrument 不匹配: 引擎绑定 {:?}，订单 {:?}",
-                    expected, order.instrument
-                ),
-            });
-        }
-        // L1 不支持止损/冰山
-        match order.order_type {
-            OrderType::Market | OrderType::Limit { .. } => Ok(()),
-            _ => Err(MatchingError::UnsupportedOrderType(format!(
-                "{:?}",
-                order.order_type
-            ))),
-        }
+    /// 最优卖价(开头 key)
+    pub fn best_ask(&self) -> Option<Price> {
+        self.asks.keys().next().copied()
     }
 
-    /// FOK 预检：检查订单簿中是否有足够深度可以全部成交
-    fn check_fok_fillable(&self, taker: &Order) -> bool {
-        let required = taker.remaining_quantity().as_f64();
-        match taker.side {
-            Side::Buy => {
-                // 买单：按卖价升序累加可成交量
-                let mut available = 0.0;
-                for orders in self.asks.values() {
-                    if let Some(taker_price) = Self::limit_price(taker)
-                        && taker_price.as_f64() < orders_price(orders)
-                    {
-                        break;
-                    }
-                    for maker in orders.iter() {
-                        if !maker.status.is_terminal() {
-                            available += maker.remaining_quantity().as_f64();
-                            if available >= required {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-            Side::Sell => {
-                // 卖单：按买价降序累加可成交量
-                let mut available = 0.0;
-                for orders in self.bids.values().rev() {
-                    if let Some(taker_price) = Self::limit_price(taker)
-                        && taker_price.as_f64() > orders_price(orders)
-                    {
-                        break;
-                    }
-                    for maker in orders.iter() {
-                        if !maker.status.is_terminal() {
-                            available += maker.remaining_quantity().as_f64();
-                            if available >= required {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-        }
+    /// 将未成交部分挂入本方订单簿
+    ///
+    /// 限价单按价格挂单;市价单无价格不入簿。**T3.2 从 L1MatchingEngine
+    /// inherent method 迁来**,只操作单 book(不依赖 self.instrument)。
+    pub fn insert_passive(&mut self, order: Order) {
+        let Some(price) = L1MatchingEngine::limit_price(&order) else {
+            return;
+        };
+        let book_side = match order.side {
+            Side::Buy => &mut self.bids,
+            Side::Sell => &mut self.asks,
+        };
+
+        let orders = book_side.entry(price).or_insert_with(VecDeque::new);
+        orders.push_back(order);
+
+        // order 已 move，从参数获取 id/side
+        // order_index 在 push_back 之后更新，避免借用冲突
+        let last = orders.back().unwrap();
+        self.order_index.insert(last.id, (last.side, price));
     }
 
-    /// 买单与卖单簿撮合
-    fn match_against_asks(&mut self, taker: &mut Order) -> Vec<MatchFill> {
+    /// 买单与本方卖单簿撮合
+    ///
+    /// T3.2 改:从 `&mut self` method 迁为 `L1Book` 关联函数,接收
+    /// `trade_sequence: &AtomicU64` 用于分配 fill id。关联函数化后
+    /// 调用方可以同时借用 `self.books`(取 book)和 `self.trade_sequence`
+    /// (取序号),彻底避免 borrow-check 冲突。
+    fn match_against_asks(
+        book: &mut L1Book,
+        taker: &mut Order,
+        trade_sequence: &AtomicU64,
+    ) -> Vec<MatchFill> {
         let mut fills = Vec::new();
         let mut empty_prices = Vec::new();
 
-        for (price, orders) in self.asks.iter_mut() {
+        for (price, orders) in book.asks.iter_mut() {
             // 限价单：买价 < 卖价时停止
-            if let Some(taker_price) = Self::limit_price(taker)
+            if let Some(taker_price) = L1MatchingEngine::limit_price(taker)
                 && taker_price.as_f64() < price.as_f64()
             {
                 break;
@@ -317,7 +233,7 @@ impl L1MatchingEngine {
                 let fill_qty = taker_remaining.min(maker_remaining);
 
                 // 收集 fill 所需字段（避免 &orders 与 &self 同时存在）
-                let fill_id = self.trade_sequence.fetch_add(1, Ordering::Relaxed);
+                let fill_id = trade_sequence.fetch_add(1, Ordering::Relaxed);
                 let taker_id = taker.id;
                 let taker_side = taker.side;
                 let taker_created = taker.created_at;
@@ -354,26 +270,33 @@ impl L1MatchingEngine {
         }
 
         for price in empty_prices {
-            self.asks.remove(&price);
+            book.asks.remove(&price);
         }
         fills
     }
 
-    /// 卖单与买单簿撮合
-    fn match_against_bids(&mut self, taker: &mut Order) -> Vec<MatchFill> {
+    /// 卖单与本方买单簿撮合
+    ///
+    /// T3.2 改:同 `match_against_asks`,从 `&mut self` method 迁为
+    /// `L1Book` 关联函数,接收 `trade_sequence: &AtomicU64`。
+    fn match_against_bids(
+        book: &mut L1Book,
+        taker: &mut Order,
+        trade_sequence: &AtomicU64,
+    ) -> Vec<MatchFill> {
         let mut fills = Vec::new();
         let mut empty_prices = Vec::new();
 
         // 收集需要撮合的价格级别（从高到低）
-        let prices: Vec<Price> = self.bids.keys().rev().copied().collect();
+        let prices: Vec<Price> = book.bids.keys().rev().copied().collect();
 
         for price in prices {
             let stop = {
-                let Some(orders) = self.bids.get_mut(&price) else {
+                let Some(orders) = book.bids.get_mut(&price) else {
                     continue;
                 };
                 // 限价单：卖价 > 买价时停止
-                if let Some(taker_price) = Self::limit_price(taker)
+                if let Some(taker_price) = L1MatchingEngine::limit_price(taker)
                     && taker_price.as_f64() > price.as_f64()
                 {
                     break;
@@ -397,7 +320,7 @@ impl L1MatchingEngine {
                     let fill_qty = taker_remaining.min(maker_remaining);
 
                     // 直接访问原子，避免借用冲突
-                    let fill_id = self.trade_sequence.fetch_add(1, Ordering::Relaxed);
+                    let fill_id = trade_sequence.fetch_add(1, Ordering::Relaxed);
                     let taker_id = taker.id;
                     let taker_side = taker.side;
                     let taker_created = taker.created_at;
@@ -439,31 +362,153 @@ impl L1MatchingEngine {
         }
 
         for price in empty_prices {
-            self.bids.remove(&price);
+            book.bids.remove(&price);
         }
         fills
     }
+}
 
-    /// 将未成交部分挂入本方订单簿
-    fn insert_passive(&mut self, order: Order) {
-        // 限价单按价格挂单；市价单无价格不入簿
-        let Some(price) = Self::limit_price(&order) else {
-            return;
-        };
-        let book = match order.side {
-            Side::Buy => &mut self.bids,
-            Side::Sell => &mut self.asks,
-        };
+/// L1 撮合引擎(多品种路由版)
+///
+/// T3.2 改:从单 book 改为 `HashMap<Instrument, L1Book>`,实现
+/// 多 leg 路由(spot + swap 各自独立撮合,delta 中性套利基础)。
+pub struct L1MatchingEngine {
+    /// 每个 instrument 一个 book
+    books: HashMap<Instrument, L1Book>,
+    /// 成交序列号(单调递增,跨 instrument 共享)
+    trade_sequence: AtomicU64,
+}
 
-        let orders = book.entry(price).or_insert_with(VecDeque::new);
-        orders.push_back(order);
+impl Default for L1MatchingEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-        // order 已 move，从参数获取 id/side
-        // order_index 在 push_back 之后更新，避免借用冲突
-        let last = orders.back().unwrap();
-        self.order_index.insert(last.id, (last.side, price));
+impl L1MatchingEngine {
+    /// 创建 L1 撮合引擎(多品种版,无预绑定 instrument)
+    pub fn new() -> Self {
+        Self {
+            books: HashMap::new(),
+            trade_sequence: AtomicU64::new(0),
+        }
     }
 
+    /// T3.2 改:**参数已忽略**。L1 现在是 `HashMap<Instrument, L1Book>` 多
+    /// book 路由,首次 `submit` 时按 `order.instrument` 自动建 book,
+    /// 不再需要预绑定 symbol。保留方法仅为兼容既有调用方(`axon-llm`、
+    /// Python `__init__(symbol=...)`、fuzz 测试等)。
+    pub fn with_symbol(_symbol: Symbol) -> Self {
+        Self::new()
+    }
+
+    /// 获取当前已分配的成交 ID 数量
+    pub fn fill_count(&self) -> u64 {
+        self.trade_sequence.load(Ordering::Relaxed)
+    }
+
+    /// 获取下一个成交 ID（兼容辅助方法；内部循环中直接使用原子以避免借用冲突）
+    #[allow(dead_code)]
+    #[inline]
+    fn next_fill_id(&self) -> u64 {
+        self.trade_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 按 instrument 路由的最优买价
+    pub fn best_bid_for(&self, instrument: &Instrument) -> Option<Price> {
+        self.books.get(instrument).and_then(|b| b.best_bid())
+    }
+
+    /// 按 instrument 路由的最优卖价
+    pub fn best_ask_for(&self, instrument: &Instrument) -> Option<Price> {
+        self.books.get(instrument).and_then(|b| b.best_ask())
+    }
+
+    /// 提取订单的限价（市价单返回 `None`）
+    #[inline]
+    fn limit_price(order: &Order) -> Option<Price> {
+        order.order_type.limit_price()
+    }
+
+    /// 验证订单基础参数(不验证 instrument 归属,book 自带隔离)
+    fn validate(order: &Order) -> MatchingResult<()> {
+        // 限价单价格必须 > 0
+        if let Some(p) = Self::limit_price(order)
+            && p.as_f64() <= 0.0
+        {
+            return Err(MatchingError::InvalidPrice { price: p });
+        }
+        if order.quantity.as_f64() <= 0.0 {
+            return Err(MatchingError::InvalidQuantity {
+                quantity: order.quantity,
+            });
+        }
+        // L1 不支持止损/冰山
+        match order.order_type {
+            OrderType::Market | OrderType::Limit { .. } => Ok(()),
+            _ => Err(MatchingError::UnsupportedOrderType(format!(
+                "{:?}",
+                order.order_type
+            ))),
+        }
+    }
+
+    /// FOK 预检：检查订单簿中是否有足够深度可以全部成交
+    ///
+    /// T3.2 改:接收 `book: &L1Book` 参数(不读 self.bids/asks),每个
+    /// instrument 独立计算 fillable。
+    fn check_fok_fillable(book: &L1Book, taker: &Order) -> bool {
+        let required = taker.remaining_quantity().as_f64();
+        match taker.side {
+            Side::Buy => {
+                // 买单：按卖价升序累加可成交量
+                let mut available = 0.0;
+                for orders in book.asks.values() {
+                    if let Some(taker_price) = Self::limit_price(taker)
+                        && taker_price.as_f64() < orders_price(orders)
+                    {
+                        break;
+                    }
+                    for maker in orders.iter() {
+                        if !maker.status.is_terminal() {
+                            available += maker.remaining_quantity().as_f64();
+                            if available >= required {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            Side::Sell => {
+                // 卖单：按买价降序累加可成交量
+                let mut available = 0.0;
+                for orders in book.bids.values().rev() {
+                    if let Some(taker_price) = Self::limit_price(taker)
+                        && taker_price.as_f64() > orders_price(orders)
+                    {
+                        break;
+                    }
+                    for maker in orders.iter() {
+                        if !maker.status.is_terminal() {
+                            available += maker.remaining_quantity().as_f64();
+                            if available >= required {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// 买单与卖单簿撮合
+    ///
+    /// T3.2 改:`match_against_asks` / `match_against_bids` 已迁为
+    /// `L1Book` 关联函数(见上方 `impl L1Book { fn match_against_asks(...) }`),
+    /// 这样调用方可以同时借用 `self.books` 和 `self.trade_sequence` 而
+    /// 不触发 borrow-check 冲突。这里只保留 FOK 预检等"只读 book"逻辑。
     /// 在订单簿两侧播种虚拟流动性（回测辅助）
     ///
     /// # 用途
@@ -502,15 +547,14 @@ impl L1MatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         if mid_price <= 0.0 || half_spread <= 0.0 || depth_levels == 0 || size_per_level <= 0.0 {
             return next_id;
         }
-        // T2.3:从 Instrument 直接派生 base/quote,不再走 split_symbol_to_base_quote
-        // 路径。T3.1 后续会按 instrument 路由到独立的 L1Book,届时此方法签名
-        // 还会进一步调整(每个 instrument 一个 book)。
+        // T3.2:路由到对应 instrument 的 L1Book(自动创建)
+        let book = self.books.entry(instrument.clone()).or_default();
         let (base, quote) = (instrument.base().clone(), instrument.quote().clone());
         let mut id = next_id;
         // 卖盘：ask 在 mid 之上，按 spread 阶梯递增
@@ -531,7 +575,7 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
-            self.insert_passive(order);
+            book.insert_passive(order);
             id += 1;
         }
         // 买盘：bid 在 mid 之下。一旦触及非正值,更深档只会更小,直接跳出循环
@@ -551,7 +595,7 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
-            self.insert_passive(order);
+            book.insert_passive(order);
             id += 1;
         }
         id
@@ -577,9 +621,11 @@ impl L1MatchingEngine {
 }
 
 impl MatchingEngine for L1MatchingEngine {
+    /// T3.2 改:按 `order.instrument` 路由到对应 L1Book
+    /// (无则自动创建),撮合在 book 内部进行。
     fn submit(&mut self, order: Order) -> SubmitResult {
-        // 1. 验证订单
-        if let Err(_e) = self.validate(&order) {
+        // 1. 验证订单(不依赖 instrument 归属)
+        if let Err(_e) = Self::validate(&order) {
             let mut rejected = order;
             let _ = rejected.reject(axon_core::order::RejectReason::Other);
             return SubmitResult::empty(rejected.quantity);
@@ -589,19 +635,32 @@ impl MatchingEngine for L1MatchingEngine {
         // 激活订单：Created -> Pending
         let _ = taker.activate();
 
-        // 2. FOK 预检：若 FOK 无法全部成交，直接拒收
-        if taker.time_in_force == TimeInForce::FOK && !self.check_fok_fillable(&taker) {
+        // 2. 路由到对应 instrument 的 book(自动创建)
+        let instrument = taker.instrument.clone();
+        let book = self.books.entry(instrument).or_default();
+
+        // 3. FOK 预检：若 FOK 无法全部成交，直接拒收
+        if taker.time_in_force == TimeInForce::FOK && !Self::check_fok_fillable(book, &taker) {
             let _ = taker.reject(axon_core::order::RejectReason::Other);
             return SubmitResult::empty(taker.quantity);
         }
 
-        // 3. 撮合
+        // 4. 撮合。`L1Book::match_against_*` 是关联函数,接受
+        //    `(book, taker, trade_sequence)` 三个独立借用,因此可以
+        //    同时持有 `self.books` (取 book) 和 `self.trade_sequence`
+        //    (取序号),无 borrow-check 冲突。
         let fills = match taker.side {
-            Side::Buy => self.match_against_asks(&mut taker),
-            Side::Sell => self.match_against_bids(&mut taker),
+            Side::Buy => {
+                let book = self.books.get_mut(&taker.instrument).unwrap();
+                L1Book::match_against_asks(book, &mut taker, &self.trade_sequence)
+            }
+            Side::Sell => {
+                let book = self.books.get_mut(&taker.instrument).unwrap();
+                L1Book::match_against_bids(book, &mut taker, &self.trade_sequence)
+            }
         };
 
-        // 4. 处理 TIF
+        // 5. 处理 TIF
         let remaining = taker.remaining_quantity();
         let is_filled = (remaining.as_f64()).abs() < f64::EPSILON;
         let mut to_insert = !is_filled;
@@ -612,12 +671,13 @@ impl MatchingEngine for L1MatchingEngine {
             to_insert = false;
         }
 
-        // 5. 挂单（move taker 避免 clone）
+        // 6. 挂单(move taker 避免 clone)
         if to_insert && !is_filled && taker.can_cancel() {
-            self.insert_passive(taker);
+            let book = self.books.get_mut(&taker.instrument).unwrap();
+            book.insert_passive(taker);
         }
 
-        // 6. 构造结果
+        // 7. 构造结果
         if is_filled {
             SubmitResult::filled(fills)
         } else if !fills.is_empty() {
@@ -627,43 +687,53 @@ impl MatchingEngine for L1MatchingEngine {
         }
     }
 
+    /// T3.2 改:遍历所有 books 查找 order_id 所在 book 并删除
     fn cancel(&mut self, order_id: u64) -> bool {
-        let Some((side, price)) = self.order_index.remove(&order_id) else {
-            return false;
-        };
-        let book = match side {
-            Side::Buy => &mut self.bids,
-            Side::Sell => &mut self.asks,
-        };
-        let mut found = false;
-        if let Some(orders) = book.get_mut(&price) {
-            let mut idx = 0;
-            while idx < orders.len() {
-                if orders[idx].id == order_id {
-                    let _ = orders[idx].cancel();
-                    orders.remove(idx);
-                    found = true;
-                    break;
+        for book in self.books.values_mut() {
+            if let Some((side, price)) = book.order_index.remove(&order_id) {
+                let book_side = match side {
+                    Side::Buy => &mut book.bids,
+                    Side::Sell => &mut book.asks,
+                };
+                let mut found = false;
+                if let Some(orders) = book_side.get_mut(&price) {
+                    let mut idx = 0;
+                    while idx < orders.len() {
+                        if orders[idx].id == order_id {
+                            let _ = orders[idx].cancel();
+                            orders.remove(idx);
+                            found = true;
+                            break;
+                        }
+                        idx += 1;
+                    }
+                    if orders.is_empty() {
+                        book_side.remove(&price);
+                    }
                 }
-                idx += 1;
-            }
-            if orders.is_empty() {
-                book.remove(&price);
+                return found;
             }
         }
-        found
+        false
     }
 
+    /// T3.2 改:跨 book 聚合(取任一非空 book 的最优买价)
+    ///
+    /// 注意:这个 trait 方法**限制**了 L1 的多 book 语义——返回的是某个
+    /// book 的最优价,不是全局最优。**Spec §5.1** 推荐用
+    /// `L1MatchingEngine::best_bid_for(&Instrument)` 做精确查询。
     #[inline]
     fn best_bid(&self) -> Option<Price> {
-        self.bids.keys().next_back().copied()
+        self.books.values().find_map(|b| b.best_bid())
     }
 
+    /// T3.2 改:跨 book 聚合(取任一非空 book 的最优卖价)
     #[inline]
     fn best_ask(&self) -> Option<Price> {
-        self.asks.keys().next().copied()
+        self.books.values().find_map(|b| b.best_ask())
     }
 
+    /// T3.2 改:跨 book 聚合 spread
     #[inline]
     fn spread(&self) -> Option<Price> {
         let bid = self.best_bid()?;
@@ -672,71 +742,61 @@ impl MatchingEngine for L1MatchingEngine {
         Some(Price::from_f64(spread))
     }
 
+    /// T3.2 改:跨所有 book 聚合 depth(每个 book 内部仍取前 N 层)
     fn depth(&self, levels: usize) -> (Vec<OrderBookLevel>, Vec<OrderBookLevel>) {
-        let bid_levels: Vec<OrderBookLevel> = self
-            .bids
-            .iter()
-            .rev()
-            .take(levels)
-            .map(|(price, orders)| OrderBookLevel {
-                price: *price,
-                quantity: sum_remaining(orders),
-                order_count: orders.iter().filter(|o| !o.status.is_terminal()).count(),
-            })
-            .collect();
-
-        let ask_levels: Vec<OrderBookLevel> = self
-            .asks
-            .iter()
-            .take(levels)
-            .map(|(price, orders)| OrderBookLevel {
-                price: *price,
-                quantity: sum_remaining(orders),
-                order_count: orders.iter().filter(|o| !o.status.is_terminal()).count(),
-            })
-            .collect();
-
+        let mut bid_levels = Vec::new();
+        let mut ask_levels = Vec::new();
+        for book in self.books.values() {
+            // 每个 book 取前 levels 层,跨 book 平铺
+            let bids: Vec<OrderBookLevel> = book
+                .bids
+                .iter()
+                .rev()
+                .take(levels)
+                .map(|(price, orders)| OrderBookLevel {
+                    price: *price,
+                    quantity: sum_remaining(orders),
+                    order_count: orders.iter().filter(|o| !o.status.is_terminal()).count(),
+                })
+                .collect();
+            let asks: Vec<OrderBookLevel> = book
+                .asks
+                .iter()
+                .take(levels)
+                .map(|(price, orders)| OrderBookLevel {
+                    price: *price,
+                    quantity: sum_remaining(orders),
+                    order_count: orders.iter().filter(|o| !o.status.is_terminal()).count(),
+                })
+                .collect();
+            bid_levels.extend(bids);
+            ask_levels.extend(asks);
+        }
         (bid_levels, ask_levels)
     }
 
+    /// T3.2 改:跨 book 聚合 active_order_count
     fn active_order_count(&self) -> usize {
-        self.order_index.len()
+        self.books.values().map(|b| b.active_order_count()).sum()
     }
 
+    /// T3.2 改:清空所有 books(每个 book 内部清,order_index 替换为新实例)
+    ///
+    /// `trade_sequence` 仍保留(跨 bar 连续递增)。
     fn clear_book(&mut self) {
-        // 1) 清空两侧订单簿与索引;清空后所有"被种子但未成交"的 limit 单
-        //    全部丢弃,这正是回测场景下"瞬时对手盘"想要的语义。
-        // 2) **不**清空 `trade_sequence`,成交序号跨 bar 仍连续递增。
-        //
-        // 3) ponytail: 关键内存语义。
-        //    - `BTreeMap::clear()` 内部实现 `self.root = None; self.length = 0`,
-        //      drop 根节点会递归释放整棵 B 树(节点 + 各价格下的 VecDeque +
-        //      内部每个 Order 及其 Symbol 堆),真正释放内存。直接 `.clear()` 即可。
-        //    - **`HashMap::clear()` 不释放底层 raw table 内存**(Rust std 明确语义,
-        //      "Keeps the allocated memory for reuse")。`seed_liquidity` 中
-        //      `order_index` 的 key 是单调递增的 `next_id`,HashMap 会按需扩容
-        //      到能容纳最大 id 的容量,但 `clear()` 不会缩容,导致多次 seed 循环
-        //      后 raw table 容量只增不减,叠加 PyO3 端 `Arc<Mutex<Py<PyAny>>>`
-        //      持有 Python 对象,多引擎实例创建/丢弃时会产生 GB 级累积。
-        //    - **修复**:把 `order_index` 替换为新 `HashMap` 实例(等价于
-        //      `mem::replace`),旧实例 drop 时 raw table 真正 deallocate。
-        //    - 已知简化面:`BTreeMap::clear()` 仍保留根节点的 leaf node
-        //      allocation 给下次 `seed_liquidity` 复用(避免重新分配 root),
-        //      容量重用语义稳定,无需替换新实例。
-        self.bids.clear();
-        self.asks.clear();
-        self.order_index = HashMap::new();
+        for book in self.books.values_mut() {
+            book.clear();
+        }
     }
 
     /// trait 适配:委托给 `L1MatchingEngine::seed_liquidity` inherent 方法
-    /// (`engine.rs:432-485`)。详见该方法文档。
     fn seed_liquidity(
         &mut self,
         mid_price: f64,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         L1MatchingEngine::seed_liquidity(
@@ -766,7 +826,7 @@ mod tests {
     use super::*;
     use axon_core::market::Side;
     use axon_core::order::{Order, OrderType, TimeInForce};
-    use axon_core::types::{Price, Quantity};
+    use axon_core::types::SpotInstrument;
 
     fn make_limit_order(id: u64, side: Side, price: f64, qty: f64, _ts: i64) -> Order {
         Order::spot(
@@ -1043,12 +1103,84 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_with_symbol() {
-        let engine = L1MatchingEngine::with_symbol(Symbol::from("ETH-USDT"));
-        assert!(engine.instrument.is_some());
-        let inst = engine.instrument.as_ref().unwrap();
-        assert_eq!(inst.base().as_str(), "ETH");
-        assert_eq!(inst.quote().as_str(), "USDT");
+    fn test_engine_multi_book_routing() {
+        // T3.2 改:替换原 `test_engine_with_symbol` (单 instrument 预绑定)。
+        // 现语义:L1MatchingEngine 是空 book 容器,首次 submit 时按
+        // `order.instrument` 自动建 book;不同 instrument 互不干扰。
+        let mut engine = L1MatchingEngine::new();
+        assert_eq!(engine.active_order_count(), 0);
+
+        let btc = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
+        let eth = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        });
+
+        // 用 helper 构造不同 instrument 的订单,挂入各自 book
+        // (这里只验证 active_order_count 在两个 instrument 后是两者之和)
+        let _ = engine.seed_liquidity(100.0, 0.1, 5, 1.0, btc.clone(), 1);
+        let btc_orders = engine.active_order_count();
+        assert!(btc_orders > 0, "BTC book 应有活跃订单");
+
+        let _ = engine.seed_liquidity(200.0, 0.1, 5, 1.0, eth.clone(), 100);
+        let total = engine.active_order_count();
+        assert_eq!(total, btc_orders * 2, "ETH book 不应与 BTC book 串扰");
+
+        // best_bid_for / best_ask_for 路由正确
+        assert!(engine.best_bid_for(&btc).is_some());
+        assert!(engine.best_ask_for(&btc).is_some());
+        assert!(engine.best_bid_for(&eth).is_some());
+        assert!(engine.best_ask_for(&eth).is_some());
+        // 跨 instrument 价格不同(btc=100, eth=200)
+        assert_ne!(engine.best_bid_for(&btc), engine.best_bid_for(&eth));
+    }
+
+    /// T3.3 补充:`clear_book` 在 multi-instrument 场景下应清空
+    /// 所有 book 的内容,但保留 `books: HashMap<Instrument, L1Book>`
+    /// 容器(以保留 instrument 路由的"形状",方便下次 seed_liquidity
+    /// 不用重新枚举已注册的 instrument)。同时验证 cross-instrument
+    /// 不会串扰。
+    #[test]
+    fn test_clear_book_clears_all_instruments() {
+        let mut engine = L1MatchingEngine::new();
+        let btc = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
+        let eth = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        });
+
+        // 两个 instrument 各 seed 5 层
+        let _ = engine.seed_liquidity(100.0, 0.1, 5, 1.0, btc.clone(), 1);
+        let _ = engine.seed_liquidity(10.0, 0.1, 5, 1.0, eth.clone(), 100);
+        assert_eq!(engine.active_order_count(), 20, "两 instrument 各 10 单");
+
+        // clear 后所有订单消失,但 books 容器仍在
+        engine.clear_book();
+        assert_eq!(engine.active_order_count(), 0, "所有活跃订单应清空");
+        assert_eq!(
+            engine.books.len(),
+            2,
+            "books 容器保留 instrument 路由形状(2 个 instrument)"
+        );
+        assert!(engine.best_bid_for(&btc).is_none());
+        assert!(engine.best_ask_for(&eth).is_none());
+
+        // 验证 cross-instrument 隔离:clear 之后再 seed,价格档应回到干净状态
+        let _ = engine.seed_liquidity(200.0, 0.1, 5, 1.0, btc.clone(), 200);
+        // btc best_ask 应是 mid(200) + half_spread(0.1)*1 = 200.1
+        assert_eq!(
+            engine.best_ask_for(&btc).unwrap().as_f64(),
+            200.1,
+            "clear 后再 seed,应得到干净的 mid+spread 档,无 ghost 旧单"
+        );
+        // eth book 仍为空(未重新 seed)
+        assert!(engine.best_ask_for(&eth).is_none());
     }
 
     #[test]
