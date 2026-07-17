@@ -12,7 +12,8 @@ fn make_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
     Order::spot(
         id,
         "BTC",
-        "USDT",side,
+        "USDT",
+        side,
         OrderType::Limit {
             price: Price::from_f64(price),
         },
@@ -94,7 +95,8 @@ pub fn run_market_impact_verification() {
     let big_buy = Order::spot(
         2,
         "BTC",
-        "USDT",Side::Buy,
+        "USDT",
+        Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(110.0),
         },
@@ -270,7 +272,8 @@ pub fn run_l3_multi_asset_routing() {
     let btc_buy = Order::spot(
         1,
         "BTC",
-        "USDT",Side::Buy,
+        "USDT",
+        Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(50000.0),
         },
@@ -284,7 +287,8 @@ pub fn run_l3_multi_asset_routing() {
     let eth_sell = Order::spot(
         2,
         "ETH",
-        "USDT",Side::Sell,
+        "USDT",
+        Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(3000.0),
         },
@@ -317,9 +321,10 @@ pub fn run_l3_cross_pair_arbitrage() {
     engine.register_asset(Symbol::from("ETH/USDT"));
     engine
         .submit(Order::spot(
-        10,
-        "BTC",
-        "USDT",Side::Buy,
+            10,
+            "BTC",
+            "USDT",
+            Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(50000.0),
             },
@@ -329,9 +334,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         .unwrap();
     engine
         .submit(Order::spot(
-        11,
-        "BTC",
-        "USDT",Side::Sell,
+            11,
+            "BTC",
+            "USDT",
+            Side::Sell,
             OrderType::Limit {
                 price: Price::from_f64(51000.0),
             },
@@ -341,9 +347,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         .unwrap();
     engine
         .submit(Order::spot(
-        20,
-        "ETH",
-        "USDT",Side::Buy,
+            20,
+            "ETH",
+            "USDT",
+            Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(3000.0),
             },
@@ -353,9 +360,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         .unwrap();
     engine
         .submit(Order::spot(
-        21,
-        "ETH",
-        "USDT",Side::Sell,
+            21,
+            "ETH",
+            "USDT",
+            Side::Sell,
             OrderType::Limit {
                 price: Price::from_f64(3100.0),
             },

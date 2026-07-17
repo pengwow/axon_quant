@@ -38,8 +38,6 @@ use axon_core::types::{Instrument, Quantity, SpotInstrument, Symbol};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-const SYM: &str = "BTC/USDT";
-
 fn sym() -> Instrument {
     // T2.3:返回 Instrument(原 Symbol),用于 begin_bar 的 instrument 参数
     Instrument::Spot(SpotInstrument {
@@ -51,8 +49,8 @@ fn sym() -> Instrument {
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
     Order::spot(
         id,
-            "BTC",
-            "USDT",
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -134,7 +132,7 @@ fn begin_bar_seeds_counterparty_then_buy_fills() {
         result.total_fees
     );
     // 持仓 long 0.05
-    let pos = result.positions.get(SYM).copied().unwrap_or(0.0);
+    let pos = result.positions.get(&sym()).copied().unwrap_or(0.0);
     assert!((pos - 0.05).abs() < 1e-9, "持仓应 = 0.05,got {}", pos);
 }
 

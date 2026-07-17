@@ -22,9 +22,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 fn make_limit_order(price: f64, qty: f64) -> Order {
     Order::spot(
-1,
-"BTC",
-"USDT",Side::Buy,
+        1,
+        "BTC",
+        "USDT",
+        Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(price),
         },

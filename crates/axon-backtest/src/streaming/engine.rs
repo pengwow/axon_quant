@@ -506,7 +506,11 @@ mod tests {
 /// 把 `Instrument` 序列化为 streaming engine HashMap key 使用的字符串 (transitional)
 #[allow(clippy::items_after_test_module)]
 fn instrument_to_key(inst: &Instrument) -> Symbol {
-    Symbol::from(format!("{}/{}", inst.base().as_str(), inst.quote().as_str()))
+    Symbol::from(format!(
+        "{}/{}",
+        inst.base().as_str(),
+        inst.quote().as_str()
+    ))
 }
 
 /// 把 `Symbol` 拆为 `(base, quote)` (T2.2 过渡 helper)

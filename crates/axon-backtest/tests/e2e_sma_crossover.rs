@@ -47,8 +47,8 @@ fn engine_with_sma(short_win: usize, long_win: usize) -> StreamingEngine {
     // 挂 Sell Limit maker(Market Buy 的对手盘)
     let maker = Order::spot(
         900,
-            "BTC",
-            "USDT",
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(200.0), // 高于所有测试价格,确保能撮合

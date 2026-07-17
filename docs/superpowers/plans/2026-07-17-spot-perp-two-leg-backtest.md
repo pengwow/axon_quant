@@ -1079,7 +1079,11 @@ git commit -m "feat(backtest): TradeRecord carries instrument"
 **Files:**
 - Modify: `crates/axon-backtest/src/matching/engine.rs`
 
-- [ ] **Step 1: Add `L1Book` struct above `L1MatchingEngine`**
+- [x] **Step 1: Add `L1Book` struct above `L1MatchingEngine`**
+
+> **完成状态(e58a253)**:L1Book 已抽到 `crates/axon-backtest/src/matching/engine.rs`,
+> 含 `new` / `clear` / `active_order_count` / `best_bid` / `best_ask` / `insert_passive` 方法。
+> L1Book 持有 bids/asks/order_index,`#[derive(Debug, Default)]`。
 
 In `crates/axon-backtest/src/matching/engine.rs`, add (before `pub struct L1MatchingEngine`):
 
@@ -1123,14 +1127,39 @@ impl L1Book {
 }
 ```
 
-- [ ] **Step 2: Run tests, expect compile errors**
+- [x] **Step 2: Run tests, expect compile errors**
 
-Run: `cargo build -p axon-backtest 2>&1 | head -30`
-Expected: `L1MatchingEngine` field access compile errors. Task 3.2 fixes.
+> **完成状态**:L1MatchingEngine 已持有 `books: HashMap<Instrument, L1Book>`,
+> `seed_liquidity` 按 `instrument` 路由,`submit` 按 `order.instrument` 路由,
+> `match_against_asks` / `match_against_bids` 迁为 L1Book 关联函数接收
+> `trade_sequence: &AtomicU64`,彻底解决 `&mut self` 同时借用 `self.books`
+> 和 `self.trade_sequence` 的 borrow-check 冲突。
+>
+> L1 / L2 保留 `with_symbol(Symbol)` 为 no-op(参数被忽略),供 axon-llm、
+> Python `__init__(symbol=...)`、fuzz 测试等历史调用方使用。
+>
+> `test_engine_with_symbol` 已替换为 `test_engine_multi_book_routing`
+> (覆盖 BTC/ETH 路由隔离 + best_bid_for/ask_for 路由)。
 
 ---
 
 ### Task 3.2: Refactor `L1MatchingEngine` to hold `HashMap<Instrument, L1Book>`
+
+> **完成状态(e58a253)**:本任务所有 step 已完成。L1MatchingEngine 现在持
+> 有 `books: HashMap<Instrument, L1Book>`,所有路由走 `order.instrument`。
+> 关键设计点:
+> - `match_against_asks` / `match_against_bids` 迁为 `L1Book` 关联函数,
+>   接收 `trade_sequence: &AtomicU64`,根除 `&mut self` 同时借用
+>   `self.books` 和 `self.trade_sequence` 的 borrow-check 冲突。
+> - `L1 / L2::with_symbol(Symbol)` 保留为 no-op(参数被忽略)以兼容
+>   axon-llm、Python `__init__(symbol=...)`、fuzz 测试。
+> - `clear_book` 遍历 `self.books.values_mut()` 调 `L1Book::clear`,
+>   books 容器保留(下次 seed 不用重新枚举 instrument)。
+> - `best_bid` / `best_ask` / `depth` / `active_order_count` 跨所有 book
+>   聚合;`best_bid_for` / `best_ask_for` 按 instrument 路由(inherent 方法)。
+>
+> 见 commit e58a253 "refactor(backtest): route L1/L2 by Instrument via L1Book map (multi-leg)"。
+> 关联 commit 修复 `streaming_report_e2e` 中 BuyStrategy split 旧 bug。
 
 **Files:**
 - Modify: `crates/axon-backtest/src/matching/engine.rs`
@@ -1327,6 +1356,13 @@ git commit -m "refactor(backtest): L1MatchingEngine holds per-instrument L1Book"
 
 ### Task 3.3: Add `L1Book` unit tests
 
+> **完成状态(e58a253)**:本任务所有 step 已完成。tests 模块中添加了:
+> - `test_engine_multi_book_routing`:BTC/ETH 两个 instrument 路由隔离,
+>   `best_bid_for` / `best_ask_for` 路由正确,跨 instrument 价格不串扰。
+> - `test_clear_book_clears_all_instruments`:多 instrument 场景下
+>   `clear_book` 清空所有 book 内容但保留 books 容器(形状),
+>   clear 之后再 seed 不留 ghost entry。
+
 **Files:**
 - Modify: `crates/axon-backtest/src/matching/engine.rs`
 
@@ -1402,6 +1438,14 @@ git commit -m "test(backtest): L1 multi-instrument routing and clear_book covera
 ---
 
 ### Task 3.4: Update `BacktestEngine::begin_bar` for Instrument routing
+
+> **完成状态(T2.3)**:本任务所有 step 已在 T2.3 阶段完成。
+> `BacktestEngine::begin_bar` 现在签名是 `pub fn begin_bar(&mut self, mid_price: f64, instrument: Instrument)`,
+> 参数 `symbol: Symbol` 替换为 `instrument: Instrument`,内部 `clear_book()`
+> 清所有 book(语义不变)+ `seed_liquidity(..., instrument, ...)` 按 instrument 路由。
+>
+> 完整实现见 `crates/axon-backtest/src/engine.rs` 第 455 行 `begin_bar`。
+> 见 commit 6d91f99 "refactor(backtest): seed_liquidity and begin_bar take Instrument"。
 
 **Files:**
 - Modify: `crates/axon-backtest/src/engine.rs`

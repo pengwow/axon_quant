@@ -29,7 +29,11 @@ pub fn check_position_limit(
 
     if new_qty > config.max_position_per_instrument {
         return RiskResult::Reject(RiskReason::PositionLimitExceeded {
-            instrument: format!("{}/{}", order.instrument.base().as_str(), order.instrument.quote().as_str()),
+            instrument: format!(
+                "{}/{}",
+                order.instrument.base().as_str(),
+                order.instrument.quote().as_str()
+            ),
             limit: config.max_position_per_instrument,
         });
     }
@@ -50,9 +54,10 @@ mod tests {
 
     fn make_order(side: Side, qty: f64) -> Order {
         Order::spot(
-1,
-"BTC",
-"USDT",side,
+            1,
+            "BTC",
+            "USDT",
+            side,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
             },

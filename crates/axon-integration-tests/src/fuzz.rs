@@ -99,9 +99,10 @@ fn order_strategy(side: Side, base_price: f64) -> impl Strategy<Value = Order> {
             let p = Price::from_f64((base_price + price_off as f64 * 0.001).max(0.01));
             let q = Quantity::from_f64(qty as f64 * 0.001);
             Order::spot(
-id,
-"FUZZ",
-"USDT",side,
+                id,
+                "FUZZ",
+                "USDT",
+                side,
                 OrderType::Limit { price: p },
                 q,
                 TimeInForce::GTC,

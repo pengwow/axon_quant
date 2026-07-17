@@ -39,7 +39,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
@@ -149,7 +157,8 @@ impl SmaStrategy {
         let long = self.sma(self.long_win);
         self.desired = match (short, long) {
             (Some(s), Some(l)) if s > l => 1.0,
-            _ => 0.0};
+            _ => 0.0,
+        };
     }
 
     /// 根据 (desired, position) 决定是否需要下单;返回 Some(side) 表示要发单
@@ -608,9 +617,10 @@ fn total_fees_equals_sum_per_fill() {
 
     // 终态持仓:三笔都是 buy,long 累加 = 0.1 + 0.05 + 0.2 = 0.35(force_liquidate=false 留仓)
     assert_eq!(result.positions.len(), 1);
+    let btc = btc_inst();
     assert!(
-        (result.positions["BTC/USDT"] - 0.35).abs() < 1e-9,
+        (result.positions[&btc] - 0.35).abs() < 1e-9,
         "expected long 0.35,got {}",
-        result.positions["BTC/USDT"]
+        result.positions[&btc]
     );
 }

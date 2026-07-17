@@ -30,7 +30,8 @@ fn make_limit_order(price: f64, qty: f64) -> Order {
     Order::spot(
         1,
         "BTC",
-        "USDT",Side::Buy,
+        "USDT",
+        Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(price),
         },

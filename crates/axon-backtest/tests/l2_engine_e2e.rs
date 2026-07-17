@@ -31,7 +31,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Instrument, Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── L2Adapter:让 L2MatchingEngine 接入 MatchingEngine trait ──────────
 
@@ -100,7 +108,7 @@ impl MatchingEngine for L2Adapter {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _instrument: Instrument,    // 改: 原 _symbol: Symbol (T2.3)
+        _instrument: Instrument, // 改: 原 _symbol: Symbol (T2.3)
         _next_id: u64,
     ) -> u64 {
         // L2 不实现 seed_liquidity(继承默认 no-op)
@@ -194,7 +202,7 @@ fn l2_adapter_works_in_backtest_engine() {
         result.total_fees
     );
     // 末态持仓 = +0.1
-    let pos = result.positions.get("BTC/USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!((pos - 0.1).abs() < 1e-9, "pos 应=+0.1, got {}", pos);
 }
 

@@ -1,6 +1,7 @@
 //! 事件构建器（类型安全的事件创建 + 自增序列号）
 
 use super::fill::FillEvent;
+use super::mark::MarkEvent;
 use super::market::{MarketDataEvent, MarketDataPayload};
 use super::order::{OrderAction, OrderEvent};
 use super::system::{SystemAction, SystemEvent};
@@ -49,6 +50,18 @@ impl EventBuilder {
         let seq = self.next_seq;
         self.next_seq += 1;
         Event::Fill(FillEvent::new(seq, timestamp, trade))
+    }
+
+    /// 构建 Mark 事件(标记价格更新)— T3.6 新增
+    ///
+    /// 用法:`b.mark(MarkEvent::new(inst, price, ts))`,`MarkEvent` 自身已含
+    /// timestamp,这里 `next_seq` 仅自增以保持 builder 全局序号一致(Event::Mark
+    /// 序列化时 `seq()` 返回 0,但 builder 仍要分配以避免后续 `current_seq` 跳变)。
+    pub fn mark(&mut self, mark: MarkEvent) -> Event {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let _ = seq;
+        Event::Mark(mark)
     }
 
     /// 构建系统事件

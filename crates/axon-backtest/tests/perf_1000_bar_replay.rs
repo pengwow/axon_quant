@@ -50,11 +50,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
-// ── 共享 helper ──────────────────────────────────────────────
-
-const SYM: &str = "BTC/USDT";
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Bar {
@@ -138,7 +142,8 @@ impl SmaStrategy {
         let long = self.sma(self.long_win);
         self.desired = match (short, long) {
             (Some(s), Some(l)) if s > l => 1.0,
-            _ => 0.0};
+            _ => 0.0,
+        };
     }
 
     fn next_signal(&self) -> Option<Side> {
@@ -279,7 +284,7 @@ fn correctness_1000_bars_oscillating_sma_runs_to_completion() {
     );
 
     // 终态持仓应为 0(每周期收尾时 SMA short 跌破 long,Sell 触发)
-    let pos = result.positions.get(SYM).copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(pos.abs() < 1e-6, "终态持仓应=0(震荡收尾),got {}", pos);
 
     // 至少 1 笔 trade(完全平仓过)

@@ -40,7 +40,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
@@ -160,7 +168,7 @@ fn rejected_event_increments_counter() {
 /// 验证:
 /// - `orders_cancelled = 1`(事件被计数)
 /// - `fills = 1`(残留订单仍可被撮合,这是 P1 加固项)
-/// - `positions["BTC/USDT"] = 0.1`(实际成交了)
+/// - `positions[btc_inst()] = 0.1`(实际成交了)
 #[test]
 fn cancel_after_submit_does_not_remove_pending_order() {
     let mut q = EventQueue::new();
@@ -203,9 +211,10 @@ fn cancel_after_submit_does_not_remove_pending_order() {
         result.total_fees
     );
     // 持仓
+    let btc = btc_inst();
     assert!(
-        (result.positions["BTC/USDT"] - 0.1).abs() < 1e-9,
+        (result.positions[&btc] - 0.1).abs() < 1e-9,
         "BTC 持仓 0.1,got {}",
-        result.positions["BTC/USDT"]
+        result.positions[&btc]
     );
 }

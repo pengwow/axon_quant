@@ -193,7 +193,7 @@ impl ImpactedMatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         self.inner.seed_liquidity(
@@ -201,7 +201,7 @@ impl ImpactedMatchingEngine {
             half_spread,
             depth_levels,
             size_per_level,
-            instrument,    // 改: 原 symbol (T2.3)
+            instrument, // 改: 原 symbol (T2.3)
             next_id,
         )
     }

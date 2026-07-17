@@ -9,9 +9,10 @@ use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, RiskReason, RiskResul
 
 fn make_limit_order(side: Side, price: f64, qty: f64) -> Order {
     Order::spot(
-1,
-"BTC",
-"USDT",side,
+        1,
+        "BTC",
+        "USDT",
+        side,
         OrderType::Limit {
             price: Price::from_f64(price),
         },

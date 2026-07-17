@@ -36,7 +36,23 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Instrument, Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
+
+/// 构造 ETH/USDT 现货 Instrument(T3.5)
+fn eth_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── MultiSymbolAdapter:test-only thin wrapper ────────────────────────
 
@@ -128,7 +144,7 @@ impl MatchingEngine for MultiSymbolAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         // engines 已经按 Instrument key 路由(T3.1 后)
@@ -225,15 +241,17 @@ fn two_symbols_independent_positions() {
 
     assert_eq!(result.fills, 2, "BTC + ETH 各 1 笔 fill");
     assert_eq!(result.positions.len(), 2, "2 个 symbol 持仓");
+    let btc = btc_inst();
+    let eth = eth_inst();
     assert!(
-        (result.positions["BTC/USDT"] - 0.1).abs() < 1e-9,
+        (result.positions[&btc] - 0.1).abs() < 1e-9,
         "BTC 持仓 0.1, got {}",
-        result.positions["BTC/USDT"]
+        result.positions[&btc]
     );
     assert!(
-        (result.positions["ETH/USDT"] - 0.1).abs() < 1e-9,
+        (result.positions[&eth] - 0.1).abs() < 1e-9,
         "ETH 持仓 0.1, got {}",
-        result.positions["ETH/USDT"]
+        result.positions[&eth]
     );
     // 手算(同价位 100,mark 与 fill 一致):
     // cash = 100000 - 10 - 10 - 0.02 = 99979.98
@@ -430,9 +448,10 @@ fn cross_symbol_no_unintended_fill() {
     assert_eq!(result.orders_accepted, 1, "ETH ask 挂簿 accepted");
     assert_eq!(result.orders_rejected, 1, "BTC market buy 无对手方被拒");
     // BTC 持仓 = 0(未成交)
+    let btc = btc_inst();
     assert!(
-        !result.positions.contains_key("BTC/USDT") || result.positions["BTC/USDT"].abs() < 1e-9,
+        !result.positions.contains_key(&btc) || result.positions[&btc].abs() < 1e-9,
         "BTC 持仓应为 0,got {:?}",
-        result.positions.get("BTC/USDT")
+        result.positions.get(&btc)
     );
 }

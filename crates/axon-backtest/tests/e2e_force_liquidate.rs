@@ -45,9 +45,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
-const SYM: &str = "BTC/USDT";
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
@@ -125,7 +131,8 @@ impl SmaStrategyOnce {
         let long = self.sma(self.long_win);
         self.desired = match (short, long) {
             (Some(s), Some(l)) if s > l => 1.0,
-            _ => 0.0};
+            _ => 0.0,
+        };
     }
 
     /// 返回 Some(Side::Buy) 当且仅当「desired=1 且未买过」;其他情况 None
@@ -141,8 +148,8 @@ impl SmaStrategyOnce {
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
     Order::spot(
         id,
-            "BTC",
-            "USDT",
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -155,8 +162,8 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
     Order::spot(
         id,
-            "BTC",
-            "USDT",
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -227,7 +234,7 @@ fn emit_bar(
 /// SMA uptrend 序列,策略开 1 仓 long 0.1,最后一根 bar 不发单(留 long) → EOD 平仓
 ///
 /// 验证:
-/// - `positions["BTC/USDT"] ≈ 0`(被 EOD 市价清掉)
+/// - `positions[btc_inst()] ≈ 0`(被 EOD 市价清掉)
 /// - `trades.len() >= 1`(EOD 平仓 push 1 个 TradeRecord)
 /// - `final_nav` 是 cash-only(无 mark 浮动)
 /// - `orders_accepted` 含 EOD 市价单
@@ -259,7 +266,7 @@ fn force_liquidate_true_closes_open_position_via_eod() {
     let result = engine.run();
 
     // 终态持仓应为 0(EOD 市价清仓)—— 1e-6 容忍度覆盖浮点误差
-    let pos = result.positions.get(SYM).copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(
         pos.abs() < 1e-6,
         "force_liquidate=true 后 position 应清零,got {}",
@@ -319,7 +326,7 @@ fn force_liquidate_false_keeps_position_with_mark() {
     );
 
     // 终态持仓保留 long 0.1(SmaStrategyOnce 只买 1 次,不会平仓)
-    let pos = result.positions.get(SYM).copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(
         (pos - qty).abs() < 1e-6,
         "force_liquidate=false 应保留 long 0.1,got {}",
@@ -413,7 +420,7 @@ fn force_liquidate_pnl_diff_is_realized_only() {
         (
             result.total_pnl,
             result.trades.len(),
-            result.positions.get(SYM).copied().unwrap_or(0.0),
+            result.positions.get(&btc_inst()).copied().unwrap_or(0.0),
         )
     };
 

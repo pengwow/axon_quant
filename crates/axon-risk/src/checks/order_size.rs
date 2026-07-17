@@ -27,9 +27,10 @@ mod tests {
 
     fn make_limit_order(price: f64, qty: f64) -> Order {
         Order::spot(
-1,
-"BTC",
-"USDT",Side::Buy,
+            1,
+            "BTC",
+            "USDT",
+            Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(price),
             },
@@ -40,9 +41,10 @@ mod tests {
 
     fn make_market_order(qty: f64) -> Order {
         Order::spot(
-1,
-"BTC",
-"USDT",Side::Buy,
+            1,
+            "BTC",
+            "USDT",
+            Side::Buy,
             OrderType::Market,
             Quantity::from_f64(qty),
             TimeInForce::GTC,

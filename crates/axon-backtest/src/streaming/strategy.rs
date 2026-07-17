@@ -115,7 +115,10 @@ impl StreamingStrategy for SmaCrossover {
                 // T2.2: 用 Order::spot 替代 Order::new,symbol 拆分 base/quote
                 let s_str = symbol.as_str();
                 let (base, quote) = match s_str.split_once('-').or_else(|| s_str.split_once('/')) {
-                    Some((b, q)) => (axon_core::types::Symbol::from(b), axon_core::types::Symbol::from(q)),
+                    Some((b, q)) => (
+                        axon_core::types::Symbol::from(b),
+                        axon_core::types::Symbol::from(q),
+                    ),
                     None => (symbol.clone(), axon_core::types::Symbol::from("USDT")),
                 };
                 let order = Order::spot(

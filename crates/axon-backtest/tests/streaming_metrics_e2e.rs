@@ -38,8 +38,8 @@ fn btc() -> Symbol {
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
     Order::spot(
         id,
-            "BTC",
-            "USDT",
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),

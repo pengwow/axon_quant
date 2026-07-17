@@ -458,7 +458,11 @@ fn mid_price_from_engine(engine: &crate::matching::L2MatchingEngine) -> Option<P
 /// 接受的 `Symbol::from("BTC-USDT")` 不同:此处用 `/` 与 axon_quant position
 /// key 习惯保持一致,T3.x 切换 key 类型时两端会一起迁移。
 fn instrument_to_key(inst: &Instrument) -> Symbol {
-    Symbol::from(format!("{}/{}", inst.base().as_str(), inst.quote().as_str()))
+    Symbol::from(format!(
+        "{}/{}",
+        inst.base().as_str(),
+        inst.quote().as_str()
+    ))
 }
 
 /// 把 `Symbol` (L3 用的 `"BTC-USDT"` 风格) 拆为 `(base, quote)` `(T2.2 过渡 helper)`
