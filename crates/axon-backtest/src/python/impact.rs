@@ -150,28 +150,30 @@ impl PyImpactedMatchingEngine {
     /// - `half_spread`: 每层价差（绝对价格单位）
     /// - `depth_levels`: 每侧挂单层数
     /// - `size_per_level`: 每层挂单数量
-    /// - `symbol`: 交易对字符串
+    /// - `instrument`: instrument dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
     /// - `next_id`: 起始订单 id
     ///
     /// Returns:
     ///   更新后的 id 计数器（传给下一次 seed 调用）
     fn seed_liquidity(
         &mut self,
+        py: Python<'_>,
         mid_price: f64,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: &str,
+        instrument: &Bound<'_, PyAny>,
         next_id: u64,
-    ) -> u64 {
-        self.inner.seed_liquidity(
+    ) -> PyResult<u64> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        Ok(self.inner.seed_liquidity(
             mid_price,
             half_spread,
             depth_levels,
             size_per_level,
-            axon_core::types::Symbol::from(symbol),
+            inst,
             next_id,
-        )
+        ))
     }
 
     /// 清空订单簿两侧（回测辅助 — 瞬时对手盘场景）

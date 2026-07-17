@@ -54,6 +54,8 @@ try:
         ArbitrageOpportunity,
         limit_order,
         market_order,
+        spot_instrument,
+        swap_instrument,
     )
     _BACKTEST_AVAILABLE = hasattr(axon_quant, "_native") and hasattr(
         axon_quant._native, "backtest"
@@ -69,13 +71,21 @@ if not _BACKTEST_AVAILABLE:
     )
 
 
+# 0.5.0 起:所有 OrderDict 工厂用 `instrument` dict 代替 `symbol` 字符串。
+# 在测试模块顶部预创建常用 instrument,避免每个用例重复构造。
+_BTC_USDT = spot_instrument("BTC", "USDT")
+_ETH_USDT = spot_instrument("ETH", "USDT")
+_BTC_USDT_PERP = swap_instrument("BTC", "USDT", settle="usd_margin", contract_size=1.0)
+_X_USDT = spot_instrument("X", "USDT")  # 通用占位 instrument
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 类型可用性
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def test_backtest_module_imports_all_symbols():
-    """所有 14 个 backtest 符号都能 import。"""
+    """所有 backtest 符号都能 import(0.5.0 起包含 Instrument 工厂)。"""
     # 上面的 try/except 已经验证了,这里再次确保类可访问
     assert L1MatchingEngine is not None
     assert L2MatchingEngine is not None
@@ -91,9 +101,11 @@ def test_backtest_module_imports_all_symbols():
     assert CrossPair is not None
     assert AuctionResult is not None
     assert ArbitrageOpportunity is not None
-    # 工厂函数
+    # 工厂函数(0.5.0:加 Instrument 工厂)
     assert callable(limit_order)
     assert callable(market_order)
+    assert callable(spot_instrument)
+    assert callable(swap_instrument)
 
 
 def test_backtest_submodule_path():
@@ -109,11 +121,11 @@ def test_backtest_submodule_path():
 
 
 def test_limit_order_factory():
-    """limit_order 工厂返回 dict 协议,字段齐全。"""
-    o = limit_order(1, "BTC-USDT", "Buy", 100.0, 1.0)
+    """limit_order 工厂返回 dict 协议,字段齐全(0.5.0:`symbol` → `instrument`)。"""
+    o = limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0)
     assert o == {
         "id": 1,
-        "symbol": "BTC-USDT",
+        "instrument": _BTC_USDT,
         "side": "Buy",
         "type": "limit",
         "price": 100.0,
@@ -124,22 +136,114 @@ def test_limit_order_factory():
 
 def test_limit_order_default_tif_is_uppercase():
     """limit_order tif 默认 GTC,且大小写自动归一化。"""
-    o = limit_order(1, "X", "Buy", 100.0, 1.0, tif="gtc")
+    o = limit_order(1, _X_USDT, "Buy", 100.0, 1.0, tif="gtc")
     assert o["tif"] == "GTC"
 
 
 def test_market_order_factory():
-    """market_order 工厂强制 tif=IOC。"""
-    o = market_order(2, "ETH-USDT", "Sell", 5.0)
+    """market_order 工厂强制 tif=IOC(0.5.0:`symbol` → `instrument`)。"""
+    o = market_order(2, _ETH_USDT, "Sell", 5.0)
     assert o == {
         "id": 2,
-        "symbol": "ETH-USDT",
+        "instrument": _ETH_USDT,
         "side": "Sell",
         "type": "market",
         "quantity": 5.0,
         "tif": "IOC",
     }
     assert "price" not in o  # 市价单无 price
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 0.5.0 新增:Instrument 工厂测试
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_spot_instrument_factory():
+    """spot_instrument 工厂返回符合 Rust parse_instrument 协议的 dict。"""
+    inst = spot_instrument("BTC", "USDT")
+    assert inst == {"kind": "spot", "base": "BTC", "quote": "USDT"}
+
+
+def test_spot_instrument_rejects_empty():
+    """spot_instrument 空 base/quote → ValueError。"""
+    with pytest.raises(ValueError):
+        spot_instrument("", "USDT")
+    with pytest.raises(ValueError):
+        spot_instrument("BTC", "")
+
+
+def test_swap_instrument_factory():
+    """swap_instrument 工厂返回带 settle + contract_size 的 dict。"""
+    inst = swap_instrument("BTC", "USDT", settle="usd_margin", contract_size=1.0)
+    assert inst == {
+        "kind": "swap",
+        "base": "BTC",
+        "quote": "USDT",
+        "settle": "usd_margin",
+        "contract_size": 1.0,
+    }
+
+
+def test_swap_instrument_coin_margin():
+    """swap_instrument 接受 coin_margin(币本位)。"""
+    inst = swap_instrument("BTC", "USD", settle="coin_margin", contract_size=0.01)
+    assert inst["settle"] == "coin_margin"
+    assert inst["contract_size"] == 0.01
+
+
+def test_swap_instrument_settle_case_insensitive():
+    """swap_instrument settle 字段大小写不敏感(归一化到小写)。"""
+    inst_upper = swap_instrument("BTC", "USDT", settle="USD_MARGIN")
+    inst_mixed = swap_instrument("BTC", "USDT", settle="Usd_Margin")
+    assert inst_upper == inst_mixed
+    assert inst_upper["settle"] == "usd_margin"
+
+
+def test_swap_instrument_rejects_invalid_settle():
+    """swap_instrument 非法 settle → ValueError。"""
+    with pytest.raises(ValueError):
+        swap_instrument("BTC", "USDT", settle="bitcoin_settled")
+
+
+def test_swap_instrument_rejects_non_positive_contract_size():
+    """swap_instrument contract_size <= 0 → ValueError。"""
+    with pytest.raises(ValueError):
+        swap_instrument("BTC", "USDT", contract_size=0.0)
+    with pytest.raises(ValueError):
+        swap_instrument("BTC", "USDT", contract_size=-1.0)
+
+
+def test_limit_order_validates_instrument():
+    """limit_order 接收非法 instrument → 抛 TypeError / KeyError / ValueError。"""
+    # 非 dict
+    with pytest.raises(TypeError):
+        limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0)
+    # 缺 kind
+    with pytest.raises(KeyError):
+        limit_order(1, {"base": "BTC", "quote": "USDT"}, "Buy", 100.0, 1.0)
+    # 非法 kind
+    with pytest.raises(ValueError):
+        limit_order(1, {"kind": "future", "base": "BTC", "quote": "USDT"}, "Buy", 100.0, 1.0)
+    # swap 缺 settle
+    with pytest.raises(KeyError):
+        limit_order(
+            1,
+            {"kind": "swap", "base": "BTC", "quote": "USDT", "contract_size": 1.0},
+            "Buy",
+            100.0,
+            1.0,
+        )
+
+
+def test_limit_order_validates_side_and_price():
+    """limit_order 非法 side / 负价 → ValueError。"""
+    with pytest.raises(ValueError):
+        limit_order(1, _BTC_USDT, "invalid_side", 100.0, 1.0)
+    with pytest.raises(ValueError):
+        limit_order(1, _BTC_USDT, "Buy", 0.0, 1.0)
+    with pytest.raises(ValueError):
+        limit_order(1, _BTC_USDT, "Buy", 100.0, -1.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,7 +254,7 @@ def test_market_order_factory():
 def test_l1_no_match_for_buy_no_ask():
     """买单无卖单时挂单,is_filled=False。"""
     engine = L1MatchingEngine()
-    result = engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
+    result = engine.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
     assert result["is_filled"] is False
     assert result["remaining_quantity"] == 1.0
     assert engine.active_order_count == 1
@@ -161,8 +265,8 @@ def test_l1_no_match_for_buy_no_ask():
 def test_l1_cross_match_yields_one_fill():
     """同价买卖跨价成交,is_filled=True,1 笔 fill。"""
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0))
-    result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Sell", 100.0, 1.0))
+    result = engine.submit(limit_order(2, _BTC_USDT, "Buy", 100.0, 1.0))
     assert result["is_filled"] is True
     assert len(result["fills"]) == 1
     assert result["fills"][0]["price"] == 100.0
@@ -175,8 +279,8 @@ def test_l1_cross_match_yields_one_fill():
 def test_l1_partial_fill_via_buy_smaller():
     """大卖单 + 小买单:买单全成,卖单部分剩余。"""
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 5.0))
-    result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 3.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Sell", 100.0, 5.0))
+    result = engine.submit(limit_order(2, _BTC_USDT, "Buy", 100.0, 3.0))
     assert result["is_filled"] is True  # 买单 3 全部成交
     assert result["remaining_quantity"] == 0
     # 卖单剩 2 仍挂单
@@ -187,7 +291,7 @@ def test_l1_partial_fill_via_buy_smaller():
 def test_l1_cancel_active_order():
     """cancel 已存在订单返回 True,无订单返回 False。"""
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
     assert engine.cancel(1) is True
     assert engine.active_order_count == 0
     # 再次 cancel 同 ID 返回 False
@@ -197,9 +301,9 @@ def test_l1_cancel_active_order():
 def test_l1_depth_returns_dict_with_bids_asks():
     """depth 返回 dict {bids: [...], asks: [...]}。"""
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
-    engine.submit(limit_order(2, "BTCUSDT", "Buy", 99.0, 2.0))
-    engine.submit(limit_order(3, "BTCUSDT", "Sell", 101.0, 1.5))
+    engine.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
+    engine.submit(limit_order(2, _BTC_USDT, "Buy", 99.0, 2.0))
+    engine.submit(limit_order(3, _BTC_USDT, "Sell", 101.0, 1.5))
     depth = engine.depth(5)
     assert set(depth.keys()) == {"bids", "asks"}
     bids = depth["bids"]
@@ -214,8 +318,8 @@ def test_l1_depth_returns_dict_with_bids_asks():
 def test_l1_spread_calculation():
     """spread 在有买卖价时返回价差。"""
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Buy", 99.0, 1.0))
-    engine.submit(limit_order(2, "BTCUSDT", "Sell", 101.0, 1.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Buy", 99.0, 1.0))
+    engine.submit(limit_order(2, _BTC_USDT, "Sell", 101.0, 1.0))
     assert engine.spread == pytest.approx(2.0)
 
 
@@ -228,9 +332,9 @@ def test_l2_stats_after_fill():
     """L2 引擎成对 submit(卖+买)后 stats 计数递增。"""
     engine = L2MatchingEngine()
     # 卖单挂单
-    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 2.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Sell", 100.0, 2.0))
     # 买单吃 1.0,产生 1 笔 fill
-    engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    engine.submit(limit_order(2, _BTC_USDT, "Buy", 100.0, 1.0))
     stats = engine.stats  # property,返回 dict
     # 成对撮合后:matched_orders 递增,total_fills 递增
     assert stats["matched_orders"] >= 1
@@ -259,8 +363,8 @@ def test_l2_modify_after_from_entries():
 def test_l2_volume_at_price():
     """L2 volume_at_price(side, price) 查询某价位总挂单量。"""
     engine = L2MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
-    engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 2.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
+    engine.submit(limit_order(2, _BTC_USDT, "Buy", 100.0, 2.0))
     vol = engine.volume_at_price("buy", 100.0)
     assert vol == pytest.approx(3.0)
 
@@ -297,8 +401,8 @@ def test_l3_register_asset_and_route():
     assert engine.asset_count == 2
 
     # 提交订单后两 symbol 订单簿隔离
-    engine.submit(limit_order(1, "BTC-USDT", "Buy", 100.0, 1.0))
-    engine.submit(limit_order(2, "ETH-USDT", "Buy", 200.0, 2.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
+    engine.submit(limit_order(2, _ETH_USDT, "Buy", 200.0, 2.0))
     assert engine.best_bid("BTC-USDT") == 100.0
     assert engine.best_bid("ETH-USDT") == 200.0
     assert engine.active_order_count("BTC-USDT") == 1
@@ -310,8 +414,8 @@ def test_l3_submit_batch_processes_list():
     engine = MultiAssetMatchingEngine()
     engine.register_asset("BTC-USDT")
     engine.submit_batch([
-        limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0),
-        limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0),
+        limit_order(1, _BTC_USDT, "Sell", 100.0, 1.0),
+        limit_order(2, _BTC_USDT, "Buy", 100.0, 1.0),
     ])
     assert engine.fill_count("BTC-USDT") == 1
 
@@ -321,8 +425,8 @@ def test_l3_continuous_mode_yields_fill():
     engine = MultiAssetMatchingEngine()
     engine.register_asset("BTC-USDT")
     engine.set_batch_mode("continuous")
-    engine.submit(limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0))
-    fills = engine.submit(limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0))
+    engine.submit(limit_order(1, _BTC_USDT, "Sell", 100.0, 1.0))
+    fills = engine.submit(limit_order(2, _BTC_USDT, "Buy", 100.0, 1.0))
     assert len(fills) == 1
 
 
@@ -344,7 +448,7 @@ def test_impacted_builder_linear_default():
     # permanent_offset 也是方法,系数=0 时为 0
     assert ie.permanent_offset() == 0.0
     # 撮合基础路径(无对手盘)不报错
-    result = ie.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
+    result = ie.submit(limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0))
     assert "is_filled" in result
 
 
@@ -371,7 +475,7 @@ def test_impacted_engine_reset_impact_state():
     )
     # 多次 submit 后 reset
     for i in range(1, 4):
-        ie.submit(limit_order(i, "BTCUSDT", "Buy", 100.0 + i, 1.0))
+        ie.submit(limit_order(i, _BTC_USDT, "Buy", 100.0 + i, 1.0))
     # permanent_offset 是方法
     offset_before = ie.permanent_offset()
     ie.reset_impact_state()
@@ -405,7 +509,7 @@ def test_backtest_engine_single_order_no_match():
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 1_000,
-        "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),
+        "order": limit_order(1, _BTC_USDT, "Buy", 100.0, 1.0),
     })
     result = bt.run()
     assert result.events_processed == 1
@@ -420,12 +524,12 @@ def test_backtest_engine_matched_orders():
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 1_000,
-        "order": limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0),
+        "order": limit_order(1, _BTC_USDT, "Sell", 100.0, 1.0),
     })
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 2_000,
-        "order": limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0),
+        "order": limit_order(2, _BTC_USDT, "Buy", 100.0, 1.0),
     })
     result = bt.run()
     assert result.events_processed == 2
@@ -549,17 +653,17 @@ def test_push_event_unknown_type_raises():
 def test_submit_missing_price_for_limit_raises():
     """limit 订单 dict 缺 price → KeyError。"""
     engine = L1MatchingEngine()
-    bad = limit_order(1, "X", "Buy", 100.0, 1.0)
+    bad = limit_order(1, _X_USDT, "Buy", 100.0, 1.0)
     del bad["price"]
     with pytest.raises(KeyError):
         engine.submit(bad)
 
 
 def test_submit_invalid_side_raises():
-    """非法 side 字符串 → ValueError。"""
+    """非法 side 字符串 → ValueError(0.5.0:limit_order 工厂在 Rust 之前预先校验)。"""
     engine = L1MatchingEngine()
     with pytest.raises(ValueError):
-        engine.submit(limit_order(1, "X", "invalid_side", 100.0, 1.0))
+        engine.submit(limit_order(1, _X_USDT, "invalid_side", 100.0, 1.0))
 
 
 def test_l3_unknown_asset_raises():
@@ -567,3 +671,123 @@ def test_l3_unknown_asset_raises():
     engine = MultiAssetMatchingEngine()
     with pytest.raises(Exception):
         engine.best_bid("UNKNOWN")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 0.5.0 新增:多 Leg 回测(spot + swap)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_backtest_engine_begin_bar_per_instrument():
+    """begin_bar(price, instrument) 为每条 instrument 独立播种虚拟对手盘。
+
+    spot + swap 两条 leg 各自的 order book 互不干扰。
+    """
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=3, size_per_level=1.0,
+    )
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    bt.begin_bar(50_000.0, _BTC_USDT_PERP)
+    # 各 leg 推 1 笔 buy 限价单 + 1 笔 sell 限价单(同 instrument 内部撮合)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, _BTC_USDT, "Sell", 50_001.0, 0.1),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 2_000,
+        "order": limit_order(2, _BTC_USDT, "Buy", 50_001.0, 0.1),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 3_000,
+        "order": limit_order(3, _BTC_USDT_PERP, "Sell", 50_001.0, 0.1),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 4_000,
+        "order": limit_order(4, _BTC_USDT_PERP, "Buy", 50_001.0, 0.1),
+    })
+    result = bt.run()
+    # 4 笔订单,2 笔成交(spot 一对 + perp 一对)
+    assert result.orders_accepted == 4
+    assert result.fills == 2
+    # 终态两 leg 仓位为 0(完全平仓)
+    assert result.positions[_BTC_USDT] == pytest.approx(0.0)
+    assert result.positions[_BTC_USDT_PERP] == pytest.approx(0.0)
+
+
+def test_backtest_engine_set_and_get_target_position():
+    """set_target_position / get_target_position 跨 leg 独立记录。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    # 初始时无任何 leg
+    assert bt.get_target_position(_BTC_USDT) is None
+    assert bt.get_target_position(_BTC_USDT_PERP) is None
+    # 设置 spot long +1,perp short -1(delta-neutral,吃 funding > 0)
+    bt.set_target_position(_BTC_USDT, 1.0)
+    bt.set_target_position(_BTC_USDT_PERP, -1.0)
+    assert bt.get_target_position(_BTC_USDT) == 1.0
+    assert bt.get_target_position(_BTC_USDT_PERP) == -1.0
+    # 重复设置覆盖前值
+    bt.set_target_position(_BTC_USDT, 2.5)
+    assert bt.get_target_position(_BTC_USDT) == 2.5
+
+
+def test_backtest_engine_get_position_default_zero():
+    """未交易过的 instrument 当前仓位为 0.0。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    assert bt.get_position(_BTC_USDT) == 0.0
+    assert bt.get_position(_BTC_USDT_PERP) == 0.0
+
+
+def test_backtest_engine_push_mark_updates_cache():
+    """push_mark 后 marks dict 出现该 instrument 的最新价(后到覆盖先到)。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.push_mark(_BTC_USDT, 50_000.0, timestamp_ns=1_000_000)
+    bt.push_mark(_BTC_USDT, 50_500.0, timestamp_ns=2_000_000)
+    bt.push_mark(_BTC_USDT_PERP, 50_100.0, timestamp_ns=1_500_000)
+    marks = bt.marks
+    # spot 收到第二次 push(50_500)覆盖第一次
+    assert marks[_BTC_USDT] == 50_500.0
+    # perp 单次 push
+    assert marks[_BTC_USDT_PERP] == 50_100.0
+
+
+def test_backtest_engine_two_legs_isolated_positions():
+    """两 leg(spot + swap)同时成交 → positions dict 两个 instrument 独立累计。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    bt.begin_bar(50_000.0, _BTC_USDT_PERP)
+    # spot long 0.5(buy),perp short 0.5(sell)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, _BTC_USDT, "Buy", 50_001.0, 0.5),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_500,
+        "order": limit_order(2, _BTC_USDT_PERP, "Sell", 50_001.0, 0.5),
+    })
+    result = bt.run()
+    # spot long = 0.5,perp short = -0.5
+    assert result.positions[_BTC_USDT] == pytest.approx(0.5)
+    assert result.positions[_BTC_USDT_PERP] == pytest.approx(-0.5)
+    # 总成交 2 笔
+    assert result.fills == 2
+    # leg_targets 在 run 后可通过 getter 读(本次未调 set_target_position,可能为 None)
+    assert bt.get_target_position(_BTC_USDT) is None
+
+
+def test_backtest_engine_leg_targets_persist():
+    """set_target_position 后的 leg 目标位可在 result.leg_targets 中读到。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.set_target_position(_BTC_USDT, 1.0)
+    bt.set_target_position(_BTC_USDT_PERP, -1.0)
+    result = bt.run()
+    # leg_targets 是 dict[instrument_tuple, target]
+    assert result.leg_targets[_BTC_USDT] == 1.0
+    assert result.leg_targets[_BTC_USDT_PERP] == -1.0

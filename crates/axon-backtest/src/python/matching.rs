@@ -17,7 +17,7 @@ use pyo3::types::{PyDict, PyList};
 use axon_core::dict_field;
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderId, OrderType, TimeInForce};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SwapSettle};
 
 use crate::matching::engine::MatchingEngine;
 use crate::matching::types::{MatchFill, SubmitResult};
@@ -49,10 +49,15 @@ impl PyMatchingEngine {
 // ─── Order → Python dict ───────────────────────────────────
 
 /// Rust `Order` 转 Python dict(供 Python `submit` 接收)
+///
+/// `instrument` 字段使用 flat 形式(与 `parse_instrument` 对称):
+/// - spot: `{"kind": "spot", "base": "BTC", "quote": "USDT"}`
+/// - swap: `{"kind": "swap", "base": "BTC", "quote": "USDT",
+///           "settle": "usd_margin" | "coin_margin", "contract_size": 1.0}`
 pub fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("id", order.id)?;
-    d.set_item("symbol", order.symbol.as_str())?;
+    d.set_item("instrument", instrument_to_dict(py, &order.instrument)?)?;
     d.set_item("side", side_str(order.side))?;
     d.set_item("quantity", order.quantity.as_f64())?;
     d.set_item("tif", tif_str(order.time_in_force))?;
@@ -73,6 +78,33 @@ pub fn order_to_dict<'py>(py: Python<'py>, order: &Order) -> PyResult<Bound<'py,
         }
     }
     Ok(d)
+}
+
+/// `Instrument` → Python dict(flat 形式,对称于 `parse_instrument`)
+pub fn instrument_to_dict<'py>(py: Python<'py>, inst: &Instrument) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    match inst {
+        Instrument::Spot(s) => {
+            d.set_item("kind", "spot")?;
+            d.set_item("base", s.base.as_str())?;
+            d.set_item("quote", s.quote.as_str())?;
+        }
+        Instrument::Swap(s) => {
+            d.set_item("kind", "swap")?;
+            d.set_item("base", s.base.as_str())?;
+            d.set_item("quote", s.quote.as_str())?;
+            d.set_item("settle", settle_to_str(s.settle))?;
+            d.set_item("contract_size", s.contract_size)?;
+        }
+    }
+    Ok(d)
+}
+
+fn settle_to_str(s: SwapSettle) -> &'static str {
+    match s {
+        SwapSettle::UsdMargin => "usd_margin",
+        SwapSettle::CoinMargin => "coin_margin",
+    }
 }
 
 fn side_str(side: Side) -> &'static str {
@@ -247,9 +279,13 @@ impl MatchingEngine for PyMatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,
         next_id: u64,
     ) -> u64 {
+        // 将 Instrument 序列化成 "kind|base|quote|settle|contract_size" 短字符串
+        // 透传给 Python 端(Rust 持有 `Instrument` 所有权,跨 FFI 边界只能
+        // 走 `&str` / `String` 路径)。
+        let inst_str = instrument_to_query_string(&instrument);
         Python::attach(|py| {
             let engine = match self.inner.lock() {
                 Ok(g) => g,
@@ -267,7 +303,7 @@ impl MatchingEngine for PyMatchingEngine {
                 half_spread,
                 depth_levels,
                 size_per_level,
-                symbol.as_str(),
+                inst_str,
                 next_id,
             )) {
                 Ok(v) => v.extract::<u64>().unwrap_or(next_id),
@@ -277,6 +313,21 @@ impl MatchingEngine for PyMatchingEngine {
                 }
             }
         })
+    }
+}
+
+/// 把 `Instrument` 序列化成 "kind|base|quote|settle|contract_size" 短字符串
+/// (用 `|` 分隔避免与 base/quote 中可能存在的 `-` 冲突),供 Python 端解析。
+fn instrument_to_query_string(inst: &Instrument) -> String {
+    match inst {
+        Instrument::Spot(s) => format!("spot|{}|{}", s.base.as_str(), s.quote.as_str()),
+        Instrument::Swap(s) => format!(
+            "swap|{}|{}|{}|{}",
+            s.base.as_str(),
+            s.quote.as_str(),
+            settle_to_str(s.settle),
+            s.contract_size
+        ),
     }
 }
 
@@ -306,7 +357,7 @@ mod tests {
         Python::attach(|py| {
             let order = Order::spot(
                 42,
-                "BTCUSDT",
+                "BTC",
                 "USDT",
                 Side::Buy,
                 OrderType::Limit {
@@ -320,13 +371,31 @@ mod tests {
                 d.get_item("id").unwrap().unwrap().extract::<u64>().unwrap(),
                 42
             );
+            // instrument 是 dict 形式:{kind, base, quote}
+            let inst = d.get_item("instrument").unwrap().unwrap();
             assert_eq!(
-                d.get_item("symbol")
+                inst.get_item("kind")
                     .unwrap()
                     .unwrap()
                     .extract::<String>()
                     .unwrap(),
-                "BTCUSDT"
+                "spot"
+            );
+            assert_eq!(
+                inst.get_item("base")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "BTC"
+            );
+            assert_eq!(
+                inst.get_item("quote")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "USDT"
             );
             assert_eq!(
                 d.get_item("side")

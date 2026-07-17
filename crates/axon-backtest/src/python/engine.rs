@@ -60,14 +60,14 @@
 
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
-use axon_core::event::{EventBuilder, FillEvent, OrderEvent};
+use axon_core::event::{EventBuilder, FillEvent, MarkEvent, OrderEvent};
 use axon_core::market::{Side as CoreSide, Trade};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 use crate::engine::{BacktestEngine, BacktestEngineConfig, RunResult};
 use crate::matching::MatchingEngine;
@@ -201,13 +201,21 @@ impl PyBacktestEngine {
     ///
     /// Args:
     /// - `price`: 当前 bar 的中间价(通常为 `bar.close`)
-    /// - `symbol`: 交易品种(如 `"BTC-USDT"`)
+    /// - `instrument`: 交易品种 dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
     ///
     /// 行为:
     /// - 若未调 `with_seed_liquidity`:no-op(纯订单簿撮合,buy 单 → fills=0)
     /// - 若已调:`matcher.clear_book()` + `seed_liquidity(price, ...)` 自动执行
-    fn begin_bar(&mut self, price: f64, symbol: &str) {
-        self.inner.begin_bar(price, Symbol::from(symbol));
+    #[pyo3(signature = (price, instrument))]
+    fn begin_bar(
+        &mut self,
+        py: Python<'_>,
+        price: f64,
+        instrument: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        self.inner.begin_bar(price, inst);
+        Ok(())
     }
 
     /// 推入单个事件(从 Python dict 转 [`Event`])
@@ -314,6 +322,87 @@ impl PyBacktestEngine {
     /// 队列耗尽时返回 `None`。
     fn step(&mut self) -> Option<PyRunStats> {
         self.inner.step().map(|s| PyRunStats { inner: s })
+    }
+
+    // ─── 多 Leg 回测 API (T3.8 / T3.6 暴露) ─────────────────────
+
+    /// 设置某 leg 的目标仓位(0.5.0 新增)
+    ///
+    /// 仅记录策略意图,不主动下单。`BacktestEngine` 不主动根据
+    /// `target_position` 发单 —— 由策略层在每根 bar 末读取
+    /// `get_target_position` / `get_position` 自行计算 delta 并下单。
+    ///
+    /// 重复设置同一 instrument 会覆盖前值(语义:"最新 set 生效")。
+    ///
+    /// Args:
+    /// - `instrument`: 由 `spot_instrument()` / `swap_instrument()` 构造的 dict
+    /// - `target`: 目标仓位(正=多,负=空,0=清仓)
+    #[pyo3(signature = (instrument, target))]
+    fn set_target_position(
+        &mut self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        target: f64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        self.inner.set_target_position(inst, target);
+        Ok(())
+    }
+
+    /// 查询某 leg 的目标仓位(0.5.0 新增)
+    ///
+    /// Returns:`None` 表示从未调过 `set_target_position`,否则返回目标值。
+    #[pyo3(signature = (instrument))]
+    fn get_target_position(
+        &self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<f64>> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        Ok(self.inner.get_target_position(&inst))
+    }
+
+    /// 查询某 instrument 的当前仓位(0.5.0 新增)
+    ///
+    /// Returns:当前净持仓(单位 base,正=多,负=空)。未交易过返回 `0.0`。
+    #[pyo3(signature = (instrument))]
+    fn get_position(&self, py: Python<'_>, instrument: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        Ok(self.inner.get_position(&inst))
+    }
+
+    /// 推入 Mark 价格事件(0.5.0 新增)
+    ///
+    /// Mark 事件由数据源/策略在 funding 结算点推送,本次 spec 范围**只**
+    /// 写入 `mark_cache`,**不**触发 NAV 重采样、**不**做 funding 结算。
+    ///
+    /// 幂等:同一 instrument 多次 mark 事件,后到的覆盖前到的(最新价生效)。
+    ///
+    /// Args:
+    /// - `instrument`: 目标品种 dict
+    /// - `price`: mark 价格
+    /// - `timestamp_ns`: 事件纳秒时间戳
+    #[pyo3(signature = (instrument, price, timestamp_ns))]
+    fn push_mark(
+        &mut self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        price: f64,
+        timestamp_ns: i64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let mark = MarkEvent {
+            instrument: inst,
+            mark_price: Price::from_f64(price),
+            timestamp: Timestamp::from_nanos(timestamp_ns),
+        };
+        // 复用现有事件路径,统一经 EventQueue 与 dispatcher
+        self.builder.mark(mark);
+        // 通过 push_event 路径进队(dispatcher 写入 mark_cache)
+        // 实际 MarkEvent 没有对应的 push_event type 字符串,
+        // 这里直接用 inner.push_event 绕过 type 字符串协议。
+        self.inner.push_event(axon_core::event::Event::Mark(mark));
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
@@ -472,12 +561,52 @@ impl PyRunResult {
         self.inner.sharpe_ratio
     }
 
-    /// 终态持仓快照(`{symbol: qty}`)
+    /// 终态持仓快照
+    ///
+    /// 返回 dict,key 为 `Instrument` 转成的 Python `tuple`(可哈希):
+    /// - spot: `("spot", "BTC", "USDT")`
+    /// - swap: `("swap", "BTC", "USDT", "usd_margin", 1.0)`
+    ///
+    /// Python 端可用作 dict key 索引;需要原始字段时访问 tuple 元素即可。
     #[getter]
     fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
-        for (sym, qty) in &self.inner.positions {
-            d.set_item(sym, *qty)?;
+        for (inst, qty) in &self.inner.positions {
+            let key = instrument_to_tuple(py, inst)?;
+            d.set_item(key, *qty)?;
+        }
+        Ok(d)
+    }
+
+    /// Leg 目标位快照(0.5.0 新增)
+    ///
+    /// 返回 `{instrument_tuple: target_qty}`,包含本次回测过程中所有
+    /// `set_target_position` 设置过的 leg 目标位。Python 端可用 tuple
+    /// 索引:
+    /// ```python
+    /// spot = ("spot", "BTC", "USDT")
+    /// result.leg_targets[spot]  # => 1.0
+    /// ```
+    #[getter]
+    fn leg_targets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (inst, target) in &self.inner.leg_targets {
+            let key = instrument_to_tuple(py, inst)?;
+            d.set_item(key, *target)?;
+        }
+        Ok(d)
+    }
+
+    /// Mark 价格快照(0.5.0 新增)
+    ///
+    /// 返回 `{instrument_tuple: mark_price}`,包含本次回测过程中所有
+    /// `push_mark` 推入的最新 mark 价(同一 instrument 后到的覆盖前到的)。
+    #[getter]
+    fn marks<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (inst, price) in &self.inner.marks {
+            let key = instrument_to_tuple(py, inst)?;
+            d.set_item(key, price.as_f64())?;
         }
         Ok(d)
     }
@@ -607,6 +736,43 @@ where
         .ok_or_else(|| PyKeyError::new_err(format!("missing '{field}'")))?;
     v.extract::<T>()
         .map_err(|_e| PyValueError::new_err(format!("field '{field}' has wrong type or value")))
+}
+
+/// `Instrument` → Python tuple(可哈希,作 dict key 用)
+///
+/// - spot: `("spot", "BTC", "USDT")`
+/// - swap: `("swap", "BTC", "USDT", "usd_margin", 1.0)`
+///
+/// tuple 形式比字符串 key 优雅:Python 端用 `result.positions[("spot", "BTC", "USDT")]`
+/// 直查,不需要先 split 再 join。
+fn instrument_to_tuple<'py>(py: Python<'py>, inst: &Instrument) -> PyResult<Bound<'py, PyTuple>> {
+    use axon_core::types::SwapSettle;
+    match inst {
+        Instrument::Spot(s) => PyTuple::new(
+            py,
+            [
+                "spot".into_pyobject(py)?.into_any(),
+                s.base.as_str().into_pyobject(py)?.into_any(),
+                s.quote.as_str().into_pyobject(py)?.into_any(),
+            ],
+        ),
+        Instrument::Swap(s) => {
+            let settle_str = match s.settle {
+                SwapSettle::UsdMargin => "usd_margin",
+                SwapSettle::CoinMargin => "coin_margin",
+            };
+            PyTuple::new(
+                py,
+                [
+                    "swap".into_pyobject(py)?.into_any(),
+                    s.base.as_str().into_pyobject(py)?.into_any(),
+                    s.quote.as_str().into_pyobject(py)?.into_any(),
+                    settle_str.into_pyobject(py)?.into_any(),
+                    s.contract_size.into_pyobject(py)?.into_any(),
+                ],
+            )
+        }
+    }
 }
 
 /// 当前模块需要在 `parent`(即 `_native.backtest`)下注册以下类:
