@@ -31,7 +31,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 // ── Adapter:让 ImpactedMatchingEngine 接入 BacktestEngine 的 MatchingEngine trait ──
 
@@ -106,7 +106,7 @@ impl MatchingEngine for ImpactedAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         self.inner.seed_liquidity(
@@ -114,7 +114,7 @@ impl MatchingEngine for ImpactedAdapter {
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }

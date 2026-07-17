@@ -28,7 +28,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 // ── L2Adapter(同 l2_engine_e2e.rs) ────────────────────────────────────
 
@@ -75,7 +75,7 @@ impl MatchingEngine for L2Adapter {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _symbol: Symbol,
+        _instrument: Instrument,    // 改: 原 _symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         next_id

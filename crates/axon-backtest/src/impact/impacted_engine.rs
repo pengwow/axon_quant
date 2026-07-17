@@ -23,7 +23,7 @@ use axon_core::impact::{ImpactModel, ImpactModelConfig};
 use axon_core::market::{OrderBookLevel, OrderBookSnapshot, Side};
 use axon_core::order::Order;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 use crate::matching::engine::{L1MatchingEngine, MatchingEngine};
 use crate::matching::types::SubmitResult;
@@ -180,7 +180,8 @@ impl ImpactedMatchingEngine {
     /// - `half_spread`：每层价差（绝对价格单位）
     /// - `depth_levels`：每侧挂单层数
     /// - `size_per_level`：每层挂单数量
-    /// - `symbol`：交易对
+    /// - `instrument`：交易品种 (T2.3 改: 原 `symbol`),
+    ///   用于从 `Instrument::base()` / `quote()` 派生 Order 的 base/quote
     /// - `next_id`：下一个可用订单 id（避免与外部订单 id 冲突）
     ///
     /// # 返回
@@ -192,7 +193,7 @@ impl ImpactedMatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         self.inner.seed_liquidity(
@@ -200,7 +201,7 @@ impl ImpactedMatchingEngine {
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,    // 改: 原 symbol (T2.3)
             next_id,
         )
     }

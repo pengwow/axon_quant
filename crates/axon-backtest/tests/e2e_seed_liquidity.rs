@@ -34,14 +34,18 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Quantity, Symbol};
+use axon_core::types::{Instrument, Quantity, SpotInstrument, Symbol};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
 const SYM: &str = "BTC/USDT";
 
-fn sym() -> Symbol {
-    Symbol::from(SYM)
+fn sym() -> Instrument {
+    // T2.3:返回 Instrument(原 Symbol),用于 begin_bar 的 instrument 参数
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {

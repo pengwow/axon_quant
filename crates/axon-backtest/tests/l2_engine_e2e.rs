@@ -31,7 +31,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 // ── L2Adapter:让 L2MatchingEngine 接入 MatchingEngine trait ──────────
 
@@ -100,7 +100,7 @@ impl MatchingEngine for L2Adapter {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _symbol: Symbol,
+        _instrument: Instrument,    // 改: 原 _symbol: Symbol (T2.3)
         _next_id: u64,
     ) -> u64 {
         // L2 不实现 seed_liquidity(继承默认 no-op)

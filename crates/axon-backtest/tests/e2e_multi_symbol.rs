@@ -8,7 +8,7 @@
 //! 真实场景(多资产组合策略、做市商跨资产对冲)需要多 symbol 联合回测。
 //!
 //! 本测试套件填补此空缺:在测试内实现一个 **`MultiSymbolAdapter`** thin wrapper,
-//! 持 `HashMap<Symbol, L1MatchingEngine>`,按 `order.instrument` 分发。**不动源码**。
+//! 持 `HashMap<Instrument, L1MatchingEngine>`,按 `order.instrument` 分发。**不动源码**。
 //!
 //! ## 已知约束
 //!
@@ -36,7 +36,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 // ── MultiSymbolAdapter:test-only thin wrapper ────────────────────────
 
@@ -45,7 +45,8 @@ use axon_core::types::{Price, Quantity, Symbol};
 /// 按 `order.instrument` 分发到 per-symbol 的 `L1MatchingEngine`。**仅用于测试**,
 /// 源码层面 `BacktestEngine` 仍持单 `Box<dyn MatchingEngine>`。
 struct MultiSymbolAdapter {
-    engines: HashMap<Symbol, L1MatchingEngine>,
+    /// T2.3 改: 改 Instrument key 以匹配 trait 签名(原 Symbol key)
+    engines: HashMap<Instrument, L1MatchingEngine>,
 }
 
 impl MultiSymbolAdapter {
@@ -56,10 +57,10 @@ impl MultiSymbolAdapter {
         }
     }
 
-    /// 注册 1 个 symbol(预创建空 L1 引擎)
+    /// 注册 1 个 instrument(预创建空 L1 引擎)
     #[allow(dead_code)]
-    fn register(&mut self, symbol: Symbol) {
-        self.engines.insert(symbol, L1MatchingEngine::new());
+    fn register(&mut self, instrument: Instrument) {
+        self.engines.insert(instrument, L1MatchingEngine::new());
     }
 }
 
@@ -71,11 +72,8 @@ impl Default for MultiSymbolAdapter {
 
 impl MatchingEngine for MultiSymbolAdapter {
     fn submit(&mut self, order: Order) -> SubmitResult {
-        // T2.2: 把 instrument 编码为 per-symbol engine 的 key
-        // 格式: "BASE-QUOTE" (与 register() 时传入的 Symbol 风格一致)
-        let key = Symbol::from(format!("{}-{}", order.instrument.base().as_str(), order.instrument.quote().as_str()));
-        // 按 symbol 分发,缺失时自动创建(便于测试不显式 register)
-        let engine = self.engines.entry(key).or_default();
+        // T2.3 改: 直接用 order.instrument 作 key(原 BASE-QUOTE 字符串拼接)
+        let engine = self.engines.entry(order.instrument.clone()).or_default();
         engine.submit(order)
     }
 
@@ -130,16 +128,17 @@ impl MatchingEngine for MultiSymbolAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
-        let engine = self.engines.entry(symbol.clone()).or_default();
+        // engines 已经按 Instrument key 路由(T3.1 后)
+        let engine = self.engines.entry(instrument.clone()).or_default();
         engine.seed_liquidity(
             mid_price,
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }

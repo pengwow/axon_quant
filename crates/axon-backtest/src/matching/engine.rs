@@ -116,7 +116,7 @@ pub trait MatchingEngine: Send + Sync {
     /// - `half_spread`:每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
     /// - `depth_levels`:每侧挂单层数(典型 5~20)
     /// - `size_per_level`:每层挂单数量
-    /// - `symbol`:交易对
+    /// - `instrument`:交易品种(spot/swap),用于构造种子 Order 的 `Order::spot` / `Order::swap`
     /// - `next_id`:下一个可用订单 id(避免与外部订单 id 冲突)
     ///
     /// # 返回
@@ -128,7 +128,7 @@ pub trait MatchingEngine: Send + Sync {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _symbol: Symbol,
+        _instrument: Instrument,    // 改: 原 _symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         // ponytail:默认 no-op 实现,适配 L2/L3/自定义撮合引擎。
@@ -488,7 +488,8 @@ impl L1MatchingEngine {
     /// - `half_spread`：每层价差（绝对价格单位），如 0.0001 * mid = 10bps
     /// - `depth_levels`：每侧挂单层数（典型 5~20）
     /// - `size_per_level`：每层挂单数量
-    /// - `symbol`：交易对
+    /// - `instrument`：交易品种 (T2.3 改: 原 `symbol`),
+    ///   用于从 `Instrument::base()` / `quote()` 构造对应种类的 `Order::spot` / `Order::swap`
     /// - `next_id`：下一个可用订单 id（避免与外部订单 id 冲突）
     ///
     /// # 副作用
@@ -501,12 +502,16 @@ impl L1MatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         if mid_price <= 0.0 || half_spread <= 0.0 || depth_levels == 0 || size_per_level <= 0.0 {
             return next_id;
         }
+        // T2.3:从 Instrument 直接派生 base/quote,不再走 split_symbol_to_base_quote
+        // 路径。T3.1 后续会按 instrument 路由到独立的 L1Book,届时此方法签名
+        // 还会进一步调整(每个 instrument 一个 book)。
+        let (base, quote) = (instrument.base().clone(), instrument.quote().clone());
         let mut id = next_id;
         // 卖盘：ask 在 mid 之上，按 spread 阶梯递增
         for level in 1..=depth_levels {
@@ -515,11 +520,10 @@ impl L1MatchingEngine {
                 // 防御性:正常参数下不会触发,但 mid/half_spread 为 NaN/负时跳过
                 continue;
             }
-            let (base, quote) = split_symbol_to_base_quote(&symbol);
             let order = Order::spot(
                 id,
-                base,
-                quote,
+                base.clone(),
+                quote.clone(),
                 Side::Sell,
                 OrderType::Limit {
                     price: Price::from_f64(ask_price),
@@ -536,11 +540,10 @@ impl L1MatchingEngine {
             if bid_price <= 0.0 {
                 break;
             }
-            let (base, quote) = split_symbol_to_base_quote(&symbol);
             let order = Order::spot(
                 id,
-                base,
-                quote,
+                base.clone(),
+                quote.clone(),
                 Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(bid_price),
@@ -733,7 +736,7 @@ impl MatchingEngine for L1MatchingEngine {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         L1MatchingEngine::seed_liquidity(
@@ -742,7 +745,7 @@ impl MatchingEngine for L1MatchingEngine {
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }
@@ -1170,7 +1173,10 @@ mod tests {
     #[test]
     fn test_seed_liquidity_provides_counterparty() {
         let mut engine = L1MatchingEngine::new();
-        let sym = Symbol::from("BTC-USDT");
+        let sym = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         // mid=100, half_spread=0.5, depth=3, size=2.0
         // 卖盘: 100.5, 101.0, 101.5（各 2.0）
@@ -1203,7 +1209,10 @@ mod tests {
     #[test]
     fn test_seed_liquidity_invalid_params_noop() {
         let mut engine = L1MatchingEngine::new();
-        let sym = Symbol::from("BTC-USDT");
+        let sym = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         // mid_price=0 无效
         let r = engine.seed_liquidity(0.0, 0.5, 3, 2.0, sym.clone(), 1);
@@ -1222,7 +1231,10 @@ mod tests {
     #[test]
     fn test_seed_liquidity_skips_non_positive_bid_levels() {
         let mut engine = L1MatchingEngine::new();
-        let sym = Symbol::from("BTC-USDT");
+        let sym = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         let r = engine.seed_liquidity(10.0, 3.0, 5, 1.0, sym.clone(), 100);
         // 5 卖 + 3 买 = 8 单
@@ -1251,7 +1263,10 @@ mod tests {
         };
         let model: Box<dyn axon_core::impact::ImpactModel> = create_model(config);
         let mut engine = ImpactedMatchingEngine::new(model);
-        let sym = Symbol::from("BTC-USDT");
+        let sym = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         let next_id = engine.seed_liquidity(100.0, 0.5, 2, 1.0, sym.clone(), 1);
         // 4 个 maker（2 卖 + 2 买）
@@ -1318,7 +1333,10 @@ mod tests {
     #[test]
     fn test_clear_book_resets_all_state() {
         let mut engine = L1MatchingEngine::new();
-        let symbol = Symbol::from("BTC-USDT");
+        let symbol = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         // 种子注入虚拟对手盘
         let _ = engine.seed_liquidity(100.0, 0.1, 10, 1.0, symbol.clone(), 1);
@@ -1344,7 +1362,10 @@ mod tests {
     #[test]
     fn test_clear_book_stable_over_1000_rounds() {
         let mut engine = L1MatchingEngine::new();
-        let symbol = Symbol::from("BTC-USDT");
+        let symbol = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         // 1000 轮 seed + clear,每轮 mid_price 略微变化以触发不同价格键
         for round in 0..1000 {
@@ -1381,7 +1402,10 @@ mod tests {
     #[test]
     fn test_clear_book_does_not_ghost_retain_old_ids() {
         let mut engine = L1MatchingEngine::new();
-        let symbol = Symbol::from("BTC-USDT");
+        let symbol = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
 
         // 第一轮:seed 1000 个 id (1..=1000)
         let _ = engine.seed_liquidity(100.0, 0.1, 10, 1.0, symbol.clone(), 1);

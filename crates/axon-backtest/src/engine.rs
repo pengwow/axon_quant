@@ -447,7 +447,12 @@ impl BacktestEngine {
     /// `order_index` 替换为新 `HashMap` 实例强制 deallocate,见
     /// `L1MatchingEngine::clear_book` 注释)。多次 `begin_bar` 循环
     /// 后内存稳定,不累积。
-    pub fn begin_bar(&mut self, mid_price: f64, symbol: Symbol) {
+    ///
+    /// # T2.3 变更
+    ///
+    /// 参数 `symbol: Symbol` 替换为 `instrument: Instrument` 以支持
+    /// 多品种路由(seed 用 `Order::spot(instrument.base(), ...)` 构造)。
+    pub fn begin_bar(&mut self, mid_price: f64, instrument: Instrument) {
         let Some(cfg) = self.seed_liquidity_config else {
             return;
         };
@@ -470,7 +475,7 @@ impl BacktestEngine {
             cfg.half_spread,
             cfg.depth_levels,
             cfg.size_per_level,
-            symbol,
+            instrument,    // 改: 原 symbol (T2.3)
             next_id,
         );
         self.seed_liquidity_next_id

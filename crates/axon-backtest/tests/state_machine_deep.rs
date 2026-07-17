@@ -31,13 +31,14 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 // ── MultiSymbolAdapter:test-only thin wrapper(复制自 e2e_multi_symbol) ──────
 
 /// 多 symbol 撮合引擎适配器(同 e2e_multi_symbol.rs)
 struct MultiSymbolAdapter {
-    engines: HashMap<Symbol, L1MatchingEngine>,
+    /// T2.3 改: 改 Instrument key 以匹配 trait 签名(原 Symbol key)
+    engines: HashMap<Instrument, L1MatchingEngine>,
 }
 
 impl MultiSymbolAdapter {
@@ -56,7 +57,8 @@ impl Default for MultiSymbolAdapter {
 
 impl MatchingEngine for MultiSymbolAdapter {
     fn submit(&mut self, order: Order) -> SubmitResult {
-        let engine = self.engines.entry(instrument_to_key(&order.instrument)).or_default();
+        // T2.3 改: 直接用 order.instrument 作 key
+        let engine = self.engines.entry(order.instrument.clone()).or_default();
         engine.submit(order)
     }
 
@@ -108,16 +110,16 @@ impl MatchingEngine for MultiSymbolAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument,    // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
-        let engine = self.engines.entry(symbol.clone()).or_default();
+        let engine = self.engines.entry(instrument.clone()).or_default();
         engine.seed_liquidity(
             mid_price,
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }
@@ -578,6 +580,10 @@ fn multi_symbol_independent_fill_per_symbol() {
 // ── T2.2 过渡 helper ──────────────────────────────────
 
 /// T2.2: Order::symbol -> Order::instrument 过渡期,把 Instrument 序列化为 HashMap key
+///
+/// T2.3 改: MultiSymbolAdapter 改 Instrument key 后,此函数已无调用点,
+/// 保留以备未来 Portfolio 仍按 string key 时的复用
+#[allow(dead_code)]
 fn instrument_to_key(inst: &axon_core::types::Instrument) -> axon_core::types::Symbol {
     axon_core::types::Symbol::from(format!(
         "{}/{}",
