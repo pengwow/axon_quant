@@ -61,6 +61,15 @@ impl PyOrderManager {
         Ok(())
     }
 
+    /// 取出现金(出金),余额不足时抛 ValueError
+    fn withdraw(&self, currency: &str, amount: &Bound<'_, pyo3::types::PyAny>) -> PyResult<()> {
+        let amt = super::portfolio::parse_decimal_helper(amount)?;
+        self.inner
+            .withdraw(currency, amt)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// 提交订单,返回 `order_id` (str,UUID 36 字符)
     fn submit(&self, order: PyOrder) -> PyResult<String> {
         let id = self.inner.submit(order.inner).map_err(to_py_err)?;

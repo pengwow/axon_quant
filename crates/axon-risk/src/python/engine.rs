@@ -45,11 +45,59 @@ use axon_core::parse_py_enum;
 use axon_core::portfolio::{Currency, Portfolio, Position};
 use axon_core::types::{Price, Quantity, Symbol};
 
+use crate::config::RiskConfig as RustConfig;
 use crate::engine::{DefaultRiskEngine as RustEngine, RiskEngine as RustTrait};
 use crate::error::{AlertSeverity, RiskAlert, RiskReason as RustReason, RiskResult as RustResult};
 
 use super::config::PyRiskConfig;
 use super::metrics::risk_metrics_to_dict;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 辅助函数
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 当 `DefaultRiskEngine` 用默认 `RiskConfig` 构造时,emit Python `UserWarning`。
+///
+/// 通过 `warnings.warn(msg, UserWarning, stacklevel=2)` 调用,确保:
+/// - `category` 传**类对象**(`UserWarning` 类本身)而非字符串:
+///   Python 端 `warnings.warn` 会做 `issubclass(category, Warning)` 校验,
+///   字符串会触发 `TypeError: category must be a Warning subclass, not 'str'`
+///   (已通过 Python REPL 验证)。
+/// - `category` 来源:用 `pyo3::exceptions::PyUserWarning::type_object(py)`
+///   拿 `builtins.UserWarning` 类对象。**不能**用 `warnings.UserWarning`:
+///   Python 3.13 的 `warnings` 模块 `__dict__` 不含 `UserWarning` 属性
+///   (它定义在 `builtins` 里),`warnings.getattr("UserWarning")` 会抛
+///   `AttributeError`(已实测)。`PyUserWarning` 是 PyO3 内置类型,
+///   与 `builtins.UserWarning` 完全等价。
+/// - `stacklevel=2`:warning 指向 `DefaultRiskEngine(...)` 的**调用方**,而非
+///   本辅助函数,符合 `warnings` 库的常规约定
+/// - 走 `warnings` 模块而非 `print`,可被 `filterwarnings` 静默
+/// - 失败容错:`import warnings` 失败时用 `eprintln!` 兜底,
+///   避免主流程因 warning 发射失败而崩溃
+fn emit_default_config_warning(py: Python<'_>) {
+    use pyo3::PyTypeInfo;
+    use pyo3::exceptions::PyUserWarning;
+    let msg = "DefaultRiskEngine constructed with default RiskConfig; \
+               this is a lenient preset (max_order_value=50_000, max_leverage=5, \
+               max_drawdown=15%, max_daily_loss=10_000). For production, pass an \
+               explicit RiskConfig with tightened limits. Use \
+               warnings.filterwarnings('ignore', category=UserWarning, module='axon_quant') \
+               to silence in tests/prototypes.";
+    let result = (|| -> PyResult<()> {
+        let warnings = py.import("warnings")?;
+        // 关键:用 PyO3 内置类型,不要用 `warnings.getattr("UserWarning")`
+        // (Python 3.13 的 warnings 模块 dict 里没有该属性,见 doc comment)
+        // PyO3 0.28: type_object 标记 deprecated 但仍可用,返回 Bound<PyType>
+        // (更现代的 type_object_raw 返回裸指针,使用更繁琐)
+        #[allow(deprecated)]
+        let category = PyUserWarning::type_object(py);
+        warnings.call_method("warn", (msg, category, 2_u32), None)?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        eprintln!("axon_quant.risk: failed to emit default-config warning: {e}");
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 主类: PyDefaultRiskEngine
@@ -61,8 +109,8 @@ use super::metrics::risk_metrics_to_dict;
 /// `RiskResult` 字典化输出。
 ///
 /// 注:本类不实现 `Clone`(`DefaultRiskEngine` 内部 `Mutex` 不支持),
-/// 所以**不**用 `from_py_object`,改为 `new(config: &Bound<PyAny>)`
-/// 接收任意 Python 对象,内部 `extract::<PyRiskConfig>()`。
+/// 所以**不**用 `from_py_object`,改为 `new(config: Option<&Bound<PyAny>>)`
+/// 接收可选的任意 Python 对象,内部 `extract::<PyRiskConfig>()`。
 #[pyclass(name = "DefaultRiskEngine", skip_from_py_object)]
 pub struct PyDefaultRiskEngine {
     /// Rust 端 `DefaultRiskEngine`(持有 config + circuit_breaker + daily_pnl 等)
@@ -74,13 +122,45 @@ impl PyDefaultRiskEngine {
     /// 构造风控引擎
     ///
     /// Args:
-    /// - `config`:`RiskConfig` 配置对象(必填,Python 端传入)
+    /// - `config`:可选的 `RiskConfig` 配置对象。传 `None`(或不传)时使用
+    ///   Rust 端 `RiskConfig::default()` **宽松默认**(`max_order_value=50_000`,
+    ///   `max_leverage=5`,`max_drawdown=15%` 等),并 emit `UserWarning` 提醒
+    ///   生产环境应显式传收紧的配置。
+    ///
+    /// Warning:
+    /// - 显式 `DefaultRiskEngine()` 不传 config 会触发 `warnings.warn` →
+    ///   `UserWarning: DefaultRiskEngine constructed with default RiskConfig; ...`。
+    /// - 可用 `warnings.filterwarnings("ignore", ...)` 在测试/原型中静默。
+    ///
+    /// Example:
+    /// ```python
+    /// from axon_quant.risk import DefaultRiskEngine, RiskConfig
+    ///
+    /// # 显式传收紧配置(生产推荐)
+    /// engine = DefaultRiskEngine(RiskConfig(
+    ///     max_order_value=10_000.0,
+    ///     max_leverage=2.0,
+    ///     max_drawdown=0.05,
+    ///     max_daily_loss=2_000.0,
+    /// ))
+    ///
+    /// # 零参构造(原型/测试,会触发 UserWarning)
+    /// engine = DefaultRiskEngine()
+    /// ```
     #[new]
-    fn new(config: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let py_config = config.extract::<PyRiskConfig>()?;
-        Ok(Self {
-            inner: RustEngine::new(py_config.inner),
-        })
+    #[pyo3(signature = (config=None))]
+    fn new(py: Python<'_>, config: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let inner = match config {
+            Some(c) => {
+                let py_config: PyRiskConfig = c.extract()?;
+                RustEngine::new(py_config.inner)
+            }
+            None => {
+                emit_default_config_warning(py);
+                RustEngine::new(RustConfig::default())
+            }
+        };
+        Ok(Self { inner })
     }
 
     /// 预交易风控检查(主入口)
@@ -827,9 +907,128 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             let s = engine.__repr__();
             assert!(s.contains("DefaultRiskEngine"), "got: {s}");
+        });
+    }
+
+    /// `None` 路径必须真触发 `UserWarning`(0.4.1 修复回归测试)。
+    ///
+    /// 之前 0.4.1 首次实现时 `category` 误传字符串 "UserWarning",
+    /// Python 端 `warnings.warn` 抛 `TypeError`,被 `eprintln!` 兜底静默,
+    /// 单元测试看不出来(因为只断言"构造不抛错")。
+    /// 本测试**真正捕获 warning 并校验 category**,防止再次回归。
+    ///
+    /// Python 3.11+ 行为: `catch_warnings(record=True).__enter__` 返回
+    /// `log` list(records);`__exit__` 总是返回 None。所以 records 必须
+    /// 从 `__enter__` 拿,不是 `__exit__`。
+    #[test]
+    fn engine_construct_with_none_emits_real_user_warning() {
+        Python::attach(|py| {
+            use pyo3::PyTypeInfo;
+            use pyo3::exceptions::PyUserWarning;
+            use pyo3::types::{PyDict, PyList};
+            let warnings_mod = py.import("warnings").expect("import warnings");
+            // catch_warnings(record=True) 是 keyword-only 参数
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("record", true).unwrap();
+            let mgr = warnings_mod
+                .call_method("catch_warnings", (), Some(&kwargs))
+                .expect("catch_warnings(record=True)");
+            // Python 3.11+: __enter__ 返回 log list(record=True 时)
+            //                __exit__ 永远返回 None
+            let records_obj = mgr.call_method0("__enter__").expect("__enter__");
+            warnings_mod
+                .call_method1("simplefilter", ("always",))
+                .expect("simplefilter('always')");
+
+            // 触发:无参构造
+            let engine = PyDefaultRiskEngine::new(py, None).expect("construct with None");
+
+            // __exit__ 恢复 warnings 状态(不返回值,忽略)
+            let _ = mgr.call_method0("__exit__").expect("__exit__");
+
+            let records: &Bound<'_, PyList> =
+                records_obj.cast::<PyList>().expect("records is list");
+            let user_warning_cls_bound = {
+                #[allow(deprecated)]
+                let bound = PyUserWarning::type_object(py);
+                bound.into_any()
+            };
+            let mut found = false;
+            for rec in records.iter() {
+                let cat = rec.getattr("category").expect("getattr category");
+                // `category` 字段是类对象本身(不是实例)。
+                // 用 `is` 比较对象身份:cat 与 PyUserWarning 类型对象是不是同一个类。
+                // (is_instance 在这里会错,因为 cat 是类,不是 PyUserWarning 的实例。)
+                if cat.is(&user_warning_cls_bound) {
+                    let msg_obj = rec.getattr("message").expect("getattr message");
+                    let msg_str: String = msg_obj
+                        .str()
+                        .expect("str()")
+                        .extract()
+                        .expect("extract str");
+                    assert!(
+                        msg_str.contains("default RiskConfig"),
+                        "warning message should mention default RiskConfig, got: {msg_str}"
+                    );
+                    assert!(
+                        msg_str.contains("lenient") || msg_str.contains("production"),
+                        "warning message should mention 'lenient' or 'production', got: {msg_str}"
+                    );
+                    found = true;
+                }
+            }
+            assert!(
+                found,
+                "expected at least one UserWarning to be emitted, got {} records: {:?}",
+                records.len(),
+                records
+            );
+
+            // 还要验证 engine 本身可正常用(无参路径完整)
+            let _ = engine.__repr__();
+        });
+    }
+
+    /// 显式传 `RiskConfig` 不应触发任何 UserWarning。
+    ///
+    /// 同样从 `__enter__` 拿 records。
+    #[test]
+    fn engine_construct_with_explicit_config_no_warning() {
+        Python::attach(|py| {
+            use pyo3::types::{PyDict, PyList};
+            let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
+            let config_obj = Py::new(py, config).unwrap();
+            let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
+
+            let warnings_mod = py.import("warnings").expect("import warnings");
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("record", true).unwrap();
+            let mgr = warnings_mod
+                .call_method("catch_warnings", (), Some(&kwargs))
+                .expect("catch_warnings(record=True)");
+            // records 从 __enter__ 拿
+            let records_obj = mgr.call_method0("__enter__").expect("__enter__");
+            warnings_mod
+                .call_method1("simplefilter", ("always",))
+                .expect("simplefilter('always')");
+
+            // 显式传 config,不应触发 warning
+            let _engine =
+                PyDefaultRiskEngine::new(py, Some(config_bound)).expect("construct with Some");
+
+            let _ = mgr.call_method0("__exit__").expect("__exit__");
+            let records: &Bound<'_, PyList> =
+                records_obj.cast::<PyList>().expect("records is list");
+            assert_eq!(
+                records.len(),
+                0,
+                "expected no warnings with explicit config, got {} records: {:?}",
+                records.len(),
+                records
+            );
         });
     }
 
@@ -840,7 +1039,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
 
             let order = PyDict::new(py);
             order.set_item("id", 1u64).unwrap();
@@ -871,7 +1070,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 1000.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
 
             let order = PyDict::new(py);
             order.set_item("id", 1u64).unwrap();
@@ -913,7 +1112,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             // 累计日内 PnL 触发熔断
             engine.update_daily_pnl(-1_500.0);
 
@@ -948,7 +1147,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(500.0);
             engine.update_daily_pnl(-200.0);
 
@@ -980,7 +1179,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(-1_500.0);
             engine.reset_daily();
 
@@ -1029,7 +1228,7 @@ mod tests {
             let config = PyRiskConfig::new(1000.0, 5000.0, 500.0, 2.0, 0.1, 1000.0, 0.3, 60);
             let config_obj = Py::new(py, config).unwrap();
             let config_bound: &Bound<'_, PyAny> = config_obj.bind(py);
-            let engine = PyDefaultRiskEngine::new(config_bound).unwrap();
+            let engine = PyDefaultRiskEngine::new(py, Some(config_bound)).unwrap();
             engine.update_daily_pnl(-2_000.0); // 触发 daily_pnl_limit 警报
 
             let portfolio = PyDict::new(py);

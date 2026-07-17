@@ -34,6 +34,15 @@ impl OrderManager {
         self.portfolio.write().deposit(currency, amount);
     }
 
+    /// 取出现金(出金),余额不足时返回错误
+    pub fn withdraw(
+        &self,
+        currency: &str,
+        amount: Decimal,
+    ) -> Result<(), crate::portfolio::PortfolioError> {
+        self.portfolio.write().withdraw(currency, amount)
+    }
+
     /// 余额快照(供 TradingBackend::get_balance)
     pub fn snapshot_balance(&self) -> PortfolioSnapshot {
         self.portfolio.read().snapshot()

@@ -305,12 +305,12 @@ except axon_quant.risk.RiskError as e:  # 实际是 Exception 子类
 
 | 类 / 工厂 | 说明 |
 |-----------|------|
-| `OrderManager` | OMS 主类:`submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` |
+| `OrderManager` | OMS 主类:`submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` / `withdraw` |
 | `Order` | 订单对象:`symbol` / `side` / `order_type` / `quantity` / `price` / `idempotency_key` |
 | `OrderStatus` | 订单状态(`kind` 标签模式):`New` / `Acknowledged` / `PartiallyFilled(filled_qty, avg_price)` / `Filled` / `Cancelled` / `Rejected(reason)` / `Expired`,带 `is_terminal()` 判定 |
 | `Side` | 枚举:`Buy` / `Sell` |
 | `OrderType` | 枚举:`Limit` / `Market` |
-| `Portfolio` | 多币种现金 + 持仓容器:`deposit` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
+| `Portfolio` | 多币种现金 + 持仓容器:`deposit` / `withdraw` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
 | `Position` | 单 symbol 持仓:`symbol` / `quantity` / `avg_price` / `realized_pnl` / `updated_at` / `to_dict` |
 | `OmsError` | OMS 异常(继承 `Exception`,**不**继承 `AxonError`,避免 cargo 循环) |
 | `limit_order(symbol, side, quantity, price, idempotency_key=None)` | 工厂函数,返回限价单 `Order` |
@@ -411,6 +411,10 @@ p.apply_fill(
 assert p.cash["USDT"] == "70000.0"
 assert p.positions["BTC-USDT"].quantity == "0.6"
 assert p.position_count() == 1
+
+# 出金(余额不足时抛 ValueError)
+p.withdraw("USDT", 10_000)
+assert p.cash["USDT"] == "60000.0"
 
 # 序列化
 d = p.to_dict()  # {"cash": {...}, "positions": {...}, "position_count": 1}

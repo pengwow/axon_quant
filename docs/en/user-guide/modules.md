@@ -1722,6 +1722,10 @@ from decimal import Decimal
 oms = OrderManager()
 oms.deposit("USDT", 100_000)
 
+# 1b) Withdraw funds (raises ValueError if insufficient)
+oms.withdraw("USDT", 5_000)  # less tradable capital → strategy behavior changes
+assert oms.snapshot_balance()["cash"]["USDT"] == "95000.0"
+
 # 2) Submit an order (factory functions handle Decimal precision automatically)
 oid = oms.submit(limit_order(
     symbol="BTC-USDT", side="Buy",
@@ -1830,70 +1834,100 @@ Production monitoring: atomic metrics (Counter / Gauge / Histogram) + alert rule
 
 ### How to Use
 
-**Python side (primary usage; 3 categories):**
+> **Important: `axon-monitor` is intentionally NOT exposed to Python (this is a design constraint, not an oversight).**
+> Python users who need monitoring capabilities use two equivalent paths, see "Python-side Equivalent Capabilities" below.
+
+#### Why It Is Not Exposed to Python
+
+| Dimension | `axon-monitor` design | What exposing to Python would break |
+|----------|----------------------|-----------------------------------|
+| **Performance** | Counter inc **1.6ns** / Gauge set **464ps** / Histogram observe **6.5ns** / Alert check **4.8ns** | A PyO3 cross-language call itself costs **~100ns+**, turning a 1.6ns `inc` into 100ns+ (60x regression) and breaking lock-free atomic guarantees |
+| **Usage scope** | In-process instrumentation primitives for matching / order / hot paths; nanosecond-level observability | Python should not enter the hot path (would pollute P99 trading latency) |
+| **Output destination** | Rust-side write → `axum` HTTP `/metrics` endpoint → Prometheus scrape | Python uses `prometheus_client` to scrape directly; no need to go through PyO3 |
+| **Python equivalent** | — | `axon-tracker` already covers training/experiment monitoring (`MLflow` / `WandB` / `Local` / `Memory` backends) |
+
+Code-level confirmation (as of `0.4.1`):
+
+- `crates/axon-monitor/Cargo.toml` has **no `python` feature**
+- `crates/axon-monitor/src/` has **no `python/` sub-module** (`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` have no `#[pyclass]`)
+- `crates/axon-python/Cargo.toml` python-feature list **does not include `dep:axon-monitor`**
+- `crates/axon-python/src/lib.rs` `_native` function has **no `monitor` sub-module** registration (in contrast to `backtest` / `risk` / `oms` which are all registered)
+
+#### Python-side Equivalent Capabilities (Already Available)
 
 ```python
-from axon_quant.monitor import (
-    MetricsRegistry, AtomicCounter, AtomicGauge, LatencyHistogram,
-    AlertRule, AlertSeverity, ThresholdCondition,
-    HealthService, ComponentHealth, expose_prometheus,
-    MonitorError,
-)
+# Option A: training / experiment metrics — use axon-tracker (already exposed)
+from axon_quant.tracker import MemoryTracker, WandBTracker, MLflowTracker
 
-# 1) Register metrics (atomic, nanosecond-level)
-reg = MetricsRegistry()
-order_count = reg.register_counter("orders_total", labels=["side", "symbol"])
-order_latency = reg.register_histogram("order_latency_ns",
-                                        buckets=(1000, 10_000, 100_000, 1_000_000, 10_000_000))
-nav_gauge = reg.register_gauge("portfolio_nav")
+tracker = MemoryTracker(experiment_name="ppo_btc_v1")
+tracker.log_metric("sharpe", 1.23, step=1000)
+tracker.log_metric("max_drawdown", -0.08, step=1000)
+tracker.log_param("lr", 3e-4)
+tracker.finish()
 
-# 2) Instrument in business code
-order_count.inc(labels={"side": "buy", "symbol": "BTCUSDT"})
-order_latency.observe(150_000.0)               # 150µs
-nav_gauge.set(102_345.67)
+# Option B: production service metrics — scrape the Rust-side /metrics endpoint
+import requests
+from prometheus_client.parser import text_string_to_metric_families
 
-# 3) Register alert rules
-reg.add_alert_rule(AlertRule.Threshold(
-    metric_name="order_latency_ns",
-    condition=ThresholdCondition.GreaterThan(10_000_000.0),   # 10ms
-    severity=AlertSeverity.Warning,
-    message="order latency P99 > 10ms",
-))
-# Triggered in real time
-alerts = reg.check_alerts("order_latency_ns", value=15_000_000.0)
-for a in alerts:
-    print(f"[{a.severity}] {a.message}")
-
-# 4) Health check (Kubernetes liveness/readiness)
-health = HealthService()
-health.register("oms", lambda: ComponentHealth(status="ok",
-                                                latency_ms=oms.active_count()))
-health.register("exchange", lambda: adapter.health_check())
-status = health.check_all()
-# Expose to K8s:
-# livenessProbe:  http://localhost:9090/health
-# readinessProbe: http://localhost:9090/ready
-
-# 5) Prometheus export
-from http.server import HTTPServer
-expose_prometheus(reg, port=9090)              # /metrics endpoint
-# Hook into Prometheus / Grafana for dashboards
+resp = requests.get("http://trading-host:9090/metrics")
+for family in text_string_to_metric_families(resp.text):
+    for sample in family.samples:
+        print(sample.name, sample.labels, sample.value)
+        # e.g. orders_total {side="buy", symbol="BTCUSDT"} 1234
 ```
 
-**Rust side (use when developing new metric types / embedding instrumentation into oms/exchange):**
+#### Rust Side (Use When Developing New Metric Types / Embedding Instrumentation in oms/exchange)
 
 ```rust
-use axon_monitor::{MetricsRegistry, AlertRule, AlertSeverity, ThresholdCondition};
+use axon_monitor::{
+    MetricsRegistry, AlertRule, AlertSeverity, ThresholdCondition,
+    HealthService, HealthStatus, ComponentHealth,
+};
+use axum::{routing::get, Router};
 
+// 1) Build registry at startup
+// Note: `register_*` actually only takes a name, no labels / custom-bucket parameter
+//     (KISS design — labels are injected by the Prometheus exporter stage)
 let mut reg = MetricsRegistry::new();
-let latency = reg.register_histogram("order_latency_ns");
-latency.observe(150_000.0);
+let order_count = reg.register_counter("orders_total");
+let order_latency = reg.register_histogram("order_latency_ns");  // default buckets
+let nav_gauge = reg.register_gauge("portfolio_nav");
+
+// 2) Instrument in business hot path (nanosecond-level, lock-free)
+order_count.inc();                       // +1
+order_count.inc_by(3);                  // +3
+order_latency.observe(150_000.0);       // 150µs, unit is ns by convention
+nav_gauge.set(102_345.67);
+
+// 3) Alert rules (check_alerts triggers and records, get_alerts retrieves)
 reg.add_alert_rule(AlertRule::Threshold {
     metric_name: "order_latency_ns".into(),
-    condition: ThresholdCondition::GreaterThan(10_000_000.0),
+    condition: ThresholdCondition::GreaterThan(10_000_000.0),  // 10ms
     severity: AlertSeverity::Warning,
-    message: "order latency > 10ms".into(),
+    message: "order latency P99 > 10ms".into(),
 });
+// In the order path: reg.check_alerts("order_latency_ns", observed_value);
+// At the health endpoint: let alerts = reg.get_alerts();
+
+// 4) Health check (K8s liveness / readiness probe)
+// Note: the actual HealthService API is `check(Vec<ComponentHealth>) -> HealthCheck`,
+//     the caller collects each component's current state and aggregates in one shot
+//     (no register/callback mechanism), so it doesn't bind to an async runtime
+//     (works with tokio / async-std / no async), keeping it 0-dependency.
+let health = HealthService::new();
+let report = health.check(vec![
+    ComponentHealth { name: "oms".into(),      status: HealthStatus::Healthy, message: "ok".into() },
+    ComponentHealth { name: "exchange".into(), status: HealthStatus::Healthy, message: "ok".into() },
+]);
+// report.status / report.components / report.uptime_secs can be JSON-serialized directly
+
+// 5) Expose axum routes (Prometheus scrape + K8s probe)
+// Note: axon-monitor does not bind to an HTTP framework (to avoid version-locking with axum / actix).
+//     Prometheus text-format output and health JSON responses are implemented by the caller.
+let app = Router::new()
+    .route("/metrics", get(/* prometheus exporter impl */ async { "" }))
+    .route("/health",  get(/* health JSON impl */        async { "" }))
+    .route("/ready",   get(/* readiness impl */           async { "" }));
 ```
 
 ### Key Dependencies
