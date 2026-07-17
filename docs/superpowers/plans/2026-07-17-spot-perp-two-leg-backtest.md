@@ -353,30 +353,41 @@ Expected: no warnings.
 ### Task 1.3: Add `MarkEvent` to `axon-core::event`
 
 **Files:**
-- Modify: `crates/axon-core/src/event.rs`
+- Create: `crates/axon-core/src/event/mark.rs` (new file, parallel to `fill.rs` / `system.rs`)
+- Modify: `crates/axon-core/src/event/mod.rs` (register `mark` module + re-export)
+- Modify: `crates/axon-core/src/event/types.rs` (add `Mark` variant to `Event` enum + `MARK` bit to `EventType`)
+- Modify: `crates/axon-core/src/lib.rs` (re-export `MarkEvent`)
 
-- [ ] **Step 1: Locate existing event definitions**
+> **Path correction vs. original plan**: the original plan said `event.rs`, but
+> `axon-core`'s event module is actually a directory `event/` with submodules
+> (`fill.rs`, `order.rs`, `system.rs`, ...). `Event` enum lives in `event/types.rs`.
+> Use the actual file structure.
 
-Run: `grep -n "FillEvent\|pub enum Event" crates/axon-core/src/event.rs | head -20`
+- [x] **Step 1: Locate existing event definitions**
+
+Run: `grep -rn "FillEvent\|pub enum Event" crates/axon-core/src/event/ | head -20`
 Read surrounding context to understand where to add `MarkEvent`.
 
-- [ ] **Step 2: Add `MarkEvent` struct**
+- [x] **Step 2: Create `event/mark.rs` with `MarkEvent` struct**
 
-Add to `crates/axon-core/src/event.rs` (place near `FillEvent`):
+Create `crates/axon-core/src/event/mark.rs` (follows same pattern as `fill.rs` / `system.rs`):
 
 ```rust
-use crate::types::Instrument;
-use crate::types::Price;
+//! Mark price 事件(标记价格更新)
+//!
+//! 由外部数据源推入,引擎在 `dispatch` 时写入 `mark_cache`,
+//! 供未来 funding 结算 / unrealized PnL 计算使用。
+//!
+//! 本次 spec 范围:仅写缓存,不触 NAV 重采样。
+//! 详见 spec §4.4。
+
+use serde::{Deserialize, Serialize};
+
 use crate::time::Timestamp;
+use crate::types::{Instrument, Price};
 
 /// Mark price 事件(标记价格更新)
-///
-/// 由外部数据源推入,引擎在 `dispatch` 时写入 `mark_cache`,
-/// 供未来 funding 结算 / unrealized PnL 计算使用。
-///
-/// 本次 spec 范围:仅写缓存,不触 NAV 重采样。
-/// 详见 spec §4.4。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkEvent {
     /// 品种
     pub instrument: Instrument,
@@ -385,60 +396,44 @@ pub struct MarkEvent {
     /// 时间戳
     pub timestamp: Timestamp,
 }
-```
 
-- [ ] **Step 3: Add `Event::Mark` variant**
-
-Locate `pub enum Event` and add `Mark` variant. The enum has `#[non_exhaustive]` (verify by reading); if so, just add:
-
-```rust
-#[non_exhaustive]
-pub enum Event {
-    Order(OrderEvent),
-    Fill(FillEvent),
-    Mark(MarkEvent),  // 新增
-    // ... other variants ...
+impl MarkEvent {
+    /// 创建 Mark 事件
+    pub fn new(instrument: Instrument, mark_price: Price, timestamp: Timestamp) -> Self {
+        Self { instrument, mark_price, timestamp }
+    }
 }
-```
 
-(If `non_exhaustive` is not present, ADD it at this time to future-proof.)
-
-- [ ] **Step 4: Write unit test for MarkEvent serde**
-
-Add to `crates/axon-core/src/event.rs` test module (or create if absent):
-
-```rust
 #[cfg(test)]
-mod tests_mark {
+mod tests {
     use super::*;
-    use crate::types::{SpotInstrument, SwapInstrument, SwapSettle, Price};
-    use crate::time::Timestamp;
+    use crate::types::{SpotInstrument, SwapInstrument, SwapSettle, Symbol};
 
     #[test]
     fn test_mark_event_creation() {
-        let evt = MarkEvent {
-            instrument: Instrument::Spot(SpotInstrument {
+        let evt = MarkEvent::new(
+            Instrument::Spot(SpotInstrument {
                 base: Symbol::from("BTC"),
                 quote: Symbol::from("USDT"),
             }),
-            mark_price: Price::from_f64(50_000.0),
-            timestamp: Timestamp::from_nanos(1_700_000_000_000_000_000),
-        };
+            Price::from_f64(50_000.0),
+            Timestamp::from_nanos(1_700_000_000_000_000_000),
+        );
         assert_eq!(evt.mark_price.as_f64(), 50_000.0);
     }
 
     #[test]
     fn test_mark_event_serde() {
-        let evt = MarkEvent {
-            instrument: Instrument::Swap(SwapInstrument {
+        let evt = MarkEvent::new(
+            Instrument::Swap(SwapInstrument {
                 base: Symbol::from("ETH"),
                 quote: Symbol::from("USDT"),
                 settle: SwapSettle::UsdMargin,
                 contract_size: 1.0,
             }),
-            mark_price: Price::from_f64(3_000.0),
-            timestamp: Timestamp::from_nanos(0),
-        };
+            Price::from_f64(3_000.0),
+            Timestamp::from_nanos(0),
+        );
         let json = serde_json::to_string(&evt).unwrap();
         let parsed: MarkEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(evt, parsed);
@@ -446,24 +441,51 @@ mod tests_mark {
 }
 ```
 
-(Adjust imports to match file's existing `use` patterns; e.g. `Symbol` may already be imported.)
+> **Note**: Added `Eq` to derive (the parent `Event` enum derives `Eq`).
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 3: Add `Mark` variant to `Event` enum in `event/types.rs`**
+
+`pub enum Event` already has `#[non_exhaustive]`, so the new variant is non-breaking.
+The `EventType` bit mask gets a new `MARK` bit (`0b10000`, slot 5) — leaves the
+existing 4 bits intact so all previous bit-pattern callers keep working.
+`EventType::ALL` becomes `0b11111`.
+
+Also updated:
+- `Event::timestamp` / `Event::seq` / `Event::event_type` to include the new arm.
+  For `seq()`, `MarkEvent` returns `0` since it carries no seq (externally sourced).
+- `Display` impls for both `Event` and `EventType` to print `MARK` and the new variant.
+  `Instrument` is printed via `{:?}` (no `Display` impl exists for it).
+- `EventType` test strings (`ALL` display + `ALL.bits()`).
+
+- [x] **Step 4: Re-export in `event/mod.rs` and `lib.rs`**
+
+`event/mod.rs`:
+- `pub mod mark;`
+- `pub use mark::MarkEvent;`
+- Module-level doc list adds `[`mark`]：标记价格事件`.
+
+`lib.rs` (root):
+- `MarkEvent` added to the `pub use event::{...}` line.
+
+- [x] **Step 5: Run tests**
 
 Run: `cargo test -p axon-core mark`
-Expected: 2 tests pass.
+Expected: tests pass (2 in `event::mark::tests`, plus 2 new ones in
+`event::types::tests` covering the new variant & bit).
 
-- [ ] **Step 6: Run clippy**
+- [x] **Step 6: Run clippy**
 
 Run: `cargo clippy -p axon-core --all-targets -- -D warnings`
 Expected: no warnings.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
-git add crates/axon-core/src/event.rs
+git add crates/axon-core/src/event/mark.rs crates/axon-core/src/event/mod.rs         crates/axon-core/src/event/types.rs crates/axon-core/src/lib.rs
 git commit -m "feat(core): add MarkEvent and Event::Mark variant for future mark-price plumbing"
 ```
+
+Commit hash: `2a32825` (this repo).
 
 ---
 
