@@ -81,8 +81,8 @@ pub use order::{
 // 事件类型 re-export
 pub use event::{
     Event, EventBuilder, EventCollector, EventError, EventHandler, EventResult, EventRouter,
-    EventType, FillEvent, MarketDataEvent, MarketDataPayload, OrderAction, OrderEvent,
-    SystemAction, SystemEvent,
+    EventType, FillEvent, MarketDataEvent, MarketDataPayload, MarkEvent, OrderAction,
+    OrderEvent, SystemAction, SystemEvent,
 };
 
 // 事件队列 re-export

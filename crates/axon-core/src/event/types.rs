@@ -1,7 +1,7 @@
 //! 事件类型分类位掩码与统一事件枚举
 //!
 //! [`EventType`] 是 1 字节位掩码，支持快速过滤；
-//! [`Event`] 是 4 路枚举（市场数据 / 订单 / 成交 / 系统）。
+//! [`Event`] 是 5 路枚举（市场数据 / 订单 / 成交 / 标记 / 系统）。
 
 use std::fmt;
 use std::ops::{BitAnd, BitOr};
@@ -9,6 +9,7 @@ use std::ops::{BitAnd, BitOr};
 use serde::{Deserialize, Serialize};
 
 use super::fill::FillEvent;
+use super::mark::MarkEvent;
 use super::market::MarketDataEvent;
 use super::order::OrderEvent;
 use super::system::SystemEvent;
@@ -30,8 +31,10 @@ impl EventType {
     pub const FILL: EventType = EventType(0b0100);
     /// 系统事件
     pub const SYSTEM: EventType = EventType(0b1000);
+    /// 标记价格事件
+    pub const MARK: EventType = EventType(0b10000);
     /// 所有事件类型
-    pub const ALL: EventType = EventType(0b1111);
+    pub const ALL: EventType = EventType(0b11111);
     /// 空（不订阅任何事件）
     pub const NONE: EventType = EventType(0b0000);
 
@@ -109,6 +112,9 @@ impl fmt::Display for EventType {
         if self.contains(Self::SYSTEM) {
             parts.push("SYSTEM");
         }
+        if self.contains(Self::MARK) {
+            parts.push("MARK");
+        }
         if parts.is_empty() {
             write!(f, "NONE")
         } else {
@@ -127,6 +133,8 @@ pub enum Event {
     Order(OrderEvent),
     /// 成交事件
     Fill(FillEvent),
+    /// 标记价格事件
+    Mark(MarkEvent),
     /// 系统事件
     System(SystemEvent),
 }
@@ -139,6 +147,7 @@ impl Event {
             Self::MarketData(e) => e.timestamp,
             Self::Order(e) => e.timestamp,
             Self::Fill(e) => e.timestamp,
+            Self::Mark(e) => e.timestamp,
             Self::System(e) => e.timestamp,
         }
     }
@@ -150,6 +159,8 @@ impl Event {
             Self::MarketData(e) => e.seq,
             Self::Order(e) => e.seq,
             Self::Fill(e) => e.seq,
+            // MarkEvent 不携带序列号(由外部数据源推入,无单一时序保证)
+            Self::Mark(_) => 0,
             Self::System(e) => e.seq,
         }
     }
@@ -161,6 +172,7 @@ impl Event {
             Self::MarketData(_) => EventType::MARKET_DATA,
             Self::Order(_) => EventType::ORDER,
             Self::Fill(_) => EventType::FILL,
+            Self::Mark(_) => EventType::MARK,
             Self::System(_) => EventType::SYSTEM,
         }
     }
@@ -188,6 +200,11 @@ impl fmt::Display for Event {
                 e.seq, e.order_id, e.timestamp
             ),
             Self::Fill(e) => write!(f, "Fill(seq={}, t={})", e.seq, e.timestamp),
+            Self::Mark(e) => write!(
+                f,
+                "Mark(seq=0, instrument={:?}, price={}, t={})",
+                e.instrument, e.mark_price, e.timestamp
+            ),
             Self::System(e) => write!(f, "System(seq={}, t={})", e.seq, e.timestamp),
         }
     }
@@ -244,7 +261,7 @@ mod tests {
         );
         assert_eq!(
             format!("{}", EventType::ALL),
-            "MARKET_DATA|ORDER|FILL|SYSTEM"
+            "MARKET_DATA|ORDER|FILL|SYSTEM|MARK"
         );
         assert_eq!(format!("{}", EventType::NONE), "NONE");
     }
@@ -258,6 +275,36 @@ mod tests {
     #[test]
     fn test_event_type_bits() {
         assert_eq!(EventType::MARKET_DATA.bits(), 0b0001);
-        assert_eq!(EventType::ALL.bits(), 0b1111);
+        assert_eq!(EventType::ALL.bits(), 0b11111);
+    }
+
+    #[test]
+    fn test_event_type_mark_bit_distinct() {
+        // MARK 必须独立于其它 4 位,否则 EventType::MARKET_DATA | EventType::MARK
+        // 会和现有分类冲突
+        let combined = EventType::MARKET_DATA | EventType::MARK;
+        assert!(combined.contains(EventType::MARK));
+        assert!(combined.contains(EventType::MARKET_DATA));
+        assert!(!combined.contains(EventType::ORDER));
+        assert_eq!(EventType::MARK.bits(), 0b10000);
+    }
+
+    #[test]
+    fn test_event_mark_variant() {
+        use crate::types::SpotInstrument;
+        use crate::types::Symbol;
+        let mark = crate::event::mark::MarkEvent {
+            instrument: crate::types::Instrument::Spot(SpotInstrument {
+                base: Symbol::from("BTC"),
+                quote: Symbol::from("USDT"),
+            }),
+            mark_price: crate::types::Price::from_f64(50_000.0),
+            timestamp: Timestamp::from_nanos(1_000),
+        };
+        let evt = Event::Mark(mark);
+        assert_eq!(evt.timestamp(), Timestamp::from_nanos(1_000));
+        assert_eq!(evt.event_type(), EventType::MARK);
+        // MarkEvent 不携带序列号
+        assert_eq!(evt.seq(), 0);
     }
 }
