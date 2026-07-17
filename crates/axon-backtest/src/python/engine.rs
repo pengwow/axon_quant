@@ -405,6 +405,77 @@ impl PyBacktestEngine {
         Ok(())
     }
 
+    // ─── 0.5.0 新增(Phase C):Funding 结算 ─────────────────────
+
+    /// 推入 Funding 结算事件(0.5.0 新增 Phase C)
+    ///
+    /// 永续合约资金费率由数据源每 8h(可调)推入,引擎按
+    /// `position_qty × funding_rate × mark_price` 累计到 cash
+    /// 并写入 `RunResult.total_funding_pnl`。
+    ///
+    /// spot instrument 收到 funding 会被忽略(spot 无 funding 概念)。
+    ///
+    /// Args:
+    /// - `instrument`: 永续合约 dict(由 `swap_instrument()` 构造;spot 收到会被忽略)
+    /// - `funding_rate`: 资金费率(正=long 付,负=long 收)
+    /// - `mark_price`: 结算时 mark 价格
+    /// - `timestamp_ns`: 事件纳秒时间戳
+    #[pyo3(signature = (instrument, funding_rate, mark_price, timestamp_ns))]
+    fn push_funding(
+        &mut self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        funding_rate: f64,
+        mark_price: f64,
+        timestamp_ns: i64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        self.inner.push_funding(
+            inst,
+            funding_rate,
+            mark_price,
+            Timestamp::from_nanos(timestamp_ns),
+        );
+        Ok(())
+    }
+
+    // ─── 0.5.0 新增(Phase D):自动 rebalance ─────────────────────
+
+    /// 启用自动 rebalance 阈值(0.5.0 新增 Phase D)
+    ///
+    /// 启用后,策略层在每根 bar 末调 `rebalance_to_target()` 即可按
+    /// `|target - current| > threshold` 对每个 leg 自动发市价单把
+    /// 仓位推到位。多次调可覆盖前值;`with_auto_rebalance_disable()`
+    /// 关闭。
+    ///
+    /// Args:
+    /// - `threshold`: 最小 delta(绝对值)。建议 `1e-6` 避免抖动;
+    ///   `0.0` 等价"每 tick rebalance"。
+    fn with_auto_rebalance(&mut self, threshold: f64) {
+        self.inner.with_auto_rebalance(threshold);
+    }
+
+    /// 关闭自动 rebalance(回到默认 `None` 状态)
+    fn with_auto_rebalance_disable(&mut self) {
+        self.inner.with_auto_rebalance_disable();
+    }
+
+    /// 手动触发 rebalance(0.5.0 新增 Phase D)
+    ///
+    /// 遍历所有通过 `set_target_position` 设置过的 leg,对
+    /// `|target - current| > threshold` 的 leg 发市价单。
+    ///
+    /// Args:
+    /// - `threshold`: 阈值(绝对值)。不传 / 传 `None` 用
+    ///   `with_auto_rebalance` 配置的阈值;都没设则不发单。
+    ///
+    /// Returns:
+    /// - 实际发出去的 rebalance 单数(便于统计)
+    #[pyo3(signature = (threshold = None))]
+    fn rebalance_to_target(&mut self, threshold: Option<f64>) -> u64 {
+        self.inner.rebalance_to_target(threshold)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "BacktestEngine(pending={}, finished={})",
@@ -609,6 +680,27 @@ impl PyRunResult {
             d.set_item(key, price.as_f64())?;
         }
         Ok(d)
+    }
+
+    /// 累计 funding 结算 PnL(0.5.0 新增 Phase C)
+    ///
+    /// 正值=累计净收(perp short + 正 funding),负值=累计净付。
+    /// 来源:`BacktestEngine::handle_funding` 在收到 `Event::Funding` 时按
+    /// `position_qty × funding_rate × mark_price` 累加;`final_nav` 已把
+    /// 该值包含在 cash 余额中,这里单列出来便于报告/对账。
+    #[getter]
+    fn total_funding_pnl(&self) -> f64 {
+        self.inner.total_funding_pnl
+    }
+
+    /// 自动 rebalance 触发的下单次数(0.5.0 新增 Phase D)
+    ///
+    /// 由 `rebalance_to_target()` 在每根 bar 末/手动触发时,根据
+    /// `|target - current| > threshold` 对每个 leg 发市价单的实际
+    /// fill 数累加。0 表示本次回测未调用 rebalance 或所有 leg 都已在阈值内。
+    #[getter]
+    fn rebalances_triggered(&self) -> u64 {
+        self.inner.rebalances_triggered
     }
 
     /// 序列化为 Python `dict`(便于 JSON 序列化)

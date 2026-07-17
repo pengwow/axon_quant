@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use axon_core::event::{Event, FillEvent, MarkEvent, OrderAction, OrderEvent};
+use axon_core::event::{Event, FillEvent, FundingEvent, MarkEvent, OrderAction, OrderEvent};
 use axon_core::impact::ImpactModel;
 use axon_core::market::Side;
 use axon_core::market::Trade;
@@ -98,6 +98,12 @@ impl std::fmt::Debug for BacktestEngineConfig {
 /// EOD 强制平仓所发市价单的 id 起点(避免与策略订单 id / seed 流动性 id 冲突)
 const EOD_LIQUIDATE_ID_BASE: u64 = 2_000_000_000;
 
+/// 自动 rebalance 所发市价单的 id 起点(0.5.0 新增 Phase D)
+///
+/// 避开 0..1_000_000_000(策略订单)、1_000_000_000..2_000_000_000(seed 流动性)、
+/// 2_000_000_000..3_000_000_000(EOD 平仓)区间,从 3_000_000_000 开始递增。
+const REBALANCE_ID_BASE: u64 = 3_000_000_000;
+
 /// 回测运行结果
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunResult {
@@ -160,6 +166,18 @@ pub struct RunResult {
     pub leg_targets: HashMap<Instrument, f64>,
     /// T3.5 新增:每 instrument 最新 mark 价格(`instrument -> mark_price`)
     pub marks: HashMap<Instrument, f64>,
+    /// 0.5.0 新增(Phase C):累计 funding 结算 PnL(正=收,负=付)
+    ///
+    /// 来源:由 `BacktestEngine::handle_funding` 在收到 `Event::Funding` 时
+    /// 按 `qty * funding_rate * mark_price` 累加;`final_nav` 已经把这个值
+    /// 包含在 cash 余额中(因为我们直接改 cash),这里单列出来便于报告/对账。
+    pub total_funding_pnl: f64,
+    /// 0.5.0 新增(Phase D):自动 rebalance 触发的下单次数
+    ///
+    /// `with_auto_rebalance(threshold)` 启用后,每根 bar 末遍历 `legs`,对每
+    /// 个 `|target - current| > threshold` 的 leg 发市价单,本字段累计所有
+    /// **实际**发出去的 rebalance 单数(`rebalance_to_target()` 内部循环计数)。
+    pub rebalances_triggered: u64,
 }
 
 impl Default for RunResult {
@@ -188,6 +206,10 @@ impl Default for RunResult {
             // T3.5 新增
             leg_targets: HashMap::new(),
             marks: HashMap::new(),
+            // 0.5.0 新增(Phase C)
+            total_funding_pnl: 0.0,
+            // 0.5.0 新增(Phase D)
+            rebalances_triggered: 0,
         }
     }
 }
@@ -278,6 +300,8 @@ struct BacktestState {
     legs: HashMap<Instrument, LegConfig>,
     /// T3.5 新增:每 instrument 最新 mark 价格缓存(`Event::Mark` 写入)
     mark_cache: HashMap<Instrument, Price>,
+    /// 0.5.0 新增(Phase C):累计 funding 结算 PnL(`Event::Funding` 累加)
+    total_funding_pnl: f64,
 }
 
 /// Leg 配置(策略目标仓位)
@@ -359,6 +383,20 @@ pub struct BacktestEngine {
     seed_liquidity_config: Option<SeedLiquidityConfig>,
     /// 虚拟流动性种子 id 计数器(从大数 1_000_000_000 开始,避免与策略订单 id 冲突)
     seed_liquidity_next_id: std::sync::atomic::AtomicU64,
+    /// 0.5.0 新增(Phase D):自动 rebalance 阈值
+    ///
+    /// `None` = 不启用;`Some(t)` 表示"`|target - current| > t` 才发单"。
+    /// 默认建议 `1e-6`(避免抖动);`0.0` 等价"每 tick 都 rebalance"。
+    auto_rebalance_threshold: Option<f64>,
+    /// 0.5.0 新增(Phase D):rebalance 单 id 计数器(`REBALANCE_ID_BASE` 起点)
+    rebalance_next_id: std::sync::atomic::AtomicU64,
+    /// 0.5.0 新增(Phase D):累计 rebalance 触发的 fill 数
+    ///
+    /// 每次 `rebalance_to_target()` 内部每产生一个 fill 累加 1,最终
+    /// 通过 `build_result()` 写到 `RunResult.rebalances_triggered`。
+    /// 0.5.0 由调用方在 bar 末手动触发 rebalance 时累加;
+    /// 0.5.1+ 可在 `begin_bar` 收尾自动 rebalance 时累加。
+    rebalances_triggered: u64,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -396,6 +434,12 @@ impl BacktestEngine {
             seed_liquidity_config: None,
             // id 计数器从 1_000_000_000 开始(策略订单 id 通常从 1 起递增,避免冲突)
             seed_liquidity_next_id: std::sync::atomic::AtomicU64::new(1_000_000_000),
+            // 0.5.0 新增(Phase D):自动 rebalance 默认未启用
+            auto_rebalance_threshold: None,
+            // 0.5.0 新增(Phase D):rebalance id 起点避开策略/seed/EOD
+            rebalance_next_id: std::sync::atomic::AtomicU64::new(REBALANCE_ID_BASE),
+            // 0.5.0 新增(Phase D):rebalance 触发累计起点 0
+            rebalances_triggered: 0,
         }
     }
 
@@ -604,10 +648,15 @@ impl BacktestEngine {
         let started = Instant::now();
         let initial_cash = self.config.initial_cash;
 
-        // 防止重复 run：若已 finished，直接返回上次结果
-        if self.finished {
+        // 防止重复 run:若已 finished 且队列耗尽,直接返回上次结果。
+        // 但 finished 后若继续 push_event / push_funding(quantcell 跨 bar
+        // 调度场景),队列会重新有事件 → reset finished 继续 dispatch。
+        // 0.5.0 改:之前 `if self.finished { return ... }` 会吞掉 rebalance_to_target
+        // 之后 push 的 funding 事件。
+        if self.finished && self.event_queue.is_empty() {
             return self.build_result(initial_cash, started.elapsed());
         }
+        self.finished = false; // 0.5.0 新增:队列有事件时允许继续处理
 
         // 推进时钟到当前队列时间起点（事件可能晚于 clock.start()）
         if let Some(t) = self.event_queue.peek_time() {
@@ -707,6 +756,8 @@ impl BacktestEngine {
             Event::Fill(fill) => self.handle_fill(fill),
             // T3.6 新增:Mark 事件 → 写 mark_cache(本次范围不触 NAV 重采样,详见 spec §5.2)
             Event::Mark(mark) => self.handle_mark(mark),
+            // 0.5.0 新增(Phase C):Funding 事件 → 按 instrument 持仓结算资金费率
+            Event::Funding(funding) => self.handle_funding(funding),
             // MarketData / System 事件仅计数
             _ => {
                 trace!(seq = event.seq(), "non-dispatchable event (skipped)");
@@ -1061,6 +1112,214 @@ impl BacktestEngine {
         self.bt_state.cash + position_value
     }
 
+    /// 0.5.0 新增(Phase C):处理 Funding 结算事件
+    ///
+    /// 行为:
+    /// - 查找 `position_states[instrument]` 当前持仓(`quantity` 带符号)
+    /// - 算 `cash_delta = quantity * funding_rate * mark_price`
+    ///   (由 `FundingEvent::cash_delta_for` 统一实现,符号语义见其 doc)
+    /// - 直接累计到 `bt_state.cash`,因为 cash 已经在 `final_nav` 中体现
+    /// - 累计到 `bt_state.total_funding_pnl`(便于 RunResult 报告)
+    /// - 触发 NAV 重采样(同 `handle_mark`,让 `equity_curve` 反映 funding 入账)
+    ///
+    /// 边界:
+    /// - **spot instrument 收到 FundingEvent 会被忽略**(spot 无 funding)
+    /// - **无持仓时 cash_delta = 0**,仍写 `total_funding_pnl += 0`(无副作用)
+    /// - **8h 调度不在引擎内**(plan 决策),由 quantcell / 数据源按需 push
+    fn handle_funding(&mut self, funding: FundingEvent) {
+        // spot 无 funding 概念,直接跳过(保持 cash 不动,total_funding_pnl 不变)
+        if matches!(funding.instrument, Instrument::Spot(_)) {
+            trace!(
+                instrument = ?funding.instrument,
+                "spot instrument 收到 FundingEvent,忽略(spot 无 funding 概念)"
+            );
+            return;
+        }
+
+        // 找当前持仓(可能为 0:尚无成交,funding 入账为 0)
+        let qty = self
+            .bt_state
+            .position_states
+            .get(&funding.instrument)
+            .map(|p| p.quantity)
+            .unwrap_or(0.0);
+        let cash_delta = funding.cash_delta_for(qty);
+
+        self.bt_state.cash += cash_delta;
+        self.bt_state.total_funding_pnl += cash_delta;
+
+        // NAV 重采样(同 handle_mark 模式,避免连续 funding 在同一时间戳重复推)
+        let timestamp = funding.timestamp;
+        let nav = self.compute_nav(timestamp, funding.mark_price.as_f64());
+        if nav > self.bt_state.nav_peak {
+            self.bt_state.nav_peak = nav;
+        }
+        if self
+            .bt_state
+            .equity_curve
+            .last()
+            .map(|(t, _)| *t == timestamp)
+            .unwrap_or(false)
+        {
+            if let Some(last) = self.bt_state.equity_curve.last_mut() {
+                last.1 = nav;
+            }
+        } else {
+            self.bt_state.equity_curve.push((timestamp, nav));
+        }
+    }
+
+    /// 0.5.0 新增(Phase C):便捷推入 funding 事件(Python 端友好)
+    ///
+    /// 等价 `push_event(Event::Funding(FundingEvent::new(...)))`,免去 Python 端
+    /// 构造完整 `Event` 枚举的样板(避免暴露内部 `EventBuilder` 给 PyO3 绑定)。
+    ///
+    /// # 用法
+    ///
+    /// 外部调度器(每 8h / 1m 等按需)在 data feed 推动时调用:
+    /// ```ignore
+    /// engine.push_funding(swap_inst, 0.0001, 50_000.0, ts);
+    /// ```
+    pub fn push_funding(
+        &mut self,
+        instrument: Instrument,
+        funding_rate: f64,
+        mark_price: f64,
+        timestamp: Timestamp,
+    ) {
+        let evt = FundingEvent::new(
+            instrument,
+            funding_rate,
+            Price::from_f64(mark_price),
+            timestamp,
+        );
+        self.event_queue.push(Event::Funding(evt));
+    }
+
+    /// 0.5.0 新增(Phase D):启用自动 rebalance 阈值
+    ///
+    /// 调用后,每根 bar 末(`begin_bar` 之后 / `step` 收尾)自动调
+    /// `rebalance_to_target()`,对每个 `|target - current| > threshold` 的 leg
+    /// 发市价单把仓位推到位。
+    ///
+    /// # 参数
+    ///
+    /// - `threshold`:最小 delta(绝对值,`f64`),小于此值不触发 rebalance。
+    ///   - 建议 `1e-6`(避免 fill 抖动反复触发)
+    ///   - `0.0` 等价"每 tick rebalance"(几乎无阈值过滤,谨慎使用)
+    ///
+    /// # 关闭
+    ///
+    /// `with_auto_rebalance_disable()` 关闭(回到 `None` 状态)。
+    pub fn with_auto_rebalance(&mut self, threshold: f64) {
+        self.auto_rebalance_threshold = Some(threshold);
+    }
+
+    /// 0.5.0 新增(Phase D):关闭自动 rebalance
+    pub fn with_auto_rebalance_disable(&mut self) {
+        self.auto_rebalance_threshold = None;
+    }
+
+    /// 0.5.0 新增(Phase D):手动触发 rebalance
+    ///
+    /// 遍历 `bt_state.legs`:
+    /// - `current = position_states[instrument].quantity`(无则为 0)
+    /// - `delta = target - current`
+    /// - `|delta| > threshold` 时发市价单,`side` 跟 `delta` 同号
+    ///   (`delta > 0` ⇒ Buy,`delta < 0` ⇒ Sell)
+    /// - 市价单走 `MatchingEngine::submit`(同 EOD 平仓),产生的 fill 走
+    ///   `apply_fill` 6 状态机正常处理(累计 cash、realized_pnl、trades)
+    ///
+    /// # 参数
+    ///
+    /// - `threshold`:最小 delta(绝对值)。传 `None` 用本字段默认阈值;
+    ///   传 `Some(t)` 临时覆盖(单次 rebalance 用,不影响后续 bar 末的
+    ///   `auto_rebalance_threshold` 配置)。
+    ///
+    /// # 返回
+    ///
+    /// 实际发出去的 rebalance 单数(便于 `RunResult::rebalances_triggered` 统计)。
+    pub fn rebalance_to_target(&mut self, threshold_override: Option<f64>) -> u64 {
+        // 确定本轮阈值(`override` 优先;否则读 auto_rebalance_threshold;
+        // 都没有说明 rebalance 关闭 → 直接返回 0)
+        let threshold = threshold_override
+            .or(self.auto_rebalance_threshold)
+            .unwrap_or(f64::INFINITY);
+
+        // 收集要 rebalance 的 leg(避免 borrow/mut borrow 冲突:先 copy 一份)
+        // 复制为 (instrument, target) 元组列表;后续用 instrument 直接查
+        // position_states 拿 current。
+        let legs: Vec<(Instrument, f64)> = self
+            .bt_state
+            .legs
+            .iter()
+            .map(|(inst, leg)| (inst.clone(), leg.target_position))
+            .collect();
+
+        let mut triggered = 0u64;
+        // 用 rebalance_next_id 原子计数器确保多次 rebalance 调用 id 唯一
+        for (instrument, target) in legs.into_iter() {
+            let current = self
+                .bt_state
+                .position_states
+                .get(&instrument)
+                .map(|p| p.quantity)
+                .unwrap_or(0.0);
+            let delta = target - current;
+            if delta.abs() <= threshold {
+                continue; // 在阈值内,不发单
+            }
+            // delta > 0 ⇒ Buy(增加持仓);delta < 0 ⇒ Sell(减少持仓)
+            let side = if delta > 0.0 { Side::Buy } else { Side::Sell };
+            let qty = delta.abs();
+            // 0.5.0 修:按 instrument 类型分派 `Order::spot` / `Order::swap`,
+            // 之前一律用 `Order::spot` 导致 perp leg 的 `instrument` 字段被错
+            // 设为 Spot,路由到 spot book,永远不成交。
+            let order_id = self
+                .rebalance_next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let order = match &instrument {
+                Instrument::Spot(s) => Order::spot(
+                    order_id,
+                    s.base.clone(),
+                    s.quote.clone(),
+                    side,
+                    OrderType::Market,
+                    Quantity::from_f64(qty),
+                    TimeInForce::IOC,
+                ),
+                Instrument::Swap(s) => Order::swap(
+                    order_id,
+                    s.base.clone(),
+                    s.quote.clone(),
+                    s.settle,
+                    s.contract_size,
+                    side,
+                    OrderType::Market,
+                    Quantity::from_f64(qty),
+                    TimeInForce::IOC,
+                ),
+            };
+            // 同步提交走 MatchingEngine(同 EOD 模式,不入事件队列)
+            let result = self.config.matching_engine.submit(order);
+            for fill in &result.fills {
+                self.stats.orders_accepted += 1;
+                self.stats.fills += 1;
+                self.stats.total_pnl += fill_pnl_delta(fill);
+                if self.stats.total_pnl > self.stats.pnl_peak {
+                    self.stats.pnl_peak = self.stats.total_pnl;
+                }
+                // 走 6 状态机更新持仓 / cash / realized_pnl
+                self.apply_fill(&instrument, side, fill);
+                triggered += 1;
+            }
+        }
+        // 0.5.0 新增(Phase D):把本次 fill 数累计到引擎字段,
+        // `build_result` 时统一写到 `RunResult.rebalances_triggered`
+        self.rebalances_triggered += triggered;
+        triggered
+    }
+
     /// 构造最终 RunResult
     ///
     /// # 关键语义(total_pnl / max_drawdown 是"账户视角"而非"现金流视角")
@@ -1164,6 +1423,11 @@ impl BacktestEngine {
             // T3.5 新增
             leg_targets,
             marks,
+            // 0.5.0 新增(Phase C):funding 累计 PnL
+            total_funding_pnl: self.bt_state.total_funding_pnl,
+            // 0.5.0 新增(Phase D):rebalance 触发次数(累计所有
+            // `rebalance_to_target()` 调用产出的实际 fill 数)
+            rebalances_triggered: self.rebalances_triggered,
         }
     }
 }
@@ -2149,6 +2413,634 @@ mod tests {
         assert!(
             (result.positions.get(&btc_swap).copied().unwrap_or(0.0)).abs() < 1e-9,
             "swap pos 应=0(无成交)"
+        );
+    }
+
+    // ── Phase C 新增:Funding 结算 ─────────────────────────────
+
+    /// 便捷工具:构造 swap BTC/USDT
+    fn btc_swap_inst() -> Instrument {
+        Instrument::Swap(axon_core::types::SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: axon_core::types::SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        })
+    }
+
+    /// 便捷工具:构造 FundingEvent(直接 push 到队列,不走 push_funding 便捷方法)
+    fn push_funding_event(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        inst: Instrument,
+        rate: f64,
+        mark: f64,
+        ts_ns: i64,
+    ) {
+        q.push(b.funding(FundingEvent::new(
+            inst,
+            rate,
+            Price::from_f64(mark),
+            Timestamp::from_nanos(ts_ns),
+        )));
+    }
+
+    /// Funding 派发:long 0.5 @ 0.0001 @ mark 50_000 → long 付 2.5
+    ///
+    /// 验证:
+    /// - `bt_state.cash -= 2.5`
+    /// - `total_funding_pnl = -2.5`
+    /// - 终态 `final_nav` 反映 cash 减少
+    ///
+    /// 注:对手卖单也用 `Order::swap` —— L1MatchingEngine 按 instrument 分 book,
+    /// spot 卖单 + swap 买单走两个 book,不会撮合。
+    #[test]
+    fn test_funding_long_pays_cash_decreases() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_swap = btc_swap_inst();
+
+        // 1) 先开 long 0.5:对手卖(swap) + 策略买(swap) → 同一 book 撮合
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            1,
+            OrderAction::Submitted(Order::swap(
+                1,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(50_000.0),
+                },
+                Quantity::from_f64(0.5),
+                TimeInForce::GTC,
+            )),
+        ));
+        q.push(b.order(
+            Timestamp::from_nanos(2_000),
+            2,
+            OrderAction::Submitted(Order::swap(
+                2,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Buy,
+                OrderType::Market,
+                Quantity::from_f64(0.5),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        // 2) 推 funding:rate 0.0001, mark 50_000
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 3_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        // 开仓 1 笔 fill
+        assert_eq!(result.fills, 1, "swap 开仓 1 笔 fill");
+        // funding: 0.5 × 0.0001 × 50000 = 2.5,long 付 → cash_delta = -2.5
+        assert!(
+            (result.total_funding_pnl - (-2.5)).abs() < 1e-9,
+            "long funding PnL 应=-2.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// Funding 派发:short 持仓 + 正 funding → short 收
+    #[test]
+    fn test_funding_short_receives_cash_increases() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_swap = btc_swap_inst();
+
+        // 1) 开 short 0.5:对手买(swap) + 策略卖(swap) → 同一 book 撮合
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            1,
+            OrderAction::Submitted(Order::swap(
+                1,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(50_000.0),
+                },
+                Quantity::from_f64(0.5),
+                TimeInForce::GTC,
+            )),
+        ));
+        q.push(b.order(
+            Timestamp::from_nanos(2_000),
+            2,
+            OrderAction::Submitted(Order::swap(
+                2,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Sell,
+                OrderType::Market,
+                Quantity::from_f64(0.5),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        // 2) 推 funding:rate 0.0001, mark 50_000
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 3_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        // -0.5 × 0.0001 × 50000 = -2.5(short 收 → cash_delta = +2.5)
+        assert!(
+            (result.total_funding_pnl - 2.5).abs() < 1e-9,
+            "short funding PnL 应=+2.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 多笔 funding 累积:cash 累计扣减正确
+    #[test]
+    fn test_funding_multiple_accumulate() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_swap = btc_swap_inst();
+
+        // 1) 开 long 1.0(都在 swap book)
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            1,
+            OrderAction::Submitted(Order::swap(
+                1,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(50_000.0),
+                },
+                Quantity::from_f64(1.0),
+                TimeInForce::GTC,
+            )),
+        ));
+        q.push(b.order(
+            Timestamp::from_nanos(2_000),
+            2,
+            OrderAction::Submitted(Order::swap(
+                2,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Buy,
+                OrderType::Market,
+                Quantity::from_f64(1.0),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        // 2) 三笔 funding 各 0.0001 @ 50_000
+        // 累加 = 1.0 × 0.0001 × 50000 × 3 = 15(long 付 15)
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 3_000);
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 4_000);
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 5_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        // long 付 15
+        assert!(
+            (result.total_funding_pnl - (-15.0)).abs() < 1e-9,
+            "三笔 funding 累加=-15,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// Spot instrument 收到 FundingEvent 会被忽略
+    #[test]
+    fn test_funding_spot_instrument_ignored() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
+
+        // 直接推 funding 给 spot(典型误用:数据源推错)
+        push_funding_event(&mut q, &mut b, btc_spot.clone(), 0.0001, 50_000.0, 1_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        // 忽略 → total_funding_pnl = 0
+        assert!(
+            result.total_funding_pnl.abs() < 1e-9,
+            "spot 收到 funding 应被忽略,got total_funding_pnl={}",
+            result.total_funding_pnl
+        );
+        // 现金不变
+        assert!(
+            (result.final_nav - 100_000.0).abs() < 1e-6,
+            "final_nav 应=initial_cash(100_000),got {}",
+            result.final_nav
+        );
+    }
+
+    /// 无持仓时 funding 入账 0
+    #[test]
+    fn test_funding_with_zero_position_is_zero() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_swap = btc_swap_inst();
+
+        // 没有开仓 → qty = 0 → cash_delta = 0
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 1_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        assert!(
+            result.total_funding_pnl.abs() < 1e-9,
+            "无持仓时 funding PnL=0,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// `push_funding` 便捷方法等价于 `push_event(FundingEvent::new(...))`
+    #[test]
+    fn test_push_funding_convenience_method() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        let btc_swap = btc_swap_inst();
+
+        // 不走队列,直接用便捷方法
+        engine.push_funding(
+            btc_swap.clone(),
+            0.0001,
+            50_000.0,
+            Timestamp::from_nanos(1_000),
+        );
+        assert_eq!(engine.pending_events(), 1, "应入队 1 个 FundingEvent");
+
+        let result = engine.run();
+        // 无持仓 → total_funding_pnl = 0(但事件被处理过)
+        assert_eq!(result.events_processed, 1);
+        assert!(result.total_funding_pnl.abs() < 1e-9);
+    }
+
+    /// Funding 入账后 equity_curve 增加一帧(NAV 重采样)
+    #[test]
+    fn test_funding_creates_equity_curve_frame() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_swap = btc_swap_inst();
+
+        // 1) 开 long 1.0(对手卖 + 策略买,都在 swap book)
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            1,
+            OrderAction::Submitted(Order::swap(
+                1,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(50_000.0),
+                },
+                Quantity::from_f64(1.0),
+                TimeInForce::GTC,
+            )),
+        ));
+        q.push(b.order(
+            Timestamp::from_nanos(2_000),
+            2,
+            OrderAction::Submitted(Order::swap(
+                2,
+                "BTC",
+                "USDT",
+                axon_core::types::SwapSettle::UsdMargin,
+                1.0,
+                Side::Buy,
+                OrderType::Market,
+                Quantity::from_f64(1.0),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        // 2) 推 funding(long 付 5 USDT)
+        push_funding_event(&mut q, &mut b, btc_swap.clone(), 0.0001, 50_000.0, 3_000);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        let result = engine.run();
+
+        // funding 后 equity_curve 至少 1 帧(可能 2 帧:fill 后 + funding 后)
+        // 关键断言:最后一帧时间戳 == funding 时间戳
+        let last = result.equity_curve.last().expect("equity_curve 不应为空");
+        assert_eq!(last.0, Timestamp::from_nanos(3_000));
+    }
+
+    // ── Phase D 新增:自动 rebalance ─────────────────────────────
+
+    /// 便捷工具:构造 spot BTC/USDT
+    fn btc_spot_inst() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    /// 便捷工具:用事件流在 L1 上预挂 limit sell 单(让后续 rebalance Buy 能撮合)
+    ///
+    /// 流程:push Order(Submitted)→ engine.run() → fill 走 apply_fill →
+    /// matching_engine 残留 sell 单(未完全成交部分)在 book 上。
+    /// 然后返回 engine(reference);调用方继续 push order。
+    fn push_sell_order(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        id: u64,
+        instrument: Instrument,
+        price: f64,
+        qty: f64,
+    ) {
+        let (base, quote) = match &instrument {
+            Instrument::Spot(s) => (s.base.clone(), s.quote.clone()),
+            Instrument::Swap(s) => (s.base.clone(), s.quote.clone()),
+        };
+        q.push(b.order(
+            Timestamp::from_nanos(0),
+            id,
+            OrderAction::Submitted(Order::spot(
+                id,
+                base,
+                quote,
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(price),
+                },
+                Quantity::from_f64(qty),
+                TimeInForce::GTC,
+            )),
+        ));
+    }
+
+    /// set_target_position → rebalance 触发 → position 推到目标
+    ///
+    /// 场景:无持仓,target=+1.0,threshold=1e-6
+    /// 预期:发 1 笔 IOC Buy 单,成交后 position ≈ +1.0
+    #[test]
+    fn test_rebalance_long_target_from_zero() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 1) 预挂对手卖单 1.0 @ 50_000(走事件流 → L1 book)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 1.0);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        // 2) 跑一次让 sell 进 book
+        engine.run();
+        // 3) 设 target,触发 rebalance(直接调 rebalance_to_target,
+        //    市价单走 submit → 吃 sell → apply_fill → position 推到 +1.0)
+        engine.set_target_position(btc_spot.clone(), 1.0);
+        let triggered = engine.rebalance_to_target(Some(1e-6));
+
+        assert_eq!(triggered, 1, "应触发 1 笔 rebalance 单");
+        assert!(
+            (engine.get_position(&btc_spot) - 1.0).abs() < 1e-9,
+            "rebalance 后 position 应=+1.0,got {}",
+            engine.get_position(&btc_spot)
+        );
+    }
+
+    /// set_target_position → |delta| < threshold → 不发单
+    #[test]
+    fn test_rebalance_threshold_filters_jitter() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 1) 预挂 sell 0.5(让后 buy 0.5 能吃)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 0.5);
+        // 2) push buy 0.5 市价单 → fill → position = +0.5
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            2,
+            OrderAction::Submitted(Order::spot(
+                2,
+                "BTC",
+                "USDT",
+                Side::Buy,
+                OrderType::Market,
+                Quantity::from_f64(0.5),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        // 当前 position 应 = +0.5
+        assert!((engine.get_position(&btc_spot) - 0.5).abs() < 1e-9);
+
+        // target = 0.5 + 1e-8(微小差异,小于 1e-6 threshold)
+        engine.set_target_position(btc_spot.clone(), 0.5 + 1e-8);
+        let triggered = engine.rebalance_to_target(Some(1e-6));
+        assert_eq!(triggered, 0, "delta < threshold 不应触发");
+    }
+
+    /// set_target_position = 0 → 发卖单清仓
+    #[test]
+    fn test_rebalance_to_zero_position() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 1) 预挂 sell 1.0 @ 50_000(让 taker buy 能吃)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 1.0);
+        // 2) 预挂 buy 1.0 @ 49_990(低于 sell,不会立刻撮合,留在 book 给后续 rebalance sell)
+        q.push(b.order(
+            Timestamp::from_nanos(500),
+            2,
+            OrderAction::Submitted(Order::spot(
+                2,
+                "BTC",
+                "USDT",
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(49_990.0),
+                },
+                Quantity::from_f64(1.0),
+                TimeInForce::GTC,
+            )),
+        ));
+        // 3) buy 1.0 @ market 吃 sell → fill → position = +1.0(buy 限价 49_990 留在 book)
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            3,
+            OrderAction::Submitted(Order::spot(
+                3,
+                "BTC",
+                "USDT",
+                Side::Buy,
+                OrderType::Market,
+                Quantity::from_f64(1.0),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        assert!((engine.get_position(&btc_spot) - 1.0).abs() < 1e-9);
+
+        // 4) target = 0 → 需 sell 1.0 平仓(残留的 buy 限价 49_990 在 book 上,能撮合)
+        engine.set_target_position(btc_spot.clone(), 0.0);
+        let triggered = engine.rebalance_to_target(Some(1e-6));
+        assert_eq!(triggered, 1, "rebalance to zero 应触发 1 笔");
+        assert!(
+            engine.get_position(&btc_spot).abs() < 1e-9,
+            "平仓后 position 应=0"
+        );
+    }
+
+    /// `with_auto_rebalance` 启用后,`rebalance_to_target(None)` 用配置阈值
+    #[test]
+    fn test_with_auto_rebalance_threshold_used_in_rebalance() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 预挂 sell
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 1.0);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+
+        // 启用 auto rebalance @ 1e-6
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 1.0);
+
+        // 不传 threshold → 用配置阈值 1e-6
+        let triggered = engine.rebalance_to_target(None);
+        assert_eq!(triggered, 1);
+    }
+
+    /// `with_auto_rebalance_disable` 关闭后,`rebalance_to_target(None)` 用 +∞(不发单)
+    #[test]
+    fn test_with_auto_rebalance_disable_noop() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        let btc_spot = btc_spot_inst();
+
+        // 不预挂对手(没对手就 fill 不了,自然 0)
+        engine.set_target_position(btc_spot.clone(), 1.0);
+
+        // 不启用 auto rebalance → rebalance_to_target(None) 应无效
+        let triggered = engine.rebalance_to_target(None);
+        assert_eq!(triggered, 0, "未启用 auto rebalance 不应触发");
+    }
+
+    /// 多 leg 同时 rebalance:spot long +1 + swap short -1
+    ///
+    /// spot 触发 1 笔(long fill);swap 触发 1 笔 sell 但无对手 → 0 fill。
+    /// 关键断言:引擎对两条 leg 都尝试了发单(各 1 笔),
+    /// triggered 计数按实际 fill 数 → spot 1, swap 0,合计 1。
+    #[test]
+    fn test_rebalance_multiple_legs_delta_neutral() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+        let btc_swap = btc_swap_inst();
+
+        // spot book 预挂 sell 1.0(让 spot buy 能吃)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 1.0);
+        // swap book 不挂单(让 swap sell 没对手,验证 L1 按 instrument 隔离)
+        // 关键:swap 上 0 流动性,swap rebalance 发 sell 没 fill,total triggered = 1
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+
+        engine.set_target_position(btc_spot.clone(), 1.0);
+        engine.set_target_position(btc_swap.clone(), -1.0);
+
+        let triggered = engine.rebalance_to_target(Some(1e-6));
+        // spot 1 fill + swap 0 fill(sell 没对手) = 1
+        assert_eq!(
+            triggered, 1,
+            "spot fill 1 + swap no fill = 1(关键:swap sell 无 buy 对手)"
+        );
+        // spot position 应=+1.0
+        assert!((engine.get_position(&btc_spot) - 1.0).abs() < 1e-9);
+        // swap 没 fill → position = 0
+        assert!(
+            engine.get_position(&btc_swap).abs() < 1e-9,
+            "swap 应=0(无对手 fill)"
+        );
+    }
+
+    /// 未设置 target 的 leg 不参与 rebalance
+    #[test]
+    fn test_rebalance_only_set_target_legs() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+        let _btc_swap = btc_swap_inst(); // 故意不设 target,验证 swap 不参与 rebalance
+
+        // 只给 spot 设 target,不给 swap
+        // 预挂 sell 1.0
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 1.0);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.set_target_position(btc_spot.clone(), 1.0);
+
+        let triggered = engine.rebalance_to_target(Some(1e-6));
+        // spot rebalance 触发 1 fill(预挂 sell 被吃)
+        assert_eq!(triggered, 1, "只 spot 在 legs 中 → 1 笔 fill");
+    }
+
+    /// 多次 rebalance 调用累加到 `rebalances_triggered`
+    ///
+    /// 关键:每次 rebalance 的 fill 数都应累加到 `RunResult.rebalances_triggered`。
+    /// 第一轮:0→+1(1 fill);第二轮:1→+2(再 1 fill);合计 2。
+    #[test]
+    fn test_rebalances_triggered_accumulate_across_calls() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 预挂 sell 2.0(让 rebalance buy 2 次各 1.0 都能 fill)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_000.0, 2.0);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.set_target_position(btc_spot.clone(), 1.0);
+
+        // 第一次:0→+1 → 1 fill
+        let t1 = engine.rebalance_to_target(Some(1e-6));
+        assert_eq!(t1, 1);
+        assert!((engine.get_position(&btc_spot) - 1.0).abs() < 1e-9);
+
+        // 第二次:+1→+2 → 再 1 fill(总累计 2)
+        engine.set_target_position(btc_spot.clone(), 2.0);
+        let t2 = engine.rebalance_to_target(Some(1e-6));
+        assert_eq!(t2, 1);
+        assert!((engine.get_position(&btc_spot) - 2.0).abs() < 1e-9);
+
+        // 第三次:阈值内,不发单
+        let t3 = engine.rebalance_to_target(Some(1e-6));
+        assert_eq!(t3, 0);
+
+        // RunResult 应累计到 2(t1 + t2)
+        let result = engine.run();
+        assert_eq!(
+            result.rebalances_triggered, 2,
+            "rebalances_triggered 应=2(两次 rebalance 各 1 fill)"
         );
     }
 }

@@ -10,11 +10,10 @@
 //! 3. **目标仓位腿 API**:`set_target_position` / `get_target_position` 跨 leg 独立
 //! 4. **mark 价格 leg 隔离**:`push_mark` 写入 per-instrument mark cache,后到覆盖
 //! 5. **delta-neutral 入场**:`funding > 0 → spot long + perp short` 完整链路
-//!
-//! ## 设计
-//!
-//! 这些测试**不**引入 funding 结算(本批 0.5.0 范围不含),只验证腿隔离 /
-//! 目标位 / mark cache 等结构层正确性。完整 funding 结算逻辑待 0.6.0 引入。
+//! 6. **Funding 结算(Phase C)**:`push_funding` 累加 cash + `total_funding_pnl`,
+//!    spot instrument 收到被忽略,`compute_nav` 用 mark 重估未实现 PnL
+//! 7. **自动 rebalance(Phase D)**:`set_target_position` + `rebalance_to_target` 把
+//!    仓位推到目标,多 leg 同步 rebalance 形成 delta-neutral
 
 // 测试 helper 仅在 `#[test]` 函数中调用,lib build 不报 dead_code
 #![allow(dead_code)]
@@ -22,7 +21,7 @@
 use axon_backtest::engine::{BacktestEngine, BacktestEngineConfig, FeeConfig};
 use axon_backtest::matching::L1MatchingEngine;
 use axon_backtest::matching::MatchingEngine;
-use axon_core::event::{EventBuilder, OrderAction};
+use axon_core::event::{EventBuilder, FundingEvent, MarkEvent, OrderAction};
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
@@ -85,11 +84,7 @@ fn push_order_submitted(
 }
 
 /// 推一条 `Mark` 事件到队列(测试 helper)
-fn push_mark(
-    builder: &mut EventBuilder,
-    queue: &mut EventQueue,
-    mark: axon_core::event::MarkEvent,
-) {
+fn push_mark(builder: &mut EventBuilder, queue: &mut EventQueue, mark: MarkEvent) {
     let event = builder.mark(mark);
     queue.push(event);
 }
@@ -284,17 +279,17 @@ fn leg_target_position_independent_per_instrument() {
 fn leg_marks_independent_and_last_wins() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
         // spot 推两次(50_000 / 50_500),perp 推一次(50_100)
-        let mark1 = axon_core::event::MarkEvent {
+        let mark1 = MarkEvent {
             instrument: btc_spot(),
             mark_price: Price::from_f64(50_000.0),
             timestamp: Timestamp::from_nanos(1_000_000),
         };
-        let mark2 = axon_core::event::MarkEvent {
+        let mark2 = MarkEvent {
             instrument: btc_spot(),
             mark_price: Price::from_f64(50_500.0),
             timestamp: Timestamp::from_nanos(2_000_000),
         };
-        let mark3 = axon_core::event::MarkEvent {
+        let mark3 = MarkEvent {
             instrument: btc_perp(),
             mark_price: Price::from_f64(50_100.0),
             timestamp: Timestamp::from_nanos(1_500_000),
@@ -390,5 +385,318 @@ fn delta_neutral_entry_orders_isolated() {
     assert!(
         (spot_qty + perp_qty).abs() < 1e-9,
         "两 leg 净额应为 0(spot {spot_qty} + perp {perp_qty})"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 场景 6:Funding 结算(Phase C)端到端
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 推 funding 事件到队列的 helper
+fn push_funding(builder: &mut EventBuilder, queue: &mut EventQueue, funding: FundingEvent) {
+    let event = builder.funding(funding);
+    queue.push(event);
+}
+
+/// 端到端 funding 结算(0.5.0 Phase C):
+/// 1) delta-neutral 入场(spot long 0.1 + perp short 0.1)
+/// 2) 推 1 笔 funding 0.0001 @ 50_000:
+///    perp short -0.1 × 0.0001 × 50000 × (-1) = +0.5(short 收)
+/// 3) 推 spot funding(被忽略)→ total_funding_pnl 不变
+/// 4) RunResult.final_nav 反映 cash 增加(0.5 funding + 0 PnL from fill)
+#[test]
+fn funding_settle_end_to_end_delta_neutral() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 入场:spot long 0.1 + perp short 0.1
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 0.1),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 0.1),
+            2_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(3, "BTC", "USDT", Side::Buy, 50_001.0, 0.1),
+            3_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(4, "BTC", "USDT", Side::Sell, 50_001.0, 0.1),
+            4_000,
+        );
+        // 推 perp funding(perp short 收 funding)
+        push_funding(
+            b,
+            q,
+            FundingEvent::new(
+                btc_perp(),
+                0.0001,
+                Price::from_f64(50_000.0),
+                Timestamp::from_nanos(5_000),
+            ),
+        );
+        // 推 spot funding(被忽略)
+        push_funding(
+            b,
+            q,
+            FundingEvent::new(
+                btc_spot(),
+                0.0001,
+                Price::from_f64(50_000.0),
+                Timestamp::from_nanos(6_000),
+            ),
+        );
+    });
+
+    let result = engine.run();
+    // 入场 2 笔 fill,funding 收到 2 个但只结算 1 个(spot 被忽略)
+    assert_eq!(result.fills, 2, "spot + perp 各 1 笔 fill");
+    // perp short -0.1 × 0.0001 × 50000 = -0.5(收)cash_delta = +0.5
+    assert!(
+        (result.total_funding_pnl - 0.5).abs() < 1e-9,
+        "perp short funding 应=+0.5,got {}",
+        result.total_funding_pnl
+    );
+    // 终态:spot long +0.1,perp short -0.1(净额 0,delta 中性)
+    assert!(
+        (result.positions[&btc_spot()] - 0.1).abs() < 1e-9,
+        "spot long 应=+0.1"
+    );
+    assert!(
+        (result.positions[&btc_perp()] - (-0.1)).abs() < 1e-9,
+        "perp short 应=-0.1"
+    );
+}
+
+/// 多次 funding 累积(0.5.0 Phase C):3 笔 funding 累计到 total_funding_pnl。
+#[test]
+fn funding_multiple_settlements_accumulate() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 开 perp long 1.0(perp buy 吃 perp sell)
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 1.0),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 1.0),
+            2_000,
+        );
+        // 3 笔 funding 0.0001 @ 50_000:long 1.0 × 0.0001 × 50000 × 3 = 15(付)
+        for ts in [3_000, 4_000, 5_000] {
+            push_funding(
+                b,
+                q,
+                FundingEvent::new(
+                    btc_perp(),
+                    0.0001,
+                    Price::from_f64(50_000.0),
+                    Timestamp::from_nanos(ts),
+                ),
+            );
+        }
+    });
+
+    let result = engine.run();
+    // 1 笔 fill,3 笔 funding 累加
+    assert_eq!(result.fills, 1);
+    // long 1.0 × 0.0001 × 50000 × 3 = 15(付)cash_delta = -15
+    assert!(
+        (result.total_funding_pnl - (-15.0)).abs() < 1e-9,
+        "3 笔 funding 累加应=-15,got {}",
+        result.total_funding_pnl
+    );
+}
+
+/// Mark + Funding 联合:mark 价变 → NAV 重估 → funding 用最新 mark 结算
+#[test]
+fn mark_funding_combined_unrealized_pnl() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 开 perp long 1.0
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 1.0),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 1.0),
+            2_000,
+        );
+        // 推 mark 50_100(入场后价格变动,未实现 PnL = (50100 - 50001) * 1 = +99)
+        let mark = MarkEvent {
+            instrument: btc_perp(),
+            mark_price: Price::from_f64(50_100.0),
+            timestamp: Timestamp::from_nanos(3_000),
+        };
+        push_mark(b, q, mark);
+        // 推 funding 0.0001 @ 50_100:long 1.0 × 0.0001 × 50100 = 5.01(付)
+        push_funding(
+            b,
+            q,
+            FundingEvent::new(
+                btc_perp(),
+                0.0001,
+                Price::from_f64(50_100.0),
+                Timestamp::from_nanos(4_000),
+            ),
+        );
+    });
+
+    let result = engine.run();
+    // 1 笔 fill
+    assert_eq!(result.fills, 1);
+    // long funding PnL = -5.01
+    assert!(
+        (result.total_funding_pnl - (-5.01)).abs() < 1e-6,
+        "funding 应=-5.01,got {}",
+        result.total_funding_pnl
+    );
+    // mark 已写入(后到的 mark 50_100 生效)
+    assert!(
+        (result.marks[&btc_perp()] - 50_100.0).abs() < 1e-9,
+        "mark 应=50_100.0,got {}",
+        result.marks[&btc_perp()]
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 场景 7:自动 rebalance(Phase D)端到端
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 端到端 rebalance(0.5.0 Phase D):预挂对手盘 → set_target_position → rebalance
+/// 触发市价单 → position 推到目标。
+#[test]
+fn rebalance_end_to_end_pnl_aware() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 预挂 spot sell 0.1(让 rebalance buy 0.1 能撮合)
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 0.1),
+            1_000,
+        );
+    });
+
+    engine.run();
+    // 预挂 sell 后再设 target + rebalance
+    engine.set_target_position(btc_spot(), 0.1);
+    let triggered = engine.rebalance_to_target(Some(1e-6));
+    assert_eq!(triggered, 1, "应触发 1 笔 rebalance 单");
+    assert!(
+        (engine.get_position(&btc_spot()) - 0.1).abs() < 1e-9,
+        "rebalance 后 spot 应=+0.1"
+    );
+
+    let result = engine.run();
+    // RunResult.rebalances_triggered 累计到 1
+    assert_eq!(
+        result.rebalances_triggered, 1,
+        "RunResult.rebalances_triggered 应=1"
+    );
+}
+
+/// 端到端 delta-neutral rebalance:spot long +1 + perp short -1
+/// 同步 rebalance → 两 leg 净额 0(delta 中性)
+#[test]
+fn rebalance_two_legs_delta_neutral() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 预挂 spot sell 1.0 + perp buy 1.0(让 rebalance 双向都能撮合)
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 1.0),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 1.0),
+            2_000,
+        );
+    });
+
+    engine.run();
+    // 设 delta-neutral 目标
+    engine.set_target_position(btc_spot(), 1.0);
+    engine.set_target_position(btc_perp(), -1.0);
+    let triggered = engine.rebalance_to_target(Some(1e-6));
+    // 2 笔 fill(spot + perp 各 1)
+    assert_eq!(triggered, 2, "应触发 2 笔 rebalance 单");
+    // 验证 delta-neutral
+    let spot_q = engine.get_position(&btc_spot());
+    let perp_q = engine.get_position(&btc_perp());
+    assert!((spot_q - 1.0).abs() < 1e-9, "spot 应=+1.0,got {spot_q}");
+    assert!((perp_q - (-1.0)).abs() < 1e-9, "perp 应=-1.0,got {perp_q}");
+    // 净额 0
+    assert!(
+        (spot_q + perp_q).abs() < 1e-9,
+        "两 leg 净额应=0(spot {spot_q} + perp {perp_q})"
+    );
+
+    let result = engine.run();
+    assert_eq!(result.rebalances_triggered, 2);
+}
+
+/// 端到端 rebalance + funding 组合:delta-neutral 入场 + rebalance 触发 +
+/// 后续 funding 结算验证整套 0.5.0 Phase C/D 链路。
+#[test]
+fn delta_neutral_full_lifecycle_funding_and_rebalance() {
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 1) 预挂 spot ask + perp bid
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 1.0),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 1.0),
+            2_000,
+        );
+    });
+
+    engine.run();
+
+    // 2) 设 delta-neutral 目标 + rebalance 入场
+    engine.set_target_position(btc_spot(), 1.0);
+    engine.set_target_position(btc_perp(), -1.0);
+    engine.rebalance_to_target(Some(1e-6));
+    assert!((engine.get_position(&btc_spot()) - 1.0).abs() < 1e-9);
+    assert!((engine.get_position(&btc_perp()) - (-1.0)).abs() < 1e-9);
+
+    // 3) 推 funding(perp short 收 funding)
+    engine.push_funding(btc_perp(), 0.0001, 50_000.0, Timestamp::from_nanos(3_000));
+
+    let result = engine.run();
+    // 关键断言 1:2 笔 rebalance fill
+    assert_eq!(result.rebalances_triggered, 2);
+    // 关键断言 2:perp short funding PnL = -(-1.0) × 0.0001 × 50000 = +5.0
+    assert!(
+        (result.total_funding_pnl - 5.0).abs() < 1e-9,
+        "perp short funding 应=+5.0,got {}",
+        result.total_funding_pnl
+    );
+    // 关键断言 3:delta-neutral 仍保持(spot long 1.0 + perp short 1.0 = 0)
+    let spot_q = result.positions[&btc_spot()];
+    let perp_q = result.positions[&btc_perp()];
+    assert!(
+        (spot_q + perp_q).abs() < 1e-9,
+        "delta 中性仍保持(spot {spot_q} + perp {perp_q} = 0)"
     );
 }

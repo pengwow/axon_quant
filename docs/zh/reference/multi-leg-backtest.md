@@ -162,28 +162,125 @@ assert result.marks[perp] == 50_100.0
 
 ## 已知限制(0.6.0 路线图)
 
-0.5.0 只验证**结构层**正确性,以下能力**尚未**实装:
+0.5.0 完成 **backtest 路径** 的全部 Instrument 化 + Phase C/D funding/rebalance
+闭环:`axon_core::Portfolio.positions`、`axon_core::TradeRecord.instrument`、
+`axon_risk::check_position_limit`、`axon_backtest::BacktestState.position_states` /
+`leg_targets` / `mark_cache`、`axon_backtest::RunResult.positions` / `leg_targets` /
+`marks` / `total_funding_pnl` / `rebalances_triggered` 均以 `Instrument` 作 key
+或持有 per-instrument 状态。
+
+剩余工作(0.6.0):
 
 | 能力 | 状态 | 计划版本 |
 |------|------|---------|
-| Funding 结算(perp 收/付 funding rate) | ❌ | 0.6.0 |
-| 自动 leg 平衡(`set_target_position` 后自动发单推仓位) | ❌ | 0.6.0 |
-| `Position` / `RiskEngine` 全面迁 `HashMap<Instrument, _>` | ❌(暂用 `Symbol` 桥接) | 0.6.0 |
-| Mark-to-market 未实现 PnL(只缓存 mark 价) | ❌ | 0.6.0 |
+| L3 `MultiAssetMatchingEngine.engines` / `dark_orders` 用 `HashMap<Symbol, _>` 桥接 | ⚠️ | 0.6.0 |
+| L3 `CrossPair.leg1` / `leg2` 用 `Symbol` 桥接 | ⚠️ | 0.6.0 |
+| `axon_backtest::streaming::engine` 内部 `HashMap<Symbol, _>` 桥接 | ⚠️ | 0.6.0 |
+| `axon_oms::portfolio::Position.symbol: String`(独立 OMS 路径,Decimal 精度) | ❌ | 0.6.0 |
+| `begin_bar` 收尾自动 rebalance(目前需手动调 `rebalance_to_target`) | ⚠️ | 0.6.0 |
+| 自适应 funding 调度(目前靠外部 `push_funding`) | ⚠️ | 0.6.0 |
+| 跨 leg 风险约束(净敞口 / VaR) | ❌ | 0.6.0 |
 
-完整 funding 结算 + 自动 leg 平衡 + 多 leg 净值曲线,见 CHANGELOG.md 0.5.0 节"Known Limitations (0.6.0 Roadmap)"。
+完整资金费率结算 + 自动 rebalance 流程,见下面两节。
+
+## Funding 结算(0.5.0 Phase C 新增)
+
+永续合约的资金费率由数据源在每个结算点(典型 8h)推送。引擎按
+`position_qty × funding_rate × mark_price` 累计到 cash 并写入
+`RunResult.total_funding_pnl`,**spot instrument 会被忽略**。
+
+```python
+# delta-neutral 套利:spot long 1.0 + perp short 1.0
+bt.set_target_position(spot, 1.0)
+bt.set_target_position(perp, -1.0)
+bt.rebalance_to_target(threshold=1e-6)  # 入场
+
+# 8h 后推 funding
+bt.push_funding(perp, funding_rate=0.0001, mark_price=50_100.0,
+                timestamp_ns=8 * 3600 * 1_000_000_000)
+result = bt.run()
+# 持仓:spot long 1.0,perp short 1.0
+# perp short 收 1.0 × 0.0001 × 50_100 = +5.01
+assert result.total_funding_pnl == pytest.approx(5.01, abs=1e-6)
+```
+
+**符号约定**(业内标准):
+- `funding_rate > 0`:perp 高于 spot,long 付 / short 收
+- `funding_rate < 0`:perp 低于 spot,short 付 / long 收
+
+**调度**:引擎不内置 8h 时钟,需数据源 / 调度器按需调
+`push_funding`;`axon-data` / quantcell 应用层可挂 cron 推送。
+
+## 自动 Leg 平衡(0.5.0 Phase D 新增)
+
+`set_target_position` 仅记录策略意图,不主动发单。Phase D 新增
+`rebalance_to_target()` 手动触发,或 `with_auto_rebalance(threshold)`
++ 在每根 bar 末调用 rebalance。
+
+```python
+# 1) 启用自动 rebalance(阈值 = 1e-6 避免抖动)
+bt.with_auto_rebalance(1e-6)
+
+# 2) 设置 leg 目标位
+bt.set_target_position(spot, 1.0)   # spot long 1.0
+bt.set_target_position(perp, -1.0)  # perp short 1.0(delta 中性)
+
+# 3) 每根 bar 末(策略主循环)手动触发
+#    — 0.5.0 由调用方在 bar 末显式调
+#    — 0.6.0 计划在 begin_bar 收尾自动触发
+bt.begin_bar(50_000.0, spot)         # 种 spot 流动性格子
+bt.begin_bar(50_000.0, perp)         # 种 perp 流动性格子
+# ... 策略信号生成 ...
+triggered = bt.rebalance_to_target()  # None → 用配置的 1e-6 阈值
+# triggered:实际发出去的 rebalance 单数
+
+result = bt.run()
+print(f"本次回测 rebalance 触发 {result.rebalances_triggered} 次")
+```
+
+**API 摘要**:
+
+| 方法 | 用途 |
+|------|------|
+| `set_target_position(inst, target)` | 记录 leg 目标(0.5.0) |
+| `get_target_position(inst) -> Optional[float]` | 读目标(0.5.0) |
+| `rebalance_to_target(threshold=None) -> int` | **手动**触发 rebalance(0.5.0 Phase D),返回实际 fill 数 |
+| `with_auto_rebalance(threshold)` | 配置默认阈值(0.5.0 Phase D) |
+| `with_auto_rebalance_disable()` | 关闭(0.5.0 Phase D) |
+| `RunResult.rebalances_triggered` | 累计 rebalance fill 数(0.5.0 Phase D) |
+
+**设计约束**:
+- rebalance 单 id 起点 `3_000_000_000`,避开策略(0..1e9) /
+  seed 流动性(1e9..2e9) / EOD 平仓(2e9..3e9)区间
+- `threshold` 过滤抖动:`|target - current| <= threshold` 不发单
+- 未设置 `target` 的 leg 不参与 rebalance(只对显式调过
+  `set_target_position` 的 instrument 起作用)
+- delta-neutral 入场:`spot long +1 + perp short -1` 各填 1 笔,
+  净敞口 0,后续吃 funding
 
 ## 完整测试覆盖
 
-- **Rust 集成测试**:`crates/axon-integration-tests/src/delta_neutral_arb.rs`(5 测试)
-  - `two_legs_spot_match_only_spot_fills` — spot fill 不影响 perp
-  - `two_legs_orders_route_to_independent_books` — 两 leg 独立挂单
-  - `leg_target_position_independent_per_instrument` — 跨 leg 隔离
-  - `leg_marks_independent_and_last_wins` — mark 缓存隔离
-  - `delta_neutral_entry_orders_isolated` — 真实 delta 中性入场
-- **Python E2E**:`python/tests/test_backtest_e2e.py`(6+ 0.5.0 新增测试)
+- **Rust 单元测试**(`crates/axon-backtest/src/engine.rs` Phase C/D):
+  - `test_funding_long_pays_cash_decreases` / `test_funding_short_receives_cash_increases`
+  - `test_funding_multiple_accumulate` / `test_funding_spot_instrument_ignored`
+  - `test_rebalance_long_target_from_zero` / `test_rebalance_to_zero_position`
+  - `test_rebalance_threshold_filters_jitter` / `test_rebalance_only_set_target_legs`
+  - `test_rebalance_multiple_legs_delta_neutral`
+  - `test_rebalances_triggered_accumulate_across_calls`
+- **Rust 集成测试**:`crates/axon-integration-tests/src/delta_neutral_arb.rs`(11 测试)
+  - 两腿路由:`two_legs_spot_match_only_spot_fills` / `two_legs_orders_route_to_independent_books`
+  - 跨 leg 隔离:`leg_target_position_independent_per_instrument` / `leg_marks_independent_and_last_wins`
+  - delta 中性入场:`delta_neutral_entry_orders_isolated`
+  - **Phase C funding 端到端**:`funding_settle_end_to_end_delta_neutral` / `funding_multiple_settlements_accumulate` / `mark_funding_combined_unrealized_pnl`
+  - **Phase D rebalance 端到端**:`rebalance_end_to_end_pnl_aware` / `rebalance_two_legs_delta_neutral`
+  - **完整生命周期**:`delta_neutral_full_lifecycle_funding_and_rebalance`(入场 → rebalance → funding 结算 → delta 中性保持)
+- **Python E2E**:`python/tests/test_backtest_e2e.py`(0.5.0 新增)
   - `spot_instrument_factory` / `swap_instrument_factory`
   - `begin_bar` per-instrument 独立播种
   - `set_and_get_target_position` 跨 leg 隔离
   - `two_legs_isolated_positions` — spot long + perp short = delta neutral
   - `leg_targets_persist` in `RunResult`
+  - `push_funding_long_pays_cash_decreases` / `push_funding_short_receives_cash_increases`
+  - `push_funding_spot_instrument_ignored` / `push_funding_with_zero_position`
+  - `rebalance_to_target_fills_position` / `rebalance_to_target_disabled_returns_zero`
+  - `rebalance_threshold_filters_jitter` / `rebalance_two_legs_delta_neutral`

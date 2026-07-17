@@ -155,16 +155,13 @@ impl Portfolio {
         let qty_f = trade.quantity.as_f64() * taker_side.sign() as f64;
         let price_f = trade.price.as_f64();
 
-        let position = self
-            .positions
-            .entry(instrument.clone())
-            .or_insert_with(|| {
-                Position::with_instrument(
-                    instrument.clone(),
-                    Quantity::from_f64(0.0),
-                    Price::from_f64(0.0),
-                )
-            });
+        let position = self.positions.entry(instrument.clone()).or_insert_with(|| {
+            Position::with_instrument(
+                instrument.clone(),
+                Quantity::from_f64(0.0),
+                Price::from_f64(0.0),
+            )
+        });
         // 防御性:已有 position 但 instrument 不一致(旧迁移数据),用传入的覆盖
         if position.instrument != *instrument {
             position.instrument = instrument.clone();

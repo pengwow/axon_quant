@@ -9,6 +9,7 @@ use std::ops::{BitAnd, BitOr};
 use serde::{Deserialize, Serialize};
 
 use super::fill::FillEvent;
+use super::funding::FundingEvent;
 use super::mark::MarkEvent;
 use super::market::MarketDataEvent;
 use super::order::OrderEvent;
@@ -33,10 +34,12 @@ impl EventType {
     pub const SYSTEM: EventType = EventType(0b1000);
     /// 标记价格事件
     pub const MARK: EventType = EventType(0b10000);
+    /// Funding 结算事件(永续合约资金费率,0.5.0 新增)
+    pub const FUNDING: EventType = EventType(0b100000);
     /// 所有事件类型
-    pub const ALL: EventType = EventType(0b11111);
+    pub const ALL: EventType = EventType(0b111111);
     /// 空（不订阅任何事件）
-    pub const NONE: EventType = EventType(0b0000);
+    pub const NONE: EventType = EventType(0b000000);
 
     /// 创建自定义位掩码
     #[inline]
@@ -115,6 +118,9 @@ impl fmt::Display for EventType {
         if self.contains(Self::MARK) {
             parts.push("MARK");
         }
+        if self.contains(Self::FUNDING) {
+            parts.push("FUNDING");
+        }
         if parts.is_empty() {
             write!(f, "NONE")
         } else {
@@ -124,7 +130,11 @@ impl fmt::Display for EventType {
 }
 
 /// 统一事件枚举
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 注:0.5.0 起只 derive `PartialEq` 而**不** derive `Eq`,因为 [`FundingEvent`]
+/// 含 `f64` 字段(`funding_rate`)不可 `Eq`(NaN ≠ NaN)。`PartialEq` 在测试中
+/// 仍能正确比较两个 `Event::Funding` 字段值(忽略 NaN 路径)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Event {
     /// 市场数据事件
@@ -135,6 +145,8 @@ pub enum Event {
     Fill(FillEvent),
     /// 标记价格事件
     Mark(MarkEvent),
+    /// Funding 结算事件(0.5.0 新增,永续合约资金费率)
+    Funding(FundingEvent),
     /// 系统事件
     System(SystemEvent),
 }
@@ -148,6 +160,7 @@ impl Event {
             Self::Order(e) => e.timestamp,
             Self::Fill(e) => e.timestamp,
             Self::Mark(e) => e.timestamp,
+            Self::Funding(e) => e.timestamp,
             Self::System(e) => e.timestamp,
         }
     }
@@ -159,8 +172,9 @@ impl Event {
             Self::MarketData(e) => e.seq,
             Self::Order(e) => e.seq,
             Self::Fill(e) => e.seq,
-            // MarkEvent 不携带序列号(由外部数据源推入,无单一时序保证)
+            // MarkEvent / FundingEvent 不携带序列号(由外部数据源推入,无单一时序保证)
             Self::Mark(_) => 0,
+            Self::Funding(_) => 0,
             Self::System(e) => e.seq,
         }
     }
@@ -173,6 +187,7 @@ impl Event {
             Self::Order(_) => EventType::ORDER,
             Self::Fill(_) => EventType::FILL,
             Self::Mark(_) => EventType::MARK,
+            Self::Funding(_) => EventType::FUNDING,
             Self::System(_) => EventType::SYSTEM,
         }
     }
@@ -204,6 +219,11 @@ impl fmt::Display for Event {
                 f,
                 "Mark(seq=0, instrument={:?}, price={}, t={})",
                 e.instrument, e.mark_price, e.timestamp
+            ),
+            Self::Funding(e) => write!(
+                f,
+                "Funding(seq=0, instrument={:?}, rate={}, mark={}, t={})",
+                e.instrument, e.funding_rate, e.mark_price, e.timestamp
             ),
             Self::System(e) => write!(f, "System(seq={}, t={})", e.seq, e.timestamp),
         }
@@ -261,7 +281,7 @@ mod tests {
         );
         assert_eq!(
             format!("{}", EventType::ALL),
-            "MARKET_DATA|ORDER|FILL|SYSTEM|MARK"
+            "MARKET_DATA|ORDER|FILL|SYSTEM|MARK|FUNDING"
         );
         assert_eq!(format!("{}", EventType::NONE), "NONE");
     }
@@ -274,19 +294,29 @@ mod tests {
 
     #[test]
     fn test_event_type_bits() {
-        assert_eq!(EventType::MARKET_DATA.bits(), 0b0001);
-        assert_eq!(EventType::ALL.bits(), 0b11111);
+        assert_eq!(EventType::MARKET_DATA.bits(), 0b000001);
+        assert_eq!(EventType::ALL.bits(), 0b111111);
     }
 
     #[test]
     fn test_event_type_mark_bit_distinct() {
-        // MARK 必须独立于其它 4 位,否则 EventType::MARKET_DATA | EventType::MARK
+        // MARK 必须独立于其它位,否则 EventType::MARKET_DATA | EventType::MARK
         // 会和现有分类冲突
         let combined = EventType::MARKET_DATA | EventType::MARK;
         assert!(combined.contains(EventType::MARK));
         assert!(combined.contains(EventType::MARKET_DATA));
         assert!(!combined.contains(EventType::ORDER));
         assert_eq!(EventType::MARK.bits(), 0b10000);
+    }
+
+    #[test]
+    fn test_event_type_funding_bit_distinct() {
+        // FUNDING 必须独立于其它位(包括 MARK)
+        let combined = EventType::FUNDING | EventType::MARK;
+        assert!(combined.contains(EventType::FUNDING));
+        assert!(combined.contains(EventType::MARK));
+        assert!(!combined.contains(EventType::FILL));
+        assert_eq!(EventType::FUNDING.bits(), 0b100000);
     }
 
     #[test]
@@ -306,5 +336,38 @@ mod tests {
         assert_eq!(evt.event_type(), EventType::MARK);
         // MarkEvent 不携带序列号
         assert_eq!(evt.seq(), 0);
+    }
+
+    #[test]
+    fn test_event_funding_variant() {
+        use crate::types::{SpotInstrument, SwapInstrument, SwapSettle, Symbol};
+        let funding = crate::event::funding::FundingEvent {
+            instrument: crate::types::Instrument::Swap(SwapInstrument {
+                base: Symbol::from("BTC"),
+                quote: Symbol::from("USDT"),
+                settle: SwapSettle::UsdMargin,
+                contract_size: 1.0,
+            }),
+            funding_rate: 0.0001,
+            mark_price: crate::types::Price::from_f64(50_000.0),
+            timestamp: Timestamp::from_nanos(2_000),
+        };
+        let evt = Event::Funding(funding);
+        assert_eq!(evt.timestamp(), Timestamp::from_nanos(2_000));
+        assert_eq!(evt.event_type(), EventType::FUNDING);
+        // FundingEvent 不携带序列号(由数据源推入)
+        assert_eq!(evt.seq(), 0);
+        // 0.5.0 起 spot instrument 也允许携带(类型层允许,引擎派发时按需忽略)
+        let funding_spot = crate::event::funding::FundingEvent {
+            instrument: crate::types::Instrument::Spot(SpotInstrument {
+                base: Symbol::from("BTC"),
+                quote: Symbol::from("USDT"),
+            }),
+            funding_rate: 0.0,
+            mark_price: crate::types::Price::from_f64(0.0),
+            timestamp: Timestamp::from_nanos(3_000),
+        };
+        let evt2 = Event::Funding(funding_spot);
+        assert_eq!(evt2.event_type(), EventType::FUNDING);
     }
 }

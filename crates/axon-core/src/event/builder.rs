@@ -1,6 +1,7 @@
 //! 事件构建器（类型安全的事件创建 + 自增序列号）
 
 use super::fill::FillEvent;
+use super::funding::FundingEvent;
 use super::mark::MarkEvent;
 use super::market::{MarketDataEvent, MarketDataPayload};
 use super::order::{OrderAction, OrderEvent};
@@ -62,6 +63,18 @@ impl EventBuilder {
         self.next_seq += 1;
         let _ = seq;
         Event::Mark(mark)
+    }
+
+    /// 构建 Funding 事件(永续合约资金费率结算)— 0.5.0 新增(Phase C)
+    ///
+    /// 用法:`b.funding(FundingEvent::new(inst, rate, mark, ts))`,`FundingEvent`
+    /// 自身已含 timestamp,这里 `next_seq` 仅自增(同 `mark`,因为外部数据源推入的
+    /// FundingEvent 不携带全局递增 seq;`Event::Funding.seq()` 仍返回 0)。
+    pub fn funding(&mut self, funding: FundingEvent) -> Event {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        let _ = seq;
+        Event::Funding(funding)
     }
 
     /// 构建系统事件

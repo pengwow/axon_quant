@@ -791,3 +791,140 @@ def test_backtest_engine_leg_targets_persist():
     # leg_targets 是 dict[instrument_tuple, target]
     assert result.leg_targets[_BTC_USDT] == 1.0
     assert result.leg_targets[_BTC_USDT_PERP] == -1.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 0.5.0 新增(Phase C):Funding 结算 API
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_push_funding_long_pays_cash_decreases():
+    """perp long 持仓 + 正 funding rate → 累计 funding_pnl 减少(cash 减少)。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    # 1) 开 perp long 0.5(同 book 撮合,perp buy 吃 perp sell)
+    bt.begin_bar(50_000.0, _BTC_USDT_PERP)
+    bt.push_event({
+        "type": "order_submitted", "timestamp_ns": 1_000,
+        "order": limit_order(1, _BTC_USDT_PERP, "Buy", 50_001.0, 0.5),
+    })
+    # 2) 推 funding 0.0001 @ 50_000:long 0.5 × 0.0001 × 50000 = -2.5
+    bt.push_funding(_BTC_USDT_PERP, 0.0001, 50_000.0, timestamp_ns=2_000)
+
+    result = bt.run()
+    # long 0.5 × 0.0001 × 50000 = 2.5(付)cash_delta = -2.5
+    assert abs(result.total_funding_pnl - (-2.5)) < 1e-9, (
+        f"long funding 应=-2.5,got {result.total_funding_pnl}"
+    )
+
+
+def test_push_funding_short_receives_cash_increases():
+    """perp short 持仓 + 正 funding rate → 累计 funding_pnl 增加(cash 增加)。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    # 1) 开 perp short 0.5(perp sell 吃 perp buy)
+    bt.begin_bar(50_000.0, _BTC_USDT_PERP)
+    bt.push_event({
+        "type": "order_submitted", "timestamp_ns": 1_000,
+        "order": limit_order(1, _BTC_USDT_PERP, "Sell", 50_001.0, 0.5),
+    })
+    # 2) 推 funding 0.0001 @ 50_000:short 收 2.5
+    bt.push_funding(_BTC_USDT_PERP, 0.0001, 50_000.0, timestamp_ns=2_000)
+
+    result = bt.run()
+    # short -0.5 × 0.0001 × 50000 = -2.5(收)cash_delta = +2.5
+    assert abs(result.total_funding_pnl - 2.5) < 1e-9, (
+        f"short funding 应=+2.5,got {result.total_funding_pnl}"
+    )
+
+
+def test_push_funding_spot_instrument_ignored():
+    """spot instrument 收到 funding → 引擎忽略(spot 无 funding 概念)。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.push_funding(_BTC_USDT, 0.0001, 50_000.0, timestamp_ns=1_000)
+    result = bt.run()
+    # 忽略 → total_funding_pnl = 0
+    assert abs(result.total_funding_pnl) < 1e-9
+
+
+def test_push_funding_with_zero_position():
+    """无持仓时 funding 入账 = 0。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.push_funding(_BTC_USDT_PERP, 0.0001, 50_000.0, timestamp_ns=1_000)
+    result = bt.run()
+    assert abs(result.total_funding_pnl) < 1e-9
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 0.5.0 新增(Phase D):自动 rebalance API
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_rebalance_to_target_fills_position():
+    """set_target_position + rebalance_to_target 触发市价单成交,position 推到目标。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    # 第一根 bar 让 spot 卖出单进 book
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    # 第二根 bar 才下单(让 seed 流动性格子已就位)
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    bt.set_target_position(_BTC_USDT, 1.0)
+
+    triggered = bt.rebalance_to_target(threshold=1e-6)
+    assert triggered == 1, f"应触发 1 笔 rebalance,got {triggered}"
+    # buy 市价单吃 spot 卖单 1.0 → position = +1.0
+    assert abs(bt.get_position(_BTC_USDT) - 1.0) < 1e-9, (
+        f"rebalance 后 position 应=+1.0,got {bt.get_position(_BTC_USDT)}"
+    )
+
+    result = bt.run()
+    assert result.rebalances_triggered == 1
+
+
+def test_rebalance_to_target_disabled_returns_zero():
+    """未启用 auto_rebalance 时,rebalance_to_target(None) 不发单。"""
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.set_target_position(_BTC_USDT, 1.0)
+
+    triggered = bt.rebalance_to_target()  # 默认 None → 用配置阈值(未设 → +∞)
+    assert triggered == 0, "未启用 auto_rebalance 时不应触发"
+
+
+def test_rebalance_threshold_filters_jitter():
+    """`set_target_position(0.5 + 1e-8)` 在 threshold=1e-6 下不触发 rebalance。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    # 先 buy 0.5 让 position 接近 0.5
+    bt.push_event({
+        "type": "order_submitted", "timestamp_ns": 1_000,
+        "order": market_order(1, _BTC_USDT, "Buy", 0.5),
+    })
+    # 把 target 设成"看似要 rebalance"但实际在阈值内
+    bt.set_target_position(_BTC_USDT, 0.5 + 1e-8)
+    triggered = bt.rebalance_to_target(threshold=1e-6)
+    assert triggered == 0, f"delta < threshold 不应触发,got {triggered}"
+
+
+def test_rebalance_two_legs_delta_neutral():
+    """spot long +1 + perp short -1 同步 rebalance → delta-neutral,各 1 fill。"""
+    bt = BacktestEngine(initial_cash=100_000.0).with_seed_liquidity(
+        half_spread=0.5, depth_levels=2, size_per_level=2.0,
+    )
+    # spot / perp 各自种 1 层对手盘
+    bt.begin_bar(50_000.0, _BTC_USDT)
+    bt.begin_bar(50_000.0, _BTC_USDT_PERP)
+
+    bt.set_target_position(_BTC_USDT, 1.0)
+    bt.set_target_position(_BTC_USDT_PERP, -1.0)
+
+    triggered = bt.rebalance_to_target(threshold=1e-6)
+    assert triggered == 2, f"spot + perp 各 1 fill,got {triggered}"
+    # 验证 delta-neutral:spot long 1.0 + perp short 1.0 = 净额 0
+    assert abs(bt.get_position(_BTC_USDT) - 1.0) < 1e-9
+    assert abs(bt.get_position(_BTC_USDT_PERP) - (-1.0)) < 1e-9
+
