@@ -153,5 +153,9 @@ jobs:
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ contains(needs.verify-version.outputs.version, 'alpha') || contains(needs.verify-version.outputs.version, 'beta') || contains(needs.verify-version.outputs.version, 'rc') }}
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          # 关键:用 version 显式拼接 v 前缀,确保 workflow_dispatch 触发时
+          # (ref_name 是分支名如 "0.5.0")也能产出 v0.5.0 的 release
+          # 同时保证 push tag v0.5.0 路径下 tag_name = v0.5.0(去掉 ref 自带的 v 也不会双 v,
+          # 因为 verify-version.outputs.version 已剥离 v 前缀)
+          tag_name: v${{ needs.verify-version.outputs.version }}
+          name: Release v${{ needs.verify-version.outputs.version }}
