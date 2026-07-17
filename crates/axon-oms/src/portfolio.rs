@@ -83,6 +83,23 @@ impl Portfolio {
         *self.cash.entry(currency.into()).or_insert(Decimal::ZERO) += amount;
     }
 
+    /// 取出现金(出金)
+    ///
+    /// 与 deposit() 对称:扣减对应币种 cash 余额,
+    /// 余额不足时返回 `InsufficientCash` 错误。
+    pub fn withdraw(&mut self, currency: &str, amount: Decimal) -> Result<(), PortfolioError> {
+        let have = self.cash.get(currency).copied().unwrap_or(Decimal::ZERO);
+        if have < amount {
+            return Err(PortfolioError::InsufficientCash {
+                currency: currency.into(),
+                need: amount,
+                have,
+            });
+        }
+        *self.cash.entry(currency.into()).or_insert(Decimal::ZERO) -= amount;
+        Ok(())
+    }
+
     /// 导出快照
     pub fn snapshot(&self) -> PortfolioSnapshot {
         PortfolioSnapshot {
@@ -223,6 +240,53 @@ mod tests {
 
         p.deposit("BTC", dec!(1));
         assert_eq!(p.cash.get("BTC"), Some(&dec!(1)));
+    }
+
+    #[test]
+    fn withdraw_decreases_cash() {
+        let mut p = Portfolio::new();
+        p.deposit("USDT", dec!(100000));
+        p.withdraw("USDT", dec!(30000)).unwrap();
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(70000)));
+    }
+
+    #[test]
+    fn withdraw_insufficient_cash_returns_error() {
+        let mut p = Portfolio::new();
+        p.deposit("USDT", dec!(100));
+        let result = p.withdraw("USDT", dec!(200));
+        assert_eq!(
+            result,
+            Err(PortfolioError::InsufficientCash {
+                currency: "USDT".into(),
+                need: dec!(200),
+                have: dec!(100),
+            })
+        );
+        // 余额不变
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(100)));
+    }
+
+    #[test]
+    fn withdraw_missing_currency_returns_error() {
+        let mut p = Portfolio::new();
+        let result = p.withdraw("USDT", dec!(1));
+        assert_eq!(
+            result,
+            Err(PortfolioError::InsufficientCash {
+                currency: "USDT".into(),
+                need: dec!(1),
+                have: dec!(0),
+            })
+        );
+    }
+
+    #[test]
+    fn withdraw_exact_balance_leaves_zero() {
+        let mut p = Portfolio::new();
+        p.deposit("USDT", dec!(50000));
+        p.withdraw("USDT", dec!(50000)).unwrap();
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(0)));
     }
 
     #[test]

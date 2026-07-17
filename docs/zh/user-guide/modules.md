@@ -1724,6 +1724,10 @@ from decimal import Decimal
 oms = OrderManager()
 oms.deposit("USDT", 100_000)
 
+# 1b) 出金(余额不足时抛 ValueError)
+oms.withdraw("USDT", 5_000)  # 可交易资金减少 → 后续策略行为改变
+assert oms.snapshot_balance()["cash"]["USDT"] == "95000.0"
+
 # 2) 提交订单(工厂函数自动处理 Decimal 精度)
 oid = oms.submit(limit_order(
     symbol="BTC-USDT", side="Buy",

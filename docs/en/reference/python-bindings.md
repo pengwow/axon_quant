@@ -666,12 +666,12 @@ Order Management System (OMS), covering the full order lifecycle (submit / cance
 
 | Class / Factory | Description |
 |----------------|-------------|
-| `OrderManager` | Main OMS class: `submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` |
+| `OrderManager` | Main OMS class: `submit` / `cancel` / `update_status` / `get_order_status` / `batch_submit` / `add_fill` / `snapshot` / `snapshot_balance` / `snapshot_positions` / `active_count` / `history_count` / `deposit` / `withdraw` |
 | `Order` | Order object: `symbol` / `side` / `order_type` / `quantity` / `price` / `idempotency_key` |
 | `OrderStatus` | Order status (`kind` tag pattern): `New` / `Acknowledged` / `PartiallyFilled(filled_qty, avg_price)` / `Filled` / `Cancelled` / `Rejected(reason)` / `Expired`, with `is_terminal()` predicate |
 | `Side` | Enum: `Buy` / `Sell` |
 | `OrderType` | Enum: `Limit` / `Market` |
-| `Portfolio` | Multi-currency cash + positions container: `deposit` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
+| `Portfolio` | Multi-currency cash + positions container: `deposit` / `withdraw` / `apply_fill` / `cash` / `positions` / `position_count` / `is_empty` / `to_dict` |
 | `Position` | Single-symbol position: `symbol` / `quantity` / `avg_price` / `realized_pnl` / `updated_at` / `to_dict` |
 | `OmsError` | OMS exception (inherits `Exception`, **not** `AxonError`, to avoid cargo cycles) |
 | `limit_order(symbol, side, quantity, price, idempotency_key=None)` | Factory returning a limit `Order` |
@@ -772,6 +772,10 @@ p.apply_fill(
 assert p.cash["USDT"] == "70000.0"
 assert p.positions["BTC-USDT"].quantity == "0.6"
 assert p.position_count() == 1
+
+# Withdraw (raises ValueError if insufficient)
+p.withdraw("USDT", 10_000)
+assert p.cash["USDT"] == "60000.0"
 
 # Serialize
 d = p.to_dict()  # {"cash": {...}, "positions": {...}, "position_count": 1}

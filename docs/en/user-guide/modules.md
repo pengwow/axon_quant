@@ -1722,6 +1722,10 @@ from decimal import Decimal
 oms = OrderManager()
 oms.deposit("USDT", 100_000)
 
+# 1b) Withdraw funds (raises ValueError if insufficient)
+oms.withdraw("USDT", 5_000)  # less tradable capital → strategy behavior changes
+assert oms.snapshot_balance()["cash"]["USDT"] == "95000.0"
+
 # 2) Submit an order (factory functions handle Decimal precision automatically)
 oid = oms.submit(limit_order(
     symbol="BTC-USDT", side="Buy",

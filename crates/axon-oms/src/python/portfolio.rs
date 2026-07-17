@@ -139,6 +139,16 @@ impl PyPortfolio {
         Ok(())
     }
 
+    /// 取出现金(出金),余额不足时抛 ValueError
+    fn withdraw(&self, currency: &str, amount: &Bound<'_, pyo3::types::PyAny>) -> PyResult<()> {
+        let amt = py_to_decimal(amount)?;
+        self.inner
+            .lock()
+            .withdraw(currency, amt)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
     /// 应用一个 fill 事件
     ///
     /// **签名与 Rust 端对应**:`Fill` 字段是 `fill_id` / `symbol` / `price` /
