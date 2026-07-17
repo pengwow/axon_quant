@@ -9,15 +9,18 @@ use super::tif::TimeInForce;
 use super::types::OrderType;
 use crate::market::Side;
 use crate::time::Timestamp;
-use crate::types::{Quantity, Symbol};
+use crate::types::{Instrument, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
 
 /// 订单主体
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Order {
     /// 订单 ID
     pub id: OrderId,
-    /// 交易品种
-    pub symbol: Symbol,
+    /// 交易品种(spot / swap)
+    ///
+    /// 自 0.5.0 起从 `Symbol` 升级为 `Instrument`,以支持 spot+perp 双 leg
+    /// 套利场景下的类型安全路由。详见 spec §4.2。
+    pub instrument: Instrument,
     /// 买卖方向
     pub side: Side,
     /// 订单类型
@@ -44,10 +47,14 @@ pub struct Order {
 }
 
 impl Order {
-    /// 创建新订单（状态为 `Created`，`filled_quantity` 为 0）
-    pub fn new(
+    /// 构造现货订单(替代 0.5.0 之前的 `Order::new`)
+    ///
+    /// 初始状态为 `Created`,`filled_quantity` 为 0,`updated_at` / `reject_reason`
+    /// / `client_order_id` 均为 `None`,`created_at` 取 `Timestamp::now()`。
+    pub fn spot(
         id: OrderId,
-        symbol: Symbol,
+        base: impl Into<Symbol>,
+        quote: impl Into<Symbol>,
         side: Side,
         order_type: OrderType,
         quantity: Quantity,
@@ -55,7 +62,47 @@ impl Order {
     ) -> Self {
         Self {
             id,
-            symbol,
+            instrument: Instrument::Spot(SpotInstrument {
+                base: base.into(),
+                quote: quote.into(),
+            }),
+            side,
+            order_type,
+            quantity,
+            filled_quantity: Quantity::default(),
+            time_in_force,
+            status: OrderStatus::Created,
+            created_at: Timestamp::now(),
+            updated_at: None,
+            reject_reason: None,
+            client_order_id: None,
+        }
+    }
+
+    /// 构造永续合约订单
+    ///
+    /// `settle` 指定结算方式(USD 保证金 / 币本位),`contract_size` 是每张合约
+    /// 代表的 base 币种数量。初始状态语义同 [`Order::spot`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn swap(
+        id: OrderId,
+        base: impl Into<Symbol>,
+        quote: impl Into<Symbol>,
+        settle: SwapSettle,
+        contract_size: f64,
+        side: Side,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+    ) -> Self {
+        Self {
+            id,
+            instrument: Instrument::Swap(SwapInstrument {
+                base: base.into(),
+                quote: quote.into(),
+                settle,
+                contract_size,
+            }),
             side,
             order_type,
             quantity,
@@ -169,12 +216,13 @@ impl Order {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Price;
+    use crate::types::{Instrument, Price, SwapSettle};
 
     fn make_limit_order() -> Order {
-        Order::new(
+        Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
@@ -185,10 +233,50 @@ mod tests {
     }
 
     #[test]
+    fn test_order_spot_creation() {
+        let order = Order::spot(
+            100,
+            "BTC",
+            "USDT",
+            Side::Buy,
+            OrderType::Limit {
+                price: Price::from_f64(100.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::GTC,
+        );
+        assert_eq!(order.id, 100);
+        assert!(matches!(order.instrument, Instrument::Spot(_)));
+        assert_eq!(order.side, Side::Buy);
+        assert_eq!(order.filled_quantity, Quantity::default());
+    }
+
+    #[test]
+    fn test_order_swap_creation() {
+        let order = Order::swap(
+            101,
+            "ETH",
+            "USDT",
+            SwapSettle::CoinMargin,
+            0.01,
+            Side::Sell,
+            OrderType::Market,
+            Quantity::from_f64(10.0),
+            TimeInForce::IOC,
+        );
+        assert!(matches!(order.instrument, Instrument::Swap(_)));
+        if let Instrument::Swap(s) = &order.instrument {
+            assert_eq!(s.contract_size, 0.01);
+            assert_eq!(s.settle, SwapSettle::CoinMargin);
+        }
+    }
+
+    #[test]
     fn test_market_order_creation() {
-        let order = Order::new(
+        let order = Order::spot(
             2,
-            Symbol::from("ETH-USDT"),
+            "ETH",
+            "USDT",
             Side::Sell,
             OrderType::Market,
             Quantity::from_f64(5.0),
@@ -278,9 +366,10 @@ mod tests {
     #[test]
     fn test_ioc_order_partial_fill_cancel() {
         // IOC 语义在撮合引擎中实现，此处仅验证状态机的合法性
-        let mut order = Order::new(
+        let mut order = Order::spot(
             3,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(10.0),
@@ -298,9 +387,10 @@ mod tests {
     #[test]
     fn test_fok_order_partial_fill_reject() {
         // FOK 语义在撮合引擎中实现：部分成交则整单拒绝
-        let mut order = Order::new(
+        let mut order = Order::spot(
             4,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Sell,
             OrderType::Market,
             Quantity::from_f64(10.0),
@@ -314,9 +404,10 @@ mod tests {
 
     #[test]
     fn test_gtc_order_persists() {
-        let mut order = Order::new(
+        let mut order = Order::spot(
             5,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
@@ -333,9 +424,10 @@ mod tests {
 
     #[test]
     fn test_iceberg_order_reveals_partial() {
-        let order = Order::new(
+        let order = Order::spot(
             6,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Iceberg {
                 visible: Quantity::from_f64(1.0),
@@ -353,9 +445,10 @@ mod tests {
 
     #[test]
     fn test_stop_order_triggers() {
-        let order = Order::new(
+        let order = Order::spot(
             7,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Sell,
             OrderType::Stop {
                 trigger: Price::from_f64(95.0),
@@ -392,9 +485,10 @@ mod tests {
 
     #[test]
     fn test_order_fill_ratio_zero_quantity_safe() {
-        let order = Order::new(
+        let order = Order::spot(
             8,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::default(),
@@ -505,9 +599,10 @@ mod tests {
     /// 极大量订单（f64::MAX）应可正常构造
     #[test]
     fn test_max_quantity_order() {
-        let order = Order::new(
+        let order = Order::spot(
             100,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(f64::MAX),
