@@ -512,7 +512,7 @@ Expected: no warnings.
 **Files:**
 - Modify: `crates/axon-core/src/order/core.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `crates/axon-core/src/order/core.rs` `tests` module, add:
 
@@ -555,12 +555,12 @@ fn test_order_swap_creation() {
 }
 ```
 
-- [ ] **Step 2: Run test, verify it fails**
+- [x] **Step 2: Run test, verify it fails**
 
 Run: `cargo test -p axon-core order::core::test_order_spot_creation`
 Expected: compile error (no `Order::spot`).
 
-- [ ] **Step 3: Modify `Order` struct definition**
+- [x] **Step 3: Modify `Order` struct definition**
 
 Edit `crates/axon-core/src/order/core.rs`:
 
@@ -605,7 +605,7 @@ Update the `use` block at top of file to import `Instrument`:
 use crate::types::{Instrument, Quantity, SpotInstrument, SwapInstrument, SwapSettle};
 ```
 
-- [ ] **Step 4: Replace `Order::new` with `Order::spot` / `Order::swap`**
+- [x] **Step 4: Replace `Order::new` with `Order::spot` / `Order::swap`**
 
 Replace the `Order::new` method block with:
 
@@ -677,7 +677,7 @@ impl Order {
 }
 ```
 
-- [ ] **Step 5: Fix existing tests in `core.rs` to use new constructors**
+- [x] **Step 5: Fix existing tests in `core.rs` to use new constructors**
 
 In the existing tests module, replace every `Order::new(id, symbol_str, side, order_type, qty, tif)` with `Order::spot(id, "BTC", "USDT", side, order_type, qty, tif)` (or similar base/quote split). There are about 15+ test sites; use sed or manual edits.
 
@@ -687,17 +687,25 @@ Example transformations:
 
 (Adjust base/quote split based on the test's symbol name. `"BTC-USDT"` → `("BTC", "USDT")`. `"ETH-USDT"` → `("ETH", "USDT")`. Etc.)
 
-- [ ] **Step 6: Run all `axon-core` tests**
+- [x] **Step 6: Run all `axon-core` tests**
 
 Run: `cargo test -p axon-core`
 Expected: all tests pass, including the new `test_order_spot_creation` and `test_order_swap_creation`.
 
-- [ ] **Step 7: Build workspace (expect downstream breakage)**
+**Actual result:** `795 passed; 0 failed; 0 ignored` (47 order-related tests including the 2 new ones). All previous tests still pass under the new `Order::spot` factory.
+
+- [x] **Step 7: Build workspace (expect downstream breakage)**
 
 Run: `cargo build --workspace 2>&1 | head -100`
 Expected: `axon-backtest` (and possibly others) fail with "no field `symbol` on `Order`" errors. This is expected — Task 2.2 onward fixes them.
 
-- [ ] **Step 8: Commit `Order` change only (downstream broken OK)**
+**Actual downstream breakage (as expected):**
+- `axon-risk` (lib): 2 errors — `no field 'symbol' on type '&axon_core::Order'` at `crates/axon-risk/src/checks/position.rs:16, 28`
+- `axon-backtest` (lib): 15 errors — mix of `no field 'symbol'` and `no associated function 'new'`
+
+These will be resolved in T2.2 (engine) and T2.3 (matching), plus `axon-risk` migration. No further breakage found.
+
+- [x] **Step 8: Commit `Order` change only (downstream broken OK)**
 
 ```bash
 git add crates/axon-core/src/order/core.rs
@@ -706,6 +714,18 @@ git commit -m "feat(core): Order carries Instrument, breaking — replaces Order
 This is a semver breaking change. Downstream crates using Order::new
 will fail to compile until migrated. Follow-up commits will fix them."
 ```
+
+**Commit hash:** `ffeda88`
+
+**Files in commit (3):**
+- `crates/axon-core/src/order/core.rs` — main refactor (struct + 2 factories + migrated tests)
+- `crates/axon-core/src/event/order.rs` — same migration in `axon-core`'s internal test
+- `benches/core_bench.rs` — top-level Criterion bench for axon-core needed the same migration to keep `cargo clippy -p axon-core --all-targets` green; required because `--all-targets` includes benches
+
+**Deviations from plan:**
+- `Order::swap` carries 9 parameters, exceeding clippy's `too_many_arguments` (7) threshold. Added `#[allow(clippy::too_many_arguments)]` on the method. This is a deliberate trade-off: introducing a `SwapOrderParams` builder struct would obscure the simple factory call pattern that downstream tests need.
+- A second test file (`event/order.rs`) inside `axon-core` had to be migrated in the same commit to keep `--all-targets` green for clippy. The plan only mentioned `core.rs` tests; the actual scope of "axon-core self-consistent" is wider.
+- Removed unused `Symbol` import from `benches/core_bench.rs` (was using `Symbol::from("BTC-USDT")` which is no longer needed).
 
 ---
 
