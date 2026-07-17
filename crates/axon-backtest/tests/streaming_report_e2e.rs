@@ -25,7 +25,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_tick(price: f64) -> Tick {
@@ -44,9 +44,18 @@ fn engine_with_fills() -> StreamingEngine {
     }
     impl StreamingStrategy for BuyStrategy {
         fn on_tick(&mut self, symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
-            let order = Order::new(
+            // T2.2: split Symbol "BASE-QUOTE" -> (base, quote) for Order::spot
+            let (base, quote) = {
+                let s = symbol.as_str();
+                let mut parts = s.splitn(2, '-');
+                let b = parts.next().unwrap_or("BTC");
+                let q = parts.next().unwrap_or("USDT");
+                (b.to_string(), q.to_string())
+            };
+            let order = Order::spot(
                 self.id,
-                symbol.clone(),
+                base,
+                quote,
                 Side::Buy,
                 OrderType::Market,
                 Quantity::from_f64(0.1),
@@ -68,9 +77,10 @@ fn engine_with_fills() -> StreamingEngine {
     engine.set_initial_cash(100_000.0);
 
     // 挂 Sell Limit maker(给 Market Buy 对手盘)
-    let maker = Order::new(
+    let maker = Order::spot(
         900,
-        btc(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),

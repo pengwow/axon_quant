@@ -112,9 +112,16 @@ impl StreamingStrategy for SmaCrossover {
         let long = self.sma(self.long_win);
         match (short, long) {
             (Some(s), Some(l)) if s > l => {
-                let order = Order::new(
+                // T2.2: 用 Order::spot 替代 Order::new,symbol 拆分 base/quote
+                let s_str = symbol.as_str();
+                let (base, quote) = match s_str.split_once('-').or_else(|| s_str.split_once('/')) {
+                    Some((b, q)) => (axon_core::types::Symbol::from(b), axon_core::types::Symbol::from(q)),
+                    None => (symbol.clone(), axon_core::types::Symbol::from("USDT")),
+                };
+                let order = Order::spot(
                     self.next_order_id,
-                    symbol.clone(),
+                    base,
+                    quote,
                     axon_core::market::Side::Buy,
                     axon_core::order::OrderType::Market,
                     axon_core::types::Quantity::from_f64(0.1),

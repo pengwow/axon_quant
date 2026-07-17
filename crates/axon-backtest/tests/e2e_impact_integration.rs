@@ -141,28 +141,30 @@ fn gen_uptrend(n: usize, base: f64, step: f64) -> Vec<Bar> {
 
 /// 构造限价单 helper
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
-        id,
-        Symbol::from("BTC-USDT"),
+    Order::spot(
+            id,
+            "BTC",
+            "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
         },
         Quantity::from_f64(qty),
         TimeInForce::GTC,
-    )
+        )
 }
 
 /// 构造市价单 helper
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
-        id,
-        Symbol::from("BTC-USDT"),
+    Order::spot(
+            id,
+            "BTC",
+            "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
         TimeInForce::IOC,
-    )
+        )
 }
 
 /// 默认回测配置(L1 baseline)

@@ -45,15 +45,11 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
+
+const SYM: &str = "BTC/USDT";
 
 // ── 共享 helper ──────────────────────────────────────────────────────
-
-const SYM: &str = "BTC-USDT";
-
-fn sym() -> Symbol {
-    Symbol::from(SYM)
-}
 
 /// 闭式价格序列(单根 bar 简化)
 #[derive(Debug, Clone, Copy)]
@@ -129,8 +125,7 @@ impl SmaStrategyOnce {
         let long = self.sma(self.long_win);
         self.desired = match (short, long) {
             (Some(s), Some(l)) if s > l => 1.0,
-            _ => 0.0,
-        };
+            _ => 0.0};
     }
 
     /// 返回 Some(Side::Buy) 当且仅当「desired=1 且未买过」;其他情况 None
@@ -144,9 +139,10 @@ impl SmaStrategyOnce {
 }
 
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+            "BTC",
+            "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -157,9 +153,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 }
 
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+            "BTC",
+            "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -230,7 +227,7 @@ fn emit_bar(
 /// SMA uptrend 序列,策略开 1 仓 long 0.1,最后一根 bar 不发单(留 long) → EOD 平仓
 ///
 /// 验证:
-/// - `positions["BTC-USDT"] ≈ 0`(被 EOD 市价清掉)
+/// - `positions["BTC/USDT"] ≈ 0`(被 EOD 市价清掉)
 /// - `trades.len() >= 1`(EOD 平仓 push 1 个 TradeRecord)
 /// - `final_nav` 是 cash-only(无 mark 浮动)
 /// - `orders_accepted` 含 EOD 市价单

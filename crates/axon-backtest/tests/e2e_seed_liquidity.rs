@@ -38,16 +38,17 @@ use axon_core::types::{Quantity, Symbol};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-const SYM: &str = "BTC-USDT";
+const SYM: &str = "BTC/USDT";
 
 fn sym() -> Symbol {
     Symbol::from(SYM)
 }
 
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+            "BTC",
+            "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),

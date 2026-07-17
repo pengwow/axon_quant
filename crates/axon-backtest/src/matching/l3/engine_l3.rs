@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 use super::super::types::MatchFill;
 use super::auction::{AuctionResult, BatchMode, find_clearing_price};
@@ -154,7 +154,8 @@ impl MultiAssetMatchingEngine {
 
     /// 路由订单到正确的资产引擎
     pub fn submit(&mut self, order: Order) -> MatchingL3Result<Vec<MatchFill>> {
-        let symbol = order.symbol.clone();
+        // T2.2: Order::symbol -> Order::instrument; 用 Instrument 反向构造 Symbol key
+        let symbol = instrument_to_key(&order.instrument);
         match self.batch_mode {
             BatchMode::Continuous => {
                 let engine = self.engines.get_mut(&symbol).ok_or_else(|| {
@@ -196,7 +197,7 @@ impl MultiAssetMatchingEngine {
 
     /// 提交暗池订单
     pub fn submit_dark_order(&mut self, dark: DarkOrder) -> MatchingL3Result<Vec<MatchFill>> {
-        let symbol = dark.order.symbol.clone();
+        let symbol = instrument_to_key(&dark.order.instrument);
         self.try_dark_and_store(&symbol, dark)
     }
 
@@ -235,7 +236,9 @@ impl MultiAssetMatchingEngine {
         let mut to_auction: Vec<Order> = Vec::new();
         let mut kept: Vec<Order> = Vec::new();
         for order in self.pending_batch.drain(..) {
-            if &order.symbol == symbol {
+            // T2.2: 通过 instrument_to_key 转换为标准 symbol 字符串再比较
+            let order_key = instrument_to_key(&order.instrument);
+            if order_key == *symbol {
                 to_auction.push(order);
             } else {
                 kept.push(order);
@@ -350,17 +353,22 @@ impl MultiAssetMatchingEngine {
             })
             .unwrap_or_default();
 
-        let leg1_order = Order::new(
+        // T2.2: 套利 leg 订单用 Order::spot 构造;base/quote 从 Symbol 拆分
+        let (leg1_base, leg1_quote) = split_symbol_to_base_quote(&pair.leg1);
+        let (leg2_base, leg2_quote) = split_symbol_to_base_quote(&pair.leg2);
+        let leg1_order = Order::spot(
             0,
-            pair.leg1.clone(),
+            leg1_base,
+            leg1_quote,
             side_leg1,
             OrderType::Limit { price: leg1_price },
             quantity,
             TimeInForce::GTC,
         );
-        let leg2_order = Order::new(
+        let leg2_order = Order::spot(
             0,
-            pair.leg2.clone(),
+            leg2_base,
+            leg2_quote,
             leg2_side,
             OrderType::Limit { price: leg2_price },
             quantity,
@@ -440,16 +448,52 @@ fn mid_price_from_engine(engine: &crate::matching::L2MatchingEngine) -> Option<P
     }
 }
 
+/// 把 `Instrument` 序列化为 L3 HashMap key 使用的字符串 (transitional)
+///
+/// 当前 L3 内部 `engines: HashMap<Symbol, _>` / `dark_orders: HashMap<Symbol, _>`
+/// 仍按 `Symbol` 暴露 (T3.x 才会换成 `HashMap<Instrument, _>`),所以订单入口
+/// 处把 `Instrument` 序列化为 `"{base}/{quote}"` 形式的临时字符串用于 lookup。
+///
+/// 格式: `"{base}/{quote}"`,例如 `"BTC/USDT"`。与 L3 现有 `register_asset`
+/// 接受的 `Symbol::from("BTC-USDT")` 不同:此处用 `/` 与 axon_quant position
+/// key 习惯保持一致,T3.x 切换 key 类型时两端会一起迁移。
+fn instrument_to_key(inst: &Instrument) -> Symbol {
+    Symbol::from(format!("{}/{}", inst.base().as_str(), inst.quote().as_str()))
+}
+
+/// 把 `Symbol` (L3 用的 `"BTC-USDT"` 风格) 拆为 `(base, quote)` `(T2.2 过渡 helper)`
+///
+/// 接受 `-` 和 `/` 两种分隔符 (测试 fixture 风格不统一)。L3 `leg1/leg2` 是
+/// `Symbol`,构造 `Order::spot` 时需要先 split 拿到 base/quote。
+///
+/// T3.x 切到 `Instrument` 直接做 key 后这个 helper 会被删除。
+fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
+    let s = sym.as_str();
+    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
+        (Symbol::from(base), Symbol::from(quote))
+    } else {
+        (sym.clone(), Symbol::from("USDT"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axon_core::order::OrderType;
     use axon_core::time::Timestamp;
+    use axon_core::types::Symbol;
 
     fn make_limit(id: u64, symbol: &str, side: Side, price: f64, qty: f64) -> Order {
-        Order::new(
+        // T2.2: 把 "BASE/QUOTE" 拆成 base/quote 再用 Order::spot
+        let parts: Vec<&str> = symbol.split('/').collect();
+        let (base, quote) = match parts.as_slice() {
+            [b, q] => (Symbol::from(*b), Symbol::from(*q)),
+            _ => panic!("test symbol 格式必须是 BASE/QUOTE, 收到: {symbol}"),
+        };
+        Order::spot(
             id,
-            symbol.into(),
+            base,
+            quote,
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
@@ -781,9 +825,10 @@ mod tests {
     #[test]
     fn test_override_order_price_market_to_limit() {
         // 市价单被覆盖为限价单（用于批量拍卖）
-        let order = Order::new(
+        let order = Order::spot(
             1,
-            "BTC/USDT".into(),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(5.0),

@@ -8,7 +8,7 @@
 //! 真实场景(多资产组合策略、做市商跨资产对冲)需要多 symbol 联合回测。
 //!
 //! 本测试套件填补此空缺:在测试内实现一个 **`MultiSymbolAdapter`** thin wrapper,
-//! 持 `HashMap<Symbol, L1MatchingEngine>`,按 `order.symbol` 分发。**不动源码**。
+//! 持 `HashMap<Symbol, L1MatchingEngine>`,按 `order.instrument` 分发。**不动源码**。
 //!
 //! ## 已知约束
 //!
@@ -42,7 +42,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 
 /// 多 symbol 撮合引擎适配器
 ///
-/// 按 `order.symbol` 分发到 per-symbol 的 `L1MatchingEngine`。**仅用于测试**,
+/// 按 `order.instrument` 分发到 per-symbol 的 `L1MatchingEngine`。**仅用于测试**,
 /// 源码层面 `BacktestEngine` 仍持单 `Box<dyn MatchingEngine>`。
 struct MultiSymbolAdapter {
     engines: HashMap<Symbol, L1MatchingEngine>,
@@ -71,8 +71,11 @@ impl Default for MultiSymbolAdapter {
 
 impl MatchingEngine for MultiSymbolAdapter {
     fn submit(&mut self, order: Order) -> SubmitResult {
+        // T2.2: 把 instrument 编码为 per-symbol engine 的 key
+        // 格式: "BASE-QUOTE" (与 register() 时传入的 Symbol 风格一致)
+        let key = Symbol::from(format!("{}-{}", order.instrument.base().as_str(), order.instrument.quote().as_str()));
         // 按 symbol 分发,缺失时自动创建(便于测试不显式 register)
-        let engine = self.engines.entry(order.symbol.clone()).or_default();
+        let engine = self.engines.entry(key).or_default();
         engine.submit(order)
     }
 
@@ -144,18 +147,12 @@ impl MatchingEngine for MultiSymbolAdapter {
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-fn eth() -> Symbol {
-    Symbol::from("ETH-USDT")
-}
-
 /// 构造限价单 helper
-fn make_limit_order(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+fn make_limit_order(id: u64, base: &str, quote: &str, side: Side, price: f64, qty: f64) -> Order {
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -166,10 +163,11 @@ fn make_limit_order(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -
 }
 
 /// 构造市价单 helper
-fn make_market_order(id: u64, symbol: Symbol, side: Side, qty: f64) -> Order {
-    Order::new(
+fn make_market_order(id: u64, base: &str, quote: &str, side: Side, qty: f64) -> Order {
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -203,24 +201,24 @@ fn two_symbols_independent_positions() {
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         1,
-        OrderAction::Submitted(make_limit_order(1, btc(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         2,
-        OrderAction::Submitted(make_market_order(2, btc(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(2, "BTC", "USDT", Side::Buy, 0.1)),
     ));
 
     // bar 1: ETH 卖 + 策略买 @ 100
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         3,
-        OrderAction::Submitted(make_limit_order(3, eth(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(3, "ETH", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         4,
-        OrderAction::Submitted(make_market_order(4, eth(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(4, "ETH", "USDT", Side::Buy, 0.1)),
     ));
 
     let mut engine = BacktestEngine::new(adapter_config(100_000.0), q);
@@ -229,14 +227,14 @@ fn two_symbols_independent_positions() {
     assert_eq!(result.fills, 2, "BTC + ETH 各 1 笔 fill");
     assert_eq!(result.positions.len(), 2, "2 个 symbol 持仓");
     assert!(
-        (result.positions["BTC-USDT"] - 0.1).abs() < 1e-9,
+        (result.positions["BTC/USDT"] - 0.1).abs() < 1e-9,
         "BTC 持仓 0.1, got {}",
-        result.positions["BTC-USDT"]
+        result.positions["BTC/USDT"]
     );
     assert!(
-        (result.positions["ETH-USDT"] - 0.1).abs() < 1e-9,
+        (result.positions["ETH/USDT"] - 0.1).abs() < 1e-9,
         "ETH 持仓 0.1, got {}",
-        result.positions["ETH-USDT"]
+        result.positions["ETH/USDT"]
     );
     // 手算(同价位 100,mark 与 fill 一致):
     // cash = 100000 - 10 - 10 - 0.02 = 99979.98
@@ -265,22 +263,22 @@ fn two_symbols_pnl_sum_matches_individual_runs() {
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         1,
-        OrderAction::Submitted(make_limit_order(1, btc(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         2,
-        OrderAction::Submitted(make_market_order(2, btc(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(2, "BTC", "USDT", Side::Buy, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         3,
-        OrderAction::Submitted(make_limit_order(3, eth(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(3, "ETH", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         4,
-        OrderAction::Submitted(make_market_order(4, eth(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(4, "ETH", "USDT", Side::Buy, 0.1)),
     ));
     let multi_pnl = BacktestEngine::new(adapter_config(100_000.0), q)
         .run()
@@ -293,12 +291,12 @@ fn two_symbols_pnl_sum_matches_individual_runs() {
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             1,
-            OrderAction::Submitted(make_limit_order(1, btc(), Side::Sell, 100.0, 0.1)),
+            OrderAction::Submitted(make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 0.1)),
         ));
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             2,
-            OrderAction::Submitted(make_market_order(2, btc(), Side::Buy, 0.1)),
+            OrderAction::Submitted(make_market_order(2, "BTC", "USDT", Side::Buy, 0.1)),
         ));
         q
     };
@@ -313,12 +311,12 @@ fn two_symbols_pnl_sum_matches_individual_runs() {
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             3,
-            OrderAction::Submitted(make_limit_order(3, eth(), Side::Sell, 100.0, 0.1)),
+            OrderAction::Submitted(make_limit_order(3, "ETH", "USDT", Side::Sell, 100.0, 0.1)),
         ));
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             4,
-            OrderAction::Submitted(make_market_order(4, eth(), Side::Buy, 0.1)),
+            OrderAction::Submitted(make_market_order(4, "ETH", "USDT", Side::Buy, 0.1)),
         ));
         q
     };
@@ -351,24 +349,24 @@ fn two_symbols_cash_pool_shared() {
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         1,
-        OrderAction::Submitted(make_limit_order(1, btc(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         2,
-        OrderAction::Submitted(make_market_order(2, btc(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(2, "BTC", "USDT", Side::Buy, 0.1)),
     ));
 
     // ETH buy 0.1 @ 100 = 10
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         3,
-        OrderAction::Submitted(make_limit_order(3, eth(), Side::Sell, 100.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(3, "ETH", "USDT", Side::Sell, 100.0, 0.1)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         4,
-        OrderAction::Submitted(make_market_order(4, eth(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(4, "ETH", "USDT", Side::Buy, 0.1)),
     ));
 
     let mut engine = BacktestEngine::new(adapter_config(50.0), q);
@@ -415,13 +413,13 @@ fn cross_symbol_no_unintended_fill() {
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         1,
-        OrderAction::Submitted(make_limit_order(1, eth(), Side::Sell, 3000.0, 0.1)),
+        OrderAction::Submitted(make_limit_order(1, "ETH", "USDT", Side::Sell, 3000.0, 0.1)),
     ));
     // BTC market buy(无 BTC 对手方,应被拒)
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         2,
-        OrderAction::Submitted(make_market_order(2, btc(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(2, "BTC", "USDT", Side::Buy, 0.1)),
     ));
 
     let mut engine = BacktestEngine::new(adapter_config(100_000.0), q);
@@ -434,8 +432,8 @@ fn cross_symbol_no_unintended_fill() {
     assert_eq!(result.orders_rejected, 1, "BTC market buy 无对手方被拒");
     // BTC 持仓 = 0(未成交)
     assert!(
-        !result.positions.contains_key("BTC-USDT") || result.positions["BTC-USDT"].abs() < 1e-9,
+        !result.positions.contains_key("BTC/USDT") || result.positions["BTC/USDT"].abs() < 1e-9,
         "BTC 持仓应为 0,got {:?}",
-        result.positions.get("BTC-USDT")
+        result.positions.get("BTC/USDT")
     );
 }

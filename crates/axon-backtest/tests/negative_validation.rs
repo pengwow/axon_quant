@@ -30,13 +30,9 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
-
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
 
 /// 基础配置(无冲击 / 默认费率 / force_liquidate=false / 100k 现金)
 fn base_config(initial_cash: f64) -> BacktestEngineConfig {
@@ -60,9 +56,10 @@ fn negative_price_limit_order_is_rejected() {
     let mut q = EventQueue::new();
     let mut b = EventBuilder::new(0);
 
-    let bad = Order::new(
+    let bad = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(-100.0),
@@ -94,9 +91,10 @@ fn nan_quantity_does_not_panic() {
     let mut q = EventQueue::new();
     let mut b = EventBuilder::new(0);
 
-    let nan_order = Order::new(
+    let nan_order = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(100.0),
@@ -138,9 +136,10 @@ fn insufficient_cash_market_buy_does_not_reject_in_engine() {
     let mut b = EventBuilder::new(0);
 
     // 对手 sell @ 1000 qty=1(对手盘是策略吃单的对手)
-    let counter = Order::new(
+    let counter = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(1000.0),
@@ -155,9 +154,10 @@ fn insufficient_cash_market_buy_does_not_reject_in_engine() {
     ));
 
     // 策略 buy market @ qty=1(需要 1000 USDT,但 initial_cash=10)
-    let strategy = Order::new(
+    let strategy = Order::spot(
         2,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Market,
         Quantity::from_f64(1.0),
@@ -205,9 +205,10 @@ fn mixed_negative_and_valid_orders_counters_consistent() {
     let mut b = EventBuilder::new(0);
 
     // 1) 负价买单
-    let bad_price = Order::new(
+    let bad_price = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(-100.0),
@@ -222,9 +223,10 @@ fn mixed_negative_and_valid_orders_counters_consistent() {
     ));
 
     // 2) NaN qty 卖单
-    let nan_qty = Order::new(
+    let nan_qty = Order::spot(
         2,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),
@@ -239,9 +241,10 @@ fn mixed_negative_and_valid_orders_counters_consistent() {
     ));
 
     // 3) 合法 sell limit @ 100 qty=1(无对手方 → 挂簿)
-    let valid_sell = Order::new(
+    let valid_sell = Order::spot(
         3,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),

@@ -40,18 +40,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -163,7 +160,7 @@ fn rejected_event_increments_counter() {
 /// 验证:
 /// - `orders_cancelled = 1`(事件被计数)
 /// - `fills = 1`(残留订单仍可被撮合,这是 P1 加固项)
-/// - `positions["BTC-USDT"] = 0.1`(实际成交了)
+/// - `positions["BTC/USDT"] = 0.1`(实际成交了)
 #[test]
 fn cancel_after_submit_does_not_remove_pending_order() {
     let mut q = EventQueue::new();
@@ -181,9 +178,10 @@ fn cancel_after_submit_does_not_remove_pending_order() {
     q.push(b.order(
         Timestamp::from_nanos(3_000),
         2,
-        OrderAction::Submitted(Order::new(
+        OrderAction::Submitted(Order::spot(
             2,
-            sym(),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(0.1),
@@ -206,8 +204,8 @@ fn cancel_after_submit_does_not_remove_pending_order() {
     );
     // 持仓
     assert!(
-        (result.positions["BTC-USDT"] - 0.1).abs() < 1e-9,
+        (result.positions["BTC/USDT"] - 0.1).abs() < 1e-9,
         "BTC 持仓 0.1,got {}",
-        result.positions["BTC-USDT"]
+        result.positions["BTC/USDT"]
     );
 }

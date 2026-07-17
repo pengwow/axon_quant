@@ -24,10 +24,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 use super::error::{MatchingError, MatchingResult};
 use super::types::{MatchFill, OrderBookLevel, SubmitResult};
+/// 把 `Symbol` (如 `"BTC-USDT"`) 拆为 `(base, quote)` `(T2.2 过渡 helper)`
+///
+/// L1 撮合引擎单 instrument 语义下,`with_symbol` / `seed_liquidity` 等接口
+/// 仍按 `Symbol` 暴露;但 `Order::spot` 接收 `base/quote` 两个参数,因此需要
+/// 在调用边界把单个 symbol 字符串拆开。
+///
+/// - 含 `-`:  视作 `BASE-QUOTE` 格式,按第一个 `-` 切分(如 `"BTC-USDT"` → `("BTC", "USDT")`)
+/// - 不含 `-`: 视作 base 单 token,quote 默认填充 `"USDT"`
+///
+/// T2.3 计划用真正的 multi-instrument book + `Instrument` 路由替换此逻辑,
+/// 届时此 helper 会被删除。
+fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
+    let s = sym.as_str();
+    // 接受 "BASE-QUOTE" (L1 测试) 和 "BASE/QUOTE" (L3 测试/CoinGecko 风格) 两种格式
+    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
+        (Symbol::from(base), Symbol::from(quote))
+    } else {
+        // 兜底: 单 token 视为 base,quote 默认 USDT
+        (sym.clone(), Symbol::from("USDT"))
+    }
+}
 
 /// 撮合引擎 trait
 ///
@@ -134,8 +155,8 @@ pub struct L1MatchingEngine {
     trade_sequence: AtomicU64,
     /// 活跃订单索引：`order_id -> (side, price)` 快速定位
     order_index: HashMap<u64, (Side, Price)>,
-    /// 引擎处理的交易品种（确保只处理单一品种）
-    symbol: Option<Symbol>,
+    /// 引擎绑定的 instrument(确保只处理单一 instrument, T2.2 升级自 Symbol)
+    instrument: Option<Instrument>,
 }
 
 impl Default for L1MatchingEngine {
@@ -152,14 +173,16 @@ impl L1MatchingEngine {
             asks: BTreeMap::new(),
             trade_sequence: AtomicU64::new(0),
             order_index: HashMap::new(),
-            symbol: None,
+            instrument: None,
         }
     }
 
     /// 绑定交易品种
     pub fn with_symbol(symbol: Symbol) -> Self {
+        // T2.2: 构造 Instrument(Spot) from Symbol
+        let (base, quote) = split_symbol_to_base_quote(&symbol);
         Self {
-            symbol: Some(symbol),
+            instrument: Some(Instrument::Spot(SpotInstrument { base, quote })),
             ..Self::new()
         }
     }
@@ -195,11 +218,14 @@ impl L1MatchingEngine {
                 quantity: order.quantity,
             });
         }
-        if let Some(ref expected) = self.symbol
-            && &order.symbol != expected
+        if let Some(ref expected) = self.instrument
+            && &order.instrument != expected
         {
             return Err(MatchingError::InvalidModification {
-                reason: format!("符号不匹配: 引擎绑定 {}，订单 {}", expected, order.symbol),
+                reason: format!(
+                    "instrument 不匹配: 引擎绑定 {:?}，订单 {:?}",
+                    expected, order.instrument
+                ),
             });
         }
         // L1 不支持止损/冰山
@@ -489,9 +515,11 @@ impl L1MatchingEngine {
                 // 防御性:正常参数下不会触发,但 mid/half_spread 为 NaN/负时跳过
                 continue;
             }
-            let order = Order::new(
+            let (base, quote) = split_symbol_to_base_quote(&symbol);
+            let order = Order::spot(
                 id,
-                symbol.clone(),
+                base,
+                quote,
                 Side::Sell,
                 OrderType::Limit {
                     price: Price::from_f64(ask_price),
@@ -508,9 +536,11 @@ impl L1MatchingEngine {
             if bid_price <= 0.0 {
                 break;
             }
-            let order = Order::new(
+            let (base, quote) = split_symbol_to_base_quote(&symbol);
+            let order = Order::spot(
                 id,
-                symbol.clone(),
+                base,
+                quote,
                 Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(bid_price),
@@ -733,12 +763,13 @@ mod tests {
     use super::*;
     use axon_core::market::Side;
     use axon_core::order::{Order, OrderType, TimeInForce};
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     fn make_limit_order(id: u64, side: Side, price: f64, qty: f64, _ts: i64) -> Order {
-        Order::new(
+        Order::spot(
             id,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
@@ -907,9 +938,10 @@ mod tests {
     fn test_ioc_unfilled_cancelled() {
         let mut engine = L1MatchingEngine::new();
         // 无对手方时 IOC 立即取消
-        let ioc_order = Order::new(
+        let ioc_order = Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
@@ -929,9 +961,10 @@ mod tests {
         engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
 
         // FOK 买单 2.0 @ 100（期望全部成交，否则取消）
-        let fok_order = Order::new(
+        let fok_order = Order::spot(
             2,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
@@ -953,9 +986,10 @@ mod tests {
         engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
 
         // FOK 买单 1.0 @ 100（恰好全部成交）
-        let fok_order = Order::new(
+        let fok_order = Order::spot(
             2,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),
@@ -973,9 +1007,10 @@ mod tests {
         let mut engine = L1MatchingEngine::new();
         engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
 
-        let market_order = Order::new(
+        let market_order = Order::spot(
             2,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(1.0),
@@ -989,9 +1024,10 @@ mod tests {
     #[test]
     fn test_invalid_price_rejected() {
         let mut engine = L1MatchingEngine::new();
-        let bad_order = Order::new(
+        let bad_order = Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(0.0),
@@ -1006,7 +1042,10 @@ mod tests {
     #[test]
     fn test_engine_with_symbol() {
         let engine = L1MatchingEngine::with_symbol(Symbol::from("ETH-USDT"));
-        assert!(engine.symbol.is_some());
+        assert!(engine.instrument.is_some());
+        let inst = engine.instrument.as_ref().unwrap();
+        assert_eq!(inst.base().as_str(), "ETH");
+        assert_eq!(inst.quote().as_str(), "USDT");
     }
 
     #[test]
@@ -1065,9 +1104,10 @@ mod tests {
     #[test]
     fn test_market_order_on_empty_book() {
         let mut engine = L1MatchingEngine::new();
-        let order = Order::new(
+        let order = Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(10.0),

@@ -117,9 +117,10 @@ mod tests {
     use axon_core::order::OrderType;
 
     fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-        Order::new(
+        Order::spot(
             id,
-            "ETH/USDT".into(),
+            "ETH",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),

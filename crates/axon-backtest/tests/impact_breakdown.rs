@@ -16,19 +16,20 @@ use axon_core::impact::{ImpactModel, LinearImpactModel, PowerLawImpactModel};
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
-        id,
-        Symbol::from("BTC-USDT"),
+    Order::spot(
+            id,
+            "BTC",
+            "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
         },
         Quantity::from_f64(qty),
         TimeInForce::GTC,
-    )
+        )
 }
 
 fn refill_ask_book(engine: &mut ImpactedMatchingEngine, start_id: u64, n: usize, qty: f64) {

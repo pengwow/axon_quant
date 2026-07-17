@@ -31,10 +31,41 @@ use axon_core::portfolio::TradeRecord;
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Quantity, Symbol};
+use axon_core::types::{Instrument, Quantity, SpotInstrument, Symbol};
 use tracing::trace;
 
 use crate::matching::MatchingEngine;
+
+/// 把 `Instrument` 编码为 `position_states` 的字符串 key(transitional)。
+///
+/// 当前 `position_states: HashMap<String, PositionState>`(T3.5 才会换成
+/// `HashMap<Instrument, _>`),所以在 fill 入口处把 `Instrument` 序列化为
+/// 临时字符串;`liquidate_eod` 阶段再通过 [`key_to_instrument`] 反向解析
+/// 出来构造平仓单。
+///
+/// 格式: `"{base}/{quote}"`,例如 `"BTC/USDT"`。可读、确定性,且不会与
+/// 现有 `Symbol::from("BTC-USDT")` 等破折号格式冲突。
+fn instrument_to_key(inst: &Instrument) -> String {
+    format!(
+        "{}/{}",
+        inst.base().as_str(),
+        inst.quote().as_str()
+    )
+}
+
+/// 把 `position_states` 的字符串 key 反向解析为 `Instrument`(transitional)。
+///
+/// T2.2 阶段所有 key 都按 `"{base}/{quote}"` 写入,且回测里只跑 spot 单腿,
+/// 所以这里统一恢复成 `Instrument::Spot`。T3.5 切到 `Instrument` 直接做
+/// key 后这两个 helper 都会被删掉,届时 `liquidate_eod` 直接消费
+/// `position_states.iter()` 里的 `&Instrument` 即可。
+fn key_to_instrument(key: &str) -> Option<Instrument> {
+    let (base, quote) = key.split_once('/')?;
+    Some(Instrument::Spot(SpotInstrument {
+        base: Symbol::from(base),
+        quote: Symbol::from(quote),
+    }))
+}
 
 /// 回测引擎配置
 ///
@@ -522,27 +553,41 @@ impl BacktestEngine {
     /// - 平仓完后再调 `apply_fill` 内部的 mark-to-market 采样一遍 NAV,
     ///   保证 `equity_curve` 末帧反映"已清仓"的状态
     fn liquidate_eod(&mut self) {
-        // 复制一份 symbol+qty 列表(后续会 borrow/mut borrow bt_state,不能持 &)
+        // 复制一份 instrument+qty 列表(后续会 borrow/mut borrow bt_state,不能持 &)
         // ponytail:回测场景 position 数量 << 100,O(n) 复制可忽略
-        let to_liquidate: Vec<(String, f64)> = self
+        //
+        // T2.2:position_states key 还是 String(transitional),先通过
+        // `key_to_instrument` 反解成 Instrument,再交由 Order::spot 构造
+        // 平仓单。T3.5 之后这一步不再需要:position_states 直接 iter Instrument。
+        let to_liquidate: Vec<(Instrument, f64)> = self
             .bt_state
             .position_states
             .iter()
             .filter(|(_, p)| p.quantity.abs() > 1e-9)
-            .map(|(sym, p)| (sym.clone(), p.quantity))
+            .filter_map(|(sym, p)| {
+                // 解析失败就跳过(防御性,理论上 instrument_to_key 写入的 key 都能反解)
+                key_to_instrument(sym).map(|inst| (inst, p.quantity))
+            })
             .collect();
         if to_liquidate.is_empty() {
             return;
         }
 
         // 用 enumerate 替代外部可变计数器,clippy explicit_counter_loop 合规
-        for (idx, (symbol, qty)) in to_liquidate.into_iter().enumerate() {
+        for (idx, (instrument, qty)) in to_liquidate.into_iter().enumerate() {
             // qty > 0 → 持 long,平仓卖;qty < 0 → 持 short,平仓买
             let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
             let close_qty = qty.abs();
-            let order = Order::new(
+            // 从 instrument 自身拆出 base/quote,真正反映"平的是哪个品种"
+            // (不再像旧版那样硬编码 Symbol::from("..."))。
+            let (base, quote) = match &instrument {
+                Instrument::Spot(s) => (s.base.clone(), s.quote.clone()),
+                Instrument::Swap(s) => (s.base.clone(), s.quote.clone()),
+            };
+            let order = Order::spot(
                 EOD_LIQUIDATE_ID_BASE + idx as u64,
-                Symbol::from(symbol.as_str()),
+                base,
+                quote,
                 side,
                 OrderType::Market,
                 Quantity::from_f64(close_qty),
@@ -559,7 +604,7 @@ impl BacktestEngine {
                 if self.stats.total_pnl > self.stats.pnl_peak {
                     self.stats.pnl_peak = self.stats.total_pnl;
                 }
-                self.apply_fill(symbol.as_str(), side, fill);
+                self.apply_fill(&instrument_to_key(&instrument), side, fill);
             }
         }
     }
@@ -611,8 +656,11 @@ impl BacktestEngine {
     /// - 若活跃订单数未变且 fills 为空 ⇒ 订单被拒绝（accepted/rejected counter +1）
     /// - 若 fills 非空 ⇒ 订单被接受（accepted +1，且按 fill 数累加 fills/PnL）
     fn handle_submit(&mut self, order: Order) {
-        // 阶段 B:从 order 提取 symbol/side,供 apply_fill 6 状态机使用
-        let symbol = order.symbol.clone();
+        // 阶段 B:从 order 提取 instrument/side,供 apply_fill 6 状态机使用
+        // T2.2 阶段:instrument 暂用 transient 字符串 key (`"{base}/{quote}"`),
+        // 由 [`instrument_to_key`] 编码;T3.5 会把 position_states 换成
+        // `HashMap<Instrument, _>` 之后,直接传 `&Instrument` 即可。
+        let instrument = order.instrument.clone();
         let side = order.side;
         let active_before = self.config.matching_engine.active_order_count();
         let result = self.config.matching_engine.submit(order);
@@ -634,7 +682,7 @@ impl BacktestEngine {
                         self.stats.pnl_peak = self.stats.total_pnl;
                     }
                     // 阶段 B:6 状态机处理
-                    self.apply_fill(symbol.as_str(), side, fill);
+                    self.apply_fill(&instrument_to_key(&instrument), side, fill);
                 }
             }
             // 无 fill 但挂入订单簿 ⇒ accepted（pending）
@@ -962,15 +1010,26 @@ mod tests {
     use axon_core::market::Side;
     use axon_core::order::{OrderType, TimeInForce};
     use axon_core::time::Timestamp;
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     use crate::matching::L1MatchingEngine;
 
-    /// 测试用辅助：构造限价买单
-    fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-        Order::new(
+    /// 测试用辅助：构造限价单
+    ///
+    /// T2.2:接受 `(base, quote)` 参数,内部转 `Order::spot`(替代旧 `Order::new`),
+    /// 不再硬编码 `Symbol::from("BTC-USDT")`。单测默认走 BTC/USDT。
+    fn make_limit_order(
+        id: u64,
+        base: &str,
+        quote: &str,
+        side: Side,
+        price: f64,
+        qty: f64,
+    ) -> Order {
+        Order::spot(
             id,
-            Symbol::from("BTC-USDT"),
+            base,
+            quote,
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
@@ -1011,7 +1070,7 @@ mod tests {
         let mut q = EventQueue::new();
         let mut b = EventBuilder::new(0);
         // 卖单挂单（无对手方但限价合法 ⇒ 挂入订单簿）
-        let sell = make_limit_order(1, Side::Sell, 100.0, 1.0);
+        let sell = make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 1.0);
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             1,
@@ -1033,9 +1092,11 @@ mod tests {
         let mut q = EventQueue::new();
         let mut b = EventBuilder::new(0);
         // 构造非法订单：price=0
-        let bad = Order::new(
+        // T2.2:用 `Order::spot` 替代 `Order::new`,base/quote 用 BTC/USDT
+        let bad = Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(0.0),
@@ -1057,13 +1118,13 @@ mod tests {
     fn test_run_matched_orders_yield_one_fill() {
         let mut q = EventQueue::new();
         let mut b = EventBuilder::new(0);
-        let sell = make_limit_order(1, Side::Sell, 100.0, 1.0);
+        let sell = make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 1.0);
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             1,
             OrderAction::Submitted(sell),
         ));
-        let buy = make_limit_order(2, Side::Buy, 100.0, 1.0);
+        let buy = make_limit_order(2, "BTC", "USDT", Side::Buy, 100.0, 1.0);
         q.push(b.order(Timestamp::from_nanos(2_000), 2, OrderAction::Submitted(buy)));
 
         let mut engine = BacktestEngine::new(simple_config(), q);
@@ -1101,8 +1162,9 @@ mod tests {
             result.total_fees
         );
         // 终态 long 1 BTC
+        // T2.2:position_states key 是 transient "BASE/QUOTE" 格式
         assert_eq!(result.positions.len(), 1);
-        assert!((result.positions["BTC-USDT"] - 1.0).abs() < 1e-9);
+        assert!((result.positions["BTC/USDT"] - 1.0).abs() < 1e-9);
     }
 
     /// 推进时钟：final_time 应为最后一个事件时间戳
@@ -1112,7 +1174,7 @@ mod tests {
         let mut b = EventBuilder::new(0);
         // 推送多个事件，最后一个时间戳为 3_000
         for i in 0..3 {
-            let sell = make_limit_order(i + 1, Side::Sell, 100.0, 1.0);
+            let sell = make_limit_order(i + 1, "BTC", "USDT", Side::Sell, 100.0, 1.0);
             q.push(b.order(
                 Timestamp::from_nanos((i + 1) as i64 * 1_000),
                 i + 1,
@@ -1267,19 +1329,19 @@ mod tests {
         q.push(b.order(
             Timestamp::from_nanos(1_000),
             1,
-            OrderAction::Submitted(make_limit_order(1, Side::Sell, 100.0, 1.0)),
+            OrderAction::Submitted(make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 1.0)),
         ));
         // 卖单 #2
         q.push(b.order(
             Timestamp::from_nanos(2_000),
             2,
-            OrderAction::Submitted(make_limit_order(2, Side::Sell, 100.0, 1.0)),
+            OrderAction::Submitted(make_limit_order(2, "BTC", "USDT", Side::Sell, 100.0, 1.0)),
         ));
         // 买单吃两单
         q.push(b.order(
             Timestamp::from_nanos(3_000),
             3,
-            OrderAction::Submitted(make_limit_order(3, Side::Buy, 100.0, 2.0)),
+            OrderAction::Submitted(make_limit_order(3, "BTC", "USDT", Side::Buy, 100.0, 2.0)),
         ));
 
         let cfg = simple_config();

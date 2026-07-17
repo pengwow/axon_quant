@@ -301,9 +301,16 @@ pub fn build_limit_order(
     qty: f64,
     tif: TimeInForce,
 ) -> Order {
-    Order::new(
+    // T2.2: 把 "BASE-QUOTE" 拆成 base/quote,然后用 Order::spot
+    let s = symbol.as_str();
+    let (base, quote) = match s.split_once('-') {
+        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+        None => (symbol, Symbol::from("USDT")),
+    };
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -325,9 +332,10 @@ mod tests {
     }
 
     fn make_limit(id: u64, side: Side, price: f64, qty: f64, tif: TimeInForce) -> Order {
-        Order::new(
+        Order::spot(
             id,
-            sym(),
+            "BTC",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),

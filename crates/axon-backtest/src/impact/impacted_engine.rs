@@ -480,13 +480,15 @@ mod tests {
     use axon_core::impact::{LinearImpactModel, PowerLawImpactModel};
     use axon_core::market::Side;
     use axon_core::order::{Order, OrderType, TimeInForce};
-    use axon_core::types::{Quantity, Symbol};
+    use axon_core::types::Quantity;
     use pretty_assertions::assert_eq;
 
     fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-        Order::new(
+        // T2.2: 用 Order::spot 替代 Order::new
+        Order::spot(
             id,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
@@ -851,9 +853,10 @@ mod tests {
         engine.submit(make_limit(1, Side::Sell, 100.0, 1.0));
 
         // FOK 买单
-        let fok = Order::new(
+        let fok = Order::spot(
             2,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),

@@ -111,14 +111,11 @@ impl MatchingEngine for L2Adapter {
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -129,9 +126,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 }
 
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -196,7 +194,7 @@ fn l2_adapter_works_in_backtest_engine() {
         result.total_fees
     );
     // 末态持仓 = +0.1
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get("BTC/USDT").copied().unwrap_or(0.0);
     assert!((pos - 0.1).abs() < 1e-9, "pos 应=+0.1, got {}", pos);
 }
 

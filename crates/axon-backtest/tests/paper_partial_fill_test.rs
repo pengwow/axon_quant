@@ -34,13 +34,14 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ───────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        btc(),
+            "BTC",
+            "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -51,9 +52,10 @@ fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
 }
 
 fn make_market(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        btc(),
+            "BTC",
+            "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
