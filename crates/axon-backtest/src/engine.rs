@@ -609,7 +609,7 @@ impl BacktestEngine {
                 if self.stats.total_pnl > self.stats.pnl_peak {
                     self.stats.pnl_peak = self.stats.total_pnl;
                 }
-                self.apply_fill(&instrument_to_key(&instrument), side, fill);
+                self.apply_fill(&instrument, side, fill);
             }
         }
     }
@@ -687,7 +687,7 @@ impl BacktestEngine {
                         self.stats.pnl_peak = self.stats.total_pnl;
                     }
                     // 阶段 B:6 状态机处理
-                    self.apply_fill(&instrument_to_key(&instrument), side, fill);
+                    self.apply_fill(&instrument, side, fill);
                 }
             }
             // 无 fill 但挂入订单簿 ⇒ accepted（pending）
@@ -703,7 +703,7 @@ impl BacktestEngine {
 
     /// 6 状态机:处理单笔 fill,更新 BacktestState
     ///
-    /// 输入:order 的 symbol/side + MatchFill。
+    /// 输入:order 的 instrument/side + MatchFill。
     /// 行为:扣除/增加现金,扣除手续费,按 6 状态机维护 PositionState,
     /// 平仓/反手时 push TradeRecord + 记录到 TradingMetrics。
     ///
@@ -716,7 +716,13 @@ impl BacktestEngine {
     ///
     /// 不存在的"同向减仓"分支:fill 方向不变只会加仓,无法减仓(在主循环语义下);
     /// 如果将来加 reconcile 路径,该分支会出现在另外的状态机里。
-    fn apply_fill(&mut self, symbol: &str, side: Side, fill: &crate::matching::MatchFill) {
+    ///
+    /// T2.4 改:`symbol: &str` 替换为 `instrument: &Instrument` 以支持
+    /// `TradeRecord` 持有 `Instrument`(便于 per-instrument 审计/PnL)。
+    /// `position_states` 仍按 string key(T3.5 才切 Instrument key),
+    /// 内部 `instrument_to_key(instrument)` 派生。
+    fn apply_fill(&mut self, instrument: &Instrument, side: Side, fill: &crate::matching::MatchFill) {
+        let symbol = instrument_to_key(instrument);
         let fill_price = fill.price.as_f64();
         let fill_qty = fill.quantity.as_f64();
         let timestamp = fill.timestamp;
@@ -782,6 +788,7 @@ impl BacktestEngine {
                     (pnl * 1e6) as i64,
                     (fee * 1e6) as i64,
                     (n * 1e6) as i64,
+                    instrument.clone(),    // T2.4 新增
                 ));
                 // 清仓
                 pos.quantity = 0.0;
@@ -815,6 +822,7 @@ impl BacktestEngine {
                     (pnl * 1e6) as i64,
                     (fee * 1e6) as i64,
                     (n * 1e6) as i64,
+                    instrument.clone(),    // T2.4 新增
                 ));
                 // 留 p+n(同 n 方向,幅值 = |p|-|n|)
                 pos.quantity = p + n;
@@ -840,6 +848,7 @@ impl BacktestEngine {
                     (pnl * 1e6) as i64,
                     (fee * 1e6) as i64,
                     (-p * 1e6) as i64,
+                    instrument.clone(),    // T2.4 新增
                 ));
                 // 开反向 n + p
                 pos.quantity = n + p;

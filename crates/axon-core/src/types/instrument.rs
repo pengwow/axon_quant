@@ -36,6 +36,18 @@ pub enum Instrument {
     Swap(SwapInstrument),
 }
 
+// T2.4 新增:serde 反序列化时 `#[serde(default)]` 字段需要 Default 实现。
+// 默认值用 `SpotInstrument` 的"空币种",仅作为缺失值兜底,业务层不应依赖
+// 此默认值构造真实数据(若 instrument 缺失,通常意味着数据有 bug)。
+impl Default for Instrument {
+    fn default() -> Self {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from(""),
+            quote: Symbol::from(""),
+        })
+    }
+}
+
 /// 现货交易品种
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SpotInstrument {

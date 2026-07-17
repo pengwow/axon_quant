@@ -12,7 +12,7 @@ use super::trade_record::TradeRecord;
 use crate::event::FillEvent;
 use crate::market::{Side, Trade};
 use crate::time::Timestamp;
-use crate::types::{Price, Quantity, Symbol};
+use crate::types::{Instrument, Price, Quantity, Symbol};
 
 /// 投资组合
 ///
@@ -194,11 +194,17 @@ impl Portfolio {
         *self.cash.entry(self.base_currency).or_insert(0) += cash_delta;
 
         // 记录交易
+        // T2.4:Portfolio 当前 API 只接受 Symbol,无法直接传 Instrument。
+        // 暂时用 `Instrument::default()` 兜底(空币种);`BacktestEngine`
+        // 已走新的 `apply_fill(&Instrument, ...)` 路径,真实 instrument
+        // 写入 `TradeRecord`。`Portfolio::apply_trade` 后续 T3.5 改 Instrument key
+        // 时再统一补全。
         self.trades.push(TradeRecord::new(
             *trade,
             realized,
             commission,
             (qty_f * 1_000_000.0) as i64,
+            Instrument::default(),
         ));
 
         Ok(())
