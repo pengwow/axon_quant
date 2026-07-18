@@ -88,7 +88,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tests
 
-- **`cargo test --workspace` 全套通过**:246 个 `axon-backtest` 单元测试 + 35 个 streaming 单元测试 + 7 个 streaming e2e 文件(34 个集成测试)+ 60 个 `axon-risk` 单元测试 + 74 个 `axon-integration-tests` 集成测试 + `axon-oms` 61 个测试,`axon-llm` 36 个测试,全部 0 失败
+- **`cargo test --workspace` 全套通过**:`1719` lib + `514` integration + `9` doctest = **`2242` 测试,0 失败**(0.6.0 HEAD `5c34dd6` 重新统计,替代 0.5.0 收口时的旧数字)
+- 按 crate 细分(总计 + lib + integration + doctest):
+  - `axon-core`:815(813 + 0 + 2)
+  - `axon-backtest`:386(246 + 137 + 3)——含 7 个 streaming e2e(34 集成)+ delta-neutral 套利集成测试
+  - `axon-llm`:310(226 + 84 + 0)——增长最大,新增 `trading_backend` 集成测试套件
+  - `axon-rl`:176(171 + 5 + 0)
+  - `axon-defi`:149(77 + 72 + 0)——EVM on-chain RPC 集成测试(无 anvil fork 时自动 skip)
+  - `axon-integration-tests`:115(workspace 跨 crate 集成)
+  - `axon-risk`:85(60 + 24 + 1)——含 12 个 leg_pair/stress 单测 + 2 个 e2e engine
+  - `axon-oms`:66(37 + 28 + 1)——`test_order_with_instrument_roundtrip` + `test_legacy_snapshot_without_instrument_recovers` 覆盖 Phase 5 instrument 字段
+  - `axon-inference`:57(11 + 44 + 2)
+  - `axon-walk-forward`:56(51 + 5 + 0)
+  - `axon-registry`:27
 - **`cargo clippy --workspace --tests -D warnings` 零警告**
 - **`cargo fmt --all` 无 diff**
 - 新增 `axon-oms` 单元测试 `test_order_with_instrument_roundtrip` / `test_legacy_snapshot_without_instrument_recovers` 验证 instrument 字段往返 + 老 schema 兼容
