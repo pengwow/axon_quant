@@ -3085,4 +3085,101 @@ mod tests {
             "rebalances_triggered 应=2(两次 rebalance 各 1 fill)"
         );
     }
+
+    // ── Phase 1(0.6.0)新增:begin_bar 收尾自动 rebalance ─────────
+
+    /// 0.6.0 新增(Phase 1):`begin_bar` 收尾自动 rebalance 到 target
+    ///
+    /// 场景:spot long 0.1 target,启用 auto_rebalance,预挂 sell。
+    /// 第一根 bar 触发 fill(0→+0.1);第二根 bar 维持(target 已达成,no-op)。
+    #[test]
+    fn begin_bar_auto_rebalance_triggers_per_bar() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 预挂 sell 0.1(让 rebalance buy 能撮合)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+
+        // 第一根 bar:begin_bar 触发自动 rebalance
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        assert!(
+            (engine.get_position(&btc_spot) - 0.1).abs() < 1e-9,
+            "第一根 bar 后 spot 应=+0.1,got {}",
+            engine.get_position(&btc_spot)
+        );
+
+        // 第二根 bar:bar_id 推进,自动 rebalance 再次触发(但已 0 delta,no-op)
+        engine.begin_bar(50_100.0, btc_spot.clone());
+        // 仍为 0.1(target 已达成)
+        assert!(
+            (engine.get_position(&btc_spot) - 0.1).abs() < 1e-9,
+            "第二根 bar 后 spot 仍应=+0.1,got {}",
+            engine.get_position(&btc_spot)
+        );
+
+        // 验证:rebalances_triggered 累计为 1(只在第一根 bar 触发 fill)
+        let result = engine.run();
+        assert_eq!(
+            result.rebalances_triggered, 1,
+            "只有第一根 bar 触发 fill,rebalances_triggered 应=1"
+        );
+    }
+
+    /// 0.6.0 新增(Phase 1):`with_auto_rebalance_disable` 后 begin_bar 不 rebalance
+    #[test]
+    fn begin_bar_auto_rebalance_disable_noop() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+        // 关闭自动 rebalance
+        engine.with_auto_rebalance_disable();
+
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        // disable 后 rebalance 不触发,position 仍为 0
+        assert!(
+            engine.get_position(&btc_spot).abs() < 1e-9,
+            "disable 后 position 应仍为 0,got {}",
+            engine.get_position(&btc_spot)
+        );
+    }
+
+    /// 0.6.0 新增(Phase 1):同 bar 多次 `rebalance_to_target` 只触发一次
+    ///
+    /// 验证 bar_id guard 生效:用户手写两次 rebalance,第二次被 guard 拦掉。
+    #[test]
+    fn bar_id_guard_prevents_double_rebalance() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+
+        // 第一次 rebalance:bar_id=0,last=u64::MAX,通过 guard,fill 1
+        let t1 = engine.rebalance_to_target(None);
+        assert_eq!(t1, 1, "第一次 rebalance 应触发 1 笔 fill");
+        assert!((engine.get_position(&btc_spot) - 0.1).abs() < 1e-9);
+
+        // 第二次 rebalance:同 bar_id=0,last=0,guard 触发,return 0
+        let t2 = engine.rebalance_to_target(None);
+        assert_eq!(t2, 0, "同 bar 第二次 rebalance 应被 guard 拦掉");
+    }
 }
