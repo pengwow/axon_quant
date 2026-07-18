@@ -21,7 +21,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use axon_core::event::{Event, FillEvent, FundingEvent, MarkEvent, OrderAction, OrderEvent};
+use axon_core::event::{
+    Event, FillEvent, FundingEvent, FundingSchedule, MarkEvent, OrderAction, OrderEvent,
+};
 use axon_core::impact::ImpactModel;
 use axon_core::market::Side;
 use axon_core::market::Trade;
@@ -402,6 +404,17 @@ pub struct BacktestEngine {
     bar_id: u64,
     /// 0.6.0 新增(Phase 1):上一次 rebalance 触发的 bar_id(供 guard 检查)
     last_rebalance_bar_id: u64,
+    /// 0.6.0 新增(Phase 2):funding 自动调度配置(`instrument -> schedule`)
+    ///
+    /// 启用后,`begin_bar` 收尾遍历 schedules,根据
+    /// `last_funding_ts[instrument] + interval_ns <= bar_ts` 触发 funding 结算
+    /// (走 `push_funding` 派发路径)。
+    funding_schedules: HashMap<Instrument, FundingSchedule>,
+    /// 0.6.0 新增(Phase 2):每 instrument 上次 funding 结算时间戳
+    ///
+    /// `with_funding_schedule` 启用时初始化为 `Timestamp::from_nanos(0)`,
+    /// 首次 `begin_bar`(bar_ts 任意 > 0)即触发 1 次 funding 结算。
+    last_funding_ts: HashMap<Instrument, Timestamp>,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -451,6 +464,9 @@ impl BacktestEngine {
             // 保证首次调用 `rebalance_to_target` 时 guard 不误伤(bar_id=0
             // 不会等于 u64::MAX,首次必通过)
             last_rebalance_bar_id: u64::MAX,
+            // 0.6.0 新增(Phase 2):funding schedule 字段默认空
+            funding_schedules: HashMap::new(),
+            last_funding_ts: HashMap::new(),
         }
     }
 
@@ -1242,6 +1258,31 @@ impl BacktestEngine {
     /// 0.5.0 新增(Phase D):关闭自动 rebalance
     pub fn with_auto_rebalance_disable(&mut self) {
         self.auto_rebalance_threshold = None;
+    }
+
+    /// 0.6.0 新增(Phase 2):配置 funding 自动调度 schedule
+    ///
+    /// 启用后,`begin_bar` 收尾遍历所有 schedule:若
+    /// `last_funding_ts[instrument] + interval_ns <= bar_ts` 合成 `FundingEvent`
+    /// 通过 `push_funding` 派发(累计 cash + `total_funding_pnl`)。
+    ///
+    /// 多次调用同一 instrument 覆盖前值;不同 instrument 互不干扰。
+    ///
+    /// 初始化:首次配置时 `last_funding_ts[instrument] = Timestamp::from_nanos(0)`,
+    /// 故首次 `begin_bar`(bar_ts > 0)即触发 1 次 funding 结算。
+    pub fn with_funding_schedule(&mut self, schedule: FundingSchedule) {
+        self.last_funding_ts
+            .entry(schedule.instrument.clone())
+            .or_insert(Timestamp::from_nanos(0));
+        self.funding_schedules
+            .insert(schedule.instrument.clone(), schedule);
+    }
+
+    /// 0.6.0 新增(Phase 2):关闭指定 instrument 的 funding 自动调度
+    ///
+    /// `last_funding_ts` 保留(以备重新启用时复用历史;若需重置,手动清空)。
+    pub fn with_funding_schedule_disable(&mut self, instrument: &Instrument) {
+        self.funding_schedules.remove(instrument);
     }
 
     /// 0.5.0 新增(Phase D):手动触发 rebalance
