@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **pyo3 0.27 Python 绑定构建失败**(`fix(ci): port 0.5.0 pyo3 0.27 fixes to 0.6.0 + complete leg-pair coverage`,commit `abcbdea`):
+  - `axon-oms::python::portfolio::PyPortfolio::apply_fill` 补 `instrument: None`(`RustFill` 是 0.6.0 phase 5 `Fill` 的 alias,新增字段需要 Python 端兜底)
+  - `axon-risk::python::config::PyRiskConfig` 构造器补 `..Default::default()`(0.6.0 phase 6 新增 `max_leg_pair_net_exposure` / `max_leg_pair_var_95` 字段)
+  - `axon-risk::python::engine::PyRiskReason::from_rust` match 补 `RiskReason::LegPairNetExposureExceeded` arm(kind=`"LegPairNetExposureExceeded"`,str=`pair`,f64=`current`/`limit`)
+  - `axon-risk::python::engine` `Symbol::from(&symbol)` → `Symbol::from(symbol.as_str())`(`Symbol` 实现 `From<&str>` / `From<String>`,没有 `From<&String>`)
+
 ## [0.6.0] - 2026-07-18
 
 ### BREAKING CHANGES

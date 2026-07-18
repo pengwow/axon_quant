@@ -94,7 +94,10 @@ result = bt.run()
 print(result.events_processed, result.fills, result.final_nav)
 ```
 
-> 📖 **0.5.0 多 leg 回测(spot + perp delta-neutral 套利)**:见 [multi-leg-backtest.md](multi-leg-backtest.md)。
+> 📖 **多 leg 回测(spot + perp delta-neutral 套利)**:
+> 0.5.0 引入 `Instrument` 抽象 + 多 leg API,
+> 0.6.0 收口全栈 Instrument 化 + 跨 leg 风险约束。
+> 见 [multi-leg-backtest.md](multi-leg-backtest.md)。
 
 #### 提交订单返回 dict 协议
 

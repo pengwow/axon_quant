@@ -160,28 +160,67 @@ assert result.marks[perp] == 50_100.0
 
 `submit(order)` 路由逻辑:按 `order.instrument` 取对应 `L1Book`(`HashMap::entry().or_default()` 自动建 book),撮合只在 book 内部进行。spot 撮合**不会**触碰 perp book,反之亦然。
 
-## 已知限制(0.6.0 路线图)
+## 0.6.0 收口(全栈 Instrument 化 + 跨 leg 风险约束)
 
-0.5.0 完成 **backtest 路径** 的全部 Instrument 化 + Phase C/D funding/rebalance
-闭环:`axon_core::Portfolio.positions`、`axon_core::TradeRecord.instrument`、
-`axon_risk::check_position_limit`、`axon_backtest::BacktestState.position_states` /
-`leg_targets` / `mark_cache`、`axon_backtest::RunResult.positions` / `leg_targets` /
-`marks` / `total_funding_pnl` / `rebalances_triggered` 均以 `Instrument` 作 key
-或持有 per-instrument 状态。
+0.5.0 路线图上的全部 7 项 ✅ 完成,**0.6.0 一次性发布**。新增能力:
 
-剩余工作(0.6.0):
+| 能力 | 状态 | 0.6.0 实现 |
+|------|------|------------|
+| L3 `MultiAssetMatchingEngine.engines` / `dark_orders` 全面 `Instrument` 化 | ✅ | `HashMap<Instrument, _>`,`register_instrument` / `engine(&Instrument)` / `best_bid(&Instrument)` |
+| L3 `CrossPair.leg1` / `leg2` 改用 `LegPair` | ✅ | `CrossPair::new(spot: Instrument, perp: Instrument, ratio: f64, max_qty: f64)`,`execute_arbitrage(pair: &LegPair, ...)` |
+| `axon_backtest::streaming::engine` 全面 `Instrument` 化 | ✅ | `MarketDataEvent::Tick.instrument: Instrument`,`StreamDataSource::subscribe(&[Instrument])`,`StreamingStrategy::on_tick(&Instrument, f64)`,`register_instrument` |
+| `axon_oms::Order` / `Fill` 加 `instrument: Option<Instrument>` | ✅ | `#[serde(default)]` 兼容 0.5.0 snapshot,`OmsSnapshot.version` 固定 `OMS_SNAPSHOT_VERSION_CURRENT = 2` |
+| `begin_bar` 收尾自动 rebalance | ✅ | Phase 1:`BacktestEngine::begin_bar` 收尾自动触发 `rebalance_to_target`,`with_auto_rebalance(threshold)` builder |
+| 自适应 funding 调度(8h 整点) | ✅ | Phase 2:`FundingSchedule { fixed_rate, interval, start_ts }` + `with_funding_schedule(builder)`,`begin_bar` 自动 dispatch |
+| 跨 leg 风险约束(净敞口 / VaR / 压力测试) | ✅ | Phase 6:`axon_risk::checks::leg_pair::check_leg_pair_net_exposure` + `per_leg_var` + `axon_risk::checks::stress::stress_pair` / `stress_portfolio` + `RiskEngine::check_leg_pair(portfolio, &LegPair)` |
 
-| 能力 | 状态 | 计划版本 |
-|------|------|---------|
-| L3 `MultiAssetMatchingEngine.engines` / `dark_orders` 用 `HashMap<Symbol, _>` 桥接 | ⚠️ | 0.6.0 |
-| L3 `CrossPair.leg1` / `leg2` 用 `Symbol` 桥接 | ⚠️ | 0.6.0 |
-| `axon_backtest::streaming::engine` 内部 `HashMap<Symbol, _>` 桥接 | ⚠️ | 0.6.0 |
-| `axon_oms::portfolio::Position.symbol: String`(独立 OMS 路径,Decimal 精度) | ❌ | 0.6.0 |
-| `begin_bar` 收尾自动 rebalance(目前需手动调 `rebalance_to_target`) | ⚠️ | 0.6.0 |
-| 自适应 funding 调度(目前靠外部 `push_funding`) | ⚠️ | 0.6.0 |
-| 跨 leg 风险约束(净敞口 / VaR) | ❌ | 0.6.0 |
+### 跨 leg 风险约束(0.6.0 Phase 6)
 
-完整资金费率结算 + 自动 rebalance 流程,见下面两节。
+新增 3 个 API 把"delta 中性"从"策略层约定"升级到"引擎层硬约束":
+
+```rust
+use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, checks::stress};
+use axon_core::types::LegPair;
+use axon_core::portfolio::Portfolio;
+
+let btc_spot = Instrument::Spot(SpotInstrument { base: "BTC".into(), quote: "USDT".into() });
+let btc_perp = Instrument::Swap(SwapInstrument { base: "BTC".into(), quote: "USDT".into(),
+                                                 settle: SwapSettle::UsdMargin, contract_size: 1.0 });
+let pair = LegPair::new(btc_spot.clone(), btc_perp.clone());
+
+// 1. 净暴露检查:net = spot_qty + perp_qty * hedge_ratio
+//    默认 max_leg_pair_net_exposure = 0.0(严格 delta 中性)
+let engine = DefaultRiskEngine::new(RiskConfig::default());
+let pf = /* ...Portfolio with btc_spot qty=1, btc_perp qty=-1 ... */;
+assert_eq!(engine.check_leg_pair(&pf, &pair), RiskResult::Allow);
+
+// 2. 压力测试:价格冲击 ±5% 下 delta 中性对的 PnL 影响
+let pnl_impact = stress::stress_pair(&pf, &pair, 0.05);
+// = 1.0 * 50000 * 0.05 + (-1.0) * 50000 * 0.05 = 0  (delta 中性时为 0)
+
+// 3. Per-leg VaR:用历史收益序列算 VaR(95% 置信)
+use axon_risk::checks::leg_pair::per_leg_var;
+let var = per_leg_var(&[-0.05, -0.03, -0.01, 0.01, 0.02, 0.03, 0.04], 0.95);
+```
+
+新增 reason 变体 `RiskReason::LegPairNetExposureExceeded { pair, current, limit }`,配合 `RiskConfig.max_leg_pair_net_exposure` / `max_leg_pair_var_95` 做硬阈值。
+
+### `axon_oms::Order` / `Fill` Instrument 化(0.6.0 Phase 5)
+
+```rust
+// 0.6.0 新增结构化 instrument 字段(可选,#[serde(default)] 兼容 0.5.0 snapshot)
+use axon_oms::Order;
+use axon_core::types::Instrument;
+
+let order = Order::new(/* ... */)
+    .with_instrument(Instrument::Spot(SpotInstrument {
+        base: "BTC".into(), quote: "USDT".into(),
+    }));
+```
+
+snapshot schema 升级:`OmsSnapshot.version` 固定 `OMS_SNAPSHOT_VERSION_CURRENT = 2`(0.5.0 之前是自增计数器)。0.5.0 之前的 v1 snapshot 仍可在 0.6.0 进程里 recover(`#[serde(default)]` 兜底)。
+
+完整 funding 结算 + 自动 rebalance 流程,见下面两节。
 
 ## Funding 结算(0.5.0 Phase C 新增)
 
