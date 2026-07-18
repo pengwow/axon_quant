@@ -93,7 +93,13 @@ impl PyComplianceModule {
             std::fs::create_dir_all(&pathbuf)
                 .map_err(|e| PyIOError::new_err(format!("create_dir_all({path:?}) failed: {e}")))?;
             // 用 cfg() 方法拿内部 RustConfig(避免 extract::<T>() 的 Clone bound)
-            let py_cfg = unsafe { config_or_path.cast_unchecked::<PyComplianceConfig>() };
+            // 0.6.0 起:用 safe 的 `cast::<T>()` 替代 `cast_unchecked::<T>()`。
+            // 上面的 `is_instance_of::<PyComplianceConfig>()` 已经在类型层保证
+            // cast 一定成功,这里用 `expect` 把"理论上不会失败"的不变量
+            // 显式化(失败 = PyO3 invariant bug,panic 优于 UB)。
+            let py_cfg = config_or_path
+                .cast::<PyComplianceConfig>()
+                .expect("is_instance_of::<PyComplianceConfig> checked above");
             let cfg = py_cfg.borrow().0.clone();
             let inner = RustModule::new(cfg, &pathbuf).map_err(to_py_err)?;
             return Ok(Self {
