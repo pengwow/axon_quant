@@ -627,6 +627,21 @@ impl BacktestEngine {
         self.event_queue.len()
     }
 
+    /// 0.6.0 新增(Phase 2):直接设置模拟时钟到指定时间
+    ///
+    /// 用途:回测跳秒场景(quantcell 跨 8h 调度 / 测试用例构造特定 timestamp)。
+    /// 内部等价 `self.config.clock.set(ts)`,但**只暴露只读 + 写时间戳的接口**,
+    /// 避免外部直接改 `clock.time_scale` 等高级字段。
+    ///
+    /// 注意:
+    /// - 不影响事件队列;若队列里还有早于 `ts` 的事件,`run()` 仍会按事件时间
+    ///   重新推进 clock(`run()` 内部 `peek_time() → clock.set(t)`)
+    /// - 配合 `with_funding_schedule` + `begin_bar` 可手动构造"bar 跨 N 个 8h
+    ///   边界"场景(测试用)
+    pub fn set_clock(&mut self, ts: Timestamp) {
+        self.config.clock.set(ts);
+    }
+
     /// 推入单个事件到事件队列
     ///
     /// 给 Python 绑定 / 外部调用方使用 —— 构造完整 `Event` 后追加到内部队列。
@@ -2929,12 +2944,7 @@ mod tests {
         qty: f64,
     ) {
         let (base, quote, settle, contract_size) = match &instrument {
-            Instrument::Swap(s) => (
-                s.base.clone(),
-                s.quote.clone(),
-                s.settle,
-                s.contract_size,
-            ),
+            Instrument::Swap(s) => (s.base.clone(), s.quote.clone(), s.settle, s.contract_size),
             Instrument::Spot(_) => {
                 panic!("push_perp_buy 需要 swap instrument,收到 spot")
             }
@@ -3353,7 +3363,10 @@ mod tests {
         // 3) 启用 8h funding schedule
         engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
         // 4) 跳 8h 后 begin_bar → schedule 触发 1 次
-        engine.config.clock.set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
         engine.begin_bar(50_000.0, btc_spot.clone());
 
         // 5) 期望:1 次 funding 结算,perp short 收 0.0001 × 50000 × 0.1 = +0.5
@@ -3385,7 +3398,10 @@ mod tests {
         engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
 
         // 跳 24h(跨 3 个 8h 边界)→ 3 次 funding 结算
-        engine.config.clock.set(Timestamp::from_nanos(24 * 3600 * 1_000_000_000));
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(24 * 3600 * 1_000_000_000));
         engine.begin_bar(50_000.0, btc_spot.clone());
 
         let result = engine.run();
@@ -3418,7 +3434,10 @@ mod tests {
         // 关闭 funding schedule
         engine.with_funding_schedule_disable(&btc_perp);
 
-        engine.config.clock.set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
         engine.begin_bar(50_000.0, btc_spot.clone());
 
         let result = engine.run();

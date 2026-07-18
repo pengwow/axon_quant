@@ -62,7 +62,7 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
-use axon_core::event::{EventBuilder, FillEvent, MarkEvent, OrderEvent};
+use axon_core::event::{EventBuilder, FillEvent, FundingSchedule, MarkEvent, OrderEvent};
 use axon_core::market::{Side as CoreSide, Trade};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
@@ -460,6 +460,17 @@ impl PyBacktestEngine {
         self.inner.with_auto_rebalance_disable();
     }
 
+    /// 手动设置模拟时钟(0.6.0 新增 Phase 2)
+    ///
+    /// 回测跳秒场景:quantcell 跨 8h 调度 / 测试用例构造特定 timestamp。
+    /// 等价 `engine.config.clock.set(ts)`,但**只暴露只写 timestamp**。
+    ///
+    /// Args:
+    /// - `timestamp_ns`: 纳秒时间戳(整数)
+    fn set_clock(&mut self, timestamp_ns: i64) {
+        self.inner.set_clock(Timestamp::from_nanos(timestamp_ns));
+    }
+
     /// 手动触发 rebalance(0.5.0 新增 Phase D)
     ///
     /// 遍历所有通过 `set_target_position` 设置过的 leg,对
@@ -474,6 +485,54 @@ impl PyBacktestEngine {
     #[pyo3(signature = (threshold = None))]
     fn rebalance_to_target(&mut self, threshold: Option<f64>) -> u64 {
         self.inner.rebalance_to_target(threshold)
+    }
+
+    // ─── 0.6.0 新增(Phase 2):funding 8h 自动调度 ─────────────────
+
+    /// 配置 funding 自动调度 schedule(0.6.0 新增 Phase 2)
+    ///
+    /// 启用后,`begin_bar` 收尾遍历所有 schedule,若
+    /// `last_funding_ts[instrument] + interval_ns <= bar_ts` 合成
+    /// `FundingEvent` 推入队列(走 `push_funding` 派发路径)。
+    /// 多次调同一 instrument 覆盖前值。
+    ///
+    /// Args:
+    /// - `instrument`: 永续合约 dict(`swap_instrument` 构造)
+    /// - `interval_ns`: 结算间隔(ns)。典型 8h = 28_800_000_000_000
+    /// - `fixed_rate`: 资金费率(正 = long 付)
+    /// - `mark_aware`: 是否用 `mark_cache` 读 mark(默认 True)
+    #[pyo3(signature = (instrument, interval_ns, fixed_rate, mark_aware = true))]
+    fn with_funding_schedule(
+        &mut self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        interval_ns: i64,
+        fixed_rate: f64,
+        mark_aware: bool,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let schedule = FundingSchedule {
+            instrument: inst,
+            interval_ns,
+            fixed_rate,
+            mark_aware,
+        };
+        self.inner.with_funding_schedule(schedule);
+        Ok(())
+    }
+
+    /// 关闭指定 instrument 的 funding 自动调度(0.6.0 新增 Phase 2)
+    ///
+    /// Args:
+    /// - `instrument`: 永续合约 dict
+    fn with_funding_schedule_disable(
+        &mut self,
+        py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        self.inner.with_funding_schedule_disable(&inst);
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
