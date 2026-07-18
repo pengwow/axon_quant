@@ -150,9 +150,10 @@ impl PyL1MatchingEngine {
         instrument,
         next_id,
     ))]
+    #[allow(clippy::too_many_arguments)] // seed 参数多(中间价/价差/层数/层量/instrument/id),不可避免
     fn seed_liquidity(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         mid_price: f64,
         half_spread: f64,
         depth_levels: usize,
@@ -160,7 +161,7 @@ impl PyL1MatchingEngine {
         instrument: &Bound<'_, PyAny>,
         next_id: u64,
     ) -> PyResult<u64> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.seed_liquidity(
             mid_price,
             half_spread,

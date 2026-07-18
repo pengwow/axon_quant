@@ -99,15 +99,15 @@ impl MultiAssetMatchingEngine {
     pub fn register_cross_pair(&mut self, pair: CrossPair) -> MatchingL3Result<()> {
         if pair.pair.spot == pair.pair.perp {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.pair.spot.clone(),
-                leg2: pair.pair.perp.clone(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
         if pair.ratio <= 0.0 || !pair.ratio.is_finite() {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.pair.spot.clone(),
-                leg2: pair.pair.perp.clone(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
@@ -348,8 +348,8 @@ impl MultiAssetMatchingEngine {
     ) -> MatchingL3Result<Vec<MatchFill>> {
         if quantity.as_f64() > pair.max_quantity.as_f64() {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.pair.spot.clone(),
-                leg2: pair.pair.perp.clone(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
@@ -689,10 +689,7 @@ mod tests {
         };
         let fills = m.submit_dark_order(dark).expect("ok");
         assert!(fills.is_empty());
-        assert_eq!(
-            m.dark_orders.get(&btc_spot()).map(|v| v.len()),
-            Some(1)
-        );
+        assert_eq!(m.dark_orders.get(&btc_spot()).map(|v| v.len()), Some(1));
     }
 
     #[test]

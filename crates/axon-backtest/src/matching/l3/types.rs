@@ -96,12 +96,7 @@ impl CrossPair {
     }
 
     /// 0.6.0 兼容 helper:`Symbol` → `Instrument` 桥接(用于旧测试)
-    pub fn from_symbols(
-        leg1: &Symbol,
-        leg2: &Symbol,
-        ratio: f64,
-        max_quantity: Quantity,
-    ) -> Self {
+    pub fn from_symbols(leg1: &Symbol, leg2: &Symbol, ratio: f64, max_quantity: Quantity) -> Self {
         let (l1, l2) = (symbol_to_instrument(leg1), symbol_to_instrument(leg2));
         Self::new(l1, l2, ratio, max_quantity)
     }

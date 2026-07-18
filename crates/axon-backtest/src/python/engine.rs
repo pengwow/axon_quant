@@ -209,11 +209,11 @@ impl PyBacktestEngine {
     #[pyo3(signature = (price, instrument))]
     fn begin_bar(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         price: f64,
         instrument: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.begin_bar(price, inst);
         Ok(())
     }
@@ -340,11 +340,11 @@ impl PyBacktestEngine {
     #[pyo3(signature = (instrument, target))]
     fn set_target_position(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         target: f64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.set_target_position(inst, target);
         Ok(())
     }
@@ -355,10 +355,10 @@ impl PyBacktestEngine {
     #[pyo3(signature = (instrument))]
     fn get_target_position(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
     ) -> PyResult<Option<f64>> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.get_target_position(&inst))
     }
 
@@ -366,8 +366,8 @@ impl PyBacktestEngine {
     ///
     /// Returns:当前净持仓(单位 base,正=多,负=空)。未交易过返回 `0.0`。
     #[pyo3(signature = (instrument))]
-    fn get_position(&self, py: Python<'_>, instrument: &Bound<'_, PyAny>) -> PyResult<f64> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+    fn get_position(&self, _py: Python<'_>, instrument: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.get_position(&inst))
     }
 
@@ -385,19 +385,19 @@ impl PyBacktestEngine {
     #[pyo3(signature = (instrument, price, timestamp_ns))]
     fn push_mark(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         price: f64,
         timestamp_ns: i64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         let mark = MarkEvent {
             instrument: inst,
             mark_price: Price::from_f64(price),
             timestamp: Timestamp::from_nanos(timestamp_ns),
         };
         // 复用现有事件路径,统一经 EventQueue 与 dispatcher
-        self.builder.mark(mark);
+        self.builder.mark(mark.clone());
         // 通过 push_event 路径进队(dispatcher 写入 mark_cache)
         // 实际 MarkEvent 没有对应的 push_event type 字符串,
         // 这里直接用 inner.push_event 绕过 type 字符串协议。
@@ -423,13 +423,13 @@ impl PyBacktestEngine {
     #[pyo3(signature = (instrument, funding_rate, mark_price, timestamp_ns))]
     fn push_funding(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         funding_rate: f64,
         mark_price: f64,
         timestamp_ns: i64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.push_funding(
             inst,
             funding_rate,
@@ -504,13 +504,13 @@ impl PyBacktestEngine {
     #[pyo3(signature = (instrument, interval_ns, fixed_rate, mark_aware = true))]
     fn with_funding_schedule(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         interval_ns: i64,
         fixed_rate: f64,
         mark_aware: bool,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         let schedule = FundingSchedule {
             instrument: inst,
             interval_ns,
@@ -527,10 +527,10 @@ impl PyBacktestEngine {
     /// - `instrument`: 永续合约 dict
     fn with_funding_schedule_disable(
         &mut self,
-        py: Python<'_>,
+        _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.with_funding_schedule_disable(&inst);
         Ok(())
     }
@@ -736,7 +736,7 @@ impl PyRunResult {
         let d = PyDict::new(py);
         for (inst, price) in &self.inner.marks {
             let key = instrument_to_tuple(py, inst)?;
-            d.set_item(key, price.as_f64())?;
+            d.set_item(key, *price)?;
         }
         Ok(d)
     }

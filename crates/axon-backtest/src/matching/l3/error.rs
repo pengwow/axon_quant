@@ -20,10 +20,10 @@ pub enum MatchingL3Error {
     #[error("跨资产交易对无效：{leg1}/{leg2}，比率 {ratio}")]
     InvalidCrossPair {
         /// 第一腿资产(0.6.0 改:`String` → `Instrument`,避免与 `leg1/leg2: Instrument`
-        /// 不一致的双重表示)
-        leg1: Instrument,
+        /// 不一致的双重表示;为控制错误类型大小,`Box<Instrument>` 包装)
+        leg1: Box<Instrument>,
         /// 第二腿资产
-        leg2: Instrument,
+        leg2: Box<Instrument>,
         /// 比率
         ratio: f64,
     },
@@ -62,4 +62,8 @@ pub enum MatchingL3Error {
 }
 
 /// L3 撮合结果别名
+// 0.6.0:MatchingL3Error 携带 Instrument(最多 ~70 bytes)与 Quantity
+// (16 bytes)等大字段,变体 `InvalidCrossPair` 累计 ~136 bytes。
+// 这是错误信息类型安全与大小之间的折中;允许此 lint。
+#[allow(clippy::result_large_err)]
 pub type MatchingL3Result<T> = Result<T, MatchingL3Error>;
