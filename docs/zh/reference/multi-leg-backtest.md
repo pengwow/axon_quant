@@ -164,39 +164,60 @@ assert result.marks[perp] == 50_100.0
 
 0.5.0 路线图上的全部 7 项 ✅ 完成,**0.6.0 一次性发布**。新增能力:
 
-| 能力 | 状态 | 0.6.0 实现 |
-|------|------|------------|
-| L3 `MultiAssetMatchingEngine.engines` / `dark_orders` 全面 `Instrument` 化 | ✅ | `HashMap<Instrument, _>`,`register_instrument` / `engine(&Instrument)` / `best_bid(&Instrument)` |
-| L3 `CrossPair.leg1` / `leg2` 改用 `LegPair` | ✅ | `CrossPair::new(spot: Instrument, perp: Instrument, ratio: f64, max_qty: f64)`,`execute_arbitrage(pair: &LegPair, ...)` |
-| `axon_backtest::streaming::engine` 全面 `Instrument` 化 | ✅ | `MarketDataEvent::Tick.instrument: Instrument`,`StreamDataSource::subscribe(&[Instrument])`,`StreamingStrategy::on_tick(&Instrument, f64)`,`register_instrument` |
-| `axon_oms::Order` / `Fill` 加 `instrument: Option<Instrument>` | ✅ | `#[serde(default)]` 兼容 0.5.0 snapshot,`OmsSnapshot.version` 固定 `OMS_SNAPSHOT_VERSION_CURRENT = 2` |
-| `begin_bar` 收尾自动 rebalance | ✅ | Phase 1:`BacktestEngine::begin_bar` 收尾自动触发 `rebalance_to_target`,`with_auto_rebalance(threshold)` builder |
-| 自适应 funding 调度(8h 整点) | ✅ | Phase 2:`FundingSchedule { fixed_rate, interval, start_ts }` + `with_funding_schedule(builder)`,`begin_bar` 自动 dispatch |
-| 跨 leg 风险约束(净敞口 / VaR / 压力测试) | ✅ | Phase 6:`axon_risk::checks::leg_pair::check_leg_pair_net_exposure` + `per_leg_var` + `axon_risk::checks::stress::stress_pair` / `stress_portfolio` + `RiskEngine::check_leg_pair(portfolio, &LegPair)` |
+| 能力 | 关键 API |
+|------|---------|
+| L3 `MultiAssetMatchingEngine.engines` / `dark_orders` 全面 `Instrument` 化 | `register_instrument` / `engine(&Instrument)` / `best_bid(&Instrument)` |
+| L3 `CrossPair.leg1` / `leg2` 改用 `LegPair` | `LegPair::new(spot, perp)` / `with_ratio(...)`,`execute_arbitrage(&LegPair, ...)` |
+| `axon_backtest::streaming::engine` 全面 `Instrument` 化 | `MarketDataEvent::Tick.instrument`,`StreamDataSource::subscribe(&[Instrument])`,`StreamingStrategy::on_tick(&Instrument, f64)`,`register_instrument` |
+| `axon_oms::Order` / `Fill` 加 `instrument: Option<Instrument>` | `Order::with_instrument(Instrument)`,`OmsSnapshot.version = OMS_SNAPSHOT_VERSION_CURRENT = 2`,0.5.0 snapshot 兼容(`#[serde(default)]` 兜底) |
+| `begin_bar` 收尾自动 rebalance(Phase 1) | `BacktestEngine::begin_bar` 收尾自动触发,`with_auto_rebalance(threshold)` builder |
+| 自适应 funding 调度 8h 整点(Phase 2) | `FundingSchedule { fixed_rate, interval, start_ts }` + `with_funding_schedule(builder)`,`begin_bar` 自动 dispatch |
+| 跨 leg 风险约束(净敞口 / VaR / 压力测试,Phase 6) | `axon_risk::checks::leg_pair::check_leg_pair_net_exposure` / `per_leg_var`,`axon_risk::checks::stress::stress_pair` / `stress_portfolio`,`RiskEngine::check_leg_pair(portfolio, &LegPair)` |
 
 ### 跨 leg 风险约束(0.6.0 Phase 6)
 
-新增 3 个 API 把"delta 中性"从"策略层约定"升级到"引擎层硬约束":
+新增 API 把"delta 中性"从"策略层约定"升级到"引擎层硬约束":
 
 ```rust
-use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, checks::stress};
-use axon_core::types::LegPair;
-use axon_core::portfolio::Portfolio;
+use axon_core::types::{
+    Instrument, LegPair, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle,
+};
+use axon_core::market::Side;
+use axon_core::portfolio::{Currency, Portfolio, Position};
+use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, RiskResult};
 
+// 构造 spot + perp 1:1 对冲对
 let btc_spot = Instrument::Spot(SpotInstrument { base: "BTC".into(), quote: "USDT".into() });
-let btc_perp = Instrument::Swap(SwapInstrument { base: "BTC".into(), quote: "USDT".into(),
-                                                 settle: SwapSettle::UsdMargin, contract_size: 1.0 });
+let btc_perp = Instrument::Swap(SwapInstrument {
+    base: "BTC".into(),
+    quote: "USDT".into(),
+    settle: SwapSettle::UsdMargin,
+    contract_size: 1.0,
+});
 let pair = LegPair::new(btc_spot.clone(), btc_perp.clone());
+
+// 构造 portfolio:spot long 1.0,perp short 1.0(delta 中性)
+let mut pf = Portfolio::new(Currency::USD, 0.0);
+pf.add_position(Position::with_instrument(
+    btc_spot,
+    Quantity::from_f64(1.0),
+    Price::from_f64(50_000.0),
+));
+pf.add_position(Position::with_instrument(
+    btc_perp,
+    Quantity::from_f64(-1.0),
+    Price::from_f64(50_000.0),
+));
 
 // 1. 净暴露检查:net = spot_qty + perp_qty * hedge_ratio
 //    默认 max_leg_pair_net_exposure = 0.0(严格 delta 中性)
 let engine = DefaultRiskEngine::new(RiskConfig::default());
-let pf = /* ...Portfolio with btc_spot qty=1, btc_perp qty=-1 ... */;
 assert_eq!(engine.check_leg_pair(&pf, &pair), RiskResult::Allow);
 
 // 2. 压力测试:价格冲击 ±5% 下 delta 中性对的 PnL 影响
+use axon_risk::checks::stress;
 let pnl_impact = stress::stress_pair(&pf, &pair, 0.05);
-// = 1.0 * 50000 * 0.05 + (-1.0) * 50000 * 0.05 = 0  (delta 中性时为 0)
+// delta 中性时 spot 与 perp 涨跌相抵,pnl_impact ≈ 0
 
 // 3. Per-leg VaR:用历史收益序列算 VaR(95% 置信)
 use axon_risk::checks::leg_pair::per_leg_var;
@@ -207,20 +228,28 @@ let var = per_leg_var(&[-0.05, -0.03, -0.01, 0.01, 0.02, 0.03, 0.04], 0.95);
 
 ### `axon_oms::Order` / `Fill` Instrument 化(0.6.0 Phase 5)
 
-```rust
-// 0.6.0 新增结构化 instrument 字段(可选,#[serde(default)] 兼容 0.5.0 snapshot)
-use axon_oms::Order;
-use axon_core::types::Instrument;
+`Order` 新增结构化 instrument 字段(`Option<Instrument>`),`Fill` 同理。`#[serde(default)]` 让 0.5.0 序列化的 snapshot 仍可在 0.6.0 进程里 recover:
 
-let order = Order::new(/* ... */)
-    .with_instrument(Instrument::Spot(SpotInstrument {
-        base: "BTC".into(), quote: "USDT".into(),
-    }));
+```rust
+use axon_oms::{Decimal, Order, OrderType, Side};
+use axon_core::types::{Instrument, SpotInstrument};
+
+let order = Order::new(
+    "BTC-USDT".to_string(),   // instrument_id:OMS 字符串路径仍保留(0.5.0 兼容)
+    Side::Buy,
+    OrderType::Limit { price: Decimal::from(50_000) },
+    Decimal::from(1),
+    Decimal::from(50_000),
+)
+.with_instrument(Instrument::Spot(SpotInstrument {
+    base: "BTC".into(),
+    quote: "USDT".into(),
+}));
 ```
 
 snapshot schema 升级:`OmsSnapshot.version` 固定 `OMS_SNAPSHOT_VERSION_CURRENT = 2`(0.5.0 之前是自增计数器)。0.5.0 之前的 v1 snapshot 仍可在 0.6.0 进程里 recover(`#[serde(default)]` 兜底)。
 
-完整 funding 结算 + 自动 rebalance 流程,见下面两节。
+> 📌 **Python 绑定状态**:`check_leg_pair` 是 0.6.0 phase 6 在 Rust `RiskEngine` 上新增的 trait method,但 `axon-risk` Python 绑定 **暂未** 暴露(`crates/axon-risk/src/python/engine.rs` 只有 `check_order` 等 0.5.0 之前的 API)。Phase 6 跨 leg 风险约束目前 **仅 Rust 可用**,Python 用户需要等待 0.6.0 之后的 binding 收口 PR 才能用。完整 funding 结算 + 自动 rebalance 流程(均已有 Python 绑定)见下面两节。
 
 ## Funding 结算(0.5.0 Phase C 新增)
 
