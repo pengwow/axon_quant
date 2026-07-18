@@ -29,6 +29,7 @@ use axon_core::market::Side;
 use axon_core::market::Trade;
 use axon_core::metrics::TradingMetrics;
 use axon_core::order::{Order, OrderType, TimeInForce};
+use axon_core::portfolio::FillRecord;
 use axon_core::portfolio::TradeRecord;
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
@@ -147,6 +148,13 @@ pub struct RunResult {
     // ── Stage 3 阶段 B 新增字段 ─────────────────────────────
     /// 完整交易记录(开/平仓配对的 TradeRecord,单位 ×1e6 定点)
     pub trades: Vec<TradeRecord>,
+    /// 0.7.0 新增:每笔 fill 完整记录(开仓/加仓/平仓/部分 fill 全记)
+    ///
+    /// 与 `trades` 区别:`trades` 是 round-trip(开+平配对,有 realized_pnl),
+    /// 只在 case (3)(4)(5) push;`fills_detail` 是每笔 `MatchFill` 都记。
+    /// 用户若需要 partial fill / 同向加仓 的明细走 `fills_detail`,
+    /// 若要 round-trip PnL 走 `trades`。
+    pub fills_detail: Vec<FillRecord>,
     /// 累计手续费(f64,按 fill 累计扣除)
     pub total_fees: f64,
     /// NAV 曲线(`(timestamp_ns, nav)`),每笔 fill 后采样
@@ -198,6 +206,7 @@ impl Default for RunResult {
             final_time: Timestamp::from_nanos(0),
             // Stage 3 阶段 B 默认值
             trades: Vec::new(),
+            fills_detail: Vec::new(),
             total_fees: 0.0,
             equity_curve: Vec::new(),
             nav_peak: 0.0,
@@ -298,6 +307,12 @@ struct BacktestState {
     equity_curve: Vec<(Timestamp, f64)>,
     /// 平仓记录(完全平仓/反手时 push)
     trades: Vec<TradeRecord>,
+    /// 0.7.0 新增:每笔 fill 完整记录(开仓/加仓/平仓/部分 fill 全记)
+    ///
+    /// 与 `trades` 区别:`trades` 是 **round-trip** 概念(开+平配对,有 realized_pnl),
+    /// 只在 case (3)(4)(5) push;`fills_detail` 是 **每笔 MatchFill** 都记,
+    /// 适用 partial fill / 同向加仓 / 反手等场景,补 L3 级别可观测性。
+    fills_detail: Vec<FillRecord>,
     /// T3.5 新增:每 leg 目标仓位(`HashMap<Instrument, LegConfig>`)
     legs: HashMap<Instrument, LegConfig>,
     /// T3.5 新增:每 instrument 最新 mark 价格缓存(`Event::Mark` 写入)
@@ -965,6 +980,24 @@ impl BacktestEngine {
             Side::Sell => self.bt_state.cash += notional - fee,
         }
 
+        // ── 1.5. 0.7.0 新增:记录每笔 fill 到 `fills_detail` ─────────────
+        // 放在 6 状态机之前:fee/cash 已经记完,record 与状态机分支解耦,
+        // 即使后面状态机 panic 也已记录。开仓/加仓/平仓/部分 fill 全记。
+        //
+        // **timestamp** 用 `self.config.clock.now()` 而非 `fill.timestamp`:
+        // - `MatchFill.timestamp` 是 Order 创建时的 `taker_created`(wall clock)
+        // - 用户的 `Event::OrderSubmitted.timestamp_ns` 是 simulated event time
+        // - backtest 报表/审计需要的"事件时间"是后者(`self.config.clock`)
+        self.bt_state.fills_detail.push(FillRecord::new(
+            self.config.clock.now(),
+            instrument.clone(),
+            fill.taker_order_id,
+            fill.maker_order_id,
+            side,
+            fill.price,
+            fill.quantity,
+        ));
+
         // ── 2. 6 状态机 ──────────────────────────────
         let signed_qty = if side == Side::Buy {
             fill_qty
@@ -1540,6 +1573,7 @@ impl BacktestEngine {
             duration,
             final_time,
             trades: self.bt_state.trades.clone(),
+            fills_detail: self.bt_state.fills_detail.clone(),
             total_fees: self.bt_state.fee_accumulator,
             equity_curve: self.bt_state.equity_curve.clone(),
             nav_peak,

@@ -650,6 +650,46 @@ impl PyRunResult {
         Ok(list)
     }
 
+    /// 每笔 fill 完整记录(0.7.0 新增)
+    ///
+    /// 与 `trades` 区别:
+    /// - `trades`:round-trip 配对 TradeRecord,只记已平仓(开+平配对)
+    /// - `fills_detail`:每笔 `MatchFill` 都记(开仓/同向加仓/平仓/部分 fill 全包含)
+    ///
+    /// 适用场景:审计每笔成交、partial fill 分析、按 taker/maker 拆分
+    /// 不适用场景:算胜率/夏普(那用 `trades` + `win_rate`/`sharpe_ratio`)
+    ///
+    /// 返回 list[dict],每 dict 7 字段:
+    /// - `timestamp_ns`:int(fill 时间)
+    /// - `instrument`:tuple(`("spot", base, quote)` 或 `("swap", base, quote, settle, contract_size)`)
+    /// - `taker_order_id`:int(吃单方)
+    /// - `maker_order_id`:int(挂单方)
+    /// - `taker_side`:str("Buy" / "Sell")
+    /// - `price`:float
+    /// - `quantity`:float
+    #[getter]
+    fn fills_detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for fr in &self.inner.fills_detail {
+            let d = PyDict::new(py);
+            d.set_item("timestamp_ns", fr.timestamp.nanos)?;
+            d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
+            d.set_item("taker_order_id", fr.taker_order_id)?;
+            d.set_item("maker_order_id", fr.maker_order_id)?;
+            d.set_item(
+                "taker_side",
+                match fr.taker_side {
+                    axon_core::market::Side::Buy => "Buy",
+                    axon_core::market::Side::Sell => "Sell",
+                },
+            )?;
+            d.set_item("price", fr.price.as_f64())?;
+            d.set_item("quantity", fr.quantity.as_f64())?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
     /// 累计手续费(f64,按 fill 累计扣除)
     #[getter]
     fn total_fees(&self) -> f64 {

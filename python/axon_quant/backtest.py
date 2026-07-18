@@ -58,6 +58,31 @@
     })
     result = bt2.run()
     print(result.final_nav, result.fills)
+
+RunResult 字段语义对照(0.7.0 起)
+--------------------------------
+
+`RunResult` 同时提供三个层次的"成交记录",粒度从粗到细:
+
+- ``fills`` (``int``):成交笔数(累计),无 instrument 区分
+- ``trades`` (``list[dict]``):**round-trip** 交易记录,只记已平仓的开+平配对
+  包含 ``realized_pnl``(已实现盈亏),未平仓的同向加仓不计入
+- ``fills_detail`` (``list[dict]``,0.7.0 新增):**每笔 fill** 完整记录,7 字段
+  (``timestamp_ns`` / ``instrument`` / ``taker_order_id`` / ``maker_order_id`` /
+  ``taker_side`` / ``price`` / ``quantity``),开仓/同向加仓/部分 fill/反手 全记
+
+**用法选择**:
+
+- 算胜率/夏普 → 用 ``trades``(有 realized_pnl)
+- 审计每笔成交 / partial fill 分析 → 用 ``fills_detail``
+- 快速看成交笔数 → 用 ``fills``
+
+Examples::
+
+    # 同向加仓 2 笔 buy 0.5 + buy 0.3:
+    #   fills == 2, trades == [], fills_detail == [fill_1, fill_2]
+    # round-trip buy 0.5 + sell 0.5:
+    #   fills == 2, trades == [trade_1], fills_detail == [fill_1, fill_2]
 """
 
 from __future__ import annotations
