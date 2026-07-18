@@ -1,6 +1,6 @@
 # LLM Trading Operations Runbook
 
-> Applicable version: axon-llm v0.3.0+
+> Applicable version: axon-llm v0.6.0+
 > Audience: Operations / SRE / On-call Engineers
 > Prerequisites: [overview.md](overview.md) [risk-safety.md](risk-safety.md) [metrics-alerting.md](metrics-alerting.md)
 
@@ -26,7 +26,7 @@ git clone https://github.com/pengwow/axon_quant.git /opt/axon_quant
 cd /opt/axon_quant
 
 # 2. Select release tag
-git checkout v0.3.0  # or main / develop
+git checkout v0.6.0  # or main / develop
 
 # 3. Release build (LTO, 1 codegen-unit)
 cargo build --workspace --release
@@ -77,7 +77,7 @@ axon-llm is a library; upgrading affects `target/release/llm-trading-agent`. Sta
 # 1. Fetch new code
 cd /opt/axon_quant
 git fetch --tags
-git checkout v0.3.0  # Assume new version
+git checkout v0.6.0  # Assume new version
 
 # 2. Compile new binary (without interrupting old service)
 cargo build --workspace --release
@@ -244,7 +244,7 @@ Before upgrading, must read CHANGELOG's **BREAKING CHANGES** section. Typical br
 cd /opt/axon_quant
 
 # 1. Switch back to old tag
-git checkout v0.3.0
+git checkout v0.6.0
 
 # 2. Recompile
 cargo build --workspace --release

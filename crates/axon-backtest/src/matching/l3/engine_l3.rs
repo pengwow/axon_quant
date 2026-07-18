@@ -1,11 +1,18 @@
 //! L3 多资产撮合引擎
 //!
 //! 核心功能：
-//! - 多资产独立 L2 订单簿路由
-//! - 暗池撮合（软暗池：先扫暗池，未成交再入暗池簿）
+//! - 多资产独立 L2 订单簿路由(按 `Instrument` 索引)
+//! - 暗池撮合(软暗池:先扫暗池,未成交再入暗池簿)
 //! - 批量拍卖清算
 //! - 跨资产套利检测与执行
-//! - 快照与恢复（仅资产 / 配置 / 批量模式，订单级别恢复需 L2 `from_entries`）
+//! - 快照与恢复(仅资产 / 配置 / 批量模式,订单级别恢复需 L2 `from_entries`)
+//!
+//! 0.6.0 改(BREAKING):`engines` / `dark_orders` 由 `HashMap<Symbol, _>`
+//! 迁为 `HashMap<Instrument, _>`,`CrossPair.leg1/leg2` 由 `Symbol` 迁为
+//! `Instrument`,公共 API `register_asset` → `register_instrument` /
+//! `engine(symbol)` → `engine(instrument)` / `run_auction(symbol)` →
+//! `run_auction(instrument)`,与 L1/L2 引擎和 BacktestEngine 多 leg 路由
+//! 保持一致。
 
 use std::collections::HashMap;
 
@@ -13,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Instrument, Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 use super::super::types::MatchFill;
 use super::auction::{AuctionResult, BatchMode, find_clearing_price};
@@ -36,7 +43,7 @@ pub struct L3Stats {
     pub total_arbitrage_profit: f64,
 }
 
-/// 套利机会（只读报告，不自动执行）
+/// 套利机会(只读报告,不自动执行)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArbitrageOpportunity {
     /// 交易对
@@ -47,26 +54,26 @@ pub struct ArbitrageOpportunity {
     pub leg2_mid: Option<Price>,
     /// 隐含比率
     pub implied_ratio: Option<f64>,
-    /// 偏离度（`|implied - target| / target`）
+    /// 偏离度(`|implied - target| / target`)
     pub deviation: f64,
-    /// 估计套利利润（绝对值）
+    /// 估计套利利润(绝对值)
     pub estimated_profit: f64,
 }
 
-/// 多资产撮合引擎
+/// 多资产撮合引擎(0.6.0 改:全部按 `Instrument` 路由)
 #[derive(Default)]
 pub struct MultiAssetMatchingEngine {
-    /// 各资产独立的 L2 撮合引擎
-    engines: HashMap<Symbol, crate::matching::L2MatchingEngine>,
+    /// 各资产独立的 L2 撮合引擎(0.6.0 改:键类型 `Symbol` → `Instrument`)
+    engines: HashMap<Instrument, crate::matching::L2MatchingEngine>,
     /// 跨资产交易对配置
     cross_pairs: Vec<CrossPair>,
     /// 当前批量模式
     batch_mode: BatchMode,
-    /// 暗池订单簿（按资产）
-    dark_orders: HashMap<Symbol, Vec<DarkOrder>>,
-    /// 批量待撮合订单（Auction / DarkPool 模式暂存）
+    /// 暗池订单簿(按 Instrument 索引,0.6.0 改)
+    dark_orders: HashMap<Instrument, Vec<DarkOrder>>,
+    /// 批量待撮合订单(Auction / DarkPool 模式暂存)
     pending_batch: Vec<Order>,
-    /// 下一个 fill id（暗池成交使用）
+    /// 下一个 fill id(暗池成交使用)
     next_fill_id: u64,
     /// 统计
     stats: L3Stats,
@@ -78,31 +85,34 @@ impl MultiAssetMatchingEngine {
         Self::default()
     }
 
-    /// 注册新资产（幂等）
-    pub fn register_asset(&mut self, symbol: Symbol) {
-        self.engines.entry(symbol.clone()).or_default();
-        self.dark_orders.entry(symbol).or_default();
+    /// 0.6.0 改(BREAKING):`register_asset(symbol)` → `register_instrument(instrument)`
+    ///
+    /// 注册新资产(幂等)。`order.instrument` 首次 submit 时也会隐式注册,
+    /// 故一般无需显式调;但预注册可让 `engine()` 查询不返回 `None`。
+    pub fn register_instrument(&mut self, instrument: Instrument) {
+        self.engines.entry(instrument.clone()).or_default();
+        self.dark_orders.entry(instrument).or_default();
         self.stats.total_assets = self.engines.len();
     }
 
-    /// 注册跨资产交易对（自动注册两个 leg 资产）
+    /// 注册跨资产交易对(自动注册两个 leg 资产)
     pub fn register_cross_pair(&mut self, pair: CrossPair) -> MatchingL3Result<()> {
-        if pair.leg1 == pair.leg2 {
+        if pair.pair.spot == pair.pair.perp {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.leg1.to_string(),
-                leg2: pair.leg2.to_string(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
         if pair.ratio <= 0.0 || !pair.ratio.is_finite() {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.leg1.to_string(),
-                leg2: pair.leg2.to_string(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
-        self.register_asset(pair.leg1.clone());
-        self.register_asset(pair.leg2.clone());
+        self.register_instrument(pair.pair.spot.clone());
+        self.register_instrument(pair.pair.perp.clone());
         self.cross_pairs.push(pair);
         Ok(())
     }
@@ -119,19 +129,19 @@ impl MultiAssetMatchingEngine {
         self.batch_mode
     }
 
-    /// 获取资产的 L2 引擎引用
+    /// 0.6.0 改(BREAKING):`engine(&Symbol)` → `engine(&Instrument)`
     #[inline]
-    pub fn engine(&self, symbol: &Symbol) -> Option<&crate::matching::L2MatchingEngine> {
-        self.engines.get(symbol)
+    pub fn engine(&self, instrument: &Instrument) -> Option<&crate::matching::L2MatchingEngine> {
+        self.engines.get(instrument)
     }
 
-    /// 获取资产的 L2 引擎可变引用
+    /// 0.6.0 改(BREAKING):`engine_mut(&Symbol)` → `engine_mut(&Instrument)`
     #[inline]
     pub fn engine_mut(
         &mut self,
-        symbol: &Symbol,
+        instrument: &Instrument,
     ) -> Option<&mut crate::matching::L2MatchingEngine> {
-        self.engines.get_mut(symbol)
+        self.engines.get_mut(instrument)
     }
 
     /// 注册资产数量
@@ -153,14 +163,16 @@ impl MultiAssetMatchingEngine {
     }
 
     /// 路由订单到正确的资产引擎
+    ///
+    /// 0.6.0 改:直接用 `order.instrument` 做 HashMap key,不再走
+    /// `instrument_to_key` 字符串桥接。
     pub fn submit(&mut self, order: Order) -> MatchingL3Result<Vec<MatchFill>> {
-        // T2.2: Order::symbol -> Order::instrument; 用 Instrument 反向构造 Symbol key
-        let symbol = instrument_to_key(&order.instrument);
+        let instrument = order.instrument.clone();
         match self.batch_mode {
             BatchMode::Continuous => {
-                let engine = self.engines.get_mut(&symbol).ok_or_else(|| {
+                let engine = self.engines.get_mut(&instrument).ok_or_else(|| {
                     MatchingL3Error::AssetNotFound {
-                        symbol: symbol.clone(),
+                        instrument: instrument.clone(),
                     }
                 })?;
                 let result = engine.submit(order);
@@ -171,7 +183,7 @@ impl MultiAssetMatchingEngine {
                 Ok(Vec::new())
             }
             BatchMode::DarkPool => {
-                // 暗池模式：先扫暗池簿，未成交入暗池
+                // 暗池模式:先扫暗池簿,未成交入暗池
                 if order.order_type.limit_price().is_none() {
                     return Err(MatchingL3Error::OrderMissingLimitPrice { order_id: order.id });
                 }
@@ -180,7 +192,7 @@ impl MultiAssetMatchingEngine {
                     hidden_quantity: order.remaining_quantity(),
                     order: order.clone(),
                 };
-                self.try_dark_and_store(&symbol, dark)
+                self.try_dark_and_store(&instrument, dark)
             }
         }
     }
@@ -197,19 +209,19 @@ impl MultiAssetMatchingEngine {
 
     /// 提交暗池订单
     pub fn submit_dark_order(&mut self, dark: DarkOrder) -> MatchingL3Result<Vec<MatchFill>> {
-        let symbol = instrument_to_key(&dark.order.instrument);
-        self.try_dark_and_store(&symbol, dark)
+        let instrument = dark.order.instrument.clone();
+        self.try_dark_and_store(&instrument, dark)
     }
 
     /// 暗池撮合 + 暂存辅助方法
     fn try_dark_and_store(
         &mut self,
-        symbol: &Symbol,
+        instrument: &Instrument,
         dark: DarkOrder,
     ) -> MatchingL3Result<Vec<MatchFill>> {
         // 借用 dark_orders 的可变引用到一个临时块内
         let fills = {
-            let dark_book = self.dark_orders.entry(symbol.clone()).or_default();
+            let dark_book = self.dark_orders.entry(instrument.clone()).or_default();
             let fills = try_dark_match(dark_book, &dark, self.next_fill_id)?;
             self.next_fill_id = self.next_fill_id.saturating_add(fills.len() as u64);
             fills
@@ -220,25 +232,23 @@ impl MultiAssetMatchingEngine {
         }
         // 暗池无匹配 → 暂存到暗池簿
         self.dark_orders
-            .entry(symbol.clone())
+            .entry(instrument.clone())
             .or_default()
             .push(dark);
         Ok(Vec::new())
     }
 
-    /// 执行批量拍卖
-    pub fn run_auction(&mut self, symbol: &Symbol) -> MatchingL3Result<AuctionResult> {
+    /// 执行批量拍卖(0.6.0 改:参数 `&Symbol` → `&Instrument`)
+    pub fn run_auction(&mut self, instrument: &Instrument) -> MatchingL3Result<AuctionResult> {
         if self.pending_batch.is_empty() {
             return Ok(AuctionResult::empty());
         }
 
-        // 分离当前 symbol 的订单
+        // 分离当前 instrument 的订单
         let mut to_auction: Vec<Order> = Vec::new();
         let mut kept: Vec<Order> = Vec::new();
         for order in self.pending_batch.drain(..) {
-            // T2.2: 通过 instrument_to_key 转换为标准 symbol 字符串再比较
-            let order_key = instrument_to_key(&order.instrument);
-            if order_key == *symbol {
+            if order.instrument == *instrument {
                 to_auction.push(order);
             } else {
                 kept.push(order);
@@ -257,9 +267,9 @@ impl MultiAssetMatchingEngine {
 
         let engine =
             self.engines
-                .get_mut(symbol)
+                .get_mut(instrument)
                 .ok_or_else(|| MatchingL3Error::AssetNotFound {
-                    symbol: symbol.clone(),
+                    instrument: instrument.clone(),
                 })?;
 
         let mut fills = Vec::new();
@@ -292,8 +302,14 @@ impl MultiAssetMatchingEngine {
     }
 
     fn compute_arbitrage(&self, pair: &CrossPair) -> ArbitrageOpportunity {
-        let leg1_mid = self.engines.get(&pair.leg1).and_then(mid_price_from_engine);
-        let leg2_mid = self.engines.get(&pair.leg2).and_then(mid_price_from_engine);
+        let leg1_mid = self
+            .engines
+            .get(&pair.pair.spot)
+            .and_then(mid_price_from_engine);
+        let leg2_mid = self
+            .engines
+            .get(&pair.pair.perp)
+            .and_then(mid_price_from_engine);
 
         let implied_ratio = match (leg1_mid, leg2_mid) {
             (Some(l1), Some(l2)) if l2.as_f64() > 0.0 => Some(l1.as_f64() / l2.as_f64()),
@@ -319,7 +335,11 @@ impl MultiAssetMatchingEngine {
         }
     }
 
-    /// 套利执行（同时提交 leg1 / leg2 订单）
+    /// 套利执行(同时提交 leg1 / leg2 订单)
+    ///
+    /// 0.6.0 改:`CrossPair` 内部是 `LegPair { spot, perp }`,直接用
+    /// `Order::spot` / `Order::swap` 工厂构造 leg 订单,不再走 0.5.0
+    /// `split_symbol_to_base_quote` 字符串桥接。
     pub fn execute_arbitrage(
         &mut self,
         pair: &CrossPair,
@@ -328,8 +348,8 @@ impl MultiAssetMatchingEngine {
     ) -> MatchingL3Result<Vec<MatchFill>> {
         if quantity.as_f64() > pair.max_quantity.as_f64() {
             return Err(MatchingL3Error::InvalidCrossPair {
-                leg1: pair.leg1.to_string(),
-                leg2: pair.leg2.to_string(),
+                leg1: Box::new(pair.pair.spot.clone()),
+                leg2: Box::new(pair.pair.perp.clone()),
                 ratio: pair.ratio,
             });
         }
@@ -337,7 +357,7 @@ impl MultiAssetMatchingEngine {
         // 提前取价避免双重可变借用
         let leg1_price = self
             .engines
-            .get(&pair.leg1)
+            .get(&pair.pair.spot)
             .and_then(|e| match side_leg1 {
                 Side::Buy => e.best_ask(),
                 Side::Sell => e.best_bid(),
@@ -346,33 +366,27 @@ impl MultiAssetMatchingEngine {
         let leg2_side = side_leg1.opposite();
         let leg2_price = self
             .engines
-            .get(&pair.leg2)
+            .get(&pair.pair.perp)
             .and_then(|e| match leg2_side {
                 Side::Buy => e.best_ask(),
                 Side::Sell => e.best_bid(),
             })
             .unwrap_or_default();
 
-        // T2.2: 套利 leg 订单用 Order::spot 构造;base/quote 从 Symbol 拆分
-        let (leg1_base, leg1_quote) = split_symbol_to_base_quote(&pair.leg1);
-        let (leg2_base, leg2_quote) = split_symbol_to_base_quote(&pair.leg2);
-        let leg1_order = Order::spot(
+        // 0.6.0:pair.pair.spot / pair.pair.perp 已是 Instrument,直接分派 spot/swap 工厂
+        let leg1_order = build_leg_order(
             0,
-            leg1_base,
-            leg1_quote,
+            &pair.pair.spot,
             side_leg1,
             OrderType::Limit { price: leg1_price },
             quantity,
-            TimeInForce::GTC,
         );
-        let leg2_order = Order::spot(
+        let leg2_order = build_leg_order(
             0,
-            leg2_base,
-            leg2_quote,
+            &pair.pair.perp,
             leg2_side,
             OrderType::Limit { price: leg2_price },
             quantity,
-            TimeInForce::GTC,
         );
 
         let mut fills = self.submit(leg1_order)?;
@@ -381,15 +395,15 @@ impl MultiAssetMatchingEngine {
         Ok(fills)
     }
 
-    /// 创建快照
+    /// 创建快照(0.6.0 改:`engines: HashMap<Instrument, L2Snapshot>`)
     pub fn snapshot(&self) -> MatchingEngineSnapshot {
         let mut engines = HashMap::new();
-        for (symbol, engine) in &self.engines {
+        for (instrument, engine) in &self.engines {
             let (bids, asks) = engine.depth(20);
             engines.insert(
-                symbol.clone(),
+                instrument.clone(),
                 L2Snapshot {
-                    symbol: symbol.clone(),
+                    instrument: instrument.clone(),
                     best_bid: engine.best_bid(),
                     best_ask: engine.best_ask(),
                     bid_depth: bids.iter().map(PriceLevel::from_book_level).collect(),
@@ -407,18 +421,15 @@ impl MultiAssetMatchingEngine {
         }
     }
 
-    /// 从快照恢复
-    ///
-    /// 仅恢复 **资产注册 / 跨资产配置 / 批量模式**；
-    /// 价格级别（`bid_depth` / `ask_depth`）因需重建挂单，**不自动恢复**。
-    /// 如需完整恢复，请使用 L2 引擎自身的 `from_entries` API。
+    /// 从快照恢复(仅恢复资产注册 / 跨资产配置 / 批量模式;
+    /// 价格级别因需重建挂单,不自动恢复)。
     pub fn restore(&mut self, snapshot: MatchingEngineSnapshot) -> MatchingL3Result<()> {
         self.engines.clear();
         self.dark_orders.clear();
         self.pending_batch.clear();
 
-        for symbol in snapshot.engines.keys() {
-            self.register_asset(symbol.clone());
+        for instrument in snapshot.engines.keys() {
+            self.register_instrument(instrument.clone());
         }
 
         self.cross_pairs = snapshot.cross_pairs;
@@ -426,6 +437,39 @@ impl MultiAssetMatchingEngine {
         self.stats.total_assets = self.engines.len();
 
         Ok(())
+    }
+}
+
+/// 0.6.0 新增:按 `Instrument` 类型分派构造 leg 订单(spot → `Order::spot`,
+/// swap → `Order::swap`)。替代 0.5.0 `split_symbol_to_base_quote` 字符串桥。
+fn build_leg_order(
+    id: u64,
+    instrument: &Instrument,
+    side: Side,
+    order_type: OrderType,
+    quantity: Quantity,
+) -> Order {
+    match instrument {
+        Instrument::Spot(s) => Order::spot(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            side,
+            order_type,
+            quantity,
+            TimeInForce::GTC,
+        ),
+        Instrument::Swap(s) => Order::swap(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            s.settle,
+            s.contract_size,
+            side,
+            order_type,
+            quantity,
+            TimeInForce::GTC,
+        ),
     }
 }
 
@@ -448,74 +492,50 @@ fn mid_price_from_engine(engine: &crate::matching::L2MatchingEngine) -> Option<P
     }
 }
 
-/// 把 `Instrument` 序列化为 L3 HashMap key 使用的字符串 (transitional)
-///
-/// 当前 L3 内部 `engines: HashMap<Symbol, _>` / `dark_orders: HashMap<Symbol, _>`
-/// 仍按 `Symbol` 暴露 (T3.x 才会换成 `HashMap<Instrument, _>`),所以订单入口
-/// 处把 `Instrument` 序列化为 `"{base}/{quote}"` 形式的临时字符串用于 lookup。
-///
-/// 格式: `"{base}/{quote}"`,例如 `"BTC/USDT"`。与 L3 现有 `register_asset`
-/// 接受的 `Symbol::from("BTC-USDT")` 不同:此处用 `/` 与 axon_quant position
-/// key 习惯保持一致,T3.x 切换 key 类型时两端会一起迁移。
-fn instrument_to_key(inst: &Instrument) -> Symbol {
-    Symbol::from(format!(
-        "{}/{}",
-        inst.base().as_str(),
-        inst.quote().as_str()
-    ))
-}
-
-/// 把 `Symbol` (L3 用的 `"BTC-USDT"` 风格) 拆为 `(base, quote)` `(T2.2 过渡 helper)`
-///
-/// 接受 `-` 和 `/` 两种分隔符 (测试 fixture 风格不统一)。L3 `leg1/leg2` 是
-/// `Symbol`,构造 `Order::spot` 时需要先 split 拿到 base/quote。
-///
-/// T3.x 切到 `Instrument` 直接做 key 后这个 helper 会被删除。
-fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
-    let s = sym.as_str();
-    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
-        (Symbol::from(base), Symbol::from(quote))
-    } else {
-        (sym.clone(), Symbol::from("USDT"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axon_core::order::OrderType;
     use axon_core::time::Timestamp;
-    use axon_core::types::Symbol;
+    use axon_core::types::{SpotInstrument, SwapInstrument, SwapSettle, Symbol};
 
-    fn make_limit(id: u64, symbol: &str, side: Side, price: f64, qty: f64) -> Order {
-        // T2.2: 把 "BASE/QUOTE" 拆成 base/quote 再用 Order::spot
-        let parts: Vec<&str> = symbol.split('/').collect();
-        let (base, quote) = match parts.as_slice() {
-            [b, q] => (Symbol::from(*b), Symbol::from(*q)),
-            _ => panic!("test symbol 格式必须是 BASE/QUOTE, 收到: {symbol}"),
-        };
-        Order::spot(
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    fn eth_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    fn btc_perp() -> Instrument {
+        Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        })
+    }
+
+    fn make_limit(id: u64, instrument: Instrument, side: Side, price: f64, qty: f64) -> Order {
+        let order = build_leg_order(
             id,
-            base,
-            quote,
+            &instrument,
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
             },
             Quantity::from_f64(qty),
-            TimeInForce::GTC,
-        )
-        .with_test_timestamp(Timestamp::from_nanos(0))
-    }
-
-    trait OrderTestHelpers {
-        fn with_test_timestamp(self, ts: Timestamp) -> Self;
-    }
-    impl OrderTestHelpers for Order {
-        fn with_test_timestamp(mut self, ts: Timestamp) -> Self {
-            self.created_at = ts;
-            self
-        }
+        );
+        // 测试里给 created_at 写 0 让排序稳定
+        let mut o = order;
+        o.created_at = Timestamp::from_nanos(0);
+        o
     }
 
     // ─── 多资产路由 ──────────────────────────────────────
@@ -529,27 +549,27 @@ mod tests {
     }
 
     #[test]
-    fn test_register_asset_idempotent() {
+    fn test_register_instrument_idempotent() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        m.register_asset("BTC/USDT".into());
+        m.register_instrument(btc_spot());
+        m.register_instrument(btc_spot());
         assert_eq!(m.asset_count(), 1);
     }
 
     #[test]
     fn test_isolated_order_books() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        m.register_asset("ETH/USDT".into());
+        m.register_instrument(btc_spot());
+        m.register_instrument(eth_spot());
 
-        m.submit(make_limit(1, "BTC/USDT", Side::Sell, 50_000.0, 1.0))
+        m.submit(make_limit(1, btc_spot(), Side::Sell, 50_000.0, 1.0))
             .expect("submit sell");
         let btc_fills = m
-            .submit(make_limit(2, "BTC/USDT", Side::Buy, 50_000.0, 1.0))
+            .submit(make_limit(2, btc_spot(), Side::Buy, 50_000.0, 1.0))
             .expect("submit buy");
         assert_eq!(btc_fills.len(), 1);
 
-        let eth = m.engine(&"ETH/USDT".into()).expect("engine");
+        let eth = m.engine(&eth_spot()).expect("engine");
         assert!(eth.best_bid().is_none());
         assert!(eth.best_ask().is_none());
     }
@@ -557,7 +577,7 @@ mod tests {
     #[test]
     fn test_multi_asset_routing_unknown_asset_errors() {
         let mut m = MultiAssetMatchingEngine::new();
-        let result = m.submit(make_limit(1, "SOL/USDT", Side::Buy, 100.0, 1.0));
+        let result = m.submit(make_limit(1, btc_spot(), Side::Buy, 100.0, 1.0));
         assert!(matches!(result, Err(MatchingL3Error::AssetNotFound { .. })));
     }
 
@@ -566,12 +586,7 @@ mod tests {
     #[test]
     fn test_register_cross_pair_registers_assets() {
         let mut m = MultiAssetMatchingEngine::new();
-        let pair = CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
-            16.0,
-            Quantity::from_f64(1.0),
-        );
+        let pair = CrossPair::new(btc_spot(), eth_spot(), 16.0, Quantity::from_f64(1.0));
         m.register_cross_pair(pair).expect("ok");
         assert_eq!(m.asset_count(), 2);
         assert_eq!(m.cross_pair_count(), 1);
@@ -580,12 +595,7 @@ mod tests {
     #[test]
     fn test_register_cross_pair_same_leg_errors() {
         let mut m = MultiAssetMatchingEngine::new();
-        let pair = CrossPair::new(
-            "BTC/USDT".into(),
-            "BTC/USDT".into(),
-            1.0,
-            Quantity::from_f64(1.0),
-        );
+        let pair = CrossPair::new(btc_spot(), btc_spot(), 1.0, Quantity::from_f64(1.0));
         let result = m.register_cross_pair(pair);
         assert!(matches!(
             result,
@@ -596,16 +606,21 @@ mod tests {
     #[test]
     fn test_register_cross_pair_invalid_ratio() {
         let mut m = MultiAssetMatchingEngine::new();
-        let pair = CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
-            0.0,
-            Quantity::from_f64(1.0),
-        );
+        let pair = CrossPair::new(btc_spot(), eth_spot(), 0.0, Quantity::from_f64(1.0));
         assert!(matches!(
             m.register_cross_pair(pair),
             Err(MatchingL3Error::InvalidCrossPair { .. })
         ));
+    }
+
+    /// 0.6.0 新增:CrossPair 接受 spot + swap(perp)做 leg,验证 Instrument
+    /// 抽象完整覆盖跨资产场景
+    #[test]
+    fn test_register_cross_pair_spot_vs_perp() {
+        let mut m = MultiAssetMatchingEngine::new();
+        let pair = CrossPair::new(btc_spot(), btc_perp(), 1.0, Quantity::from_f64(0.5));
+        m.register_cross_pair(pair).expect("ok");
+        assert_eq!(m.asset_count(), 2);
     }
 
     // ─── 批量模式 ──────────────────────────────────────
@@ -613,11 +628,11 @@ mod tests {
     #[test]
     fn test_auction_mode_defers_orders() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("ETH/USDT".into());
+        m.register_instrument(eth_spot());
         m.set_batch_mode(BatchMode::Auction);
 
         let fills = m
-            .submit(make_limit(1, "ETH/USDT", Side::Buy, 3000.0, 1.0))
+            .submit(make_limit(1, eth_spot(), Side::Buy, 3000.0, 1.0))
             .expect("submit");
         assert!(fills.is_empty(), "Auction 模式应暂存订单，不立即撮合");
     }
@@ -625,24 +640,24 @@ mod tests {
     #[test]
     fn test_run_auction_empty() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("ETH/USDT".into());
+        m.register_instrument(eth_spot());
         m.set_batch_mode(BatchMode::Auction);
-        let result = m.run_auction(&"ETH/USDT".into()).expect("ok");
+        let result = m.run_auction(&eth_spot()).expect("ok");
         assert!(!result.has_trades());
     }
 
     #[test]
     fn test_run_auction_balanced() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("ETH/USDT".into());
+        m.register_instrument(eth_spot());
         m.set_batch_mode(BatchMode::Auction);
 
-        m.submit(make_limit(1, "ETH/USDT", Side::Buy, 3000.0, 5.0))
+        m.submit(make_limit(1, eth_spot(), Side::Buy, 3000.0, 5.0))
             .unwrap();
-        m.submit(make_limit(2, "ETH/USDT", Side::Sell, 3002.0, 5.0))
+        m.submit(make_limit(2, eth_spot(), Side::Sell, 3002.0, 5.0))
             .unwrap();
 
-        let result = m.run_auction(&"ETH/USDT".into()).expect("ok");
+        let result = m.run_auction(&eth_spot()).expect("ok");
         assert!(result.has_trades());
         assert!(!result.fills.is_empty());
     }
@@ -652,9 +667,8 @@ mod tests {
     #[test]
     fn test_submit_dark_order_invalid_quantity() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        // 用 DarkOrder::new 验证（绕过结构体直接构造）
-        let order = make_limit(1, "BTC/USDT", Side::Buy, 50_000.0, 5.0);
+        m.register_instrument(btc_spot());
+        let order = make_limit(1, btc_spot(), Side::Buy, 50_000.0, 5.0);
         let result = DarkOrder::new(
             order,
             Quantity::from_f64(10.0), // visible > hidden
@@ -666,8 +680,8 @@ mod tests {
     #[test]
     fn test_submit_dark_order_no_match_stores() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        let order = make_limit(1, "BTC/USDT", Side::Buy, 50_000.0, 5.0);
+        m.register_instrument(btc_spot());
+        let order = make_limit(1, btc_spot(), Side::Buy, 50_000.0, 5.0);
         let dark = DarkOrder {
             visible_quantity: Quantity::from_f64(2.0),
             hidden_quantity: Quantity::from_f64(5.0),
@@ -675,18 +689,15 @@ mod tests {
         };
         let fills = m.submit_dark_order(dark).expect("ok");
         assert!(fills.is_empty());
-        assert_eq!(
-            m.dark_orders.get(&"BTC/USDT".into()).map(|v| v.len()),
-            Some(1)
-        );
+        assert_eq!(m.dark_orders.get(&btc_spot()).map(|v| v.len()), Some(1));
     }
 
     #[test]
     fn test_submit_dark_order_matches_existing() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
+        m.register_instrument(btc_spot());
 
-        let sell = make_limit(1, "BTC/USDT", Side::Sell, 50_000.0, 3.0);
+        let sell = make_limit(1, btc_spot(), Side::Sell, 50_000.0, 3.0);
         m.submit_dark_order(DarkOrder {
             visible_quantity: Quantity::from_f64(1.0),
             hidden_quantity: Quantity::from_f64(3.0),
@@ -694,7 +705,7 @@ mod tests {
         })
         .expect("ok");
 
-        let buy = make_limit(2, "BTC/USDT", Side::Buy, 50_000.0, 3.0);
+        let buy = make_limit(2, btc_spot(), Side::Buy, 50_000.0, 3.0);
         let fills = m
             .submit_dark_order(DarkOrder {
                 visible_quantity: Quantity::from_f64(1.0),
@@ -714,8 +725,8 @@ mod tests {
     fn test_detect_arbitrage_no_data() {
         let mut m = MultiAssetMatchingEngine::new();
         m.register_cross_pair(CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
+            btc_spot(),
+            eth_spot(),
             16.0,
             Quantity::from_f64(1.0),
         ))
@@ -727,25 +738,24 @@ mod tests {
 
     #[test]
     fn test_detect_arbitrage_with_both_sides() {
-        // 套利需要买卖价均存在才能计算 mid
         let mut m = MultiAssetMatchingEngine::new();
         m.register_cross_pair(CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
+            btc_spot(),
+            eth_spot(),
             16.0,
             Quantity::from_f64(1.0),
         ))
         .expect("ok");
 
         // BTC: bid=50000, ask=50100
-        m.submit(make_limit(0, "BTC/USDT", Side::Buy, 50_000.0, 1.0))
+        m.submit(make_limit(0, btc_spot(), Side::Buy, 50_000.0, 1.0))
             .unwrap();
-        m.submit(make_limit(1, "BTC/USDT", Side::Sell, 50_100.0, 1.0))
+        m.submit(make_limit(1, btc_spot(), Side::Sell, 50_100.0, 1.0))
             .unwrap();
         // ETH: bid=3000, ask=3020
-        m.submit(make_limit(2, "ETH/USDT", Side::Buy, 3_000.0, 1.0))
+        m.submit(make_limit(2, eth_spot(), Side::Buy, 3_000.0, 1.0))
             .unwrap();
-        m.submit(make_limit(3, "ETH/USDT", Side::Sell, 3_020.0, 1.0))
+        m.submit(make_limit(3, eth_spot(), Side::Sell, 3_020.0, 1.0))
             .unwrap();
 
         let ops = m.detect_arbitrage();
@@ -761,12 +771,7 @@ mod tests {
     #[test]
     fn test_execute_arbitrage_quantity_exceeds_max() {
         let mut m = MultiAssetMatchingEngine::new();
-        let pair = CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
-            16.0,
-            Quantity::from_f64(0.5),
-        );
+        let pair = CrossPair::new(btc_spot(), eth_spot(), 16.0, Quantity::from_f64(0.5));
         m.register_cross_pair(pair.clone()).expect("ok");
         let result = m.execute_arbitrage(&pair, Quantity::from_f64(1.0), Side::Buy);
         assert!(matches!(
@@ -775,13 +780,35 @@ mod tests {
         ));
     }
 
+    /// 0.6.0 新增:`execute_arbitrage` 接受 spot + perp(不只 spot-spot)
+    #[test]
+    fn test_execute_arbitrage_spot_vs_perp() {
+        let mut m = MultiAssetMatchingEngine::new();
+        m.register_instrument(btc_spot());
+        m.register_instrument(btc_perp());
+        // 给 spot book 挂 1 笔 buy(让 spot sell 有对手),给 perp book 挂 1 笔 sell
+        // (让 perp buy 有对手)
+        m.submit(make_limit(1, btc_spot(), Side::Buy, 50_001.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(2, btc_perp(), Side::Sell, 50_001.0, 1.0))
+            .unwrap();
+
+        let pair = CrossPair::new(btc_spot(), btc_perp(), 1.0, Quantity::from_f64(1.0));
+        m.register_cross_pair(pair.clone()).expect("ok");
+        // leg1 (spot) sell 吃 spot bid 50001,leg2 (perp) buy 吃 perp ask 50001
+        let fills = m
+            .execute_arbitrage(&pair, Quantity::from_f64(1.0), Side::Sell)
+            .expect("ok");
+        assert_eq!(fills.len(), 2, "spot + perp 各 1 笔 fill");
+    }
+
     // ─── 快照与恢复 ──────────────────────────────────────
 
     #[test]
     fn test_snapshot_preserves_state() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        m.register_asset("ETH/USDT".into());
+        m.register_instrument(btc_spot());
+        m.register_instrument(eth_spot());
         m.set_batch_mode(BatchMode::Auction);
 
         let snap = m.snapshot();
@@ -792,10 +819,10 @@ mod tests {
     #[test]
     fn test_restore_recovers_basic_state() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
+        m.register_instrument(btc_spot());
         m.register_cross_pair(CrossPair::new(
-            "BTC/USDT".into(),
-            "ETH/USDT".into(),
+            btc_spot(),
+            eth_spot(),
             16.0,
             Quantity::from_f64(1.0),
         ))
@@ -815,12 +842,12 @@ mod tests {
     #[test]
     fn test_submit_batch() {
         let mut m = MultiAssetMatchingEngine::new();
-        m.register_asset("BTC/USDT".into());
-        m.submit(make_limit(1, "BTC/USDT", Side::Sell, 50_000.0, 1.0))
+        m.register_instrument(btc_spot());
+        m.submit(make_limit(1, btc_spot(), Side::Sell, 50_000.0, 1.0))
             .unwrap();
         let orders = vec![
-            make_limit(2, "BTC/USDT", Side::Buy, 50_000.0, 1.0),
-            make_limit(3, "BTC/USDT", Side::Buy, 49_000.0, 1.0),
+            make_limit(2, btc_spot(), Side::Buy, 50_000.0, 1.0),
+            make_limit(3, btc_spot(), Side::Buy, 49_000.0, 1.0),
         ];
         let fills = m.submit_batch(orders).expect("ok");
         assert_eq!(fills.len(), 1);
@@ -828,7 +855,6 @@ mod tests {
 
     #[test]
     fn test_override_order_price_market_to_limit() {
-        // 市价单被覆盖为限价单（用于批量拍卖）
         let order = Order::spot(
             1,
             "BTC",

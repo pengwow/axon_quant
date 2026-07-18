@@ -21,7 +21,7 @@
 //! 运行:`cargo test -p axon-backtest --lib streaming::strategy::`
 
 use axon_core::order::Order;
-use axon_core::types::Symbol;
+use axon_core::types::Instrument;
 
 /// 策略对单个 tick 的反应
 ///
@@ -45,21 +45,24 @@ pub enum StrategyAction {
 ///
 /// 实现方需:
 /// - 维护自己的内部状态(SMA 窗口、订单簿快照、风控阈值等)
-/// - 在 `on_tick` 中根据 `(symbol, price)` 决策,返回 `StrategyAction` 列表
-/// - 自行分配 `Order.id`(用 `Order::new` 时显式传入,避免与 engine 内部 ID 冲突)
+/// - 在 `on_tick` 中根据 `(instrument, price)` 决策,返回 `StrategyAction` 列表
+/// - 自行分配 `Order.id`(用 `Order::spot` / `Order::swap` 时显式传入,避免与 engine 内部 ID 冲突)
+///
+/// 0.6.0 改(BREAKING):参数 `&Symbol` → `&Instrument`,让 strategy 直接感知
+/// spot/swap 差异(例如 perp 用 `Order::swap`,spot 用 `Order::spot`)。
 pub trait StreamingStrategy: Send {
     /// 处理 tick,返回应执行的动作列表
     ///
     /// # 参数
     ///
-    /// - `symbol`:tick 对应的交易品种
+    /// - `instrument`:tick 对应的交易品种(spot / swap)
     /// - `price`:tick 成交价(`tick.price.as_f64()`,已从 `Price` 提取)
     ///
     /// # 返回
     ///
     /// `Vec<StrategyAction>`,按执行顺序排列(先返回的先执行)。
     /// 长度为 0 表示"本 tick 不做任何操作"(等价于一个 `Hold`)。
-    fn on_tick(&mut self, symbol: &Symbol, price: f64) -> Vec<StrategyAction>;
+    fn on_tick(&mut self, instrument: &Instrument, price: f64) -> Vec<StrategyAction>;
 }
 
 /// SMA 均线交叉策略
@@ -103,7 +106,7 @@ impl SmaCrossover {
 }
 
 impl StreamingStrategy for SmaCrossover {
-    fn on_tick(&mut self, symbol: &Symbol, price: f64) -> Vec<StrategyAction> {
+    fn on_tick(&mut self, instrument: &Instrument, price: f64) -> Vec<StrategyAction> {
         self.closes.push_back(price);
         if self.closes.len() > self.long_win {
             self.closes.pop_front();
@@ -112,24 +115,31 @@ impl StreamingStrategy for SmaCrossover {
         let long = self.sma(self.long_win);
         match (short, long) {
             (Some(s), Some(l)) if s > l => {
-                // T2.2: 用 Order::spot 替代 Order::new,symbol 拆分 base/quote
-                let s_str = symbol.as_str();
-                let (base, quote) = match s_str.split_once('-').or_else(|| s_str.split_once('/')) {
-                    Some((b, q)) => (
-                        axon_core::types::Symbol::from(b),
-                        axon_core::types::Symbol::from(q),
+                // 0.6.0:按 instrument 变体派发 Order 构造器;
+                // spot → Order::spot,swap → Order::swap。
+                let limit = axon_core::order::OrderType::Market; // 原 Market 单; 改保留
+                let order = match instrument {
+                    Instrument::Spot(s) => Order::spot(
+                        self.next_order_id,
+                        s.base.clone(),
+                        s.quote.clone(),
+                        axon_core::market::Side::Buy,
+                        limit,
+                        axon_core::types::Quantity::from_f64(0.1),
+                        axon_core::order::TimeInForce::IOC,
                     ),
-                    None => (symbol.clone(), axon_core::types::Symbol::from("USDT")),
+                    Instrument::Swap(s) => Order::swap(
+                        self.next_order_id,
+                        s.base.clone(),
+                        s.quote.clone(),
+                        s.settle,
+                        s.contract_size,
+                        axon_core::market::Side::Buy,
+                        limit,
+                        axon_core::types::Quantity::from_f64(0.1),
+                        axon_core::order::TimeInForce::IOC,
+                    ),
                 };
-                let order = Order::spot(
-                    self.next_order_id,
-                    base,
-                    quote,
-                    axon_core::market::Side::Buy,
-                    axon_core::order::OrderType::Market,
-                    axon_core::types::Quantity::from_f64(0.1),
-                    axon_core::order::TimeInForce::IOC,
-                );
                 self.next_order_id += 1;
                 vec![StrategyAction::Submit(order)]
             }
@@ -141,6 +151,14 @@ impl StreamingStrategy for SmaCrossover {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_core::types::{SpotInstrument, Symbol};
+
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
 
     /// 简单"固定动作"策略(供测试用)
     struct FixedStrategy {
@@ -155,7 +173,7 @@ mod tests {
     }
 
     impl StreamingStrategy for FixedStrategy {
-        fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
+        fn on_tick(&mut self, _instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
             std::mem::take(&mut self.next)
         }
     }
@@ -163,23 +181,25 @@ mod tests {
     #[test]
     fn fixed_strategy_returns_next_actions_and_clears() {
         let mut s = FixedStrategy::new(vec![StrategyAction::Hold]);
-        let sym = Symbol::from("BTC-USDT");
-        let actions = s.on_tick(&sym, 100.0);
+        let inst = btc_spot();
+        let actions = s.on_tick(&inst, 100.0);
         assert_eq!(actions, vec![StrategyAction::Hold]);
         // 第二次应返回空(已 clear)
-        let actions2 = s.on_tick(&sym, 101.0);
+        let actions2 = s.on_tick(&inst, 101.0);
         assert!(actions2.is_empty());
     }
 
     #[test]
     fn sma_crossover_emits_buy_after_uptrend() {
         let mut s = SmaCrossover::new(2, 3);
-        let sym = Symbol::from("BTC-USDT");
+        let inst = btc_spot();
         // 喂 4 个递增 tick,触发 short(2) > long(3)
         for price in [100.0, 101.0, 102.0, 103.0] {
-            let actions = s.on_tick(&sym, price);
+            let actions = s.on_tick(&inst, price);
             if let StrategyAction::Submit(order) = &actions[0] {
                 assert_eq!(order.side, axon_core::market::Side::Buy);
+                // 0.6.0:spot instrument 应派发到 Order::spot(Instrument::Spot)
+                assert!(matches!(order.instrument, Instrument::Spot(_)));
                 return; // 成功
             }
         }

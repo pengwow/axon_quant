@@ -480,6 +480,16 @@ impl PyRiskReason {
                 fields.insert("available".into(), available);
                 "InsufficientMargin"
             }
+            RustReason::LegPairNetExposureExceeded {
+                pair,
+                current,
+                limit,
+            } => {
+                str_fields.insert("pair".into(), pair);
+                fields.insert("current".into(), current);
+                fields.insert("limit".into(), limit);
+                "LegPairNetExposureExceeded"
+            }
         }
         .to_string();
         Self {

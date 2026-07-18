@@ -182,6 +182,9 @@ impl PyPortfolio {
         let fill = RustFill {
             fill_id,
             symbol,
+            // 0.6.0 新增:Python 端 `apply_fill` 路径暂未携带结构化 instrument,
+            // 留 None 让老路径继续走字符串 `symbol` 兜底
+            instrument: None,
             price,
             quantity,
             fee,

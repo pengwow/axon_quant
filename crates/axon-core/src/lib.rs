@@ -67,6 +67,10 @@ pub use market::{
 // 通用类型 re-export
 pub use types::{Price, Quantity, Symbol};
 
+// 0.6.0 新增:Instrument / LegPair re-export(供 axon-oms / axon-risk 复用)
+pub use types::Instrument;
+pub use types::pair::LegPair;
+
 // 时间类型 re-export
 pub use time::{MonotonicClock, TimePrecision, Timestamp};
 

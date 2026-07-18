@@ -77,6 +77,18 @@ def main() -> int:
         make_order_status,
     )
     from axon_quant.oms import limit_order, market_order
+    from axon_quant.backtest import spot_instrument, swap_instrument  # 0.6.0:Instrument 工厂
+
+    # 0.6.0 OMS 说明:`Order` 在 Rust 端已支持 `instrument: Option<Instrument>`
+    # 结构化字段(供跨 leg 风险约束 / 路由使用),Python 端 `limit_order` /
+    # `market_order` 工厂通过可选 `instrument=dict` 形参 + `Order.with_instrument()`
+    # builder 链式注入。`spot_instrument` / `swap_instrument` 工厂从
+    # `axon_quant.backtest` 复用,spot 形式 `{"kind": "spot", ...}` /
+    # swap 形式 `{"kind": "swap", "settle": ..., "contract_size": ...}`。
+    BTC_USDT = "BTC-USDT"
+    ETH_USDT = "ETH-USDT"
+    BTC_SPOT = spot_instrument("BTC", "USDT")
+    ETH_SPOT = spot_instrument("ETH", "USDT")
 
     header("AXON OMS (Order Management System) 演示", "📋")
 
@@ -91,7 +103,11 @@ def main() -> int:
     # ── 2. 提交限价买单 ──────────────────────────────────────────
     step(2, "提交限价买单: 买入 0.1 BTC @ 50,000")
     oid = oms.submit(
-        limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="demo-001")
+        limit_order(
+            BTC_USDT, "Buy", 0.1, 50_000,
+            idempotency_key="demo-001",
+            instrument=BTC_SPOT,  # 0.6.0:结构化 instrument 注入
+        )
     )
     value("订单 ID", oid)
     status = oms.get_order_status(oid)
@@ -109,7 +125,7 @@ def main() -> int:
     oms.add_fill(
         order_id=oid,
         fill_id="fill-001",
-        symbol="BTC-USDT",
+        symbol=BTC_USDT,
         price=50_000.0,
         quantity=0.05,
         fee=0.25,
@@ -123,7 +139,7 @@ def main() -> int:
     oms.add_fill(
         order_id=oid,
         fill_id="fill-002",
-        symbol="BTC-USDT",
+        symbol=BTC_USDT,
         price=50_000.0,
         quantity=0.05,
         fee=0.25,
@@ -151,7 +167,11 @@ def main() -> int:
     # ── 5. 批量订单提交 ──────────────────────────────────────────
     step(7, "批量提交 3 个 ETH-USDT 限价买单")
     orders = [
-        limit_order("ETH-USDT", "Buy", 1.0, 3_000, idempotency_key=f"batch-{i}")
+        limit_order(
+            ETH_USDT, "Buy", 1.0, 3_000,
+            idempotency_key=f"batch-{i}",
+            instrument=ETH_SPOT,  # 0.6.0:结构化 instrument 注入
+        )
         for i in range(3)
     ]
     ids = oms.batch_submit(orders)

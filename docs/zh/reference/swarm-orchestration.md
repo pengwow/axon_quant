@@ -1,8 +1,8 @@
-# `axon-llm::swarm` 多 Agent 编排(0.3.0 P0 工作流 B 收口)
+# `axon-llm::swarm` 多 Agent 编排(0.6.0 P0 工作流 B 收口)
 
-> 适用版本:`axon-llm` v0.3.0+
+> 适用版本:`axon-llm` v0.6.0+
 > 状态:**已实现**(工作流 B Batch 1-4 全收口)
-> 上游 plan:`.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
+> 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
 
 `SwarmOrchestrator` 把 4 类 agent (Market / Risk / Execution / Audit) 串成可运行 pipeline,
 配合 `HarnessBridge` 做最终裁决,`TradingBackend` 真下单到 `MockTradingBackend` / 交易所。
@@ -38,6 +38,7 @@ Python 端可直接构造 + 启动 + 注入信号,完整可观测。
 ```
 
 **关键设计**:
+
 - 每个 agent 持 `Box<dyn DeclarativeAgentRunner>`,**复用** DeclarativeAgent 抽象
 - Agent 间通信用 `tokio::mpsc`,**不**用共享状态
 - Orchestrator 主循环监听 inbox,按 `MessageContent` 路由
@@ -46,7 +47,7 @@ Python 端可直接构造 + 启动 + 注入信号,完整可观测。
 ## 2. 消息路由表(`run_loop` 内)
 
 | 收到的消息 | 处理动作 |
-|---|---|
+| --- | --- |
 | `MarketAnalysis(signal)` | 创建 `TradeDecision` 投票,广播 `VoteRequest` 给 Risk + Execution |
 | `RiskAssessment{approved=true}` | 转发给 Execution agent 生成 `ExecutionRequest` |
 | `RiskAssessment{approved=false}` | 广播给 Audit 记录拒绝原因 |
@@ -95,7 +96,7 @@ pub trait DeclarativeAgentRunner: Send + Sync {
 ### 3.2 4 个 Agent
 
 | Agent | 输入 | 输出 | 配置 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `MarketAgent` | `MarketDataSource` (tick) | `MarketSignal` | `symbols` + `price_change_threshold` |
 | `RiskAgent` | `MarketSignal` | `RiskAssessment` | `RiskAgentConfig` (默认阈值) |
 | `ExecutionAgent` | `RiskAssessment{approved=true}` | `ExecutionResult` (通过 `PlaceOrderTool`) | `TradingTools { place_order, query_portfolio }` |
@@ -192,14 +193,14 @@ orch.stop()
 ## 5. 测试覆盖
 
 | 测试文件 | 数量 | 内容 |
-|---|---|---|
+| --- | --- | --- |
 | `python/tests/test_swarm_pipeline_e2e.py` | **25/25 ✅** | 枚举/数据结构 + 4 类 agent 注册 + lifecycle + inject + stats |
 | `crates/axon-llm/src/swarm/` lib unittests | 全部通过 | DeclarativeAgentRunner / Orchestrator / Vote / 4 agent / market_data |
 | `crates/axon-llm/src/trading/paper_backend.rs` lib unittests | 全部通过 | place_order / balance / position 滑点+手续费验证 |
 
 **总测试数**:322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 全过**。
 
-## 6. 现状与未实现项(基于 0.4.1)
+## 6. 现状与未实现项(基于 0.6.0)
 
 ### 已完成的 0.3.x / 0.4.x 路线图
 
@@ -210,8 +211,8 @@ orch.stop()
 - **`RiskAgent` 基础限额**: 已实现 `max_order_notional` + `quantity > 0` 检查;合规时 `approved=true` + `risk_score=0.1` + 空 `violations`,违规时附带违规列表。
 - **真实交易所接入**: `ExchangeTradingBackend`(`crates/axon-llm/src/trading/exchange.rs`)完整实现,把 `ExchangeAdapter`(Binance / OKX)适配为 `TradingBackend`;依赖 `trading-exchange` feature,`SymbolMap` 提供 LLM symbol ↔ 交易所 symbol 双向映射。注:同文件测试模块里有 8 处 `unimplemented!()`,是 `#[cfg(test)]` 内的 `MockAdapter` stub(测试路径不调用),非生产代码缺口。
 
-### 未实现(0.5.0+ 路线图)
+### 未实现(0.6.0+ 路线图)
 
-- **`RiskAgent` 高级风控**: `RiskAgentConfig` 已定义 `max_position` / `max_drawdown` 字段但**未做检查**;`risk_score` 目前只是二元(0.1 / 0.9);波动率 / VaR / 历史回撤窗口 / 仓位集中度等指标**未实现**。计划在 0.5.0 接入 `axon-risk` 的 `DefaultRiskEngine`(12ns 检查链、circuit breaker、VaR 95/99、实时 metrics)替换 happy path。
-- **4-Agent pipeline 跨进程协调(分布式 swarm)**: 当前 `SwarmOrchestrator` 是单进程内 mpsc 通道;跨进程协调、共识状态机 `ConsensusManager` 持久化、`axon-distributed` 的 Ray Actor 化包装**未实现**。计划在 0.6.0+ 路线图。
+- **`RiskAgent` 高级风控**: `RiskAgentConfig` 已定义 `max_position` / `max_drawdown` 字段但**未做检查**;`risk_score` 目前只是二元(0.1 / 0.9);波动率 / VaR / 历史回撤窗口 / 仓位集中度等指标**未实现**。**0.6.0 收口部分能力**:`axon-risk` 0.6.0 新增跨 leg 风险约束(`check_leg_pair(portfolio, &LegPair) -> RiskResult` + `RiskReason::LegPairNetExposureExceeded` + `per_leg_var` + `stress_pair` / `stress_portfolio`),`RiskConfig.max_leg_pair_net_exposure` 默认 0.0(严格 delta 中性)。`RiskAgent` 接入这些 API 替换 happy path 是后续工作。
+- **4-Agent pipeline 跨进程协调(分布式 swarm)**: 当前 `SwarmOrchestrator` 是单进程内 mpsc 通道;跨进程协调、共识状态机 `ConsensusManager` 持久化、`axon-distributed` 的 Ray Actor 化包装**未实现**。计划在 0.7.0+ 路线图。
 - **单 Agent 跨进程复用**: `MarketAgent` / `RiskAgent` / `AuditAgent` 目前以独立 `tokio::task::spawn` 运行,跨进程调度 / 共享 LLM client / 全局 prompt cache 仍待设计。

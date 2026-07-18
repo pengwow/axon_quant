@@ -281,13 +281,15 @@ await adapter.connect()
 
 ```python
 # Place order with risk checks
-order = Order(
-    symbol="BTCUSDT",
-    side=Side.Buy,
-    order_type=OrderType.Limit,
-    price=50000.0,
-    quantity=0.001,
-)
+# 0.6.0 Python adapter.place_order accepts only dict, not Order instance
+order = {
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "limit",
+    "price": "50000",
+    "quantity": "0.001",
+    "tif": "GTC",
+}
 
 # Risk check before submission
 if risk_engine.check_order(order):

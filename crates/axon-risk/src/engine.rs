@@ -2,9 +2,12 @@ use std::collections::{HashMap, VecDeque};
 
 use axon_core::order::Order;
 use axon_core::portfolio::Portfolio;
+use axon_core::types::LegPair;
 use parking_lot::Mutex;
 
-use crate::checks::{concentration, drawdown, leverage, order_size, position, var as var_check};
+use crate::checks::{
+    concentration, drawdown, leg_pair, leverage, order_size, position, var as var_check,
+};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::config::RiskConfig;
 use crate::error::{AlertSeverity, RiskAlert, RiskReason, RiskResult};
@@ -22,6 +25,8 @@ pub trait RiskEngine: Send + Sync {
     fn update_daily_pnl(&self, pnl: f64);
     fn get_metrics(&self, portfolio: &Portfolio) -> RiskMetrics;
     fn reset_daily(&self);
+    /// 0.6.0 新增:对单一 `LegPair` 检查 delta 中性(`max_abs` 来自 `RiskConfig`)
+    fn check_leg_pair(&self, portfolio: &Portfolio, pair: &LegPair) -> RiskResult;
 }
 
 pub struct DefaultRiskEngine {
@@ -170,6 +175,15 @@ impl RiskEngine for DefaultRiskEngine {
         *self.daily_pnl.lock() = 0.0;
         self.circuit_breaker.reset();
         // 不重置 pnl_history：历史窗口是滚动概念，不应每天清零
+    }
+
+    /// 0.6.0 新增:跨 leg 风险约束检查(用 `RiskConfig.max_leg_pair_net_exposure`)
+    fn check_leg_pair(&self, portfolio: &Portfolio, pair: &LegPair) -> RiskResult {
+        leg_pair::check_leg_pair_net_exposure(
+            portfolio,
+            pair,
+            self.config.max_leg_pair_net_exposure,
+        )
     }
 }
 
@@ -454,5 +468,71 @@ mod tests {
         let order = make_limit_order(Side::Buy, 100.0, 10.0);
         // 重置后应该允许订单
         assert_eq!(engine.check_order(&order, &portfolio), RiskResult::Allow);
+    }
+
+    // ===== 0.6.0 新增:LegPair 跨 leg 风险约束 =====
+    //
+    // 验证 `check_leg_pair` 通过 `DefaultRiskEngine` 串到底层 `leg_pair::check_leg_pair_net_exposure`,
+    // 上限取自 `RiskConfig.max_leg_pair_net_exposure`(默认 0.0,严格 delta 中性)。
+
+    use axon_core::portfolio::Position;
+    use axon_core::types::{Instrument, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
+
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    fn btc_perp() -> Instrument {
+        Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        })
+    }
+
+    fn make_pos(inst: Instrument, qty: f64) -> Position {
+        Position {
+            symbol: inst.label().into(),
+            instrument: inst,
+            quantity: Quantity::from_f64(qty),
+            avg_cost: Price::from_f64(50_000.0),
+            market_price: Some(Price::from_f64(50_000.0)),
+            realized_pnl: 0,
+            side: if qty >= 0.0 { Side::Buy } else { Side::Sell },
+        }
+    }
+
+    #[test]
+    fn test_check_leg_pair_default_strict_neutral() {
+        // 默认 max_leg_pair_net_exposure = 0.0 → spot 1 / perp 0 → Reject
+        let engine = DefaultRiskEngine::new(RiskConfig::default());
+        let mut pf = Portfolio::default();
+        pf.add_position(make_pos(btc_spot(), 1.0));
+        pf.add_position(make_pos(btc_perp(), 0.0));
+        let pair = LegPair::new(btc_spot(), btc_perp());
+        assert!(matches!(
+            engine.check_leg_pair(&pf, &pair),
+            RiskResult::Reject(RiskReason::LegPairNetExposureExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn test_check_leg_pair_relaxed_allows_skew() {
+        // max_leg_pair_net_exposure = 0.5 → spot 1 / perp 0 → net=1.0 > 0.5 → Reject
+        // 但 spot 1 / perp -0.6 → net=0.4 → Allow
+        let config = RiskConfig {
+            max_leg_pair_net_exposure: 0.5,
+            ..Default::default()
+        };
+        let engine = DefaultRiskEngine::new(config);
+        let mut pf = Portfolio::default();
+        pf.add_position(make_pos(btc_spot(), 1.0));
+        pf.add_position(make_pos(btc_perp(), -0.6));
+        let pair = LegPair::new(btc_spot(), btc_perp());
+        assert_eq!(engine.check_leg_pair(&pf, &pair), RiskResult::Allow);
     }
 }

@@ -116,7 +116,7 @@ async fn test_order_placement() {
         .expect_place_order()
         .returning(|_| Ok(OrderId::new("test-123")));
     
-    let order = Order::new("BTCUSDT", Side::Buy, Quantity::from_f64(0.001));
+    let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Market, Quantity::from_f64(0.001), TimeInForce::GTC);
     let result = mock_adapter.place_order(order).await;
     
     assert!(result.is_ok());

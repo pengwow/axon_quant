@@ -21,7 +21,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use axon_core::event::{Event, FillEvent, FundingEvent, MarkEvent, OrderAction, OrderEvent};
+use axon_core::event::{
+    Event, FillEvent, FundingEvent, FundingSchedule, MarkEvent, OrderAction, OrderEvent,
+};
 use axon_core::impact::ImpactModel;
 use axon_core::market::Side;
 use axon_core::market::Trade;
@@ -397,6 +399,22 @@ pub struct BacktestEngine {
     /// 0.5.0 由调用方在 bar 末手动触发 rebalance 时累加;
     /// 0.5.1+ 可在 `begin_bar` 收尾自动 rebalance 时累加。
     rebalances_triggered: u64,
+    /// 0.6.0 新增(Phase 1):bar 计数器,`begin_bar` 每次自增,
+    /// `rebalance_to_target` 用它做"本 bar 已 rebalance"防重 guard。
+    bar_id: u64,
+    /// 0.6.0 新增(Phase 1):上一次 rebalance 触发的 bar_id(供 guard 检查)
+    last_rebalance_bar_id: u64,
+    /// 0.6.0 新增(Phase 2):funding 自动调度配置(`instrument -> schedule`)
+    ///
+    /// 启用后,`begin_bar` 收尾遍历 schedules,根据
+    /// `last_funding_ts[instrument] + interval_ns <= bar_ts` 触发 funding 结算
+    /// (走 `push_funding` 派发路径)。
+    funding_schedules: HashMap<Instrument, FundingSchedule>,
+    /// 0.6.0 新增(Phase 2):每 instrument 上次 funding 结算时间戳
+    ///
+    /// `with_funding_schedule` 启用时初始化为 `Timestamp::from_nanos(0)`,
+    /// 首次 `begin_bar`(bar_ts 任意 > 0)即触发 1 次 funding 结算。
+    last_funding_ts: HashMap<Instrument, Timestamp>,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -440,6 +458,15 @@ impl BacktestEngine {
             rebalance_next_id: std::sync::atomic::AtomicU64::new(REBALANCE_ID_BASE),
             // 0.5.0 新增(Phase D):rebalance 触发累计起点 0
             rebalances_triggered: 0,
+            // 0.6.0 新增(Phase 1):bar 计数器从 0 开始,`begin_bar` 每次 +1
+            bar_id: 0,
+            // 0.6.0 新增(Phase 1):用 u64::MAX 表示"从未 rebalance",
+            // 保证首次调用 `rebalance_to_target` 时 guard 不误伤(bar_id=0
+            // 不会等于 u64::MAX,首次必通过)
+            last_rebalance_bar_id: u64::MAX,
+            // 0.6.0 新增(Phase 2):funding schedule 字段默认空
+            funding_schedules: HashMap::new(),
+            last_funding_ts: HashMap::new(),
         }
     }
 
@@ -518,38 +545,101 @@ impl BacktestEngine {
     /// 参数 `symbol: Symbol` 替换为 `instrument: Instrument` 以支持
     /// 多品种路由(seed 用 `Order::spot(instrument.base(), ...)` 构造)。
     pub fn begin_bar(&mut self, mid_price: f64, instrument: Instrument) {
-        let Some(cfg) = self.seed_liquidity_config else {
-            return;
-        };
-        // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
-        if mid_price <= 0.0
-            || cfg.half_spread <= 0.0
-            || cfg.depth_levels == 0
-            || cfg.size_per_level <= 0.0
-        {
-            return;
+        // 0.6.0 新增(Phase 1):bar_id 自增,放最前以保证每次 begin_bar 都推进
+        // bar_id(无论 seed_liquidity 是否启用)。这样:
+        // - guard 让同 bar 多次 `rebalance_to_target` 只触发一次
+        // - 用户用 begin_bar 显式跨 bar 时,新 bar 必能重新 rebalance
+        self.bar_id += 1;
+        // 1) 清空上一 bar 的种子挂单 + 2) 重新挂单(seed id 单调递增)
+        // 0.6.0 改:用 if let 嵌套而非早 return,确保末尾自动 rebalance
+        // 永远会执行(无论 seed_liquidity 是否启用)
+        if let Some(cfg) = self.seed_liquidity_config {
+            // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
+            if mid_price > 0.0
+                && cfg.half_spread > 0.0
+                && cfg.depth_levels != 0
+                && cfg.size_per_level > 0.0
+            {
+                // 1) 清空上一 bar 的种子挂单
+                self.config.matching_engine.clear_book();
+                // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
+                let next_id = self
+                    .seed_liquidity_next_id
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let new_next_id = self.config.matching_engine.seed_liquidity(
+                    mid_price,
+                    cfg.half_spread,
+                    cfg.depth_levels,
+                    cfg.size_per_level,
+                    instrument, // 改: 原 symbol (T2.3)
+                    next_id,
+                );
+                self.seed_liquidity_next_id
+                    .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
+            }
         }
-        // 1) 清空上一 bar 的种子挂单
-        self.config.matching_engine.clear_book();
-        // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
-        let next_id = self
-            .seed_liquidity_next_id
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let new_next_id = self.config.matching_engine.seed_liquidity(
-            mid_price,
-            cfg.half_spread,
-            cfg.depth_levels,
-            cfg.size_per_level,
-            instrument, // 改: 原 symbol (T2.3)
-            next_id,
-        );
-        self.seed_liquidity_next_id
-            .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
+        // 0.6.0 新增(Phase 2):funding 自动调度(在 rebalance 之前)
+        //   遍历 `funding_schedules`,若 `next_funding_ts(prev) <= bar_ts` 推
+        //   funding event;bar 跨多个 8h 边界(回测跳秒)用 while 循环多次推。
+        //   mark_aware = true 用 `mark_cache`,否则 fallback 0
+        //   ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
+        //   调 `push_funding(&mut self)` 的 borrow 冲突
+        let bar_ts = self.config.clock.now();
+        let schedules: Vec<(Instrument, FundingSchedule)> = self
+            .funding_schedules
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (instrument, schedule) in schedules {
+            let prev_ts = self
+                .last_funding_ts
+                .get(&instrument)
+                .copied()
+                .unwrap_or(Timestamp::from_nanos(0));
+            let mut next_ts = schedule.next_funding_ts(prev_ts);
+            while next_ts.nanos <= bar_ts.nanos {
+                let mark = if schedule.mark_aware {
+                    self.bt_state
+                        .mark_cache
+                        .get(&instrument)
+                        .copied()
+                        .unwrap_or_else(|| Price::from_f64(0.0))
+                        .as_f64()
+                } else {
+                    0.0
+                };
+                self.push_funding(instrument.clone(), schedule.fixed_rate, mark, next_ts);
+                self.last_funding_ts.insert(instrument.clone(), next_ts);
+                next_ts = schedule.next_funding_ts(next_ts);
+            }
+        }
+        // 0.6.0 新增(Phase 1):bar 末自动 rebalance
+        //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
+        //     阈值,所有 leg 都在阈值内,no-op
+        //   - 用户手写 `rebalance_to_target` 与自动模式冲突:bar_id guard
+        //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
+        //     执行,本 bar 自动 rebalance 会被 guard 跳过)
+        self.rebalance_to_target(None);
     }
 
     /// 当前已注册的源数量（队列中剩余事件数）
     pub fn pending_events(&self) -> usize {
         self.event_queue.len()
+    }
+
+    /// 0.6.0 新增(Phase 2):直接设置模拟时钟到指定时间
+    ///
+    /// 用途:回测跳秒场景(quantcell 跨 8h 调度 / 测试用例构造特定 timestamp)。
+    /// 内部等价 `self.config.clock.set(ts)`,但**只暴露只读 + 写时间戳的接口**,
+    /// 避免外部直接改 `clock.time_scale` 等高级字段。
+    ///
+    /// 注意:
+    /// - 不影响事件队列;若队列里还有早于 `ts` 的事件,`run()` 仍会按事件时间
+    ///   重新推进 clock(`run()` 内部 `peek_time() → clock.set(t)`)
+    /// - 配合 `with_funding_schedule` + `begin_bar` 可手动构造"bar 跨 N 个 8h
+    ///   边界"场景(测试用)
+    pub fn set_clock(&mut self, ts: Timestamp) {
+        self.config.clock.set(ts);
     }
 
     /// 推入单个事件到事件队列
@@ -1220,6 +1310,31 @@ impl BacktestEngine {
         self.auto_rebalance_threshold = None;
     }
 
+    /// 0.6.0 新增(Phase 2):配置 funding 自动调度 schedule
+    ///
+    /// 启用后,`begin_bar` 收尾遍历所有 schedule:若
+    /// `last_funding_ts[instrument] + interval_ns <= bar_ts` 合成 `FundingEvent`
+    /// 通过 `push_funding` 派发(累计 cash + `total_funding_pnl`)。
+    ///
+    /// 多次调用同一 instrument 覆盖前值;不同 instrument 互不干扰。
+    ///
+    /// 初始化:首次配置时 `last_funding_ts[instrument] = Timestamp::from_nanos(0)`,
+    /// 故首次 `begin_bar`(bar_ts > 0)即触发 1 次 funding 结算。
+    pub fn with_funding_schedule(&mut self, schedule: FundingSchedule) {
+        self.last_funding_ts
+            .entry(schedule.instrument.clone())
+            .or_insert(Timestamp::from_nanos(0));
+        self.funding_schedules
+            .insert(schedule.instrument.clone(), schedule);
+    }
+
+    /// 0.6.0 新增(Phase 2):关闭指定 instrument 的 funding 自动调度
+    ///
+    /// `last_funding_ts` 保留(以备重新启用时复用历史;若需重置,手动清空)。
+    pub fn with_funding_schedule_disable(&mut self, instrument: &Instrument) {
+        self.funding_schedules.remove(instrument);
+    }
+
     /// 0.5.0 新增(Phase D):手动触发 rebalance
     ///
     /// 遍历 `bt_state.legs`:
@@ -1240,6 +1355,12 @@ impl BacktestEngine {
     ///
     /// 实际发出去的 rebalance 单数(便于 `RunResult::rebalances_triggered` 统计)。
     pub fn rebalance_to_target(&mut self, threshold_override: Option<f64>) -> u64 {
+        // 0.6.0 新增(Phase 1):bar_id guard——本 bar 已 rebalance 过则 no-op,
+        // 与 `begin_bar` 收尾的自动 rebalance 配合,避免同 bar 多次触发
+        if self.last_rebalance_bar_id == self.bar_id {
+            return 0;
+        }
+
         // 确定本轮阈值(`override` 优先;否则读 auto_rebalance_threshold;
         // 都没有说明 rebalance 关闭 → 直接返回 0)
         let threshold = threshold_override
@@ -1317,6 +1438,12 @@ impl BacktestEngine {
         // 0.5.0 新增(Phase D):把本次 fill 数累计到引擎字段,
         // `build_result` 时统一写到 `RunResult.rebalances_triggered`
         self.rebalances_triggered += triggered;
+        // 0.6.0 新增(Phase 1):本 bar 已 rebalance,记 bar_id
+        // (仅当 triggered > 0 时记录,确保"无 target / 全在阈值内"场景
+        // 不会浪费 guard —— 用户多次无操作 rebalance 仍可继续尝试)
+        if triggered > 0 {
+            self.last_rebalance_bar_id = self.bar_id;
+        }
         triggered
     }
 
@@ -2445,6 +2572,22 @@ mod tests {
         )));
     }
 
+    /// 0.6.0 新增(Phase 2):推 mark 事件到队列(走 BacktestEngine 派发后
+    /// 写入 `bt_state.mark_cache`,供 funding schedule 读取)
+    fn push_mark_event(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        inst: Instrument,
+        mark: f64,
+        ts_ns: i64,
+    ) {
+        q.push(b.mark(MarkEvent::new(
+            inst,
+            Price::from_f64(mark),
+            Timestamp::from_nanos(ts_ns),
+        )));
+    }
+
     /// Funding 派发:long 0.5 @ 0.0001 @ mark 50_000 → long 付 2.5
     ///
     /// 验证:
@@ -2791,6 +2934,40 @@ mod tests {
         ));
     }
 
+    /// 0.6.0 新增(Phase 2):推 perp BUY limit 单(让后续 rebalance SELL perp 能撮合)
+    fn push_perp_buy(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        id: u64,
+        instrument: Instrument,
+        price: f64,
+        qty: f64,
+    ) {
+        let (base, quote, settle, contract_size) = match &instrument {
+            Instrument::Swap(s) => (s.base.clone(), s.quote.clone(), s.settle, s.contract_size),
+            Instrument::Spot(_) => {
+                panic!("push_perp_buy 需要 swap instrument,收到 spot")
+            }
+        };
+        q.push(b.order(
+            Timestamp::from_nanos(0),
+            id,
+            OrderAction::Submitted(Order::swap(
+                id,
+                base,
+                quote,
+                settle,
+                contract_size,
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(price),
+                },
+                Quantity::from_f64(qty),
+                TimeInForce::GTC,
+            )),
+        ));
+    }
+
     /// set_target_position → rebalance 触发 → position 推到目标
     ///
     /// 场景:无持仓,target=+1.0,threshold=1e-6
@@ -3008,6 +3185,9 @@ mod tests {
     ///
     /// 关键:每次 rebalance 的 fill 数都应累加到 `RunResult.rebalances_triggered`。
     /// 第一轮:0→+1(1 fill);第二轮:1→+2(再 1 fill);合计 2。
+    ///
+    /// 0.6.0 改:每次 rebalance 之间用 `begin_bar` 跨 bar,避免 bar_id guard
+    /// (Phase 1)在同 bar 拦掉第二次 rebalance。
     #[test]
     fn test_rebalances_triggered_accumulate_across_calls() {
         let mut q = EventQueue::new();
@@ -3021,10 +3201,13 @@ mod tests {
         engine.run();
         engine.set_target_position(btc_spot.clone(), 1.0);
 
-        // 第一次:0→+1 → 1 fill
+        // 第一次:0→+1 → 1 fill(bar_id=0,首次 rebalance 通过 guard)
         let t1 = engine.rebalance_to_target(Some(1e-6));
         assert_eq!(t1, 1);
         assert!((engine.get_position(&btc_spot) - 1.0).abs() < 1e-9);
+
+        // begin_bar 推进 bar_id → guard 让 t2 重新允许
+        engine.begin_bar(50_000.0, btc_spot.clone());
 
         // 第二次:+1→+2 → 再 1 fill(总累计 2)
         engine.set_target_position(btc_spot.clone(), 2.0);
@@ -3032,7 +3215,7 @@ mod tests {
         assert_eq!(t2, 1);
         assert!((engine.get_position(&btc_spot) - 2.0).abs() < 1e-9);
 
-        // 第三次:阈值内,不发单
+        // 第三次:阈值内,不发单(bar_id 不再推进,因为 t3 不发单无影响)
         let t3 = engine.rebalance_to_target(Some(1e-6));
         assert_eq!(t3, 0);
 
@@ -3041,6 +3224,227 @@ mod tests {
         assert_eq!(
             result.rebalances_triggered, 2,
             "rebalances_triggered 应=2(两次 rebalance 各 1 fill)"
+        );
+    }
+
+    // ── Phase 1(0.6.0)新增:begin_bar 收尾自动 rebalance ─────────
+
+    /// 0.6.0 新增(Phase 1):`begin_bar` 收尾自动 rebalance 到 target
+    ///
+    /// 场景:spot long 0.1 target,启用 auto_rebalance,预挂 sell。
+    /// 第一根 bar 触发 fill(0→+0.1);第二根 bar 维持(target 已达成,no-op)。
+    #[test]
+    fn begin_bar_auto_rebalance_triggers_per_bar() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        // 预挂 sell 0.1(让 rebalance buy 能撮合)
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+
+        // 第一根 bar:begin_bar 触发自动 rebalance
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        assert!(
+            (engine.get_position(&btc_spot) - 0.1).abs() < 1e-9,
+            "第一根 bar 后 spot 应=+0.1,got {}",
+            engine.get_position(&btc_spot)
+        );
+
+        // 第二根 bar:bar_id 推进,自动 rebalance 再次触发(但已 0 delta,no-op)
+        engine.begin_bar(50_100.0, btc_spot.clone());
+        // 仍为 0.1(target 已达成)
+        assert!(
+            (engine.get_position(&btc_spot) - 0.1).abs() < 1e-9,
+            "第二根 bar 后 spot 仍应=+0.1,got {}",
+            engine.get_position(&btc_spot)
+        );
+
+        // 验证:rebalances_triggered 累计为 1(只在第一根 bar 触发 fill)
+        let result = engine.run();
+        assert_eq!(
+            result.rebalances_triggered, 1,
+            "只有第一根 bar 触发 fill,rebalances_triggered 应=1"
+        );
+    }
+
+    /// 0.6.0 新增(Phase 1):`with_auto_rebalance_disable` 后 begin_bar 不 rebalance
+    #[test]
+    fn begin_bar_auto_rebalance_disable_noop() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+        // 关闭自动 rebalance
+        engine.with_auto_rebalance_disable();
+
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        // disable 后 rebalance 不触发,position 仍为 0
+        assert!(
+            engine.get_position(&btc_spot).abs() < 1e-9,
+            "disable 后 position 应仍为 0,got {}",
+            engine.get_position(&btc_spot)
+        );
+    }
+
+    /// 0.6.0 新增(Phase 1):同 bar 多次 `rebalance_to_target` 只触发一次
+    ///
+    /// 验证 bar_id guard 生效:用户手写两次 rebalance,第二次被 guard 拦掉。
+    #[test]
+    fn bar_id_guard_prevents_double_rebalance() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_spot = btc_spot_inst();
+
+        push_sell_order(&mut q, &mut b, 1, btc_spot.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 0.1);
+
+        // 第一次 rebalance:bar_id=0,last=u64::MAX,通过 guard,fill 1
+        let t1 = engine.rebalance_to_target(None);
+        assert_eq!(t1, 1, "第一次 rebalance 应触发 1 笔 fill");
+        assert!((engine.get_position(&btc_spot) - 0.1).abs() < 1e-9);
+
+        // 第二次 rebalance:同 bar_id=0,last=0,guard 触发,return 0
+        let t2 = engine.rebalance_to_target(None);
+        assert_eq!(t2, 0, "同 bar 第二次 rebalance 应被 guard 拦掉");
+    }
+
+    // ── Phase 2(0.6.0)新增:funding 8h 自动调度 ─────────────────
+
+    /// 0.6.0 新增(Phase 2):8h funding schedule 触发 1 次结算
+    ///
+    /// 流程:
+    /// 1) 推 perp mark 让 mark_cache 有值
+    /// 2) run() 消费 mark + rebalance 入场 perp short -0.1
+    /// 3) push 1 个 funding 事件(短时一步到位,不走 schedule)
+    /// 4) enable 8h schedule + clock 跳到 8h 后
+    /// 5) begin_bar → funding 调度触发 1 次
+    #[test]
+    fn funding_schedule_uses_mark_cache() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        // 1) 推 perp mark 50_000(让 mark_cache 有值)
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        // 2) 预挂 perp BUY 0.1(让 rebalance SELL perp 能撮合)
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        // 让 mark + seed 事件先派发写 mark_cache
+        engine.run();
+        // 入场 perp short -0.1
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        // sanity:perp short 已就位
+        assert!(
+            (engine.get_position(&btc_perp) - (-0.1)).abs() < 1e-9,
+            "perp short 应=-0.1,got {}",
+            engine.get_position(&btc_perp)
+        );
+
+        // 3) 启用 8h funding schedule
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 4) 跳 8h 后 begin_bar → schedule 触发 1 次
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        // 5) 期望:1 次 funding 结算,perp short 收 0.0001 × 50000 × 0.1 = +0.5
+        let result = engine.run();
+        assert!(
+            (result.total_funding_pnl - 0.5).abs() < 1e-6,
+            "8h funding 1 次应累计=+0.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.6.0 新增(Phase 2):bar 跨多个 8h 边界 → 多次 funding 结算
+    #[test]
+    fn funding_schedule_multiple_boundaries_in_one_bar() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+
+        // 跳 24h(跨 3 个 8h 边界)→ 3 次 funding 结算
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(24 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        let result = engine.run();
+        // 3 × 0.5 = 1.5
+        assert!(
+            (result.total_funding_pnl - 1.5).abs() < 1e-6,
+            "24h 跳秒应累计 3 次 funding=+1.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.6.0 新增(Phase 2):`with_funding_schedule_disable` 后无 funding 结算
+    #[test]
+    fn funding_schedule_disabled_no_settlement() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 关闭 funding schedule
+        engine.with_funding_schedule_disable(&btc_perp);
+
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert!(
+            result.total_funding_pnl.abs() < 1e-9,
+            "disable 后无 funding 结算,got {}",
+            result.total_funding_pnl
         );
     }
 }

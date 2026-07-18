@@ -29,12 +29,15 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── helpers ───────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
@@ -85,7 +88,7 @@ impl FixedStrategy {
 }
 
 impl StreamingStrategy for FixedStrategy {
-    fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
+    fn on_tick(&mut self, _instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
         self.actions.pop_front().into_iter().collect()
     }
 }
@@ -160,7 +163,7 @@ fn partial_fill_min_ratio_lt_one_scales_quantity() {
     .with_seed(42);
 
     let mut engine = StreamingEngine::new(TradingMode::PaperTrading).with_paper_engine(paper);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
     // maker
@@ -176,7 +179,7 @@ fn partial_fill_min_ratio_lt_one_scales_quantity() {
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let events = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 

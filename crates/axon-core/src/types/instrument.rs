@@ -169,6 +169,26 @@ impl Instrument {
     }
 }
 
+// ─── 0.6.0 新增(Phase 3):`Display` impl(用于 error message / log) ────
+//
+// 之前 `Instrument` 只 derive `Debug`,调用方在 `thiserror` 错误消息里
+// 写 `"{leg1}"` / `pair.leg1.to_string()` 都会编译失败。本次 Phase 3 全面
+// `Instrument` 化时一次性补上,语义与 `Instrument::label()` 一致:
+//
+//   `Spot(SpotInstrument { base: "BTC", quote: "USDT" })` → `"BTC/USDT"`
+//   `Swap(SwapInstrument { base: "BTC", quote: "USDT", settle: UsdMargin, contract_size: 1.0 })` → `"BTC/USDT:SWAP"`
+//
+// 加 `:SWAP` 后缀区分 spot/swap,便于日志/错误一眼看出品种类型(否则
+// `BTC/USDT` spot + `BTC/USDT` perp 在错误信息里会无法区分)。
+impl std::fmt::Display for Instrument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Instrument::Spot(_) => write!(f, "{}", self.label()),
+            Instrument::Swap(_) => write!(f, "{}:SWAP", self.label()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

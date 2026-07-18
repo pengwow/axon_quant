@@ -233,6 +233,27 @@ pub fn submit_result_to_dict<'py>(
 
 // ─── 内部辅助 ────────────────────────────────────────────
 
+/// 从 dict 中取必填字段,缺字段返回 `PyKeyError("missing '<field>'")`。
+///
+/// 0.6.0 新增:L3 `cross_pair_from_any` / `snapshot_from_dict` 需要从
+/// 普通 `dict` 提取任意类型字段;`dict_field!` 宏只能从固定类型实例化,
+/// 这里用 generic 函数把"取字段 + 类型转换"抽出来。
+///
+/// 错误:
+/// - 缺字段 → `PyKeyError("missing '<field>'")`
+/// - 字段类型不匹配 / 枚举值非法 → `PyValueError`
+pub fn require_dict_field<'py, T>(dict: &Bound<'py, PyDict>, field: &str) -> PyResult<T>
+where
+    T: pyo3::conversion::FromPyObjectOwned<'py>,
+{
+    let v = dict
+        .get_item(field)?
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(format!("missing '{field}'")))?;
+    v.extract::<T>().map_err(|_e| {
+        pyo3::exceptions::PyValueError::new_err(format!("field '{field}' has wrong type or value"))
+    })
+}
+
 /// 从 dict 中取必填字段,缺字段返回 `PyKeyError("missing '<field>'")`,
 /// 当前模块无 `#[pyclass]`,只暴露辅助函数 + 公共 `register` 占位
 /// (保持与 `error.rs` / `matching_l1.rs` 风格一致,便于 `mod.rs` 一行调用)。

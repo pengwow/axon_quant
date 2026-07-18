@@ -85,7 +85,7 @@ bt = BacktestEngine(initial_cash=100_000.0)
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000,
-    "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),  # -> axon_core::order::Order::limit
+    "order": limit_order(1, spot_instrument("BTC", "USDT"), "Buy", 100.0, 1.0),  # 0.5.0 起:instrument 字典代替旧 "BTCUSDT" 字符串
 })
 result = bt.run()
 ```
@@ -93,11 +93,12 @@ result = bt.run()
 **Rust 侧（开发新 crate / 集成测试时使用）：**
 
 ```rust
-use axon_core::{EventQueue, Order, OrderType, Side, Price, Quantity, Tick, Timestamp};
+use axon_core::{EventQueue, Order, OrderType, Side, Price, Quantity, Tick, Timestamp, TimeInForce};
 
 let mut q = EventQueue::new();
 q.push(Tick::new(Timestamp::from_nanos(1_000_000_000), 50_000.0, 0.1, Side::Buy));
-let order = Order::limit("BTC-USDT".into(), Side::Buy, Price::from(50_000.0), Quantity::from(0.01));
+// 0.5.0 起:用 Order::spot(id, base, quote, side, order_type, qty, tif) 工厂替代旧 Order::new / Order::limit
+let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Limit { price: Price::from(50_000.0) }, Quantity::from(0.01), TimeInForce::GTC);
 ```
 
 ### 关键依赖
@@ -118,7 +119,7 @@ let order = Order::limit("BTC-USDT".into(), Side::Buy, Price::from(50_000.0), Qu
 - `crates/axon-backtest/src/matching/l2.rs` — 多档价格 Level 2 撮合
 - `crates/axon-backtest/src/matching/l3/` — Level 3：集合竞价 / 暗池 / 订单簿快照恢复
 - `crates/axon-backtest/src/impact/` — `ImpactedMatchingEngine`（叠加 `ImpactModel` 的撮合包装）
-- `crates/axon-backtest/src/streaming/` — 流式回测：`StreamingStrategy::on_tick` / `StrategyAction` / `ExchangeStreamSource` / `ReplayStreamSource`
+- `crates/axon-backtest/src/streaming/` — 流式回测:`StreamingStrategy::on_tick(&Instrument, f64) -> StrategyAction` / `ExchangeStreamSource` / `ReplayStreamSource`(0.6.0 起 on_tick 接收 `&Instrument` 与价位,不再传 `Tick` / `OrderBook`)
 - `crates/axon-backtest/src/python/` — PyO3 绑定（`axon_quant.backtest`）
 - `crates/axon-backtest/tests/` — 17 个 e2e 集成测试
 
@@ -129,7 +130,7 @@ let order = Order::limit("BTC-USDT".into(), Side::Buy, Price::from(50_000.0), Qu
   - L3：包含集合竞价（开盘集合）、暗池撮合、订单簿快照/恢复
 - **确定性**：单线程事件循环，无并发副作用；相同输入必产生相同输出
 - **冲击注入**：`ImpactedMatchingEngine` 包装基础撮合，按 `ImpactModel::compute_impact(quantity, ...)` 调整成交价
-- **流式回测**：策略实现 `StreamingStrategy::on_tick(&Tick, &OrderBook) -> StrategyAction`，由 `StreamingEngine` 驱动循环；`ExchangeStreamSource` 走 `crossbeam::channel`，`ReplayStreamSource` 从 CSV / Vec 回放
+- **流式回测**：策略实现 `StreamingStrategy::on_tick(&Instrument, f64) -> StrategyAction`，由 `StreamingEngine` 驱动循环；`ExchangeStreamSource` 走 `crossbeam::channel`，`ReplayStreamSource` 从 CSV / Vec 回放
 
 ### 适用场景
 - 任何需要可重现回测的策略研究（用 `BacktestEngine` + `L2MatchingEngine` 起步）
@@ -150,17 +151,19 @@ let order = Order::limit("BTC-USDT".into(), Side::Buy, Price::from(50_000.0), Qu
 from axon_quant.backtest import (
     BacktestEngine, L2MatchingEngine, ImpactedMatchingEngine,
     ImpactedMatchingEngineBuilder, limit_order, market_order,
+    spot_instrument, swap_instrument,
 )
 
 # 1) 事件驱动回测：L1（默认）/ L2 撮合
 bt = BacktestEngine(initial_cash=100_000.0)
 bt.with_matching_engine(L2MatchingEngine())           # 可选：换成 L2
 bt.with_seed_liquidity(half_spread=0.5, depth_levels=10, size_per_level=1.0)
-bt.begin_bar(price=50_000.0, symbol="BTCUSDT")        # 每根 bar 必调
+# 0.6.0 起：`symbol` 字符串改 `instrument` 字典
+bt.begin_bar(price=50_000.0, instrument=spot_instrument("BTC", "USDT"))        # 每根 bar 必调
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000_000_000,
-    "order": limit_order(1, "BTCUSDT", "Buy", 50_000.0, 0.1),
+    "order": limit_order(1, spot_instrument("BTC", "USDT"), "Buy", 50_000.0, 0.1),
 })
 result = bt.run()
 print(result.final_nav, result.fills)
@@ -171,11 +174,11 @@ ie = (ImpactedMatchingEngineBuilder()
       .coefficient(0.1)
       .depth_levels(5)
       .build())
-ie.submit(limit_order(2, "BTCUSDT", "Buy", 50_000.0, 0.1))
+ie.submit(limit_order(2, spot_instrument("BTC", "USDT"), "Buy", 50_000.0, 0.1))
 
 # 3) 也可直接调撮合引擎做单笔提交（不经过 BacktestEngine 主循环）
 l2 = L2MatchingEngine()
-fill = l2.submit(limit_order(3, "BTCUSDT", "Sell", 50_000.0, 0.1))
+fill = l2.submit(limit_order(3, spot_instrument("BTC", "USDT"), "Sell", 50_000.0, 0.1))
 print(fill["is_filled"], fill["fills"])
 ```
 
@@ -185,7 +188,8 @@ print(fill["is_filled"], fill["fills"])
 use axon_backtest::{BacktestEngine, L2MatchingEngine};
 use axon_core::Tick;
 
-let mut engine = BacktestEngine::new(L2MatchingEngine::new("BTC-USDT".into()));
+// 0.5.0 起 L2MatchingEngine::new() 不再接受 symbol(0.6.0 多 Instrument 路由)
+let mut engine = BacktestEngine::new(L2MatchingEngine::new());
 engine.feed_tick(Tick::new(/* ... */));
 let result = engine.run_to_end()?;
 println!("Sharpe = {}, MaxDD = {}", result.sharpe(), result.max_drawdown());
@@ -493,7 +497,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 - 用 `env!("CARGO_PKG_VERSION")` / `env!("RUSTC_VERSION")` / `target_triple` 等编译期常量
 
 ### 适用场景
-- 当前阶段（0.4.0）：验证构建、版本号、平台信息
+- 当前阶段（0.6.0）：验证构建、版本号、平台信息
 - 未来（plan 0.5+）：`axon backtest run` / `axon train ppo` / `axon serve` 等子命令的统一入口
 
 ### 不适用场景
@@ -504,7 +508,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 
 ```bash
 $ cargo run -p axon-cli
-axon 0.4.0
+axon 0.6.0
 Rust 1.97.0 (aarch64-apple-darwin)
 阶段：Phase 0 — 架构与基础设施
 ```
@@ -1790,9 +1794,14 @@ print(f"active={oms.active_count()} history={oms.history_count()}")
 ```rust
 use axon_oms::{OrderManager, Order, OrderStatus, Side, OrderType};
 use rust_decimal::Decimal;
+use axon_core::instruments::{Instrument, SpotInstrument};
 
 let oms = OrderManager::new();
-let order = Order::new("BTC-USDT".into(), Side::Buy, OrderType::Limit,
+// 0.6.0 起:`Order::new(instrument_id, ...)` 仍兼容,但推荐显式注入结构化
+// `Instrument`(供跨 leg 风险约束 / 路由使用)。`Order::spot()` 工厂等价于
+// `Order::new` + `with_instrument(SpotInstrument)` 链式调用。
+let btc_spot: Instrument = SpotInstrument::new("BTC", "USDT").into();
+let order = Order::spot(btc_spot, Side::Buy, OrderType::Limit,
     Decimal::new(1, 3), Decimal::from(50_000));
 let id = oms.submit(order)?;
 oms.update_status(id, OrderStatus::Acknowledged)?;
@@ -1848,7 +1857,7 @@ oms.update_status(id, OrderStatus::Acknowledged)?;
 | **输出去向** | Rust 端写 → `axum` HTTP `/metrics` 端点 → Prometheus 抓取 | Python 端用 `prometheus_client` 直接 scrape，无需走 PyO3 |
 | **Python 等价物** | — | 已有 `axon-tracker` 承担训练/实验监控（`MLflow` / `WandB` / `Local` / `Memory` backends） |
 
-代码层确认（`0.4.1` 状态）：
+代码层确认（`0.6.0` 状态）：
 
 - `crates/axon-monitor/Cargo.toml` **无 `python` feature**
 - `crates/axon-monitor/src/` **无 `python/` 子模块**（`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` 都无 `#[pyclass]`）
@@ -2275,7 +2284,7 @@ Python 统一入口 `axon_quant._native`：把各 crate 的 PyO3 绑定 + 共享
 
 ```python
 import axon_quant
-print(axon_quant.__version__)  # 0.4.0
+print(axon_quant.__version__)  # 0.6.0
 
 # 子模块
 env = axon_quant.rl.TradingEnv(...)

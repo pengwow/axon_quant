@@ -608,7 +608,8 @@ pub fn contract_oms_order_snapshot_roundtrip() {
     let snapshot = oms.snapshot();
     let json = serde_json::to_string(&snapshot).unwrap();
     let de: axon_oms::OmsSnapshot = serde_json::from_str(&json).unwrap();
-    assert_eq!(de.version, 1);
+    // 0.6.0 改:version 不再自增,固定为 `OMS_SNAPSHOT_VERSION_CURRENT`(= 2)
+    assert_eq!(de.version, axon_oms::OMS_SNAPSHOT_VERSION_CURRENT);
     assert_eq!(de.active_orders.len(), 1);
 }
 

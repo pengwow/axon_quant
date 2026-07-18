@@ -21,7 +21,7 @@ use axon_core::event::{Event, FillEvent};
 use axon_core::market::{Side as MarketSide, Trade};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Portfolio;
-use axon_core::types::{Instrument, Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 use crate::matching::{L1MatchingEngine, MatchingEngine};
 
@@ -95,8 +95,8 @@ pub struct StreamingSnapshot {
 
 /// 流式回测引擎
 pub struct StreamingEngine {
-    /// per-symbol 撮合引擎
-    engines: HashMap<Symbol, L1MatchingEngine>,
+    /// per-instrument 撮合引擎
+    engines: HashMap<Instrument, L1MatchingEngine>,
     /// 投资组合
     portfolio: Portfolio,
     /// 交易模式
@@ -170,9 +170,12 @@ impl StreamingEngine {
         self
     }
 
-    /// 注册交易品种
-    pub fn register_symbol(&mut self, symbol: Symbol) {
-        self.engines.entry(symbol).or_default();
+    /// 0.6.0 改(BREAKING):`register_symbol(symbol: Symbol)` →
+    /// `register_instrument(instrument: Instrument)`
+    ///
+    /// 注册 instrument(幂等,已注册则 no-op)。
+    pub fn register_instrument(&mut self, instrument: Instrument) {
+        self.engines.entry(instrument).or_default();
     }
 
     /// 处理市场事件
@@ -181,20 +184,19 @@ impl StreamingEngine {
     /// 返回本 tick 产生的 `Event::Fill`(可能为空)。
     pub fn on_market_event(&mut self, event: MarketDataEvent) -> Vec<Event> {
         match event {
-            MarketDataEvent::Tick { symbol, tick } => {
+            MarketDataEvent::Tick { instrument, tick } => {
                 let tick_price = tick.price;
                 let tick_qty = tick.quantity;
                 let tick_ts = tick.timestamp;
                 let tick_side = tick.side;
 
                 // 1. 更新 portfolio mark-to-market(0.5.0:instrument-based)
-                let inst = Instrument::from_symbol(&symbol);
                 self.portfolio
-                    .update_market_price_instrument(&inst, tick_price);
+                    .update_market_price_instrument(&instrument, tick_price);
 
                 // 2. 调 strategy 拿 actions(无 strategy 则空)
                 let actions = match &mut self.strategy {
-                    Some(s) => s.on_tick(&symbol, tick_price.as_f64()),
+                    Some(s) => s.on_tick(&instrument, tick_price.as_f64()),
                     None => Vec::new(),
                 };
 
@@ -231,7 +233,7 @@ impl StreamingEngine {
                                 order.quantity = Quantity::from_f64(scaled);
                             }
                             // 3b. 撮合(走 L1)
-                            if let Some(engine) = self.engines.get_mut(&symbol) {
+                            if let Some(engine) = self.engines.get_mut(&instrument) {
                                 let result = engine.submit(order);
                                 for fill in result.fills {
                                     self.total_trades += 1;
@@ -245,8 +247,8 @@ impl StreamingEngine {
                                     );
                                     // 0.4.0:记录 fill 前后 realized_pnl 差值(包含 realized - commission)
                                     let pnl_before = self.portfolio.total_realized_pnl();
-                                    let _ = self.portfolio.apply_trade(
-                                        &symbol,
+                                    let _ = self.portfolio.apply_trade_instrument(
+                                        &instrument,
                                         &trade,
                                         fill.taker_side,
                                         fill.timestamp,
@@ -274,7 +276,7 @@ impl StreamingEngine {
                             }
                         }
                         StrategyAction::Cancel(order_id) => {
-                            if let Some(engine) = self.engines.get_mut(&symbol) {
+                            if let Some(engine) = self.engines.get_mut(&instrument) {
                                 let _ = engine.cancel(order_id);
                             }
                         }
@@ -298,14 +300,13 @@ impl StreamingEngine {
     /// 撮合产生的 fills 会累加 `total_trades`,但不更新 portfolio(portfolio 由
     /// `on_market_event` 走 strategy 路径时统一更新,避免重复记账)。
     pub fn submit_order(&mut self, order: Order) -> Result<u64, String> {
-        // T2.2: Order::symbol -> Order::instrument; 用 Instrument 反向构造 Symbol key
-        let symbol = instrument_to_key(&order.instrument);
         let order_id = order.id;
+        let inst_key = order.instrument.clone();
 
         let engine = self
             .engines
-            .get_mut(&symbol)
-            .ok_or_else(|| format!("symbol not registered: {}", symbol))?;
+            .get_mut(&inst_key)
+            .ok_or_else(|| format!("instrument not registered: {}", inst_key))?;
 
         let result = engine.submit(order);
         self.total_trades += result.fills.len();
@@ -406,29 +407,44 @@ impl StreamingEngine {
 
     /// 构造一个测试用的限价单(模块外亦可调)
     ///
-    /// ponytail:常用 helper 放在 engine 上避免每个测试都写 Order::new 6 个参数。
-    /// `id` 由调用方分配(可调 `next_order_id()`),`created_at` 用 `now()`。
+    /// ponytail:常用 helper 放在 engine 上避免每个测试都写 Order::spot / Order::swap
+    /// 7~8 个参数。`id` 由调用方分配(可调 `next_order_id()`),`created_at` 用 `now()`。
+    ///
+    /// 0.6.0 改:参数 `Symbol` → `Instrument`,按 variant 派发到
+    /// `Order::spot` / `Order::swap`。
     pub fn make_limit_order(
         &self,
         id: u64,
-        symbol: Symbol,
+        instrument: Instrument,
         side: MarketSide,
         price: f64,
         qty: f64,
     ) -> Order {
-        // T2.2: 把 symbol 拆成 base/quote, 用 Order::spot 构造
-        let (base, quote) = split_symbol_to_base_quote(&symbol);
-        Order::spot(
-            id,
-            base,
-            quote,
-            side,
-            OrderType::Limit {
-                price: Price::from_f64(price),
-            },
-            Quantity::from_f64(qty),
-            TimeInForce::GTC,
-        )
+        let limit = OrderType::Limit {
+            price: Price::from_f64(price),
+        };
+        match instrument {
+            Instrument::Spot(s) => Order::spot(
+                id,
+                s.base,
+                s.quote,
+                side,
+                limit,
+                Quantity::from_f64(qty),
+                TimeInForce::GTC,
+            ),
+            Instrument::Swap(s) => Order::swap(
+                id,
+                s.base,
+                s.quote,
+                s.settle,
+                s.contract_size,
+                side,
+                limit,
+                Quantity::from_f64(qty),
+                TimeInForce::GTC,
+            ),
+        }
     }
 }
 
@@ -437,7 +453,14 @@ mod tests {
     use super::*;
     use axon_core::market::{Side, Tick};
     use axon_core::time::Timestamp;
-    use axon_core::types::{Price, Quantity};
+    use axon_core::types::{Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
+
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
 
     #[test]
     fn test_streaming_engine_create() {
@@ -455,17 +478,17 @@ mod tests {
     }
 
     #[test]
-    fn test_register_symbol() {
+    fn test_register_instrument() {
         let mut engine = StreamingEngine::new(TradingMode::PaperTrading);
-        engine.register_symbol(Symbol::from("BTC-USDT"));
-        assert!(engine.engines.contains_key(&Symbol::from("BTC-USDT")));
+        engine.register_instrument(btc_spot());
+        assert!(engine.engines.contains_key(&btc_spot()));
     }
 
     #[test]
     fn test_on_market_event_without_strategy_returns_empty() {
         // 退化语义:无 strategy 时 on_market_event 只更新 portfolio mark,不应返回任何 fill
         let mut engine = StreamingEngine::new(TradingMode::Backtest);
-        engine.register_symbol(Symbol::from("BTC-USDT"));
+        engine.register_instrument(btc_spot());
 
         let tick = Tick::new(
             Timestamp::now(),
@@ -474,7 +497,7 @@ mod tests {
             Side::Buy,
         );
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: Symbol::from("BTC-USDT"),
+            instrument: btc_spot(),
             tick,
         });
         assert!(events.is_empty());
@@ -488,7 +511,7 @@ mod tests {
         impl super::super::strategy::StreamingStrategy for NoopStrategy {
             fn on_tick(
                 &mut self,
-                _symbol: &Symbol,
+                _instrument: &Instrument,
                 _price: f64,
             ) -> Vec<super::super::strategy::StrategyAction> {
                 vec![super::super::strategy::StrategyAction::Hold]
@@ -499,29 +522,31 @@ mod tests {
             StreamingEngine::new(TradingMode::Backtest).with_strategy(Box::new(NoopStrategy));
         assert!(engine.has_strategy());
     }
-}
 
-// ── T2.2 过渡 helpers ──────────────────────────────────
-// T2.2 follow-up: 这两个 helper 故意放在 tests 模块之后以减小 diff;
-// 后续 T3.x 重新组织 src/streaming 时再把它们移到 tests 之前。
+    /// 0.6.0 改:`make_limit_order` 接受 `Instrument` 后,spot 派发到 `Order::spot`。
+    #[test]
+    fn test_make_limit_order_spot() {
+        let engine = StreamingEngine::new(TradingMode::Backtest);
+        let order = engine.make_limit_order(1, btc_spot(), Side::Buy, 50_000.0, 0.5);
+        assert!(matches!(order.instrument, Instrument::Spot(_)));
+        if let Instrument::Spot(s) = &order.instrument {
+            assert_eq!(s.base.as_str(), "BTC");
+            assert_eq!(s.quote.as_str(), "USDT");
+        }
+    }
 
-/// 把 `Instrument` 序列化为 streaming engine HashMap key 使用的字符串 (transitional)
-#[allow(clippy::items_after_test_module)]
-fn instrument_to_key(inst: &Instrument) -> Symbol {
-    Symbol::from(format!(
-        "{}/{}",
-        inst.base().as_str(),
-        inst.quote().as_str()
-    ))
-}
-
-/// 把 `Symbol` 拆为 `(base, quote)` (T2.2 过渡 helper)
-#[allow(clippy::items_after_test_module)]
-fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
-    let s = sym.as_str();
-    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
-        (Symbol::from(base), Symbol::from(quote))
-    } else {
-        (sym.clone(), Symbol::from("USDT"))
+    /// 0.6.0 改:`make_limit_order` 接受 `Instrument` 后,swap 派发到 `Order::swap`。
+    #[test]
+    fn test_make_limit_order_swap() {
+        let engine = StreamingEngine::new(TradingMode::Backtest);
+        let btc_perp = Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        });
+        let order = engine.make_limit_order(2, btc_perp.clone(), Side::Sell, 50_100.0, 0.1);
+        assert!(matches!(order.instrument, Instrument::Swap(_)));
+        assert_eq!(order.instrument, btc_perp);
     }
 }

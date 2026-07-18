@@ -298,7 +298,7 @@ for fee in [100, 500, 3000, 10000]:
 
 ### V3Router — on-chain swap
 
-`V3Router` wraps `SwapRouter02` (canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`) for real swap transactions. The Python-side `swap()` lands in 0.3.x follow-up; in 0.3.0 the public API is `build_tx` (offline construction) plus address exposure.
+`V3Router` wraps `SwapRouter02` (canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`) for real swap transactions. The Python-side `swap()` is available from 0.6.0 onwards (`axon_quant.defi.UniswapV3.swap()`); in 0.3.0 the public API was `build_tx` (offline construction) plus address exposure.
 
 ```python
 # Available in 0.3.0
@@ -403,7 +403,7 @@ bundle_hash = await client.submit_transaction(signed_tx_hex)
 # Returns "0x..." (real Flashbots bundleHash)
 ```
 
-> **Signature requirement**:in production, `X-Flashbots-Signature` needs HMAC (signing-key + body). The 0.3.0 release ships a placeholder header that includes the real signing key; HMAC signing lands in a follow-up 0.3.x release.
+> **Signature requirement**:in production, `X-Flashbots-Signature` needs HMAC (signing-key + body). As of 0.6.0 the client ships a placeholder header that includes the real signing key (sufficient for development); full production HMAC support is targeted for 0.7.0+ (see [axon-defi Roadmap](https://github.com/pengwow/axon_quant/issues)).
 
 ---
 
@@ -481,22 +481,22 @@ Integration test pattern:probe `http://127.0.0.1:8545` for a 500ms response; if 
 | Class / Function | Source | Description |
 |------------------|--------|-------------|
 | `Chain` | `axon-defi::evm::chain` | 4-chain enum |
-| `EvmConfig` | `axon-defi::python::config` | EVM config (0.3.0 legacy API, kept) |
+| `EvmConfig` | `axon-defi::python::config` | EVM config (legacy API, kept through 0.6.0) |
 | `DefiOrder` | `axon-defi::python::types` | DeFi order |
 | `SwapRoute` | `axon-defi::python::types` | Trade route |
 | `RiskCheckResult` | `axon-defi::python::types` | Risk result |
 | `UniswapV3Contracts` | `axon-defi::python::types` | Per-chain contract addresses |
-| `ProviderConfig` | `axon-defi::python::evm` | **New in 0.3.0**, RPC config |
-| `EvmProvider` | `axon-defi::python::evm` | **New in 0.3.0**, on-chain RPC client |
-| `LocalSigner` | `axon-defi::python::evm` | **New in 0.3.0**, local signer |
-| `Erc20Client` | `axon-defi::python::evm` | **Strengthened in 0.3.0**, real on-chain read/write |
-| `V3Quoter` | `axon-defi::python::evm` | **New in 0.3.0**, IQuoterV2 |
-| `V3Router` | `axon-defi::python::evm` | **New in 0.3.0**, SwapRouter02 |
-| `Multicall` | `axon-defi::python::evm` | **New in 0.3.0**, Multicall3 |
-| `BridgeConfig` | `axon-defi::python::bridge` | **Strengthened in 0.3.0**, LayerZero V2 |
-| `BridgeManager` | `axon-defi::python::bridge` | **Strengthened in 0.3.0**, estimate_fee / bridge_tokens |
-| `MevShareConfig` | `axon-defi::python::mev` | **Strengthened in 0.3.0**, Flashbots |
-| `MevShareClient` | `axon-defi::python::mev` | **Strengthened in 0.3.0**, eth_sendBundle |
+| `ProviderConfig` | `axon-defi::python::evm` | RPC config (new in 0.3.0, stable in 0.6.0) |
+| `EvmProvider` | `axon-defi::python::evm` | On-chain RPC client (new in 0.3.0, stable in 0.6.0) |
+| `LocalSigner` | `axon-defi::python::evm` | Local signer (new in 0.3.0, stable in 0.6.0) |
+| `Erc20Client` | `axon-defi::python::evm` | Real on-chain read/write (new in 0.3.0, stable in 0.6.0) |
+| `V3Quoter` | `axon-defi::python::evm` | IQuoterV2 (new in 0.3.0, stable in 0.6.0) |
+| `V3Router` | `axon-defi::python::evm` | SwapRouter02 (new in 0.3.0, Python `swap()` available since 0.6.0) |
+| `Multicall` | `axon-defi::python::evm` | Multicall3 (new in 0.3.0, stable in 0.6.0) |
+| `BridgeConfig` | `axon-defi::python::bridge` | LayerZero V2 config (new in 0.3.0, stable in 0.6.0) |
+| `BridgeManager` | `axon-defi::python::bridge` | estimate_fee / bridge_tokens (new in 0.3.0, stable in 0.6.0) |
+| `MevShareConfig` | `axon-defi::python::mev` | Flashbots config (new in 0.3.0, stable in 0.6.0) |
+| `MevShareClient` | `axon-defi::python::mev` | eth_sendBundle (new in 0.3.0, stable in 0.6.0) |
 | `DefiError` | `axon-defi::python::error` | 9 variants, inheriting `Exception` |
 | `evm_provider(chain, url)` | `defi.py` factory | Quick `EvmProvider` construction |
 | `local_signer(hex, chain)` | `defi.py` factory | Quick `LocalSigner` construction |

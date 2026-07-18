@@ -61,6 +61,8 @@ impl PyRiskConfig {
             max_daily_loss,
             max_concentration,
             circuit_breaker_cooldown: Duration::from_secs(circuit_breaker_cooldown_secs),
+            // 0.6.0 新增:跨 leg 约束字段 — 用 `Default` 兜底(默认严格 delta 中性)
+            ..Default::default()
         };
         Self { inner }
     }

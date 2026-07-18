@@ -3,7 +3,7 @@
 > **完整可运行示例**: [`examples/17_python_bindings/python_bindings_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/17_python_bindings/python_bindings_demo.py)
 > 覆盖本文档全部 6 个模块（Backtest / Risk / OMS / Exchange / Inference / LLM Trading），一键执行。
 
-> 适用版本:AXON v0.3.0+ Python 绑定(Stage K 交付)
+> 适用版本:AXON v0.6.0+ Python 绑定(Stage K 交付)
 
 AXON 通过 PyO3 把核心 Rust 类型暴露给 Python,提供 `axon_quant` 包。
 
@@ -94,7 +94,10 @@ result = bt.run()
 print(result.events_processed, result.fills, result.final_nav)
 ```
 
-> 📖 **0.5.0 多 leg 回测(spot + perp delta-neutral 套利)**:见 [multi-leg-backtest.md](multi-leg-backtest.md)。
+> 📖 **多 leg 回测(spot + perp delta-neutral 套利)**:
+> 0.5.0 引入 `Instrument` 抽象 + 多 leg API,
+> 0.6.0 收口全栈 Instrument 化 + 跨 leg 风险约束。
+> 见 [multi-leg-backtest.md](multi-leg-backtest.md)。
 
 #### 提交订单返回 dict 协议
 

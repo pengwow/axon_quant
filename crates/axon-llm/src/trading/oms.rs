@@ -737,6 +737,8 @@ mod tests {
                 axon_oms::Fill {
                     fill_id: "f1".into(),
                     symbol: "BTC-USDT".into(),
+                    // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
+                    instrument: None,
                     price: dec!(50000),
                     quantity: dec!(0.5),
                     fee: dec!(0),
@@ -769,6 +771,8 @@ mod tests {
                 axon_oms::Fill {
                     fill_id: "f1".into(),
                     symbol: "BTC-USDT".into(),
+                    // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
+                    instrument: None,
                     price: dec!(50000),
                     quantity: dec!(0.5),
                     fee: dec!(0),

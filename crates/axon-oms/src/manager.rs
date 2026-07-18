@@ -13,7 +13,6 @@ pub struct OrderManager {
     active_orders: RwLock<HashMap<OrderId, Order>>,
     order_history: RwLock<Vec<OrderRecord>>,
     idempotency_index: RwLock<HashMap<String, OrderId>>,
-    snapshot_version: RwLock<u64>,
     /// Stage B-MVP 新增 — 共享 portfolio(订单层 -> 资产层的事件消费方)
     portfolio: Arc<RwLock<Portfolio>>,
 }
@@ -24,7 +23,6 @@ impl OrderManager {
             active_orders: RwLock::new(HashMap::new()),
             order_history: RwLock::new(Vec::new()),
             idempotency_index: RwLock::new(HashMap::new()),
-            snapshot_version: RwLock::new(0),
             portfolio: Arc::new(RwLock::new(Portfolio::new())),
         }
     }
@@ -201,12 +199,12 @@ impl OrderManager {
     }
 
     pub fn snapshot(&self) -> OmsSnapshot {
-        let mut version = self.snapshot_version.write();
-        *version += 1;
+        // 0.6.0 改:`version` 字段不再自增,直接写 `OMS_SNAPSHOT_VERSION_CURRENT`(= 2),
+        // 老 OMS 写出的 version=1 的 snapshot 仍能 recover(字段含义 = 序列化 schema 版本)。
         OmsSnapshot {
             active_orders: self.active_orders.read().clone(),
             order_history: self.order_history.read().clone(),
-            version: *version,
+            version: crate::types::OMS_SNAPSHOT_VERSION_CURRENT,
             timestamp: Utc::now(),
             portfolio: Some(self.portfolio.read().snapshot()),
         }
@@ -215,7 +213,9 @@ impl OrderManager {
     pub fn recover(&self, snapshot: OmsSnapshot) -> Result<(), OmsError> {
         *self.active_orders.write() = snapshot.active_orders;
         *self.order_history.write() = snapshot.order_history;
-        *self.snapshot_version.write() = snapshot.version;
+        // 0.6.0 改:`version` 不再回写到内部计数器(recover 不再维护自增 version)。
+        // 这里仅做参数兼容,真正语义见 `OMS_SNAPSHOT_VERSION_CURRENT` 注释。
+        let _ = snapshot.version;
 
         self.idempotency_index.write().clear();
         let orders = self.active_orders.read();
@@ -294,6 +294,7 @@ mod tests {
         let fill = Fill {
             fill_id: "f1".into(),
             symbol: "BTC-USDT".into(),
+            instrument: None,
             price: dec!(65000),
             quantity: dec!(0.1),
             fee: dec!(6.5),
@@ -344,10 +345,55 @@ mod tests {
         oms.submit(order).unwrap();
 
         let snapshot = oms.snapshot();
-        assert_eq!(snapshot.version, 1);
+        // 0.6.0 改:version 不再自增,固定为 `OMS_SNAPSHOT_VERSION_CURRENT`(= 2)
+        assert_eq!(snapshot.version, crate::types::OMS_SNAPSHOT_VERSION_CURRENT);
+        assert_eq!(snapshot.version, 2);
 
         let oms2 = OrderManager::new();
         oms2.recover(snapshot).unwrap();
+        assert_eq!(oms2.active_count(), 1);
+    }
+
+    /// 0.6.0 新增:`Order::with_instrument` 注入结构化 instrument 后,
+    /// snapshot / recover 路径保留该字段(往返无损)。
+    #[test]
+    fn test_order_with_instrument_roundtrip() {
+        use axon_core::types::{SpotInstrument, Symbol};
+        let oms = OrderManager::new();
+        let btc = axon_core::Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
+        let order = make_order(Side::Buy, dec!(0.1), dec!(65000)).with_instrument(btc.clone());
+        oms.submit(order).unwrap();
+
+        let snap = oms.snapshot();
+        let recovered: Vec<_> = snap
+            .active_orders
+            .values()
+            .filter_map(|o| o.instrument.clone())
+            .collect();
+        assert_eq!(recovered, vec![btc]);
+    }
+
+    /// 0.6.0 新增:无 `instrument` 字段的 Order snapshot 仍能 recover
+    /// (`#[serde(default)]` 让字段缺省 = `None`)。
+    #[test]
+    fn test_legacy_snapshot_without_instrument_recovers() {
+        use crate::types::OMS_SNAPSHOT_VERSION_LEGACY;
+        let oms = OrderManager::new();
+        oms.submit(make_order(Side::Buy, dec!(0.1), dec!(65000)))
+            .unwrap();
+
+        let mut snap = oms.snapshot();
+        // 模拟 0.5.0 之前写出的老 snapshot:version=1,所有 Order.instrument = None
+        snap.version = OMS_SNAPSHOT_VERSION_LEGACY;
+        for o in snap.active_orders.values_mut() {
+            o.instrument = None;
+        }
+
+        let oms2 = OrderManager::new();
+        oms2.recover(snap).unwrap();
         assert_eq!(oms2.active_count(), 1);
     }
 
@@ -404,6 +450,7 @@ mod tests {
             Fill {
                 fill_id: "f1".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: dec!(50000),
                 quantity: dec!(1),
                 fee: dec!(0),
@@ -433,6 +480,7 @@ mod tests {
             Fill {
                 fill_id: "f1".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: dec!(50000),
                 quantity: dec!(0.5),
                 fee: dec!(0),
@@ -467,6 +515,7 @@ mod tests {
                 Fill {
                     fill_id: "f1".into(),
                     symbol: "BTC-USDT".into(),
+                    instrument: None,
                     price: dec!(50000),
                     quantity: dec!(1),
                     fee: dec!(0),
@@ -500,6 +549,7 @@ mod tests {
             Fill {
                 fill_id: "f1".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: dec!(50000),
                 quantity: dec!(1),
                 fee: dec!(0),
@@ -584,6 +634,7 @@ mod tests {
                     Fill {
                         fill_id: format!("f{}", i),
                         symbol: "BTC-USDT".into(),
+                        instrument: None,
                         price: Decimal::from(50000 + i),
                         quantity: dec!(1),
                         fee: dec!(0),

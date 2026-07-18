@@ -59,7 +59,10 @@ pub mod types;
 pub use error::OmsError;
 pub use manager::OrderManager;
 pub use portfolio::{Portfolio, PortfolioError, PortfolioSnapshot, Position};
+// 0.6.0 新增:`OMS_SNAPSHOT_VERSION_CURRENT` 等常量需显式 re-export
+// (在 `types::*` 之外),让 `axon_oms::OMS_SNAPSHOT_VERSION_CURRENT` 可用。
 pub use types::*;
+pub use types::{OMS_SNAPSHOT_VERSION_CURRENT, OMS_SNAPSHOT_VERSION_LEGACY};
 
 // Stage 4:`axon-oms` Python 绑定(PyO3)。仅在 `python` feature 启用时编译。
 // 完整子模块结构见 `crates/axon-oms/src/python/mod.rs`。

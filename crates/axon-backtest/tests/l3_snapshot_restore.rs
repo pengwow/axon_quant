@@ -31,35 +31,70 @@ use axon_backtest::matching::l3::{BatchMode, CrossPair, MultiAssetMatchingEngine
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{
+    Instrument, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol,
+};
 
 // ── 共享 helper ──────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn eth() -> Symbol {
-    Symbol::from("ETH/USDT")
+fn eth_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn sol() -> Symbol {
-    Symbol::from("SOL/USDT")
+fn sol_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("SOL"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn make_limit(id: u64, base: &str, quote: &str, side: Side, price: f64, qty: f64) -> Order {
-    Order::spot(
-        id,
-        base,
-        quote,
-        side,
-        OrderType::Limit {
-            price: Price::from_f64(price),
-        },
-        Quantity::from_f64(qty),
-        TimeInForce::GTC,
-    )
-    .with_test_timestamp(Timestamp::from_nanos(0))
+fn btc_perp() -> Instrument {
+    Instrument::Swap(SwapInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+        settle: SwapSettle::UsdMargin,
+        contract_size: 1.0,
+    })
+}
+
+fn make_limit(id: u64, instrument: &Instrument, side: Side, price: f64, qty: f64) -> Order {
+    let order = match instrument {
+        Instrument::Spot(s) => Order::spot(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            side,
+            OrderType::Limit {
+                price: Price::from_f64(price),
+            },
+            Quantity::from_f64(qty),
+            TimeInForce::GTC,
+        ),
+        Instrument::Swap(s) => Order::swap(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            s.settle,
+            s.contract_size,
+            side,
+            OrderType::Limit {
+                price: Price::from_f64(price),
+            },
+            Quantity::from_f64(qty),
+            TimeInForce::GTC,
+        ),
+    };
+    order.with_test_timestamp(Timestamp::from_nanos(0))
 }
 
 /// 内部 trait:让测试用的 Order 自带 created_at timestamp
@@ -82,9 +117,9 @@ impl OrderTestHelpers for Order {
 #[test]
 fn restore_preserves_asset_registration_count() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(btc());
-    m.register_asset(eth());
-    m.register_asset(sol());
+    m.register_instrument(btc_spot());
+    m.register_instrument(eth_spot());
+    m.register_instrument(sol_spot());
     assert_eq!(m.asset_count(), 3);
 
     let snap = m.snapshot();
@@ -113,14 +148,19 @@ fn restore_preserves_asset_registration_count() {
 fn restore_preserves_cross_pair_list() {
     let mut m = MultiAssetMatchingEngine::new();
     m.register_cross_pair(CrossPair::new(
-        btc(),
-        eth(),
+        btc_spot(),
+        eth_spot(),
         15.0,
         Quantity::from_f64(100.0),
     ))
     .expect("ok");
-    m.register_cross_pair(CrossPair::new(eth(), sol(), 0.05, Quantity::from_f64(50.0)))
-        .expect("ok");
+    m.register_cross_pair(CrossPair::new(
+        eth_spot(),
+        sol_spot(),
+        0.05,
+        Quantity::from_f64(50.0),
+    ))
+    .expect("ok");
     assert_eq!(m.cross_pair_count(), 2);
 
     let snap = m.snapshot();
@@ -128,8 +168,8 @@ fn restore_preserves_cross_pair_list() {
 
     // 验证 snapshot 的 cross_pair 字段值精确
     let pair_0 = &snap.cross_pairs[0];
-    assert_eq!(pair_0.leg1, btc());
-    assert_eq!(pair_0.leg2, eth());
+    assert_eq!(pair_0.leg1(), &btc_spot());
+    assert_eq!(pair_0.leg2(), &eth_spot());
     assert!((pair_0.ratio - 15.0).abs() < 1e-9);
     assert!((pair_0.max_quantity.as_f64() - 100.0).abs() < 1e-9);
 
@@ -139,15 +179,15 @@ fn restore_preserves_cross_pair_list() {
     assert_eq!(m2.cross_pair_count(), 2);
 
     // 验证 restore 后的 cross_pair 字段精确匹配
-    let m2_engine = m2.engine(&btc()).expect("btc 应已被 register");
+    let m2_engine = m2.engine(&btc_spot()).expect("btc 应已被 register");
     let _ = m2_engine; // 抑制 unused 警告 — 仅为证明 btc 已被 register
     let restored_pair_0 = m2.stats(); // stats 公开;通过 snapshot 验证
     let _ = restored_pair_0;
     // 二次 snapshot 验证:字段应完全保留
     let snap2 = m2.snapshot();
     let pair_0_restored = &snap2.cross_pairs[0];
-    assert_eq!(pair_0_restored.leg1, btc());
-    assert_eq!(pair_0_restored.leg2, eth());
+    assert_eq!(pair_0_restored.leg1(), &btc_spot());
+    assert_eq!(pair_0_restored.leg2(), &eth_spot());
     assert!((pair_0_restored.ratio - 15.0).abs() < 1e-9);
 }
 
@@ -200,13 +240,13 @@ fn restore_preserves_batch_mode() {
 #[test]
 fn restore_clears_pending_batch_orders() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(eth());
+    m.register_instrument(eth_spot());
     m.set_batch_mode(BatchMode::Auction);
 
     // Auction 模式 submit 3 笔:全部进 pending_batch,无 fill
-    let r1 = m.submit(make_limit(1, "ETH", "USDT", Side::Buy, 2_900.0, 1.0));
-    let r2 = m.submit(make_limit(2, "ETH", "USDT", Side::Buy, 2_950.0, 1.0));
-    let r3 = m.submit(make_limit(3, "ETH", "USDT", Side::Sell, 3_000.0, 1.0));
+    let r1 = m.submit(make_limit(1, &eth_spot(), Side::Buy, 2_900.0, 1.0));
+    let r2 = m.submit(make_limit(2, &eth_spot(), Side::Buy, 2_950.0, 1.0));
+    let r3 = m.submit(make_limit(3, &eth_spot(), Side::Sell, 3_000.0, 1.0));
     assert!(r1.is_ok());
     assert!(r2.is_ok());
     assert!(r3.is_ok());
@@ -228,7 +268,7 @@ fn restore_clears_pending_batch_orders() {
 
     // run_auction 在新 engine 上应得空结果(无 pending_batch 可清算)
     let auction_result = m2
-        .run_auction(&eth())
+        .run_auction(&eth_spot())
         .expect("run_auction 不应 panic(空簿返回空 result)");
     assert!(
         !auction_result.has_trades(),
@@ -245,8 +285,8 @@ fn restore_clears_pending_batch_orders() {
 #[test]
 fn restore_then_engine_can_continue_matching() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(btc());
-    m.register_asset(eth());
+    m.register_instrument(btc_spot());
+    m.register_instrument(eth_spot());
     m.set_batch_mode(BatchMode::Continuous);
 
     let snap = m.snapshot();
@@ -257,8 +297,8 @@ fn restore_then_engine_can_continue_matching() {
     assert_eq!(m2.asset_count(), 2);
 
     // 验证 m2 内部 L2 引擎可工作:直接通过 engine_mut 拿 L2 引用 + submit
-    let btc_engine = m2.engine_mut(&btc()).expect("btc 已被 register");
-    let fill = btc_engine.submit(make_limit(100, "BTC", "USDT", Side::Sell, 50_000.0, 1.0));
+    let btc_engine = m2.engine_mut(&btc_spot()).expect("btc 已被 register");
+    let fill = btc_engine.submit(make_limit(100, &btc_spot(), Side::Sell, 50_000.0, 1.0));
     assert!(fill.fills.is_empty(), "无对手方,空撮合");
 
     let best_ask = btc_engine.best_ask();
@@ -269,7 +309,36 @@ fn restore_then_engine_can_continue_matching() {
     );
 
     // 撮合:对手 buy @ 50_000 → 1 笔 fill
-    let buy_fill = btc_engine.submit(make_limit(101, "BTC", "USDT", Side::Buy, 50_000.0, 1.0));
+    let buy_fill = btc_engine.submit(make_limit(101, &btc_spot(), Side::Buy, 50_000.0, 1.0));
     assert_eq!(buy_fill.fills.len(), 1, "对手买单应成交 1 笔");
     assert_eq!(buy_fill.fills[0].price, Price::from_f64(50_000.0));
+}
+
+/// 0.6.0 新增:spot+perp CrossPair 在 restore 后能继续工作
+#[test]
+fn restore_preserves_spot_perp_cross_pair() {
+    let mut m = MultiAssetMatchingEngine::new();
+    m.register_cross_pair(CrossPair::new(
+        btc_spot(),
+        btc_perp(),
+        1.0,
+        Quantity::from_f64(0.5),
+    ))
+    .expect("ok");
+    assert_eq!(m.asset_count(), 2, "spot+perp 应 register 两个 instrument");
+    assert_eq!(m.cross_pair_count(), 1);
+
+    let snap = m.snapshot();
+    assert_eq!(snap.engines.len(), 2, "snapshot 应含 2 个 instrument");
+
+    let mut m2 = MultiAssetMatchingEngine::new();
+    m2.restore(snap).expect("ok");
+    assert_eq!(m2.asset_count(), 2);
+    assert_eq!(m2.cross_pair_count(), 1);
+
+    // 验证 CrossPair 字段精确还原
+    let snap2 = m2.snapshot();
+    let pair = &snap2.cross_pairs[0];
+    assert_eq!(pair.leg1(), &btc_spot());
+    assert_eq!(pair.leg2(), &btc_perp());
 }

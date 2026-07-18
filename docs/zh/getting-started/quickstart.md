@@ -1,6 +1,6 @@
 # 快速开始
 
-> 适用版本:AXON v0.3.0+
+> 适用版本:AXON v0.6.0+
 > 前置阅读:[安装](installation.md)
 
 本文档带你 5 分钟跑通 AXON 的第一个回测示例。
@@ -43,12 +43,13 @@ data = [
 ]
 
 # 2. 创建回测引擎
-from axon_quant.backtest import L1MatchingEngine, limit_order
+from axon_quant.backtest import L1MatchingEngine, limit_order, spot_instrument
 
 engine = L1MatchingEngine()
 
-# 3. 提交订单
-result = engine.submit(limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0))
+# 3. 提交订单(0.5.0 起:用 instrument dict 取代旧 symbol 字符串)
+btc_spot = spot_instrument("BTC", "USDT")
+result = engine.submit(limit_order(1, btc_spot, "Buy", 100.0, 1.0))
 print(f"Order filled: {result['is_filled']}, Fills: {len(result['fills'])}")
 ```
 

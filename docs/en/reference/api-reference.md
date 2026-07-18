@@ -418,7 +418,6 @@ print(f"New version detected: {version_rx.borrow()}")
 from axon_quant import (
     BinanceAdapter, OkxAdapter,
     ExchangeConfig, ExchangeId,
-    Symbol, Order, OrderId, OrderType, Side, TimeInForce,
     RateLimitConfig, ReconnectConfig,
     MarginType, PositionMode,
 )
@@ -454,8 +453,8 @@ config = ExchangeConfig(
 adapter = BinanceAdapter(config)
 await adapter.connect()
 
-# Subscribe to market data
-await adapter.subscribe([Symbol("BTCUSDT"), Symbol("ETHUSDT")])
+# Subscribe to market data (0.6.0 Python adapter.subscribe accepts only str list)
+await adapter.subscribe(["BTCUSDT", "ETHUSDT"])
 
 # Get market data channel
 market_rx = adapter.market_data_rx()
@@ -467,19 +466,16 @@ while True:
         case "Trade":
             print(f"Trade: {msg.data.price} x {msg.data.quantity}")
 
-# Place order
-order = Order(
-    client_order_id=OrderId.new(),
-    symbol=Symbol("BTCUSDT"),
-    side=Side.Buy,
-    order_type=OrderType.Market,
-    price=None,
-    quantity=Decimal("0.001"),
-    time_in_force=TimeInForce.Gtc,
-    exchange=ExchangeId.Binance,
-    meta={"strategy": "momentum_v1"},
-)
-order_id = await adapter.send_order(order)
+# Place order (0.6.0 Python adapter.place_order accepts only dict, not Order instance)
+order = {
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "market",
+    "quantity": "0.001",
+    "tif": "GTC",
+    "meta": {"strategy": "momentum_v1"},
+}
+order_id = await adapter.place_order(order)
 
 # Cancel order
 await adapter.cancel_order(order_id)
@@ -684,23 +680,23 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. Version Compatibility
 
-AXON current version is `0.3.0`, all crate versions unified:
+AXON current version is `0.6.0`, all crate versions unified:
 
 | Crate | Version | Minimum Rust Version |
 |-------|---------|---------------------|
-| axon-core | 0.3.0 | 1.97.0 |
-| axon-rl | 0.3.0 | 1.97.0 |
-| axon-llm | 0.3.0 | 1.97.0 |
-| axon-inference | 0.3.0 | 1.97.0 |
-| axon-exchange | 0.3.0 | 1.97.0 |
-| axon-ensemble | 0.3.0 | 1.97.0 |
-| axon-explain | 0.3.0 | 1.97.0 |
-| axon-backtest | 0.3.0 | 1.97.0 |
-| axon-hpo | 0.3.0 | 1.97.0 |
-| axon-walk-forward | 0.3.0 | 1.97.0 |
-| axon-tracker | 0.3.0 | 1.97.0 |
-| axon-registry | 0.3.0 | 1.97.0 |
-| axon-distributed | 0.3.0 | 1.97.0 |
-| axon-monitor | 0.3.0 | 1.97.0 |
-| axon-risk | 0.3.0 | 1.97.0 |
-| axon-compliance | 0.3.0 | 1.97.0 |
+| axon-core | 0.6.0 | 1.96.0 |
+| axon-rl | 0.6.0 | 1.96.0 |
+| axon-llm | 0.6.0 | 1.96.0 |
+| axon-inference | 0.6.0 | 1.96.0 |
+| axon-exchange | 0.6.0 | 1.96.0 |
+| axon-ensemble | 0.6.0 | 1.96.0 |
+| axon-explain | 0.6.0 | 1.96.0 |
+| axon-backtest | 0.6.0 | 1.96.0 |
+| axon-hpo | 0.6.0 | 1.96.0 |
+| axon-walk-forward | 0.6.0 | 1.96.0 |
+| axon-tracker | 0.6.0 | 1.96.0 |
+| axon-registry | 0.6.0 | 1.96.0 |
+| axon-distributed | 0.6.0 | 1.96.0 |
+| axon-monitor | 0.6.0 | 1.96.0 |
+| axon-risk | 0.6.0 | 1.96.0 |
+| axon-compliance | 0.6.0 | 1.96.0 |

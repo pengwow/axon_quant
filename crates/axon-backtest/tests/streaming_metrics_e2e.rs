@@ -27,12 +27,15 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── helpers ───────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
@@ -72,7 +75,7 @@ fn deterministic_paper_engine() -> StreamingEngine {
 /// 一次 buy + sell roundtrip(价差 spread=100,扣 commission 后净赚 99.7)
 fn run_roundtrip(spread: f64) -> StreamingEngine {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
     engine.set_initial_cash(100_000.0);
 
@@ -105,7 +108,7 @@ fn run_roundtrip(spread: f64) -> StreamingEngine {
 
     // tick1: Market Buy → 撮合 maker1 @100
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -115,7 +118,7 @@ fn run_roundtrip(spread: f64) -> StreamingEngine {
 
     // tick2: Market Sell → 撮合 maker2
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0 + spread),
     });
 
@@ -136,7 +139,7 @@ impl FixedStrategy {
 }
 
 impl StreamingStrategy for FixedStrategy {
-    fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
+    fn on_tick(&mut self, _instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
         self.actions.pop_front().into_iter().collect()
     }
 }
@@ -193,7 +196,7 @@ fn metrics_snapshot_reflects_single_fill() {
 #[test]
 fn metrics_snapshot_with_initial_cash() {
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     // 不调 set_initial_cash,total_pnl = current_nav - 0 = current_nav
     // 调用 set_initial_cash 后,total_pnl = current_nav - 100_000
     engine.set_initial_cash(100_000.0);

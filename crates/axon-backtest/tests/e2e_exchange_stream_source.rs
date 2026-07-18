@@ -18,9 +18,11 @@
 //! ## 4 个测试场景
 //!
 //! 1. `exchange_source_push_and_replay_through_engine`:推入多个 tick → 消费 → 喂入 engine → 验证 FIFO
-//! 2. `exchange_source_multi_symbol_dispatch`:多 symbol → engine 按 symbol 分发到正确撮合引擎
+//! 2. `exchange_source_multi_instrument_dispatch`:多 instrument → engine 按 instrument 分发到正确撮合引擎
 //! 3. `exchange_source_subscribe_and_buffered`:subscribe 后 is_connected=true,buffered() 计数准确
 //! 4. `exchange_source_empty_buffer_returns_none`:buffer 为空时 next_event 返回 None,不 panic
+//!
+//! 0.6.0 改(BREAKING):`Symbol` → `Instrument`,spot/swap 都用 `Instrument` 派发
 //!
 //! 运行:`cargo test -p axon-backtest --test e2e_exchange_stream_source`
 
@@ -30,21 +32,39 @@ use axon_backtest::streaming::{
 use axon_core::market::{Side, Tick};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{
+    Instrument, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol,
+};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn eth() -> Symbol {
-    Symbol::from("ETH/USDT")
+fn eth_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn make_tick(symbol: &Symbol, price: f64, ts_nanos: i64) -> MarketDataEvent {
+#[allow(dead_code)]
+fn btc_swap() -> Instrument {
+    Instrument::Swap(SwapInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+        settle: SwapSettle::UsdMargin,
+        contract_size: 1.0,
+    })
+}
+
+fn make_tick(instrument: &Instrument, price: f64, ts_nanos: i64) -> MarketDataEvent {
     MarketDataEvent::Tick {
-        symbol: symbol.clone(),
+        instrument: instrument.clone(),
         tick: Tick::new(
             Timestamp::from_nanos(ts_nanos),
             Price::from_f64(price),
@@ -60,16 +80,16 @@ fn make_tick(symbol: &Symbol, price: f64, ts_nanos: i64) -> MarketDataEvent {
 async fn exchange_source_push_and_replay_through_engine() {
     let mut src = ExchangeStreamSource::new("mock-exchange");
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
-    let _ = src.subscribe(&[btc()]).await;
+    let _ = src.subscribe(&[btc_spot()]).await;
     assert!(src.is_connected());
 
     // 推入 3 个 tick
-    src.try_push(make_tick(&btc(), 100.0, 1_000));
-    src.try_push(make_tick(&btc(), 101.0, 2_000));
-    src.try_push(make_tick(&btc(), 102.0, 3_000));
+    src.try_push(make_tick(&btc_spot(), 100.0, 1_000));
+    src.try_push(make_tick(&btc_spot(), 101.0, 2_000));
+    src.try_push(make_tick(&btc_spot(), 102.0, 3_000));
     assert_eq!(src.buffered(), 3);
 
     // 消费第一个 tick → 触发 portfolio mark 更新
@@ -93,29 +113,29 @@ async fn exchange_source_push_and_replay_through_engine() {
     assert!(src.next_event().await.is_none());
 }
 
-// ── 2. 多 symbol → engine 按 symbol 分发到正确撮合引擎 ─────────────────
+// ── 2. 多 instrument → engine 按 instrument 分发到正确撮合引擎 ──────────
 
 #[tokio::test]
-async fn exchange_source_multi_symbol_dispatch() {
+async fn exchange_source_multi_instrument_dispatch() {
     let mut src = ExchangeStreamSource::new("mock-multi");
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
-    engine.register_symbol(eth());
+    engine.register_instrument(btc_spot());
+    engine.register_instrument(eth_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
-    let _ = src.subscribe(&[btc(), eth()]).await;
+    let _ = src.subscribe(&[btc_spot(), eth_spot()]).await;
 
     // 推入 BTC 和 ETH 的 tick 交替
-    src.try_push(make_tick(&btc(), 50_000.0, 1_000));
-    src.try_push(make_tick(&eth(), 3_000.0, 2_000));
-    src.try_push(make_tick(&btc(), 50_100.0, 3_000));
+    src.try_push(make_tick(&btc_spot(), 50_000.0, 1_000));
+    src.try_push(make_tick(&eth_spot(), 3_000.0, 2_000));
+    src.try_push(make_tick(&btc_spot(), 50_100.0, 3_000));
 
     // 消费所有 tick,验证 engine 不 panic 且 portfolio 更新
     while let Some(ev) = src.next_event().await {
         let _ = engine.on_market_event(ev);
     }
 
-    // 两个 symbol 都应被注册
+    // 两个 instrument 都应被注册
     let snap = engine.snapshot();
     assert_eq!(snap.total_trades, 0); // 无 strategy + 无 maker → 无 fill
 }
@@ -129,12 +149,12 @@ async fn exchange_source_subscribe_and_buffered() {
     assert!(!src.is_connected());
     assert_eq!(src.buffered(), 0);
 
-    let _ = src.subscribe(&[btc()]).await;
+    let _ = src.subscribe(&[btc_spot()]).await;
     assert!(src.is_connected());
 
     // 推入 5 个
     for i in 0..5 {
-        src.try_push(make_tick(&btc(), 100.0 + i as f64, i * 1_000));
+        src.try_push(make_tick(&btc_spot(), 100.0 + i as f64, i * 1_000));
     }
     assert_eq!(src.buffered(), 5);
 
@@ -155,7 +175,7 @@ async fn exchange_source_subscribe_and_buffered() {
 #[tokio::test]
 async fn exchange_source_empty_buffer_returns_none() {
     let mut src = ExchangeStreamSource::new("mock-empty");
-    let _ = src.subscribe(&[btc()]).await;
+    let _ = src.subscribe(&[btc_spot()]).await;
 
     // 连续调 3 次,全部返回 None
     assert!(src.next_event().await.is_none());

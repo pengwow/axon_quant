@@ -570,7 +570,6 @@ AXON 通过 `axon-exchange` 提供统一的交易所适配器，目前支持 Bin
 import asyncio
 from axon_quant import (
     BinanceAdapter, ExchangeConfig, ExchangeId,
-    Symbol, Order, OrderId, OrderType, Side, TimeInForce,
     RateLimitConfig, ReconnectConfig,
 )
 from decimal import Decimal
@@ -617,10 +616,10 @@ async def setup_binance() -> BinanceAdapter:
     await adapter.connect()
     print("Binance 连接成功")
     
-    # 订阅行情 (深度、Ticker、成交、K线)
+    # 订阅行情 (深度、Ticker、成交、K线) - 0.6.0 Python 端接受 List[str]
     await adapter.subscribe([
-        Symbol("BTCUSDT"),
-        Symbol("ETHUSDT"),
+        "BTCUSDT",
+        "ETHUSDT",
     ])
     print("行情订阅成功")
     
@@ -653,9 +652,9 @@ async def trading_loop(adapter: BinanceAdapter):
                 print(f"[{trade.symbol}] 成交: {trade.price} x {trade.quantity}")
             
             case "OrderUpdate":
-                # 订单状态更新
+                # 订单状态更新(0.6.0 Python 端 OrderUpdate 字段:`order_id` / `status`)
                 update = msg.data
-                print(f"订单 {update.client_order_id} 状态: {update.status}")
+                print(f"订单 {update.order_id} 状态: {update.status}")
             
             case _:
                 pass
@@ -663,24 +662,24 @@ async def trading_loop(adapter: BinanceAdapter):
 async def place_order(adapter: BinanceAdapter):
     """
     下单示例: 市价买入 0.001 BTC。
+
+    0.6.0 Python 端 `place_order` 仅接受 dict(非 `Order` 实例),
+    dict 字段见 `axon_quant.exchange.BinanceAdapter.place_order` docstring。
     """
-    order = Order(
-        client_order_id=OrderId.new(),  # UUID v7
-        symbol=Symbol("BTCUSDT"),
-        side=Side.Buy,
-        order_type=OrderType.Market,
-        price=None,                    # 市价单不需要价格
-        quantity=Decimal("0.001"),
-        time_in_force=TimeInForce.Gtc,
-        exchange=ExchangeId.Binance,
-        meta={"strategy": "momentum_v1"},
-    )
-    
-    order_id = await adapter.send_order(order)
+    order = {
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "type": "market",            # 市价单
+        "quantity": "0.001",
+        "tif": "GTC",
+        "meta": {"strategy": "momentum_v1"},
+    }
+
+    order_id = await adapter.place_order(order)
     print(f"订单已发送,客户端 ID: {order_id}")
     return order_id
 
-async def cancel_order(adapter: BinanceAdapter, order_id: OrderId):
+async def cancel_order(adapter: BinanceAdapter, order_id: str):
     """撤单: Binance 需要 symbol + clientOrderId。"""
     await adapter.cancel_order(order_id)
     print(f"订单 {order_id} 已撤销")

@@ -30,12 +30,8 @@ from axon_quant import (
     BacktestEngine,
     MarketBar,
     Order,
-    OrderId,
     OrderType,
     Side,
-    TimeInForce,
-    Symbol,
-    ExchangeId,
 )
 
 
@@ -149,15 +145,14 @@ class SimpleMomentumStrategy:
         quantity = abs(signal.target_position) * 10000  # Scale to actual quantity
         
         return Order(
-            client_order_id=OrderId.new(),
-            symbol=Symbol("BTCUSDT"),
+            # 0.6.0 Python `axon_quant.oms.Order` field set:
+            # (symbol, side, order_type, quantity, price, idempotency_key=None)
+            symbol="BTCUSDT",
             side=side,
             order_type=OrderType.Market,
-            price=None,
             quantity=Decimal(str(quantity)),
-            time_in_force=TimeInForce.Ioc,
-            exchange=ExchangeId.Binance,
-            meta={"strategy": "momentum", "reason": signal.reason},
+            price=Decimal("0"),  # Market order: price = 0
+            idempotency_key=f"momentum-{signal.confidence:.2f}",
         )
 ```
 
@@ -280,8 +275,10 @@ class HybridMomentumRL:
             return Order(
                 symbol=bar.symbol,
                 side=side,
+                order_type=OrderType.Limit,  # use Limit so price matters
                 quantity=quantity,
                 price=bar.close,
+                idempotency_key=f"rl-env-{signal}",
             )
         
         return None

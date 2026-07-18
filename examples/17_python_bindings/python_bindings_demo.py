@@ -75,12 +75,17 @@ def demo_backtest() -> None:
     from axon_quant.backtest import (
         L1MatchingEngine, BacktestEngine,
         limit_order, market_order,
+        spot_instrument, swap_instrument,  # 0.6.0:Instrument 工厂,替代 "BTC-USDT" 字符串
     )
+
+    # 0.6.0 多 leg 路径统一用 `spot_instrument` / `swap_instrument` 工厂
+    btc_spot = spot_instrument("BTC", "USDT")
+    eth_spot = spot_instrument("ETH", "USDT")
 
     step(1, "L1MatchingEngine 基础撮合")
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTC-USDT", "Sell", 100.0, 1.0))
-    result = engine.submit(limit_order(2, "BTC-USDT", "Buy", 100.0, 1.0))
+    engine.submit(limit_order(1, btc_spot, "Sell", 100.0, 1.0))
+    result = engine.submit(limit_order(2, btc_spot, "Buy", 100.0, 1.0))
     value("is_filled", result["is_filled"])
     value("fills 数量", len(result["fills"]))
     value("成交价", result["fills"][0]["price"])
@@ -89,8 +94,8 @@ def demo_backtest() -> None:
 
     step(2, "市价单撮合")
     engine2 = L1MatchingEngine()
-    engine2.submit(limit_order(10, "ETH-USDT", "Sell", 3000.0, 5.0))
-    result2 = engine2.submit(market_order(11, "ETH-USDT", "Buy", 2.0))
+    engine2.submit(limit_order(10, eth_spot, "Sell", 3000.0, 5.0))
+    result2 = engine2.submit(market_order(11, eth_spot, "Buy", 2.0))
     value("is_filled", result2["is_filled"])
     value("remaining_quantity", result2["remaining_quantity"])
     value("成交价", result2["fills"][0]["price"])
@@ -101,12 +106,12 @@ def demo_backtest() -> None:
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 1_000,
-        "order": limit_order(1, "BTC-USDT", "Sell", 50_000.0, 0.5),
+        "order": limit_order(1, btc_spot, "Sell", 50_000.0, 0.5),
     })
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 2_000,
-        "order": market_order(2, "BTC-USDT", "Buy", 0.5),
+        "order": market_order(2, btc_spot, "Buy", 0.5),
     })
     run_result = bt.run()
     value("events_processed", run_result.events_processed)
@@ -116,8 +121,8 @@ def demo_backtest() -> None:
     ok("事件驱动回测完成")
 
     step(4, "工厂函数参数对比")
-    lo = limit_order(1, "BTC-USDT", "Buy", 50_000.0, 0.1, "IOC")
-    mo = market_order(2, "ETH-USDT", "Sell", 1.0)
+    lo = limit_order(1, btc_spot, "Buy", 50_000.0, 0.1, "IOC")
+    mo = market_order(2, eth_spot, "Sell", 1.0)
     value("limit_order tif", lo["tif"])
     value("market_order tif", mo["tif"])
     info("limit_order 默认 GTC，market_order 强制 IOC")

@@ -82,7 +82,7 @@ bt = BacktestEngine(initial_cash=100_000.0)
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000,
-    "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),  # -> axon_core::order::Order::limit
+    "order": limit_order(1, spot_instrument("BTC", "USDT"), "Buy", 100.0, 1.0),  # 0.5.0+: instrument dict replaces "BTCUSDT" string
 })
 result = bt.run()
 ```
@@ -90,12 +90,12 @@ result = bt.run()
 **Rust side (use when developing a new crate / writing integration tests):**
 
 ```rust
-use axon_core::{EventQueue, Order, OrderType, Side, Price, Quantity, Tick, Timestamp};
+use axon_core::{EventQueue, Order, OrderType, Side, Price, Quantity, Tick, Timestamp, TimeInForce};
 
 let mut q = EventQueue::new();
 q.push(Tick::new(Timestamp::from_nanos(1_000_000_000), 50_000.0, 0.1, Side::Buy));
-
-let order = Order::limit("BTC-USDT".into(), Side::Buy, Price::from(50_000.0), Quantity::from(0.01));
+// 0.5.0+: Order::spot(id, base, quote, side, order_type, qty, tif) factory replaces old Order::new / Order::limit
+let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Limit { price: Price::from(50_000.0) }, Quantity::from(0.01), TimeInForce::GTC);
 ```
 
 ### Key Dependencies
@@ -127,7 +127,7 @@ Event-driven backtest engine + L1/L2/L3 deterministic matching + impact-aware ma
   - L3: includes call auction, dark pool, orderbook snapshot/restore
 - **Determinism**: single-threaded event loop, no concurrent side effects; same input always yields the same output
 - **Impact injection**: `ImpactedMatchingEngine` wraps the base matcher and adjusts fill price by `ImpactModel::compute_impact(quantity, ...)`
-- **Streaming backtest**: strategy implements `StreamingStrategy::on_tick(&Tick, &OrderBook) -> StrategyAction`; `StreamingEngine` drives the loop; `ExchangeStreamSource` uses `crossbeam::channel`, `ReplayStreamSource` replays from CSV / Vec
+- **Streaming backtest**: strategy implements `StreamingStrategy::on_tick(&Instrument, f64) -> StrategyAction`; `StreamingEngine` drives the loop; `ExchangeStreamSource` uses `crossbeam::channel`, `ReplayStreamSource` replays from CSV / Vec
 
 ### Applicable Scenarios
 - Any strategy research that needs reproducible backtests (start with `BacktestEngine` + `L2MatchingEngine`)
@@ -148,17 +148,19 @@ Event-driven backtest engine + L1/L2/L3 deterministic matching + impact-aware ma
 from axon_quant.backtest import (
     BacktestEngine, L2MatchingEngine, ImpactedMatchingEngine,
     ImpactedMatchingEngineBuilder, limit_order, market_order,
+    spot_instrument, swap_instrument,
 )
 
 # 1) Event-driven backtest: L1 (default) / L2 matching
 bt = BacktestEngine(initial_cash=100_000.0)
 bt.with_matching_engine(L2MatchingEngine())           # optional: switch to L2
 bt.with_seed_liquidity(half_spread=0.5, depth_levels=10, size_per_level=1.0)
-bt.begin_bar(price=50_000.0, symbol="BTCUSDT")        # required per bar
+# 0.6.0+: `symbol` string replaced with `instrument` dict
+bt.begin_bar(price=50_000.0, instrument=spot_instrument("BTC", "USDT"))        # required per bar
 bt.push_event({
     "type": "order_submitted",
     "timestamp_ns": 1_000_000_000,
-    "order": limit_order(1, "BTCUSDT", "Buy", 50_000.0, 0.1),
+    "order": limit_order(1, spot_instrument("BTC", "USDT"), "Buy", 50_000.0, 0.1),
 })
 result = bt.run()
 print(result.final_nav, result.fills)
@@ -169,11 +171,11 @@ ie = (ImpactedMatchingEngineBuilder()
       .coefficient(0.1)
       .depth_levels(5)
       .build())
-ie.submit(limit_order(2, "BTCUSDT", "Buy", 50_000.0, 0.1))
+ie.submit(limit_order(2, spot_instrument("BTC", "USDT"), "Buy", 50_000.0, 0.1))
 
 # 3) You can also call the matcher directly (bypassing BacktestEngine)
 l2 = L2MatchingEngine()
-fill = l2.submit(limit_order(3, "BTCUSDT", "Sell", 50_000.0, 0.1))
+fill = l2.submit(limit_order(3, spot_instrument("BTC", "USDT"), "Sell", 50_000.0, 0.1))
 print(fill["is_filled"], fill["fills"])
 ```
 
@@ -183,7 +185,8 @@ print(fill["is_filled"], fill["fills"])
 use axon_backtest::{BacktestEngine, L2MatchingEngine};
 use axon_core::Tick;
 
-let mut engine = BacktestEngine::new(L2MatchingEngine::new("BTC-USDT".into()));
+// 0.5.0+ L2MatchingEngine::new() no longer takes symbol (0.6.0 multi-Instrument routing)
+let mut engine = BacktestEngine::new(L2MatchingEngine::new());
 engine.feed_tick(Tick::new(/* ... */));
 let result = engine.run_to_end()?;
 println!("Sharpe = {}, MaxDD = {}", result.sharpe(), result.max_drawdown());
@@ -491,7 +494,7 @@ The `axon` command-line entry point (Phase 0 only prints a banner; later stages 
 - Uses compile-time constants like `env!("CARGO_PKG_VERSION")` / `env!("RUSTC_VERSION")` / `target_triple`
 
 ### Applicable Scenarios
-- Current stage (0.4.0): verify build, version, platform info
+- Current stage (0.6.0): verify build, version, platform info
 - Future (plan 0.5+): unified entry for subcommands like `axon backtest run` / `axon train ppo` / `axon serve`
 
 ### Non-applicable Scenarios
@@ -502,7 +505,7 @@ The `axon` command-line entry point (Phase 0 only prints a banner; later stages 
 
 ```bash
 $ cargo run -p axon-cli
-axon 0.4.0
+axon 0.6.0
 Rust 1.97.0 (aarch64-apple-darwin)
 Stage: Phase 0 — Architecture & Infrastructure
 ```
@@ -1788,9 +1791,14 @@ print(f"active={oms.active_count()} history={oms.history_count()}")
 ```rust
 use axon_oms::{OrderManager, Order, OrderStatus, Side, OrderType};
 use rust_decimal::Decimal;
+use axon_core::instruments::{Instrument, SpotInstrument};
 
 let oms = OrderManager::new();
-let order = Order::new("BTC-USDT".into(), Side::Buy, OrderType::Limit,
+// 0.6.0 起:`Order::new(instrument_id, ...)` 仍兼容,但推荐显式注入结构化
+// `Instrument`(供跨 leg 风险约束 / 路由使用)。`Order::spot()` 工厂等价于
+// `Order::new` + `with_instrument(SpotInstrument)` 链式调用。
+let btc_spot: Instrument = SpotInstrument::new("BTC", "USDT").into();
+let order = Order::spot(btc_spot, Side::Buy, OrderType::Limit,
     Decimal::new(1, 3), Decimal::from(50_000));
 let id = oms.submit(order)?;
 oms.update_status(id, OrderStatus::Acknowledged)?;
@@ -1846,7 +1854,7 @@ Production monitoring: atomic metrics (Counter / Gauge / Histogram) + alert rule
 | **Output destination** | Rust-side write → `axum` HTTP `/metrics` endpoint → Prometheus scrape | Python uses `prometheus_client` to scrape directly; no need to go through PyO3 |
 | **Python equivalent** | — | `axon-tracker` already covers training/experiment monitoring (`MLflow` / `WandB` / `Local` / `Memory` backends) |
 
-Code-level confirmation (as of `0.4.1`):
+Code-level confirmation (as of `0.6.0`):
 
 - `crates/axon-monitor/Cargo.toml` has **no `python` feature**
 - `crates/axon-monitor/src/` has **no `python/` sub-module** (`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` have no `#[pyclass]`)
@@ -2274,7 +2282,7 @@ Python unified entry `axon_quant._native`: aggregates each crate's PyO3 bindings
 
 ```python
 import axon_quant
-print(axon_quant.__version__)  # 0.4.0
+print(axon_quant.__version__)  # 0.6.0
 
 # Submodules
 env = axon_quant.rl.TradingEnv(...)

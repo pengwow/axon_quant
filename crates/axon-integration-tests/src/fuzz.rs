@@ -597,6 +597,7 @@ proptest! {
 // ───────────────────────────────────────────────────────────────────
 
 use axon_backtest::matching::{BatchMode, CrossPair, MultiAssetMatchingEngine};
+use axon_core::types::{Instrument, SpotInstrument};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
@@ -609,7 +610,11 @@ proptest! {
         side in prop::bool::ANY,
     ) {
         let mut engine = MultiAssetMatchingEngine::new();
-        engine.register_asset(Symbol::from("FUZZ"));
+        let inst = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("FUZZ"),
+            quote: Symbol::from("USDT"),
+        });
+        engine.register_instrument(inst);
         let s = if side { Side::Buy } else { Side::Sell };
         let order = Order::spot(
 0,
@@ -627,12 +632,18 @@ proptest! {
         ratio in 0.001f64..1000.0,
     ) {
         let mut engine = MultiAssetMatchingEngine::new();
-        let pair = CrossPair {
-            leg1: Symbol::from("A"),
-            leg2: Symbol::from("B"),
+        let pair = CrossPair::new(
+            Instrument::Spot(SpotInstrument {
+                base: Symbol::from("A"),
+                quote: Symbol::from("USDT"),
+            }),
+            Instrument::Spot(SpotInstrument {
+                base: Symbol::from("B"),
+                quote: Symbol::from("USDT"),
+            }),
             ratio,
-            max_quantity: Quantity::from_f64(1.0),
-        };
+            Quantity::from_f64(1.0),
+        );
         prop_assert!(engine.register_cross_pair(pair).is_ok());
         assert_eq!(engine.cross_pair_count(), 1);
     }
@@ -643,7 +654,11 @@ proptest! {
         n_orders in 1usize..20usize,
     ) {
         let mut engine = MultiAssetMatchingEngine::new();
-        engine.register_asset(Symbol::from("FUZZ"));
+        let inst = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("FUZZ"),
+            quote: Symbol::from("USDT"),
+        });
+        engine.register_instrument(inst);
         engine.set_batch_mode(BatchMode::DarkPool);
 
         let mut total_fills = 0usize;
@@ -671,9 +686,12 @@ i as u64,
 
         for i in 0..n_assets {
             // T2.2: 资产 key 用 base/quote 格式(与 Order::spot 产生的 instrument key 一致)
-            let sym = Symbol::from(format!("SYM_{}/USDT", i));
-            engine1.register_asset(sym.clone());
-            engine2.register_asset(sym);
+            let inst = Instrument::Spot(SpotInstrument {
+                base: Symbol::from(format!("SYM_{}", i)),
+                quote: Symbol::from("USDT"),
+            });
+            engine1.register_instrument(inst.clone());
+            engine2.register_instrument(inst);
         }
 
         // 提交相同订单

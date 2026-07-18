@@ -261,12 +261,28 @@ pub fn run_rapid_order_churn() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 use axon_backtest::matching::{BatchMode, CrossPair, MultiAssetMatchingEngine};
+use axon_core::types::{Instrument, SpotInstrument};
+
+/// 0.6.0 helper:构造 spot Instrument
+fn btc_spot_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
+
+fn eth_spot_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 /// L3 多资产路由：不同资产的订单应路由到正确引擎
 pub fn run_l3_multi_asset_routing() {
     let mut engine = MultiAssetMatchingEngine::new();
-    engine.register_asset(Symbol::from("BTC/USDT"));
-    engine.register_asset(Symbol::from("ETH/USDT"));
+    engine.register_instrument(btc_spot_inst());
+    engine.register_instrument(eth_spot_inst());
 
     // BTC 买单
     let btc_buy = Order::spot(
@@ -299,26 +315,26 @@ pub fn run_l3_multi_asset_routing() {
     assert!(r2.is_empty(), "ETH 卖单无对手方");
 
     // 验证各自引擎有挂单
-    assert!(engine.engine(&Symbol::from("BTC/USDT")).is_some());
-    assert!(engine.engine(&Symbol::from("ETH/USDT")).is_some());
+    assert!(engine.engine(&btc_spot_inst()).is_some());
+    assert!(engine.engine(&eth_spot_inst()).is_some());
     assert_eq!(engine.asset_count(), 2);
 }
 
 /// L3 跨资产交易对注册与套利检测
 pub fn run_l3_cross_pair_arbitrage() {
     let mut engine = MultiAssetMatchingEngine::new();
-    let pair = CrossPair {
-        leg1: Symbol::from("BTC/USDT"),
-        leg2: Symbol::from("ETH/USDT"),
-        ratio: 16.0,
-        max_quantity: Quantity::from_f64(1.0),
-    };
+    let pair = CrossPair::new(
+        btc_spot_inst(),
+        eth_spot_inst(),
+        16.0,
+        Quantity::from_f64(1.0),
+    );
     engine.register_cross_pair(pair).unwrap();
     assert_eq!(engine.cross_pair_count(), 1);
 
     // 各挂一笔，使 mid price 不同
-    engine.register_asset(Symbol::from("BTC/USDT"));
-    engine.register_asset(Symbol::from("ETH/USDT"));
+    engine.register_instrument(btc_spot_inst());
+    engine.register_instrument(eth_spot_inst());
     engine
         .submit(Order::spot(
             10,
@@ -385,13 +401,13 @@ pub fn run_l3_cross_pair_arbitrage() {
 /// L3 快照保存与恢复：状态一致性
 pub fn run_l3_snapshot_restore() {
     let mut engine = MultiAssetMatchingEngine::new();
-    engine.register_asset(Symbol::from("BTC/USDT"));
+    engine.register_instrument(btc_spot_inst());
     engine.set_batch_mode(BatchMode::Auction);
 
     // 创建快照
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.batch_mode, BatchMode::Auction);
-    assert!(snapshot.engines.contains_key(&Symbol::from("BTC/USDT")));
+    assert!(snapshot.engines.contains_key(&btc_spot_inst()));
 
     // 恢复到新引擎
     let mut engine2 = MultiAssetMatchingEngine::new();

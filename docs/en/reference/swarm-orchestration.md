@@ -1,8 +1,8 @@
-# `axon-llm::swarm` Multi-Agent Orchestration (0.3.0 P0 Workflow B Wrap-up)
+# `axon-llm::swarm` Multi-Agent Orchestration (0.6.0 P0 Workflow B Wrap-up)
 
-> Applies to: `axon-llm` v0.3.0+
+> Applies to: `axon-llm` v0.6.0+
 > Status: **Implemented** (Workflow B Batch 1-4 fully wrapped up)
-> Plan: `.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
+> Plan: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
 
 `SwarmOrchestrator` chains 4 agents (Market / Risk / Execution / Audit) into a runnable pipeline,
 integrated with `HarnessBridge` for final adjudication, and `TradingBackend` for real order
@@ -202,7 +202,7 @@ See [`examples/18_harness/swarm_demo.py`](https://github.com/pengwow/axon_quant/
 
 **Total**: 322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 all pass**.
 
-## 6. Current Status and Unimplemented Items (as of 0.4.1)
+## 6. Current Status and Unimplemented Items (as of 0.6.0)
 
 ### Completed Roadmap Items (0.3.x / 0.4.x)
 

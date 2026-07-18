@@ -298,10 +298,10 @@ for fee in [100, 500, 3000, 10000]:
 
 ### V3Router — 真链 swap
 
-`V3Router` 封装 `SwapRouter02`(canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`),走真发交易。Python 端 `swap()` 在 0.3.x 后续版本暴露,0.3.0 收口时先通过 `UniswapRouter::swap` Rust API + 工厂 `build_tx` 提供离线构造。
+`V3Router` 封装 `SwapRouter02`(canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`),走真发交易。Python 端 `swap()` 自 0.6.0 起可用,见 `axon_quant.defi.UniswapV3.swap()`(0.3.0 收口时先通过 `UniswapRouter::swap` Rust API + 工厂 `build_tx` 提供离线构造)。
 
 ```python
-# 0.3.0 收口时已可读取 router 地址
+# 0.3.0 收口起已可读取 router 地址
 from axon_quant.defi import V3Router, evm_provider, Chain
 
 provider = evm_provider(Chain.Ethereum, "https://eth.llamarpc.com")
@@ -403,7 +403,7 @@ bundle_hash = await client.submit_transaction(signed_tx_hex)
 # 返回 "0x..."(Flashbots bundleHash,真值)
 ```
 
-> **签名要求**:生产环境 `X-Flashbots-Signature` 需要 HMAC 签名(签名私钥 + body),当前 0.3.0 收口版用占位符 + 真实 signing_key 上送,后续版本补 HMAC 签名。
+> **签名要求**:生产环境 `X-Flashbots-Signature` 需要 HMAC 签名(签名私钥 + body)。0.6.0 仍以占位符 + 真实 signing_key 上送为主(开发环境够用),生产级 HMAC 完整支持规划在 0.7.0+(详见 [axon-defi Roadmap](https://github.com/pengwow/axon_quant/issues))。
 
 ---
 
@@ -486,17 +486,17 @@ cargo test -p axon-defi --features evm --test evm_erc20_write
 | `SwapRoute` | `axon-defi::python::types` | 交易路由 |
 | `RiskCheckResult` | `axon-defi::python::types` | 风控结果 |
 | `UniswapV3Contracts` | `axon-defi::python::types` | 4 链合约地址 |
-| `ProviderConfig` | `axon-defi::python::evm` | 0.3.0 新增,RPC 配置 |
-| `EvmProvider` | `axon-defi::python::evm` | 0.3.0 新增,真链 RPC 客户端 |
-| `LocalSigner` | `axon-defi::python::evm` | 0.3.0 新增,本地签名器 |
-| `Erc20Client` | `axon-defi::python::evm` | 0.3.0 强化,真链 read/write |
-| `V3Quoter` | `axon-defi::python::evm` | 0.3.0 新增,IQuoterV2 |
-| `V3Router` | `axon-defi::python::evm` | 0.3.0 新增,SwapRouter02 |
-| `Multicall` | `axon-defi::python::evm` | 0.3.0 新增,Multicall3 |
-| `BridgeConfig` | `axon-defi::python::bridge` | 0.3.0 强化,LayerZero V2 |
-| `BridgeManager` | `axon-defi::python::bridge` | 0.3.0 强化,estimate_fee / bridge_tokens |
-| `MevShareConfig` | `axon-defi::python::mev` | 0.3.0 强化,Flashbots |
-| `MevShareClient` | `axon-defi::python::mev` | 0.3.0 强化,eth_sendBundle |
+| `ProviderConfig` | `axon-defi::python::evm` | 0.3.0 起,RPC 配置 |
+| `EvmProvider` | `axon-defi::python::evm` | 0.3.0 起,真链 RPC 客户端 |
+| `LocalSigner` | `axon-defi::python::evm` | 0.3.0 起,本地签名器 |
+| `Erc20Client` | `axon-defi::python::evm` | 0.3.0 起,真链 read/write |
+| `V3Quoter` | `axon-defi::python::evm` | 0.3.0 起,IQuoterV2 |
+| `V3Router` | `axon-defi::python::evm` | 0.3.0 起,SwapRouter02 |
+| `Multicall` | `axon-defi::python::evm` | 0.3.0 起,Multicall3 |
+| `BridgeConfig` | `axon-defi::python::bridge` | 0.3.0 起,LayerZero V2 |
+| `BridgeManager` | `axon-defi::python::bridge` | 0.3.0 起,estimate_fee / bridge_tokens |
+| `MevShareConfig` | `axon-defi::python::mev` | 0.3.0 起,Flashbots |
+| `MevShareClient` | `axon-defi::python::mev` | 0.3.0 起,eth_sendBundle |
 | `DefiError` | `axon-defi::python::error` | 9 变体,继承 Exception |
 | `evm_provider(chain, url)` | `defi.py` 工厂 | 快速构造 EvmProvider |
 | `local_signer(hex, chain)` | `defi.py` 工厂 | 快速构造 LocalSigner |

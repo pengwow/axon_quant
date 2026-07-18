@@ -15,13 +15,14 @@
 //! 7. **自动 rebalance(Phase D)**:`set_target_position` + `rebalance_to_target` 把
 //!    仓位推到目标,多 leg 同步 rebalance 形成 delta-neutral
 
-// 测试 helper 仅在 `#[test]` 函数中调用,lib build 不报 dead_code
+// 测试 helper 仅在 `#[test]` 函数中调用,lib build 不报 dead_code / unused_imports
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 use axon_backtest::engine::{BacktestEngine, BacktestEngineConfig, FeeConfig};
 use axon_backtest::matching::L1MatchingEngine;
 use axon_backtest::matching::MatchingEngine;
-use axon_core::event::{EventBuilder, FundingEvent, MarkEvent, OrderAction};
+use axon_core::event::{EventBuilder, FundingEvent, FundingSchedule, MarkEvent, OrderAction};
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
@@ -579,6 +580,9 @@ fn mark_funding_combined_unrealized_pnl() {
 
 /// 端到端 rebalance(0.5.0 Phase D):预挂对手盘 → set_target_position → rebalance
 /// 触发市价单 → position 推到目标。
+///
+/// 0.6.0 改(Phase 1):依赖 `begin_bar` 收尾自动 rebalance,不再手写调用。
+/// 用户只需 `with_auto_rebalance` + `set_target` + `begin_bar`。
 #[test]
 fn rebalance_end_to_end_pnl_aware() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -592,13 +596,13 @@ fn rebalance_end_to_end_pnl_aware() {
     });
 
     engine.run();
-    // 预挂 sell 后再设 target + rebalance
+    // 0.6.0 改:启用自动 rebalance + 设 target + 调 begin_bar 收尾触发
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 0.1);
-    let triggered = engine.rebalance_to_target(Some(1e-6));
-    assert_eq!(triggered, 1, "应触发 1 笔 rebalance 单");
+    engine.begin_bar(50_000.0, btc_spot());
     assert!(
         (engine.get_position(&btc_spot()) - 0.1).abs() < 1e-9,
-        "rebalance 后 spot 应=+0.1"
+        "begin_bar 收尾 rebalance 后 spot 应=+0.1"
     );
 
     let result = engine.run();
@@ -611,6 +615,8 @@ fn rebalance_end_to_end_pnl_aware() {
 
 /// 端到端 delta-neutral rebalance:spot long +1 + perp short -1
 /// 同步 rebalance → 两 leg 净额 0(delta 中性)
+///
+/// 0.6.0 改(Phase 1):依赖 `begin_bar` 收尾自动 rebalance。
 #[test]
 fn rebalance_two_legs_delta_neutral() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -630,12 +636,12 @@ fn rebalance_two_legs_delta_neutral() {
     });
 
     engine.run();
-    // 设 delta-neutral 目标
+    // 0.6.0 改:启用 auto_rebalance,设两个 leg target,单次 begin_bar 触发
+    // (rebalance 内部遍历所有 legs,与 begin_bar 的 instrument 参数无关)
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 1.0);
     engine.set_target_position(btc_perp(), -1.0);
-    let triggered = engine.rebalance_to_target(Some(1e-6));
-    // 2 笔 fill(spot + perp 各 1)
-    assert_eq!(triggered, 2, "应触发 2 笔 rebalance 单");
+    engine.begin_bar(50_000.0, btc_spot());
     // 验证 delta-neutral
     let spot_q = engine.get_position(&btc_spot());
     let perp_q = engine.get_position(&btc_perp());
@@ -653,6 +659,8 @@ fn rebalance_two_legs_delta_neutral() {
 
 /// 端到端 rebalance + funding 组合:delta-neutral 入场 + rebalance 触发 +
 /// 后续 funding 结算验证整套 0.5.0 Phase C/D 链路。
+///
+/// 0.6.0 改(Phase 1):入场用 `begin_bar` 收尾自动 rebalance。
 #[test]
 fn delta_neutral_full_lifecycle_funding_and_rebalance() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -673,10 +681,11 @@ fn delta_neutral_full_lifecycle_funding_and_rebalance() {
 
     engine.run();
 
-    // 2) 设 delta-neutral 目标 + rebalance 入场
+    // 2) 0.6.0 改:auto_rebalance + set_targets + begin_bar 一次性入场
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 1.0);
     engine.set_target_position(btc_perp(), -1.0);
-    engine.rebalance_to_target(Some(1e-6));
+    engine.begin_bar(50_000.0, btc_spot());
     assert!((engine.get_position(&btc_spot()) - 1.0).abs() < 1e-9);
     assert!((engine.get_position(&btc_perp()) - (-1.0)).abs() < 1e-9);
 
@@ -698,5 +707,212 @@ fn delta_neutral_full_lifecycle_funding_and_rebalance() {
     assert!(
         (spot_q + perp_q).abs() < 1e-9,
         "delta 中性仍保持(spot {spot_q} + perp {perp_q} = 0)"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 0.6.0 新增(Phase 2):funding 8h 自动调度端到端
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 8h funding schedule 端到端(0.6.0 新增 Phase 2):
+///
+/// 流程:
+/// 1) 预挂 spot ask + perp bid(让 rebalance 双向能撮合)+ 推 perp mark 50_000
+/// 2) `run()` 消费 mark 与种子事件
+/// 3) 启用 auto_rebalance + 设 spot long +1 / perp short -1(delta 中性)
+/// 4) 启用 8h funding schedule for perp
+/// 5) 第一次 `begin_bar(0)`:rebalance 入场,无 funding 触发(bar_ts=0 还没跨 8h)
+/// 6) `run()` 消费 rebalance fill
+/// 7) 第二次 `begin_bar(8h)`:funding 触发 1 次
+/// 8) 第三次 `begin_bar(24h)`:funding 触发 2 次
+/// 9) `run()` 收尾,验证 `total_funding_pnl = 3 × 5 = 15.0` + delta 中性保持
+#[test]
+fn auto_funding_delta_neutral_8h_schedule() {
+    // 1ns = 1_000_000_000,8h = 28_800_000_000_000 ns
+    const EIGHT_HOURS_NS: i64 = 8 * 3600 * 1_000_000_000;
+    const ONE_DAY_NS: i64 = 24 * 3600 * 1_000_000_000;
+
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // 推 perp mark 50_000(让 mark_cache 有值,schedule 触发时用)
+        let mark = MarkEvent {
+            instrument: btc_perp(),
+            mark_price: Price::from_f64(50_000.0),
+            timestamp: Timestamp::from_nanos(2_000),
+        };
+        push_mark(b, q, mark);
+        // 预挂 spot ask + perp bid(让 rebalance 双向能撮合)
+        push_order_submitted(
+            b,
+            q,
+            make_spot_limit(1, "BTC", "USDT", Side::Sell, 50_001.0, 1.0),
+            1_000,
+        );
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(2, "BTC", "USDT", Side::Buy, 50_001.0, 1.0),
+            3_000,
+        );
+    });
+
+    // 2) 消费 mark + 种子事件
+    engine.run();
+
+    // 3) 启用 auto_rebalance + 设 delta-neutral 目标
+    engine.with_auto_rebalance(1e-6);
+    engine.set_target_position(btc_spot(), 1.0);
+    engine.set_target_position(btc_perp(), -1.0);
+
+    // 4) 启用 8h funding schedule(perp 端,rate=0.0001)
+    engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp(), 0.0001));
+
+    // 5) 第一次 begin_bar(bar_ts=0):rebalance 入场,funding 暂不触发
+    //    (last_funding_ts=0, next_funding_ts=8h > bar_ts=0)
+    engine.begin_bar(50_000.0, btc_spot());
+
+    // 6) 消费 rebalance fill → spot long +1, perp short -1
+    engine.run();
+    assert!(
+        (engine.get_position(&btc_spot()) - 1.0).abs() < 1e-9,
+        "rebalance 入场后 spot 应=+1.0"
+    );
+    assert!(
+        (engine.get_position(&btc_perp()) - (-1.0)).abs() < 1e-9,
+        "rebalance 入场后 perp 应=-1.0"
+    );
+
+    // 7) 第二次 begin_bar(bar_ts=8h):funding 触发 1 次
+    //    last_funding_ts=0, next_funding_ts=8h <= 8h,触发 1 次,last=8h
+    engine.set_clock(Timestamp::from_nanos(EIGHT_HOURS_NS));
+    engine.begin_bar(50_000.0, btc_spot());
+
+    // 8) 第三次 begin_bar(bar_ts=24h):funding 触发 2 次
+    //    last=8h, next=16h <= 24h 触发;next=24h <= 24h 触发;next=32h > 24h 停
+    engine.set_clock(Timestamp::from_nanos(ONE_DAY_NS));
+    engine.begin_bar(50_000.0, btc_spot());
+
+    // 9) run 收尾,验证总 funding PnL 与 delta 中性
+    let result = engine.run();
+    // perp short -1.0 × 0.0001 × 50000 × 3 次 = +15.0
+    assert!(
+        (result.total_funding_pnl - 15.0).abs() < 1e-6,
+        "3 次 funding 累加应=+15.0(perp short 收 funding),got {}",
+        result.total_funding_pnl
+    );
+    // delta-neutral 仍保持
+    let spot_q = result.positions[&btc_spot()];
+    let perp_q = result.positions[&btc_perp()];
+    assert!((spot_q - 1.0).abs() < 1e-9, "spot 仍应=+1.0,got {spot_q}");
+    assert!(
+        (perp_q - (-1.0)).abs() < 1e-9,
+        "perp 仍应=-1.0,got {perp_q}"
+    );
+    assert!(
+        (spot_q + perp_q).abs() < 1e-9,
+        "delta 中性(spot {spot_q} + perp {perp_q} = 0)"
+    );
+}
+
+/// 验证 `with_funding_schedule_disable` 端到端生效(0.6.0 新增 Phase 2):
+///
+/// 启用 → 跨 8h → funding 触发 1 次(+5.0)→ 禁用 → 跨 8h → funding 不再触发。
+#[test]
+fn auto_funding_disabled_after_enable_no_more_settlement() {
+    const EIGHT_HOURS_NS: i64 = 8 * 3600 * 1_000_000_000;
+
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        let mark = MarkEvent {
+            instrument: btc_perp(),
+            mark_price: Price::from_f64(50_000.0),
+            timestamp: Timestamp::from_nanos(2_000),
+        };
+        push_mark(b, q, mark);
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(1, "BTC", "USDT", Side::Buy, 50_001.0, 0.1),
+            1_000,
+        );
+    });
+
+    engine.run();
+    engine.with_auto_rebalance(1e-6);
+    engine.set_target_position(btc_perp(), -0.1);
+    engine.begin_bar(50_000.0, btc_spot());
+    engine.run();
+    assert!((engine.get_position(&btc_perp()) - (-0.1)).abs() < 1e-9);
+
+    // 启用 8h schedule
+    engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp(), 0.0001));
+    // 跨 8h → 触发 1 次 funding → perp short 收 0.0001 × 50000 × 0.1 = +0.5
+    engine.set_clock(Timestamp::from_nanos(EIGHT_HOURS_NS));
+    engine.begin_bar(50_000.0, btc_spot());
+    // 禁用 schedule
+    engine.with_funding_schedule_disable(&btc_perp());
+    // 再跨 8h → 不再触发 funding(last_funding_ts 保留,但 schedule 已无)
+    engine.set_clock(Timestamp::from_nanos(2 * EIGHT_HOURS_NS));
+    engine.begin_bar(50_000.0, btc_spot());
+
+    let result = engine.run();
+    // 只 1 次 funding 累计 +0.5(禁用后无新 funding)
+    assert!(
+        (result.total_funding_pnl - 0.5).abs() < 1e-6,
+        "禁用后不应再结算,total_funding_pnl 应=+0.5,got {}",
+        result.total_funding_pnl
+    );
+}
+
+/// 多 leg 各自 schedule 隔离(0.6.0 新增 Phase 2):
+///
+/// 同时启用 spot 与 perp 的 schedule,跨 8h 后:
+/// - perp schedule 触发 1 次(perp short 收 funding)
+/// - spot schedule 走 `Event::Funding` 但 `handle_funding` 忽略 spot
+///   (spot 无 funding 概念),`total_funding_pnl` 不变
+///
+/// 验证:两个 schedule 并存时互不干扰,spot 端 schedule 是个 no-op(忽略但
+/// 不报错,`last_funding_ts[spot]` 仍更新以保持时序正确)。
+#[test]
+fn auto_funding_cross_legs_spot_schedule_ignored() {
+    const EIGHT_HOURS_NS: i64 = 8 * 3600 * 1_000_000_000;
+
+    let mut engine = make_backtest_engine(100_000.0, |b, q| {
+        // perp mark + perp bid
+        let mark = MarkEvent {
+            instrument: btc_perp(),
+            mark_price: Price::from_f64(50_000.0),
+            timestamp: Timestamp::from_nanos(2_000),
+        };
+        push_mark(b, q, mark);
+        // perp bid 0.1
+        push_order_submitted(
+            b,
+            q,
+            make_swap_limit(1, "BTC", "USDT", Side::Buy, 50_001.0, 0.1),
+            1_000,
+        );
+    });
+
+    engine.run();
+    engine.with_auto_rebalance(1e-6);
+    engine.set_target_position(btc_perp(), -0.1);
+    engine.begin_bar(50_000.0, btc_spot());
+    engine.run();
+    assert!((engine.get_position(&btc_perp()) - (-0.1)).abs() < 1e-9);
+
+    // 同时给 spot + perp 都设 8h schedule
+    // (spot 端 schedule 在 handle_funding 里被忽略,但 last_funding_ts 仍更新)
+    engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_spot(), 0.0001));
+    engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp(), 0.0001));
+
+    // 跨 8h → 两 leg 都触发 schedule
+    engine.set_clock(Timestamp::from_nanos(EIGHT_HOURS_NS));
+    engine.begin_bar(50_000.0, btc_spot());
+
+    let result = engine.run();
+    // 只有 perp 端 funding 入账(+0.5),spot 端被 handle_funding 忽略
+    assert!(
+        (result.total_funding_pnl - 0.5).abs() < 1e-6,
+        "spot schedule 忽略,perp schedule 触发 1 次,total 应=+0.5,got {}",
+        result.total_funding_pnl
     );
 }
