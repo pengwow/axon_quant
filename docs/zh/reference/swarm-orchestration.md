@@ -38,6 +38,7 @@ Python 端可直接构造 + 启动 + 注入信号,完整可观测。
 ```
 
 **关键设计**:
+
 - 每个 agent 持 `Box<dyn DeclarativeAgentRunner>`,**复用** DeclarativeAgent 抽象
 - Agent 间通信用 `tokio::mpsc`,**不**用共享状态
 - Orchestrator 主循环监听 inbox,按 `MessageContent` 路由
@@ -46,7 +47,7 @@ Python 端可直接构造 + 启动 + 注入信号,完整可观测。
 ## 2. 消息路由表(`run_loop` 内)
 
 | 收到的消息 | 处理动作 |
-|---|---|
+| --- | --- |
 | `MarketAnalysis(signal)` | 创建 `TradeDecision` 投票,广播 `VoteRequest` 给 Risk + Execution |
 | `RiskAssessment{approved=true}` | 转发给 Execution agent 生成 `ExecutionRequest` |
 | `RiskAssessment{approved=false}` | 广播给 Audit 记录拒绝原因 |
@@ -95,7 +96,7 @@ pub trait DeclarativeAgentRunner: Send + Sync {
 ### 3.2 4 个 Agent
 
 | Agent | 输入 | 输出 | 配置 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `MarketAgent` | `MarketDataSource` (tick) | `MarketSignal` | `symbols` + `price_change_threshold` |
 | `RiskAgent` | `MarketSignal` | `RiskAssessment` | `RiskAgentConfig` (默认阈值) |
 | `ExecutionAgent` | `RiskAssessment{approved=true}` | `ExecutionResult` (通过 `PlaceOrderTool`) | `TradingTools { place_order, query_portfolio }` |
@@ -192,7 +193,7 @@ orch.stop()
 ## 5. 测试覆盖
 
 | 测试文件 | 数量 | 内容 |
-|---|---|---|
+| --- | --- | --- |
 | `python/tests/test_swarm_pipeline_e2e.py` | **25/25 ✅** | 枚举/数据结构 + 4 类 agent 注册 + lifecycle + inject + stats |
 | `crates/axon-llm/src/swarm/` lib unittests | 全部通过 | DeclarativeAgentRunner / Orchestrator / Vote / 4 agent / market_data |
 | `crates/axon-llm/src/trading/paper_backend.rs` lib unittests | 全部通过 | place_order / balance / position 滑点+手续费验证 |

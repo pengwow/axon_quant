@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 MD036 MD012 MD040 -->
 <div align="center">
 
 # <img src="docs/assets/logo.svg" width="36" alt="" style="vertical-align: middle;"/> AXON

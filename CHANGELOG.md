@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD022 MD024 MD032 -->
 # Changelog
 
 All notable changes to AXON will be documented in this file.
