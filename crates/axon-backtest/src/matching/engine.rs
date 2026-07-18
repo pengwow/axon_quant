@@ -75,6 +75,26 @@ pub trait MatchingEngine: Send + Sync {
     /// 流动性。**不**清空 `trade_sequence`(成交序号跨 bar 连续)。
     fn clear_book(&mut self);
 
+    /// 清空指定 instrument 的订单簿(0.7.0 新增,per-leg seed 用)
+    ///
+    /// # 用途
+    ///
+    /// 多 leg 套利场景下,spot 和 perp 各自有独立 book。`begin_bar` 一次
+    /// 只能 seed 一个 instrument,但**不应**清掉其他 instrument 的 seed
+    /// (那会导致跨 bar 的另一 leg 失去对手盘)。
+    ///
+    /// # 默认实现
+    ///
+    /// no-op(回退到 `clear_book` 全清行为)。`L1MatchingEngine` override 提供
+    /// 精确单 book 清空;其他撮合引擎若不支持可保留默认。
+    ///
+    /// # 参数
+    ///
+    /// - `_instrument`:要清空的 instrument(L1 路由到对应 book)
+    fn clear_book_for(&mut self, _instrument: &Instrument) {
+        // 默认 no-op;L1 引擎 override 实现真正的 per-instrument 清空
+    }
+
     /// 在订单簿两侧播种虚拟流动性(回测辅助,默认 no-op)
     ///
     /// # 用途(下沉到 BacktestEngine 后)
@@ -804,6 +824,16 @@ impl MatchingEngine for L1MatchingEngine {
     /// `trade_sequence` 仍保留(跨 bar 连续递增)。
     fn clear_book(&mut self) {
         for book in self.books.values_mut() {
+            book.clear();
+        }
+    }
+
+    /// 0.7.0 新增:只清空指定 instrument 的 book(per-leg seed 用)
+    ///
+    /// 若该 instrument 尚无 book(`books` 中没有),`get_mut` 返回 None → no-op。
+    /// 避免误清空其他 leg 的 seed(spot 的 begin_bar 不应清掉 perp 的 book)。
+    fn clear_book_for(&mut self, instrument: &Instrument) {
+        if let Some(book) = self.books.get_mut(instrument) {
             book.clear();
         }
     }

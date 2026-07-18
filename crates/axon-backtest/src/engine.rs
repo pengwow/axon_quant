@@ -396,8 +396,19 @@ pub struct BacktestEngine {
     finished: bool,
     /// 阶段 B 持仓 / 资金 / 指标状态(6 状态机上下文)
     bt_state: BacktestState,
-    /// 虚拟流动性种子配置(`None` = 不启用,等价纯订单簿撮合)
-    seed_liquidity_config: Option<SeedLiquidityConfig>,
+    /// 0.7.0 改:per-leg 虚拟流动性种子配置(`HashMap<Instrument, SeedLiquidityConfig>`)
+    ///
+    /// 0.6.0 是 `Option<SeedLiquidityConfig>` 全局共享,跨 instrument 用相同参数。
+    /// 0.7.0 起支持 per-leg 独立配置(spot 和 perp 不同 half_spread / depth /
+    /// size_per_level,符合 spot 紧 / perp 松的 real market 规律)。
+    /// 配合 `default_seed_liquidity_config` 实现"统一 + 覆写"两层语义。
+    seed_liquidity_per_leg: HashMap<Instrument, SeedLiquidityConfig>,
+    /// 0.7.0 改:默认虚拟流动性种子配置(向后兼容 0.6.0 全局 API)
+    ///
+    /// 调用方仍可用 `with_seed_liquidity(half_spread, depth, size)` 设默认;
+    /// `begin_bar(price, instrument)` 在 per-leg 找不到 cfg 时回退到该 default。
+    /// `None` = 不启用虚拟对手盘(纯订单簿撮合)。
+    default_seed_liquidity_config: Option<SeedLiquidityConfig>,
     /// 虚拟流动性种子 id 计数器(从大数 1_000_000_000 开始,避免与策略订单 id 冲突)
     seed_liquidity_next_id: std::sync::atomic::AtomicU64,
     /// 0.5.0 新增(Phase D):自动 rebalance 阈值
@@ -463,8 +474,10 @@ impl BacktestEngine {
             stats: RunStats::default(),
             finished: false,
             bt_state,
-            // 虚拟流动性种子:默认未启用,需调 `with_seed_liquidity` 启用
-            seed_liquidity_config: None,
+            // 0.7.0 改:per-leg + default 双层 seed_liquidity 字段
+            // (原 `seed_liquidity_config: Option<SeedLiquidityConfig>` 拆为两个字段)
+            seed_liquidity_per_leg: HashMap::new(),
+            default_seed_liquidity_config: None,
             // id 计数器从 1_000_000_000 开始(策略订单 id 通常从 1 起递增,避免冲突)
             seed_liquidity_next_id: std::sync::atomic::AtomicU64::new(1_000_000_000),
             // 0.5.0 新增(Phase D):自动 rebalance 默认未启用
@@ -521,6 +534,19 @@ impl BacktestEngine {
     /// - `depth_levels`:每侧挂单层数(典型 5~20)
     /// - `size_per_level`:每层挂单数量
     ///
+    /// 0.7.0 改:设置默认虚拟流动性种子配置(向后兼容 0.6.0 API)
+    ///
+    /// 0.6.0 是单一全局配置;0.7.0 起改为"default + per-leg override"两层:
+    /// - `with_seed_liquidity(...)` 仍存在,设的是 `default_seed_liquidity_config`
+    /// - `with_seed_liquidity_for(instrument, ...)` 新增,设 per-leg 覆写
+    /// - `begin_bar(price, instrument)` 优先用 per-leg,fallback 到 default
+    ///
+    /// # 参数
+    ///
+    /// - `half_spread`:每层价差(绝对价格单位),如 `0.0001 * mid = 10bps`
+    /// - `depth_levels`:每侧挂单层数(典型 5~20)
+    /// - `size_per_level`:每层挂单数量
+    ///
     /// # 调用次数
     ///
     /// 可重复调用(更新配置);但**不**自动调用 `clear_book` —— 已有种子会保留,
@@ -531,29 +557,66 @@ impl BacktestEngine {
         depth_levels: usize,
         size_per_level: f64,
     ) {
-        self.seed_liquidity_config = Some(SeedLiquidityConfig {
+        self.default_seed_liquidity_config = Some(SeedLiquidityConfig {
             half_spread,
             depth_levels,
             size_per_level,
         });
     }
 
-    /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
+    /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
+    ///
+    /// 给定 instrument 设置独立的 `SeedLiquidityConfig`,优先于
+    /// `default_seed_liquidity_config`(用 `with_seed_liquidity` 设的)。
+    /// 允许 spot 和 perp 各用不同 half_spread / depth / size,符合
+    /// spot 紧 / perp 松 的真实市场规律(spot 价差 ~1bps,perp 价差 ~5bps)。
+    ///
+    /// # 用法
+    ///
+    /// ```ignore
+    /// engine.with_seed_liquidity(0.1, 5, 0.1);  // 默认:half_spread=0.1
+    /// engine.with_seed_liquidity_for(spot_inst, 0.01, 10, 0.5);  // spot 紧
+    /// engine.with_seed_liquidity_for(perp_inst, 0.5, 5, 0.1);   // perp 松
+    /// ```
+    ///
+    /// # 重复设置
+    ///
+    /// 同 instrument 多次调用,**后调覆盖前调**。
+    pub fn with_seed_liquidity_for(
+        &mut self,
+        instrument: Instrument,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) {
+        self.seed_liquidity_per_leg.insert(
+            instrument,
+            SeedLiquidityConfig {
+                half_spread,
+                depth_levels,
+                size_per_level,
+            },
+        );
+    }
+
+    /// 每根 bar 开始时由应用层调用:同步执行 `clear_book_for + seed_liquidity`
+    ///
+    /// 0.7.0 改:只清空**该 instrument** 的 book(而非全部),其他 leg 的 seed
+    /// 保留;seed 配线优先 per-leg,fallback 到 default。
     ///
     /// 行为:
-    /// - 若 `seed_liquidity_config` 未设置(未调 `with_seed_liquidity`):no-op
-    /// - 若已设置:`matcher.clear_book()` 清空旧种子,再 `seed_liquidity(mid_price, ...)`
-    ///   按配置在 `mid_price` 上下挂 `depth_levels` 层限价单
+    /// - 若 per-leg + default 都未设置:no-op
+    /// - 若已设置(任一):`matcher.clear_book_for(instrument)` 清空该 instrument
+    ///   旧种子,再 `seed_liquidity(mid_price, ...)` 按配置挂 `depth_levels` 层
     ///
     /// 必须在 `push_event("order_submitted", ...)` **之前**调用 —— 让对手盘先就位。
     /// 同步执行不入事件队列,纯配置侧操作。
     ///
     /// # 内存语义
     ///
-    /// `clear_book` 会清空撮合引擎所有挂单 + 索引(L1 实现中
-    /// `order_index` 替换为新 `HashMap` 实例强制 deallocate,见
-    /// `L1MatchingEngine::clear_book` 注释)。多次 `begin_bar` 循环
-    /// 后内存稳定,不累积。
+    /// `clear_book_for` 只清空指定 instrument 的 book(L1 实现中
+    /// `L1Book::clear` 内部替换 `order_index` 为新 `HashMap` 实例强制
+    /// deallocate)。多次 `begin_bar` 循环后内存稳定,不累积。
     ///
     /// # T2.3 变更
     ///
@@ -565,18 +628,22 @@ impl BacktestEngine {
         // - guard 让同 bar 多次 `rebalance_to_target` 只触发一次
         // - 用户用 begin_bar 显式跨 bar 时,新 bar 必能重新 rebalance
         self.bar_id += 1;
-        // 1) 清空上一 bar 的种子挂单 + 2) 重新挂单(seed id 单调递增)
-        // 0.6.0 改:用 if let 嵌套而非早 return,确保末尾自动 rebalance
-        // 永远会执行(无论 seed_liquidity 是否启用)
-        if let Some(cfg) = self.seed_liquidity_config {
+        // 0.7.0 改:per-leg + default 双层 seed 配线
+        let cfg = self
+            .seed_liquidity_per_leg
+            .get(&instrument)
+            .copied()
+            .or(self.default_seed_liquidity_config);
+        if let Some(cfg) = cfg {
             // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
             if mid_price > 0.0
                 && cfg.half_spread > 0.0
                 && cfg.depth_levels != 0
                 && cfg.size_per_level > 0.0
             {
-                // 1) 清空上一 bar 的种子挂单
-                self.config.matching_engine.clear_book();
+                // 1) 清空该 instrument 的旧种子(0.7.0 改:从 clear_book 改为
+                //    clear_book_for,只清该 instrument,不影响其他 leg)
+                self.config.matching_engine.clear_book_for(&instrument);
                 // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
                 let next_id = self
                     .seed_liquidity_next_id
@@ -599,6 +666,82 @@ impl BacktestEngine {
         //   mark_aware = true 用 `mark_cache`,否则 fallback 0
         //   ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
         //   调 `push_funding(&mut self)` 的 borrow 冲突
+        self.run_funding_schedule_for_bar();
+        // 0.6.0 新增(Phase 1):bar 末自动 rebalance
+        //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
+        //     阈值,所有 leg 都在阈值内,no-op
+        //   - 用户手写 `rebalance_to_target` 与自动模式冲突:bar_id guard
+        //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
+        //     执行,本 bar 自动 rebalance 会被 guard 跳过)
+        self.rebalance_to_target(None);
+    }
+
+    /// 0.7.0 新增:多 leg 同 bar seed(spot+perp 套利场景)
+    ///
+    /// 在同一根 bar 内对多个 instrument 同时 seed liquidity,常用于 delta-neutral
+    /// 套利(spot 和 perp 各自挂对手盘,策略单两边都能成交)。
+    ///
+    /// 与多次 `begin_bar(price, instrument)` 的区别:
+    /// - 多次 `begin_bar` 会 bar_id 自增多次 + funding 调度多次 + 末次 rebalance,
+    ///   **不**适合多 leg 同 bar
+    /// - `begin_bar_multi` 调一次,bar_id +1,funding 调度一次,末次 rebalance
+    ///
+    /// # 参数
+    ///
+    /// - `legs`:每 leg 的 `(instrument, mid_price)`,用 `IntoIterator` 接受
+    ///   `Vec` / `HashMap` / 数组
+    ///
+    /// # 用法
+    ///
+    /// ```ignore
+    /// use std::collections::HashMap;
+    /// let mut legs = HashMap::new();
+    /// legs.insert(spot_inst, 100.0);
+    /// legs.insert(perp_inst, 100.5);
+    /// engine.begin_bar_multi(legs);
+    /// ```
+    pub fn begin_bar_multi<I>(&mut self, legs: I)
+    where
+        I: IntoIterator<Item = (Instrument, f64)>,
+    {
+        // 0.7.0 改:在开始之前 bar_id 推进一次(funding + rebalance 都按 1 次算)
+        self.bar_id += 1;
+        // 1) 对每 leg 各调 clear_book_for + seed_liquidity
+        //    ponytail:先 collect 避免 `seed_liquidity(&mut self.matching)`
+        //    与 `seed_liquidity_per_leg.get()` 的借用冲突
+        let per_leg: HashMap<Instrument, SeedLiquidityConfig> = self.seed_liquidity_per_leg.clone();
+        let default_cfg = self.default_seed_liquidity_config;
+        for (instrument, mid_price) in legs {
+            let cfg = per_leg.get(&instrument).copied().or(default_cfg);
+            if let Some(cfg) = cfg
+                && mid_price > 0.0
+                && cfg.half_spread > 0.0
+                && cfg.depth_levels != 0
+                && cfg.size_per_level > 0.0
+            {
+                self.config.matching_engine.clear_book_for(&instrument);
+                let next_id = self
+                    .seed_liquidity_next_id
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let new_next_id = self.config.matching_engine.seed_liquidity(
+                    mid_price,
+                    cfg.half_spread,
+                    cfg.depth_levels,
+                    cfg.size_per_level,
+                    instrument,
+                    next_id,
+                );
+                self.seed_liquidity_next_id
+                    .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // 2) 跑一次 funding 调度 + bar 末 rebalance(同单 leg begin_bar)
+        self.run_funding_schedule_for_bar();
+        self.rebalance_to_target(None);
+    }
+
+    /// 0.7.0 抽离:bar 末 funding 自动调度(从 `begin_bar` 抽出供 `begin_bar_multi` 复用)
+    fn run_funding_schedule_for_bar(&mut self) {
         let bar_ts = self.config.clock.now();
         let schedules: Vec<(Instrument, FundingSchedule)> = self
             .funding_schedules
@@ -628,13 +771,6 @@ impl BacktestEngine {
                 next_ts = schedule.next_funding_ts(next_ts);
             }
         }
-        // 0.6.0 新增(Phase 1):bar 末自动 rebalance
-        //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
-        //     阈值,所有 leg 都在阈值内,no-op
-        //   - 用户手写 `rebalance_to_target` 与自动模式冲突:bar_id guard
-        //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
-        //     执行,本 bar 自动 rebalance 会被 guard 跳过)
-        self.rebalance_to_target(None);
     }
 
     /// 当前已注册的源数量（队列中剩余事件数）
