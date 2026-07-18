@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use axon_core::types::{Quantity, Symbol};
+use axon_core::types::{Instrument, Quantity};
 
 use super::super::error::MatchingError;
 
@@ -10,19 +10,20 @@ use super::super::error::MatchingError;
 #[derive(Debug, Error)]
 pub enum MatchingL3Error {
     /// 资产不存在
-    #[error("资产不存在：{symbol}")]
+    #[error("资产不存在：{instrument}")]
     AssetNotFound {
-        /// 未注册的资产
-        symbol: Symbol,
+        /// 未注册的品种(0.6.0 改:`Symbol` → `Instrument`,与引擎 HashMap key 对齐)
+        instrument: Instrument,
     },
 
     /// 跨资产交易对无效
     #[error("跨资产交易对无效：{leg1}/{leg2}，比率 {ratio}")]
     InvalidCrossPair {
-        /// 第一腿资产
-        leg1: String,
+        /// 第一腿资产(0.6.0 改:`String` → `Instrument`,避免与 `leg1/leg2: Instrument`
+        /// 不一致的双重表示)
+        leg1: Instrument,
         /// 第二腿资产
-        leg2: String,
+        leg2: Instrument,
         /// 比率
         ratio: f64,
     },

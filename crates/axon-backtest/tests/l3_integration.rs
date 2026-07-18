@@ -10,7 +10,7 @@
 //! 本测试套件**部分通过 BacktestEngine + L3Adapter**(连续模式) + **部分直接
 //! 调 L3 API**(`step()` 模式,适配批量/暗池语义)验证:
 //!
-//! 1. **多资产路由隔离**:L3 把订单路由到正确 symbol 的内部 L2
+//! 1. **多资产路由隔离**:L3 把订单路由到正确 instrument 的内部 L2
 //! 2. **批量拍卖**:Auction 模式暂存 + `run_auction` 出清算价
 //! 3. **暗池撮合**:DarkPool 模式扫暗池簿
 //! 4. **跨资产套利检测**:`detect_arbitrage` 在盘口偏离时返回 `ArbitrageOpportunity`
@@ -35,51 +35,87 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{
+    Instrument, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol,
+};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
-}
-fn eth() -> Symbol {
-    Symbol::from("ETH/USDT")
-}
-
-fn make_limit(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Order {
-    let (base, quote) = match symbol.as_str() {
-        "BTC/USDT" => ("BTC", "USDT"),
-        "ETH/USDT" => ("ETH", "USDT"),
-        other => panic!("make_limit: unsupported symbol {other}"),
-    };
-    Order::spot(
-        id,
-        base,
-        quote,
-        side,
-        OrderType::Limit {
-            price: Price::from_f64(price),
-        },
-        Quantity::from_f64(qty),
-        TimeInForce::GTC,
-    )
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
-fn make_market(id: u64, symbol: Symbol, side: Side, qty: f64) -> Order {
-    let (base, quote) = match symbol.as_str() {
-        "BTC/USDT" => ("BTC", "USDT"),
-        "ETH/USDT" => ("ETH", "USDT"),
-        other => panic!("make_market: unsupported symbol {other}"),
-    };
-    Order::spot(
-        id,
-        base,
-        quote,
-        side,
-        OrderType::Market,
-        Quantity::from_f64(qty),
-        TimeInForce::IOC,
-    )
+fn eth_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
+}
+
+fn btc_perp() -> Instrument {
+    Instrument::Swap(SwapInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+        settle: SwapSettle::UsdMargin,
+        contract_size: 1.0,
+    })
+}
+
+fn make_limit(id: u64, instrument: &Instrument, side: Side, price: f64, qty: f64) -> Order {
+    match instrument {
+        Instrument::Spot(s) => Order::spot(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            side,
+            OrderType::Limit {
+                price: Price::from_f64(price),
+            },
+            Quantity::from_f64(qty),
+            TimeInForce::GTC,
+        ),
+        Instrument::Swap(s) => Order::swap(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            s.settle,
+            s.contract_size,
+            side,
+            OrderType::Limit {
+                price: Price::from_f64(price),
+            },
+            Quantity::from_f64(qty),
+            TimeInForce::GTC,
+        ),
+    }
+}
+
+fn make_market(id: u64, instrument: &Instrument, side: Side, qty: f64) -> Order {
+    match instrument {
+        Instrument::Spot(s) => Order::spot(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            side,
+            OrderType::Market,
+            Quantity::from_f64(qty),
+            TimeInForce::IOC,
+        ),
+        Instrument::Swap(s) => Order::swap(
+            id,
+            s.base.clone(),
+            s.quote.clone(),
+            s.settle,
+            s.contract_size,
+            side,
+            OrderType::Market,
+            Quantity::from_f64(qty),
+            TimeInForce::IOC,
+        ),
+    }
 }
 
 // ── L3Adapter:让 L3 接入 MatchingEngine trait(Continuous 模式) ─────
@@ -88,15 +124,15 @@ fn make_market(id: u64, symbol: Symbol, side: Side, qty: f64) -> Order {
 ///
 /// 限制:
 /// - 仅 Continuous 模式语义;Auction 模式 orders 暂存,不在 BacktestEngine 主循环生效
-/// - `best_bid` / `best_ask` / `depth` 取**任一注册 symbol** 的最优价(简单聚合)
+/// - `best_bid` / `best_ask` / `depth` 取**任一注册 instrument** 的最优价(简单聚合)
 /// - `seed_liquidity` / `clear_book` 在 L3 上语义有限,做 no-op
 ///
-/// **关键实现细节**:L3 未暴露 enumerate registered symbols 的 API,本 adapter
-/// 自行跟踪已注册 symbol 列表(测试层语义)。
+/// **关键实现细节**:L3 未暴露 enumerate registered instruments 的 API,本 adapter
+/// 自行跟踪已注册 instrument 列表(测试层语义)。
 struct L3Adapter {
     inner: MultiAssetMatchingEngine,
-    /// 测试层跟踪:已注册 symbols(用于 best_bid/best_ask/depth 聚合)
-    registered: Vec<Symbol>,
+    /// 测试层跟踪:已注册 instruments(用于 best_bid/best_ask/depth 聚合)
+    registered: Vec<Instrument>,
 }
 
 impl L3Adapter {
@@ -107,10 +143,10 @@ impl L3Adapter {
         }
     }
 
-    fn register(&mut self, symbol: Symbol) {
-        self.inner.register_asset(symbol.clone());
-        if !self.registered.contains(&symbol) {
-            self.registered.push(symbol);
+    fn register(&mut self, instrument: Instrument) {
+        self.inner.register_instrument(instrument.clone());
+        if !self.registered.contains(&instrument) {
+            self.registered.push(instrument);
         }
     }
 }
@@ -139,7 +175,7 @@ impl MatchingEngine for L3Adapter {
     }
 
     fn cancel(&mut self, _order_id: u64) -> bool {
-        // L3 未实现统一 cancel API(需逐 symbol 调 inner engine_mut)
+        // L3 未实现统一 cancel API(需逐 instrument 调 inner engine_mut)
         false
     }
 
@@ -166,8 +202,8 @@ impl MatchingEngine for L3Adapter {
     fn depth(&self, levels: usize) -> (Vec<OrderBookLevel>, Vec<OrderBookLevel>) {
         let mut bids = Vec::new();
         let mut asks = Vec::new();
-        for symbol in &self.registered {
-            if let Some(engine) = self.inner.engine(symbol) {
+        for instrument in &self.registered {
+            if let Some(engine) = self.inner.engine(instrument) {
                 let (b, a) = engine.depth(levels);
                 bids.extend(b);
                 asks.extend(a);
@@ -194,37 +230,37 @@ impl MatchingEngine for L3Adapter {
 // ── 测试 1:多资产路由隔离 ───────────────────────────────────────────
 
 /// 注册 BTC + ETH,submit BTC sell + ETH sell
-/// 验证:两 symbol 内部 L2 簿各自挂单,互不影响
+/// 验证:两 instrument 内部 L2 簿各自挂单,互不影响
 #[test]
 fn l3_routes_to_correct_asset_in_continuous_mode() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(btc());
-    m.register_asset(eth());
+    m.register_instrument(btc_spot());
+    m.register_instrument(eth_spot());
 
     // BTC 卖单 @ 50000
     let btc_sell_fills = m
-        .submit(make_limit(1, btc(), Side::Sell, 50_000.0, 1.0))
+        .submit(make_limit(1, &btc_spot(), Side::Sell, 50_000.0, 1.0))
         .expect("submit btc sell");
     assert!(btc_sell_fills.is_empty(), "无对手方,挂簿不成交");
 
     // ETH 卖单 @ 3000
     let eth_sell_fills = m
-        .submit(make_limit(2, eth(), Side::Sell, 3_000.0, 1.0))
+        .submit(make_limit(2, &eth_spot(), Side::Sell, 3_000.0, 1.0))
         .expect("submit eth sell");
     assert!(eth_sell_fills.is_empty(), "无对手方,挂簿不成交");
 
     // BTC 内部 L2 有 best_ask,ETH 也有
-    let btc_engine = m.engine(&btc()).expect("btc engine");
+    let btc_engine = m.engine(&btc_spot()).expect("btc engine");
     assert_eq!(btc_engine.best_ask(), Some(Price::from_f64(50_000.0)));
     assert_eq!(btc_engine.best_bid(), None);
 
-    let eth_engine = m.engine(&eth()).expect("eth engine");
+    let eth_engine = m.engine(&eth_spot()).expect("eth engine");
     assert_eq!(eth_engine.best_ask(), Some(Price::from_f64(3_000.0)));
     assert_eq!(eth_engine.best_bid(), None);
 
     // BTC buy @ 50000 → 吃 BTC sell
     let btc_buy_fills = m
-        .submit(make_limit(3, btc(), Side::Buy, 50_000.0, 1.0))
+        .submit(make_limit(3, &btc_spot(), Side::Buy, 50_000.0, 1.0))
         .expect("submit btc buy");
     assert_eq!(btc_buy_fills.len(), 1, "BTC 撮合 1 笔 fill");
     assert_eq!(
@@ -234,7 +270,7 @@ fn l3_routes_to_correct_asset_in_continuous_mode() {
     );
 
     // ETH 簿仍只有 ETH sell,没被 BTC buy 撮合
-    let eth_engine = m.engine(&eth()).expect("eth engine");
+    let eth_engine = m.engine(&eth_spot()).expect("eth engine");
     assert_eq!(eth_engine.best_ask(), Some(Price::from_f64(3_000.0)));
 }
 
@@ -244,21 +280,21 @@ fn l3_routes_to_correct_asset_in_continuous_mode() {
 #[test]
 fn l3_batch_auction_clears_at_uniform_price() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(eth());
+    m.register_instrument(eth_spot());
     m.set_batch_mode(BatchMode::Auction);
 
     // 累积 4 笔:2 买 2 卖
-    m.submit(make_limit(1, eth(), Side::Buy, 2_990.0, 5.0))
+    m.submit(make_limit(1, &eth_spot(), Side::Buy, 2_990.0, 5.0))
         .expect("ok");
-    m.submit(make_limit(2, eth(), Side::Buy, 3_000.0, 3.0))
+    m.submit(make_limit(2, &eth_spot(), Side::Buy, 3_000.0, 3.0))
         .expect("ok");
-    m.submit(make_limit(3, eth(), Side::Sell, 3_010.0, 4.0))
+    m.submit(make_limit(3, &eth_spot(), Side::Sell, 3_010.0, 4.0))
         .expect("ok");
-    m.submit(make_limit(4, eth(), Side::Sell, 3_020.0, 5.0))
+    m.submit(make_limit(4, &eth_spot(), Side::Sell, 3_020.0, 5.0))
         .expect("ok");
 
     // 4 笔 submit 都不应成交(Auction 模式)
-    let result = m.run_auction(&eth()).expect("auction");
+    let result = m.run_auction(&eth_spot()).expect("auction");
     assert!(result.has_trades(), "应有成交");
     assert!(!result.fills.is_empty(), "至少 1 笔 fill");
 
@@ -277,11 +313,11 @@ fn l3_batch_auction_clears_at_uniform_price() {
 #[test]
 fn l3_dark_pool_matches_existing_dark_order() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(btc());
+    m.register_instrument(btc_spot());
     m.set_batch_mode(BatchMode::DarkPool);
 
     // 1) 暗池 sell
-    let sell = make_limit(1, btc(), Side::Sell, 50_000.0, 3.0);
+    let sell = make_limit(1, &btc_spot(), Side::Sell, 50_000.0, 3.0);
     let sell_fills = m
         .submit_dark_order(DarkOrder {
             visible_quantity: Quantity::from_f64(1.0),
@@ -292,7 +328,7 @@ fn l3_dark_pool_matches_existing_dark_order() {
     assert!(sell_fills.is_empty(), "首个暗池 sell 暂存,无成交");
 
     // 2) 暗池 buy 同价 → 撮合
-    let buy = make_limit(2, btc(), Side::Buy, 50_000.0, 3.0);
+    let buy = make_limit(2, &btc_spot(), Side::Buy, 50_000.0, 3.0);
     let buy_fills = m
         .submit_dark_order(DarkOrder {
             visible_quantity: Quantity::from_f64(1.0),
@@ -312,18 +348,23 @@ fn l3_dark_pool_matches_existing_dark_order() {
 #[test]
 fn l3_detect_arbitrage_with_deviating_prices() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_cross_pair(CrossPair::new(btc(), eth(), 16.0, Quantity::from_f64(1.0)))
-        .expect("ok");
+    m.register_cross_pair(CrossPair::new(
+        btc_spot(),
+        eth_spot(),
+        16.0,
+        Quantity::from_f64(1.0),
+    ))
+    .expect("ok");
 
     // BTC bid=50000, ask=50100 → mid 50050
-    m.submit(make_limit(0, btc(), Side::Buy, 50_000.0, 1.0))
+    m.submit(make_limit(0, &btc_spot(), Side::Buy, 50_000.0, 1.0))
         .expect("ok");
-    m.submit(make_limit(1, btc(), Side::Sell, 50_100.0, 1.0))
+    m.submit(make_limit(1, &btc_spot(), Side::Sell, 50_100.0, 1.0))
         .expect("ok");
     // ETH bid=3000, ask=3020 → mid 3010
-    m.submit(make_limit(2, eth(), Side::Buy, 3_000.0, 1.0))
+    m.submit(make_limit(2, &eth_spot(), Side::Buy, 3_000.0, 1.0))
         .expect("ok");
-    m.submit(make_limit(3, eth(), Side::Sell, 3_020.0, 1.0))
+    m.submit(make_limit(3, &eth_spot(), Side::Sell, 3_020.0, 1.0))
         .expect("ok");
 
     let ops = m.detect_arbitrage();
@@ -337,6 +378,39 @@ fn l3_detect_arbitrage_with_deviating_prices() {
     assert!(op.estimated_profit > 0.0, "estimated_profit > 0");
 }
 
+/// 0.6.0 新增:spot+perp 套利检测
+#[test]
+fn l3_detect_arbitrage_spot_vs_perp() {
+    let mut m = MultiAssetMatchingEngine::new();
+    m.register_cross_pair(CrossPair::new(
+        btc_spot(),
+        btc_perp(),
+        1.0,
+        Quantity::from_f64(0.5),
+    ))
+    .expect("ok");
+
+    // spot bid=50000, ask=50100 → mid 50050
+    m.submit(make_limit(0, &btc_spot(), Side::Buy, 50_000.0, 1.0))
+        .expect("ok");
+    m.submit(make_limit(1, &btc_spot(), Side::Sell, 50_100.0, 1.0))
+        .expect("ok");
+    // perp bid=50100, ask=50200 → mid 50150(perp 略高于 spot,有套利空间)
+    m.submit(make_limit(2, &btc_perp(), Side::Buy, 50_100.0, 1.0))
+        .expect("ok");
+    m.submit(make_limit(3, &btc_perp(), Side::Sell, 50_200.0, 1.0))
+        .expect("ok");
+
+    let ops = m.detect_arbitrage();
+    assert_eq!(ops.len(), 1);
+    let op = &ops[0];
+    // implied = spot_mid / perp_mid = 50050 / 50150 ≈ 0.998
+    assert!(op.implied_ratio.is_some());
+    let ir = op.implied_ratio.unwrap();
+    assert!((ir - 1.0).abs() < 0.01, "implied 接近 1.0 (差 ~0.2%)");
+    assert!(op.deviation < 0.01, "deviation 很小");
+}
+
 // ── 测试 5:快照/恢复一致性 ─────────────────────────────────────────
 
 /// 完整 setup BTC + ETH + CrossPair + Auction 模式 → snapshot → 新 engine restore
@@ -345,10 +419,15 @@ fn l3_detect_arbitrage_with_deviating_prices() {
 #[test]
 fn l3_snapshot_restore_consistency() {
     let mut m = MultiAssetMatchingEngine::new();
-    m.register_asset(btc());
-    m.register_asset(eth());
-    m.register_cross_pair(CrossPair::new(btc(), eth(), 16.0, Quantity::from_f64(1.0)))
-        .expect("ok");
+    m.register_instrument(btc_spot());
+    m.register_instrument(eth_spot());
+    m.register_cross_pair(CrossPair::new(
+        btc_spot(),
+        eth_spot(),
+        16.0,
+        Quantity::from_f64(1.0),
+    ))
+    .expect("ok");
     m.set_batch_mode(BatchMode::Auction);
 
     let snap = m.snapshot();
@@ -375,7 +454,7 @@ fn l3_snapshot_restore_consistency() {
 #[test]
 fn l3_adapter_works_in_backtest_engine_continuous_mode() {
     let mut adapter = L3Adapter::new();
-    adapter.register(btc());
+    adapter.register(btc_spot());
 
     let cfg = BacktestEngineConfig {
         clock: SimulatedClock::new(Timestamp::from_nanos(0)),
@@ -392,12 +471,12 @@ fn l3_adapter_works_in_backtest_engine_continuous_mode() {
     q.push(b.order(
         Timestamp::from_nanos(1_000),
         1,
-        OrderAction::Submitted(make_limit(1, btc(), Side::Sell, 100.0, 1.0)),
+        OrderAction::Submitted(make_limit(1, &btc_spot(), Side::Sell, 100.0, 1.0)),
     ));
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         2,
-        OrderAction::Submitted(make_market(2, btc(), Side::Buy, 1.0)),
+        OrderAction::Submitted(make_market(2, &btc_spot(), Side::Buy, 1.0)),
     ));
 
     let mut engine = BacktestEngine::new(cfg, q);
