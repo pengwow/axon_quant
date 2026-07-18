@@ -165,7 +165,7 @@ impl PyImpactedMatchingEngine {
         instrument: &Bound<'_, PyAny>,
         next_id: u64,
     ) -> PyResult<u64> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.seed_liquidity(
             mid_price,
             half_spread,
