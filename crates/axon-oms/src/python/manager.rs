@@ -207,6 +207,7 @@ impl PyOrderManager {
         let fill = crate::types::Fill {
             fill_id,
             symbol,
+            instrument: None,
             price: price_dec,
             quantity: qty_dec,
             fee: fee_dec,

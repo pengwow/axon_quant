@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-18
+
+### BREAKING CHANGES
+
+⚠️ **多 leg 全栈 `Instrument` 化 + `axon_oms` snapshot schema 升级 — 6 个 phase 一次性发布**
+
+0.6.0 收口 0.5.0 Known Limitations 列出的 6 项后续工作(begin_bar 自动 rebalance / funding 8h 调度 / L3 撮合 + streaming + OMS 全面 Instrument 化 / 跨 leg 风险约束),涉及多个 crate 的 API 升级。
+
+主要 BREAKING:
+
+- **`axon-backtest` streaming 全面 `Instrument` 化**:`MarketDataEvent::Tick.symbol` → `instrument: Instrument`,`StreamDataSource::subscribe(&[Symbol])` → `subscribe(&[Instrument])`,`StreamingStrategy::on_tick(&Symbol, f64)` → `on_tick(&Instrument, f64)`,`StreamingEngine::register_symbol` → `register_instrument`
+- **`axon-backtest` L3 撮合 `Instrument` 化**:`MultiAssetMatchingEngine::engines: HashMap<Symbol, _>` → `HashMap<Instrument, _>`,`register_asset` → `register_instrument`,`CrossPair.leg1/leg2: Symbol` → `pair: LegPair`(spot + perp 配对),`MatchingL3Error::InvalidCrossPair` 字段用 `Box<Instrument>` 减少 variant 大小
+- **`axon-oms` Order/Fill 加 `instrument: Option<Instrument>` 字段**:`#[serde(default)]` 保证老 snapshot(v1)仍可在 0.6.0 进程里 recover;**新** snapshot 的 `OmsSnapshot.version` 固定写 `OMS_SNAPSHOT_VERSION_CURRENT = 2`,不再自增;`Order::with_instrument(Instrument)` builder 注入结构化标识;`Order::new(...)` / `Order::instrument_id: String` / `Fill::symbol: String` 保留为向后兼容的"字符串标识"路径
+- **`axon-core::types::LegPair`** 新增结构化 spot+perp 对冲对类型(`spot: Instrument` / `perp: Instrument` / `hedge_ratio: f64`),手写 `Hash` / `Eq`(因 `f64` 不可派生),`is_valid()` 校验 spot/perp 变体正确
+
+迁移指南:
+- streaming: `btc() -> Symbol` helper 替换为 `btc_spot() -> Instrument { Instrument::Spot(SpotInstrument { ... }) }`
+- L3: `m.register_asset(symbol)` → `m.register_instrument(instrument)`
+- OMS: 老路径不传 instrument 仍能跑(`#[serde(default)]` 兜底);新路径用 `Order::new(...).with_instrument(btc)`
+
+### Added
+
+- **Phase 1: `begin_bar` 自动 rebalance**:`BacktestEngine::begin_bar(price, instrument)` 收尾自动触发 `rebalance_to_target`(行为对齐 `with_auto_rebalance(threshold)`),`set_clock(...)` 注入虚拟时钟给测试用
+- **Phase 2: 8 小时 funding 自动调度**:`FundingSchedule { fixed_rate, interval: Duration, start_ts }` 配置 + `BacktestEngine::with_funding_schedule(schedule)` builder;`push_funding` 在 8h 整点自动推 funding 事件(替代策略层手动调)
+- **Phase 3: L3 撮合 `Instrument` 化**:
+  - `MultiAssetMatchingEngine::register_instrument(instrument)` / `engine(&Instrument)` / `best_bid/best_ask(&Instrument, ...)`
+  - `CrossPair::new(spot, perp, ratio, max_qty)` 用 `LegPair` 作内部表示
+  - `MultiAssetMatchingEngine::execute_arbitrage(pair: &LegPair, qty, max_price) -> ArbResult`
+  - Python 绑定同步:`register_instrument(dict)` / `best_bid(dict)` / `execute_arbitrage(pair_dict, qty, max_price)`
+- **Phase 4: streaming 全面 `Instrument` 化**:`MarketDataEvent::Tick.instrument` / `StreamDataSource::subscribe(&[Instrument])` / `StreamingStrategy::on_tick(&Instrument, f64)` / `SmaCrossover` 按 `instrument` 变体派发 `Order::spot` / `Order::swap`;7 个 e2e 测试文件全部迁移到 `Instrument` API(`replay_source_integration` / `e2e_streaming_paper` / `streaming_metrics_e2e` / `streaming_report_e2e` / `csv_replay_integration` / `e2e_sma_crossover` / `paper_partial_fill_test`)
+- **Phase 5: `axon_oms` 加 `instrument` 字段**:
+  - `Order.instrument: Option<Instrument>`(可选,`#[serde(default)]`)
+  - `Order::with_instrument(Instrument)` builder
+  - `Fill.instrument: Option<Instrument>`
+  - `OmsSnapshot::OMS_SNAPSHOT_VERSION_CURRENT = 2`(语义化版本号,不再自增)
+  - `OmsSnapshot::OMS_SNAPSHOT_VERSION_LEGACY = 1`(0.5.0 之前的 schema)
+  - `OrderManager::snapshot` 写 `version = OMS_SNAPSHOT_VERSION_CURRENT`
+  - `OrderManager::recover` 不再回写 `version` 计数器
+- **Phase 6: 跨 leg 风险约束**:
+  - `axon-risk::checks::leg_pair`: `leg_pair_net_exposure(portfolio, pair) -> f64` + `check_leg_pair_net_exposure(portfolio, pair, max_abs)` + `per_leg_var(returns, confidence)`
+  - `axon-risk::checks::stress`: `stress_leg(quantity, market_price, shock_pct)` + `stress_pair(portfolio, pair, shock_pct)` + `stress_portfolio(portfolio, shock_pct)`
+  - `RiskReason::LegPairNetExposureExceeded { pair, current, limit }` 新增 reason 变体
+  - `RiskConfig.max_leg_pair_net_exposure: f64`(默认 0.0,严格 delta 中性)+ `RiskConfig.max_leg_pair_var_95: f64`(默认 5_000.0)
+  - `RiskEngine::check_leg_pair(portfolio, &LegPair) -> RiskResult` 串到底层 `leg_pair::check_leg_pair_net_exposure`
+  - 12 个新单测(6 leg_pair + 6 stress)+ 2 个 end-to-end engine 测试
+
+### Tests
+
+- **`cargo test --workspace` 全套通过**:246 个 `axon-backtest` 单元测试 + 35 个 streaming 单元测试 + 7 个 streaming e2e 文件(34 个集成测试)+ 60 个 `axon-risk` 单元测试 + 74 个 `axon-integration-tests` 集成测试 + `axon-oms` 61 个测试,`axon-llm` 36 个测试,全部 0 失败
+- **`cargo clippy --workspace --tests -D warnings` 零警告**
+- **`cargo fmt --all` 无 diff**
+- 新增 `axon-oms` 单元测试 `test_order_with_instrument_roundtrip` / `test_legacy_snapshot_without_instrument_recovers` 验证 instrument 字段往返 + 老 schema 兼容
+
+### Documentation
+
+- **`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md`** — 0.6.0 实施 plan(6 phase / 详细任务清单 + 完成状态)
+- **`docs/zh/reference/multi-leg-backtest.md`** — 更新 0.6.0 多 leg 回测参考(begin_bar 自动 rebalance / funding 8h 调度 / streaming Instrument API / 跨 leg 风险约束)
+
 ## [0.5.0] - 2026-07-17
 
 ### BREAKING CHANGES
@@ -102,20 +160,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/superpowers/plans/2026-07-17-spot-perp-two-leg-backtest.md`** — 实施 plan:6 阶段 / ~35 任务清单 + 进度标记
 - **`docs/superpowers/plans/2026-07-17-spot-perp-two-leg-backtest-phase-cd.md`** — Phase A~D 实施 plan(把 0.6.0 路线图里的 funding 结算 / 自动 rebalance / Position&RiskEngine 全面迁移 / Mark-to-market PnL 全部纳入 0.5.0 收口)
 - **`docs/zh/reference/multi-leg-backtest.md`** — 多 leg 回测参考(端到端 delta-neutral 示例 + Phase C funding / Phase D rebalance API)
-
-### Known Limitations (0.6.0 Roadmap)
-
-0.5.0 已收口 Phase A~D,backtest 路径全面 Instrument 化,funding 结算 + 自动
-rebalance 闭环。剩余工作:
-
-- **L3 撮合引擎**:`MultiAssetMatchingEngine.engines` / `dark_orders` 与 `CrossPair.leg1` /
-  `leg2` 仍用 `HashMap<Symbol, _>` 桥接(0.6.0 全面迁 `HashMap<Instrument, _>`)
-- **`axon_backtest::streaming::engine`** 内部 `HashMap<Symbol, _>` 桥接
-- **`axon_oms::portfolio::Position.symbol: String`**(独立 OMS 路径,Decimal 精度)
-- **`begin_bar` 收尾自动 rebalance**:目前需策略层在每根 bar 末手动调
-  `rebalance_to_target`;0.6.0 在 `begin_bar` 收尾自动触发
-- **自适应 funding 调度**:目前靠外部 `push_funding` 触发;0.6.0 引擎内置 8h 调度钩子
-- **跨 leg 风险约束**(净敞口 / VaR / stress test)
 
 ## [0.4.1] - 2026-07-15
 

@@ -222,6 +222,7 @@ mod tests {
         Fill {
             fill_id: fill_id.into(),
             symbol: "BTC-USDT".into(),
+            instrument: None,
             price: Decimal::new(price, 2),
             quantity: Decimal::from(qty),
             fee: Decimal::new(fee, 2),
@@ -454,6 +455,7 @@ mod tests {
         p.apply_fill(&Fill {
             fill_id: "f2".into(),
             symbol: "ETH-USDT".into(),
+            instrument: None,
             price: dec!(3000),
             quantity: dec!(1),
             fee: dec!(0),
@@ -514,6 +516,7 @@ mod proptests {
             p.apply_fill(&Fill {
                 fill_id: "f1".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: Decimal::from(price_a),
                 quantity: Decimal::from(qty_a),
                 fee: dec!(0),
@@ -522,6 +525,7 @@ mod proptests {
             p.apply_fill(&Fill {
                 fill_id: "f2".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: Decimal::from(price_b),
                 quantity: Decimal::from(qty_b),
                 fee: dec!(0),
@@ -556,6 +560,7 @@ mod proptests {
             p.apply_fill(&Fill {
                 fill_id: "f1".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: Decimal::from(initial_price),
                 quantity: Decimal::from(initial_qty),
                 fee: dec!(0),
@@ -565,6 +570,7 @@ mod proptests {
             p.apply_fill(&Fill {
                 fill_id: "f2".into(),
                 symbol: "BTC-USDT".into(),
+                instrument: None,
                 price: dec!(99999),
                 quantity: -Decimal::from(sell_qty),
                 fee: dec!(0),

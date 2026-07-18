@@ -51,6 +51,7 @@ fn new_snapshot_round_trip_preserves_portfolio() {
         Fill {
             fill_id: "f1".into(),
             symbol: "BTC-USDT".into(),
+            instrument: None,
             price: dec!(50000),
             quantity: dec!(0.5),
             fee: dec!(0),

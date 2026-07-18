@@ -22,10 +22,13 @@ use axon_backtest::streaming::{
     CsvMapping, MarketDataEvent, ReplayStreamSource, StreamDataSource, StreamError, TimestampUnit,
 };
 use axon_core::market::Side;
-use axon_core::types::Symbol;
+use axon_core::types::{Instrument, SpotInstrument, Symbol};
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 /// 把字符串写入 NamedTempFile,返回 path
@@ -48,7 +51,7 @@ fn csv_default_format_4_columns() {
     let f = write_csv(csv);
     let path = f.path().to_path_buf();
 
-    let src = ReplayStreamSource::from_csv(&path, btc()).expect("from_csv ok");
+    let src = ReplayStreamSource::from_csv(&path, btc_spot()).expect("from_csv ok");
     assert_eq!(src.remaining(), 3);
     assert_eq!(src.consumed(), 0);
 
@@ -61,7 +64,7 @@ fn csv_with_header_row() {
     // 含 header
     let csv = "timestamp,price,quantity,side\n1000,100.0,0.5,buy\n2000,101.0,0.6,sell\n";
     let f = write_csv(csv);
-    let src = ReplayStreamSource::from_csv(f.path(), btc()).expect("from_csv ok");
+    let src = ReplayStreamSource::from_csv(f.path(), btc_spot()).expect("from_csv ok");
     // header 不算 1 行数据
     assert_eq!(src.remaining(), 2);
 }
@@ -81,8 +84,8 @@ fn csv_custom_mapping_and_timestamp_unit_micros() {
         timestamp_unit: TimestampUnit::Micros,
     };
     let f = write_csv(csv);
-    let src =
-        ReplayStreamSource::from_csv_with_mapping(f.path(), btc(), mapping).expect("from_csv ok");
+    let src = ReplayStreamSource::from_csv_with_mapping(f.path(), btc_spot(), mapping)
+        .expect("from_csv ok");
     assert_eq!(src.remaining(), 2);
 
     // 验证时间戳已转换为纳秒
@@ -103,7 +106,8 @@ fn csv_custom_mapping_and_timestamp_unit_micros() {
 
 #[test]
 fn csv_missing_file_returns_file_not_found() {
-    let result = ReplayStreamSource::from_csv("/tmp/this_path_should_not_exist_99999.csv", btc());
+    let result =
+        ReplayStreamSource::from_csv("/tmp/this_path_should_not_exist_99999.csv", btc_spot());
     assert!(matches!(result, Err(StreamError::FileNotFound(_))));
 }
 
@@ -114,7 +118,7 @@ fn csv_malformed_line_returns_parse_error() {
     // line 2 数据行 price 列含字母
     let csv = "timestamp,price,quantity,side\n1000,NOT_A_NUMBER,0.5,buy\n";
     let f = write_csv(csv);
-    let result = ReplayStreamSource::from_csv(f.path(), btc());
+    let result = ReplayStreamSource::from_csv(f.path(), btc_spot());
     match result {
         Err(StreamError::ParseError(msg)) => {
             // 错误信息应包含行号 2 + price 字段

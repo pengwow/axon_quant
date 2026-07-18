@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use axon_core::Instrument;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OrderId(pub Uuid);
 
@@ -121,6 +123,11 @@ impl OrderStatus {
 pub struct Order {
     pub id: OrderId,
     pub instrument_id: String,
+    /// 0.6.0 新增:结构化 instrument 标识(spot / swap),与 `instrument_id` 并存。
+    /// 老 snapshot / 老调用方不传时 = `None`,运行期用 `instrument_id` 字符串作为 fallback;
+    /// 新调用方应 `with_instrument(...)` 显式注入,供跨 leg 风险约束 / 路由使用。
+    #[serde(default)]
+    pub instrument: Option<Instrument>,
     pub side: Side,
     pub order_type: OrderType,
     pub quantity: Decimal,
@@ -144,6 +151,7 @@ impl Order {
         Self {
             id: OrderId::new(),
             instrument_id,
+            instrument: None,
             side,
             order_type,
             quantity,
@@ -154,6 +162,13 @@ impl Order {
             updated_at: now,
             meta: HashMap::new(),
         }
+    }
+
+    /// 0.6.0 新增:注入结构化 instrument(spot / swap),与 `instrument_id` 同步但
+    /// 保留 `instrument_id` 用于序列化 / 旧 OMS 兼容。
+    pub fn with_instrument(mut self, instrument: Instrument) -> Self {
+        self.instrument = Some(instrument);
+        self
     }
 
     pub fn with_idempotency_key(mut self, key: String) -> Self {
@@ -186,6 +201,10 @@ pub struct Fill {
     pub fill_id: String,
     /// 交易 symbol(如 "BTC-USDT"),由 fill event 携带
     pub symbol: String,
+    /// 0.6.0 新增:结构化 instrument(spot / swap),与 `symbol` 字符串并存。
+    /// 老 fill 事件无此字段时 = `None`,路由 / 风险约束用 `symbol` 字符串作 fallback。
+    #[serde(default)]
+    pub instrument: Option<Instrument>,
     pub price: Decimal,
     pub quantity: Decimal,
     pub fee: Decimal,
@@ -204,6 +223,14 @@ pub struct OrderRecord {
 ///
 /// **向后兼容**:portfolio 字段为 `Option`,老 snapshot(无此字段)反序列化时 serde 用 `default` = None,
 /// recover 路径识别 None 时创建空 portfolio(允许老 OMS 进程在升级后继续 recover)。
+///
+/// **0.6.0 版本号约定**:`version` 字段含义:
+/// - `1` = Stage B-MVP(0.5.0 之前,无 `Order::instrument` / `Fill::instrument` 字段)
+/// - `2` = 0.6.0+(`Order` / `Fill` 携带可选 `instrument: Option<Instrument>` 字段)
+///
+/// `recover` 路径不强制要求 version 匹配 — 老 snapshot(v1)在 0.6.0 进程里
+/// 仍可反序列化(`#[serde(default)]` 让 `instrument` 字段缺省 = `None`),
+/// 新 snapshot(v2)在老进程里会被 serde 拒绝(`instrument` 字段未知)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmsSnapshot {
     pub active_orders: HashMap<OrderId, Order>,
@@ -214,6 +241,14 @@ pub struct OmsSnapshot {
     #[serde(default)]
     pub portfolio: Option<PortfolioSnapshot>,
 }
+
+/// 0.6.0 新增:`OmsSnapshot::version` 当前写出版本号。
+///
+/// 调用 `OrderManager::snapshot()` 时,新 snapshot 的 `version` 自动设为该常量。
+/// 老 snapshot(v1) 由 0.5.0 之前的 OMS 写入。
+pub const OMS_SNAPSHOT_VERSION_CURRENT: u64 = 2;
+/// 0.5.0 之前的 OMS 写入的 snapshot 的 `version` 起始值(1)。
+pub const OMS_SNAPSHOT_VERSION_LEGACY: u64 = 1;
 
 // Stage B-MVP 新增 — Portfolio 子结构导出
 pub use crate::portfolio::{PortfolioSnapshot, Position};

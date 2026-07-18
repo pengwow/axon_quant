@@ -74,6 +74,11 @@ impl LegPair {
     pub fn is_valid(&self) -> bool {
         matches!(self.spot, Instrument::Spot(_)) && matches!(self.perp, Instrument::Swap(_))
     }
+
+    /// 显示 label,格式 `"{spot.label()}|{perp.label()}"`(给 risk reason / 日志用)
+    pub fn label(&self) -> String {
+        format!("{}|{}", self.spot.label(), self.perp.label())
+    }
 }
 
 #[cfg(test)]

@@ -33,12 +33,15 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_tick(price: f64) -> Tick {
@@ -90,7 +93,7 @@ impl FixedStrategy {
 }
 
 impl StreamingStrategy for FixedStrategy {
-    fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
+    fn on_tick(&mut self, _instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
         self.actions.pop_front().into_iter().collect()
     }
 }
@@ -103,15 +106,15 @@ async fn replay_source_replays_ticks_through_streaming_engine_in_fifo_order() {
     let prices = vec![100.0, 101.5, 103.0, 102.0, 105.0];
     let ticks: Vec<Tick> = prices.iter().copied().map(make_tick).collect();
 
-    let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(btc(), ticks);
-    source.subscribe(&[btc()]).await.expect("subscribe ok");
+    let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(btc_spot(), ticks);
+    source.subscribe(&[btc_spot()]).await.expect("subscribe ok");
     assert!(source.is_connected());
     assert_eq!(source.remaining(), 5);
     assert_eq!(source.consumed(), 0);
 
     // 引擎只跟踪 portfolio mark,无 strategy → 不产生 fill
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
     let mut observed: Vec<f64> = Vec::new();
@@ -142,8 +145,8 @@ async fn replay_source_replays_ticks_through_streaming_engine_in_fifo_order() {
 #[tokio::test]
 async fn replay_source_drains_to_none_after_all_ticks_consumed() {
     let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv")
-        .with_ticks(btc(), vec![make_tick(100.0), make_tick(101.0)]);
-    source.subscribe(&[btc()]).await.expect("subscribe ok");
+        .with_ticks(btc_spot(), vec![make_tick(100.0), make_tick(101.0)]);
+    source.subscribe(&[btc_spot()]).await.expect("subscribe ok");
 
     // 消费 2 个
     let e1 = source.next_event().await;
@@ -173,12 +176,12 @@ async fn replay_source_with_strategy_drives_fills_end_to_end() {
     let prices: Vec<f64> = (0..6).map(|i| 100.0 + i as f64 * 1.0).collect();
     let ticks: Vec<Tick> = prices.iter().copied().map(make_tick).collect();
 
-    let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(btc(), ticks);
-    source.subscribe(&[btc()]).await.expect("subscribe ok");
+    let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(btc_spot(), ticks);
+    source.subscribe(&[btc_spot()]).await.expect("subscribe ok");
 
     // 引擎:Backtest 模式,挂对手机 Sell @很低(全吃)
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
     // 预挂 1 个对手机 Sell @2000 qty=1(数量足够,任何 Buy 都能吃)
@@ -209,10 +212,9 @@ async fn replay_source_with_strategy_drives_fills_end_to_end() {
 
     // 验证 portfolio:买入 0.1 @2000 → 持仓 0.1 BTC,cash 减少 200
     // 0.5.0 起 Portfolio 用 Instrument key
-    let inst = axon_core::types::Instrument::from_symbol(&btc());
     let pos = engine
         .portfolio()
-        .position_by_instrument(&inst)
+        .position_by_instrument(&btc_spot())
         .expect("应有持仓");
     assert!(
         (pos.quantity.as_f64() - 0.1).abs() < 1e-9,
@@ -227,7 +229,7 @@ async fn replay_source_with_strategy_drives_fills_end_to_end() {
 async fn replay_source_remaining_and_consumed_track_progress() {
     // 注入 4 个 tick
     let mut source = ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(
-        btc(),
+        btc_spot(),
         vec![
             make_tick(100.0),
             make_tick(101.0),
@@ -235,7 +237,7 @@ async fn replay_source_remaining_and_consumed_track_progress() {
             make_tick(103.0),
         ],
     );
-    source.subscribe(&[btc()]).await.expect("subscribe ok");
+    source.subscribe(&[btc_spot()]).await.expect("subscribe ok");
 
     // 初始:remaining=4, consumed=0
     assert_eq!(source.remaining(), 4);

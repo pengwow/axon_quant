@@ -108,6 +108,8 @@ pub fn run_full_trading_flow() {
         fill_id: "fill-001".into(),
         // Stage B-MVP: Fill 加 symbol 字段,axon-integration-tests 同步补齐
         symbol: "BTC-USDT".into(),
+        // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
+        instrument: None,
         price: rust_decimal::Decimal::from(50000),
         quantity: rust_decimal::Decimal::new(1, 3),
         fee: rust_decimal::Decimal::from(5),
@@ -250,6 +252,8 @@ pub fn run_batch_trading_stats() {
             fill_id: format!("fill-{:03}", i),
             // Stage B-MVP: Fill 加 symbol 字段,axon-integration-tests 同步补齐
             symbol: format!("SYM-{:03}", i),
+            // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
+            instrument: None,
             price: rust_decimal::Decimal::from(50000 + i * 1000),
             quantity: rust_decimal::Decimal::new(1, 3),
             fee: rust_decimal::Decimal::from(5),

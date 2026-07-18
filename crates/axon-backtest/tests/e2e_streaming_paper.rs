@@ -36,7 +36,7 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── 测试用 strategy ────────────────────────────────────────────────────
 
@@ -54,7 +54,7 @@ impl FixedStrategy {
 }
 
 impl StreamingStrategy for FixedStrategy {
-    fn on_tick(&mut self, _symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
+    fn on_tick(&mut self, _instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
         self.actions.pop_front().into_iter().collect()
     }
 }
@@ -99,8 +99,11 @@ fn make_tick(price: f64) -> Tick {
     )
 }
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 /// 0.4.0:在 paper 模式下注入 `fill_probability=1.0` 的 paper engine,
@@ -119,7 +122,7 @@ fn deterministic_paper_engine() -> StreamingEngine {
 #[test]
 fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
 
     // 对手盘:Sell Limit @100.01(模拟"市场深度恰好 1bps 之外")
     // 策略 Buy @100(原)上浮 1bps 后变 @100.01,正好够到 maker
@@ -132,7 +135,7 @@ fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let events = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -159,7 +162,7 @@ fn paper_buy_limit_slippage_makes_taker_more_aggressive() {
 #[test]
 fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
 
     // 对手盘:Buy Limit @99.99
     // 策略 Sell @100 下浮 1bps → 99.99,正好撮合到 maker
@@ -171,7 +174,7 @@ fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let events = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -198,7 +201,7 @@ fn paper_sell_limit_slippage_makes_taker_more_aggressive() {
 #[test]
 fn paper_market_order_not_slipped() {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
 
     // 对手盘:Sell Limit @100(Market Buy 直接吃 maker)
     let maker = make_limit(900, Side::Sell, 100.0, 1.0);
@@ -210,7 +213,7 @@ fn paper_market_order_not_slipped() {
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let events = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -244,7 +247,7 @@ fn paper_market_order_not_slipped() {
 #[test]
 fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     // 入金 100k(回测初始资金),保证买得起
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
 
@@ -261,7 +264,7 @@ fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
 
     // 阶段 3:tick1 触发 strategy → Market Buy 撮合 maker1 @100
     let e1 = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
     assert_eq!(e1.len(), 1, "tick1 应有 1 fill,实为 {e1:?}");
@@ -272,7 +275,7 @@ fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
 
     // 阶段 5:tick2 触发 strategy → Market Sell 撮合 maker2 @200,平仓
     let e2 = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(200.0),
     });
     assert_eq!(e2.len(), 1, "tick2 应有 1 fill,实为 {e2:?}");
@@ -325,17 +328,17 @@ fn paper_roundtrip_buy_then_sell_yields_pnl_minus_commission() {
 #[test]
 fn paper_hold_action_emits_no_fill() {
     let mut engine = deterministic_paper_engine();
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
 
     let strategy = FixedStrategy::new(vec![StrategyAction::Hold, StrategyAction::Hold]);
     let mut engine = engine.with_strategy(Box::new(strategy));
 
     let e1 = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
     let e2 = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(101.0),
     });
 

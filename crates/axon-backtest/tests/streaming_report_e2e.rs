@@ -20,12 +20,15 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_tick(price: f64) -> Tick {
@@ -43,16 +46,12 @@ fn engine_with_fills() -> StreamingEngine {
         id: u64,
     }
     impl StreamingStrategy for BuyStrategy {
-        fn on_tick(&mut self, symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
-            // T3.2 改:按 '/' 拆 "BASE/QUOTE" 为 base/quote,送 Order::spot
-            // (新 L1MatchingEngine 按 `Instrument` 路由,base/quote 必须对齐;
-            //  否则 maker(基地=BTC,quote=USDT)和 taker(基地=BTC/USDT,quote=USDT)
-            //  落到不同 book 不成交 —— 这是 T3.2 暴露的旧测试 bug。)
-            let (base, quote) = {
-                let s = symbol.as_str();
-                let (b, q) = s.split_once('/').unwrap_or((s, "USDT"));
-                (b.to_string(), q.to_string())
-            };
+        fn on_tick(&mut self, instrument: &Instrument, _price: f64) -> Vec<StrategyAction> {
+            // 从 Instrument 直接取 base/quote(0.6.0:不再按 '/' 拆 string)
+            let (base, quote) = (
+                instrument.base().as_str().to_string(),
+                instrument.quote().as_str().to_string(),
+            );
             let order = Order::spot(
                 self.id,
                 base,
@@ -73,7 +72,7 @@ fn engine_with_fills() -> StreamingEngine {
             ..SimulatedExchange::default()
         }),
     );
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
     engine.set_initial_cash(100_000.0);
 
@@ -101,7 +100,7 @@ fn report_json_export_has_all_fields() {
     let mut engine = engine_with_fills();
     // 喂一个 tick 触发 strategy → fill
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -133,7 +132,7 @@ fn report_json_export_has_all_fields() {
 fn report_csv_export_has_headers_and_equity_rows() {
     let mut engine = engine_with_fills();
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -157,7 +156,7 @@ fn report_csv_export_has_headers_and_equity_rows() {
 fn report_html_export_contains_key_metrics() {
     let mut engine = engine_with_fills();
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -179,7 +178,7 @@ fn report_html_export_contains_key_metrics() {
 fn report_export_to_file_roundtrip() {
     let mut engine = engine_with_fills();
     let _ = engine.on_market_event(MarketDataEvent::Tick {
-        symbol: btc(),
+        instrument: btc_spot(),
         tick: make_tick(100.0),
     });
 
@@ -218,7 +217,7 @@ fn report_from_engine_reflects_fills() {
     // 喂 3 个 tick 触发多次 fill
     for price in [100.0, 101.0, 102.0] {
         let _ = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(price),
         });
     }

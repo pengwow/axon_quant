@@ -21,12 +21,15 @@ use axon_core::market::{Side, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Currency;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-fn btc() -> Symbol {
-    Symbol::from("BTC/USDT")
+fn btc_spot() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
 }
 
 fn make_tick(price: f64, ts_nanos: i64) -> Tick {
@@ -42,7 +45,7 @@ fn make_tick(price: f64, ts_nanos: i64) -> Tick {
 /// 同时挂一个 Sell Limit maker,让 Market Buy 有对手盘可撮合
 fn engine_with_sma(short_win: usize, long_win: usize) -> StreamingEngine {
     let mut engine = StreamingEngine::new(TradingMode::Backtest);
-    engine.register_symbol(btc());
+    engine.register_instrument(btc_spot());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
     // 挂 Sell Limit maker(Market Buy 的对手盘)
     let maker = Order::spot(
@@ -71,7 +74,7 @@ fn sma_crossover_uptrend_triggers_buy_fills() {
     let mut total_fills = 0;
     for (i, price) in [100.0, 101.0, 102.0, 103.0, 104.0].iter().enumerate() {
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(*price, (i as i64 + 1) * 1_000),
         });
         total_fills += events.len();
@@ -103,7 +106,7 @@ fn sma_crossover_downtrend_holds() {
     let mut total_fills = 0;
     for (i, price) in [100.0, 99.0, 98.0, 97.0, 96.0].iter().enumerate() {
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(*price, (i as i64 + 1) * 1_000),
         });
         total_fills += events.len();
@@ -127,7 +130,7 @@ fn sma_crossover_mixed_switches_behavior() {
     let mut fills_in_uptrend = 0;
     for (i, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(*price, (i as i64 + 1) * 1_000),
         });
         fills_in_uptrend += events.len();
@@ -142,7 +145,7 @@ fn sma_crossover_mixed_switches_behavior() {
     let mut fills_in_downtrend = 0;
     for (i, price) in [80.0, 70.0, 60.0, 50.0].iter().enumerate() {
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(*price, (4 + i as i64) * 1_000),
         });
         fills_in_downtrend += events.len();
@@ -165,7 +168,7 @@ fn sma_crossover_order_ids_increment() {
         .enumerate()
     {
         let events = engine.on_market_event(MarketDataEvent::Tick {
-            symbol: btc(),
+            instrument: btc_spot(),
             tick: make_tick(*price, (i as i64 + 1) * 1_000),
         });
         for ev in &events {

@@ -24,7 +24,7 @@ use thiserror::Error;
 
 use axon_core::market::{Side, Tick};
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 /// 流式数据源错误
 #[derive(Debug, Error)]
@@ -119,8 +119,8 @@ impl Default for CsvMapping {
 pub enum MarketDataEvent {
     /// 逐笔成交
     Tick {
-        /// 交易品种
-        symbol: Symbol,
+        /// 交易品种(0.6.0 改:`Symbol` → `Instrument`,与 streaming 引擎 HashMap key 对齐)
+        instrument: Instrument,
         /// 成交数据
         tick: Tick,
     },
@@ -133,8 +133,8 @@ pub enum MarketDataEvent {
 /// 统一数据源 trait
 #[async_trait]
 pub trait StreamDataSource: Send + Sync {
-    /// 订阅行情
-    async fn subscribe(&mut self, symbols: &[Symbol]) -> Result<(), StreamError>;
+    /// 订阅行情(0.6.0 改:`&[Symbol]` → `&[Instrument]`)
+    async fn subscribe(&mut self, instruments: &[Instrument]) -> Result<(), StreamError>;
 
     /// 接收下一个行情事件
     async fn next_event(&mut self) -> Option<MarketDataEvent>;
@@ -186,7 +186,7 @@ impl ExchangeStreamSource {
 
 #[async_trait]
 impl StreamDataSource for ExchangeStreamSource {
-    async fn subscribe(&mut self, _symbols: &[Symbol]) -> Result<(), StreamError> {
+    async fn subscribe(&mut self, _instruments: &[Instrument]) -> Result<(), StreamError> {
         // 当前无真 WS 连接;直接标 connected
         // 真正的 WS 接入留给 0.4.0 后续
         self.connected = true;
@@ -238,13 +238,13 @@ impl ReplayStreamSource {
     ///
     /// # 参数
     ///
-    /// - `symbol`:所有 tick 归属的 symbol
+    /// - `instrument`:所有 tick 归属的 instrument(0.6.0 改:`Symbol` → `Instrument`)
     /// - `ticks`:按时间顺序排列的 tick 序列
-    pub fn with_ticks(mut self, symbol: Symbol, ticks: Vec<Tick>) -> Self {
+    pub fn with_ticks(mut self, instrument: Instrument, ticks: Vec<Tick>) -> Self {
         self.ticks = ticks
             .into_iter()
             .map(|tick| MarketDataEvent::Tick {
-                symbol: symbol.clone(),
+                instrument: instrument.clone(),
                 tick,
             })
             .collect();
@@ -260,14 +260,14 @@ impl ReplayStreamSource {
     ///
     /// - 文件不存在 → `StreamError::FileNotFound`
     /// - 数字/方向解析失败 → `StreamError::ParseError("line N: ...")`
-    pub fn from_csv(path: impl Into<PathBuf>, symbol: Symbol) -> Result<Self, StreamError> {
-        Self::from_csv_with_mapping(path, symbol, CsvMapping::default())
+    pub fn from_csv(path: impl Into<PathBuf>, instrument: Instrument) -> Result<Self, StreamError> {
+        Self::from_csv_with_mapping(path, instrument, CsvMapping::default())
     }
 
     /// 从 CSV 文件预加载 ticks(自定义列映射)
     pub fn from_csv_with_mapping(
         path: impl Into<PathBuf>,
-        symbol: Symbol,
+        instrument: Instrument,
         mapping: CsvMapping,
     ) -> Result<Self, StreamError> {
         let path = path.into();
@@ -351,7 +351,7 @@ impl ReplayStreamSource {
             })?;
 
             events.push(MarketDataEvent::Tick {
-                symbol: symbol.clone(),
+                instrument: instrument.clone(),
                 tick: Tick::new(
                     Timestamp::from_nanos(ts_nanos),
                     Price::from_f64(price),
@@ -390,7 +390,7 @@ fn parse_side(s: &str) -> Option<Side> {
 
 #[async_trait]
 impl StreamDataSource for ReplayStreamSource {
-    async fn subscribe(&mut self, _symbols: &[Symbol]) -> Result<(), StreamError> {
+    async fn subscribe(&mut self, _instruments: &[Instrument]) -> Result<(), StreamError> {
         // 校验:ticks 为空且 path 不存在 → 报 FileNotFound
         // 允许"有 ticks 但 path 不存在"通过(测试场景,不在意真实文件)
         if self.ticks.is_empty() && !self.path.exists() {
@@ -423,10 +423,13 @@ mod tests {
     use super::*;
     use axon_core::market::{Side, Tick};
     use axon_core::time::Timestamp;
-    use axon_core::types::{Price, Quantity};
+    use axon_core::types::{Price, Quantity, SpotInstrument, Symbol};
 
-    fn sym() -> Symbol {
-        Symbol::from("BTC-USDT")
+    fn btc_spot() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
     }
 
     fn tick(price: f64) -> Tick {
@@ -441,14 +444,14 @@ mod tests {
     #[tokio::test]
     async fn exchange_source_try_push_and_next_event_roundtrip() {
         let mut src = ExchangeStreamSource::new("test");
-        let _ = src.subscribe(&[sym()]).await;
+        let _ = src.subscribe(&[btc_spot()]).await;
         assert!(src.is_connected());
         assert_eq!(src.buffered(), 0);
 
         // 推入 3 个 tick
         for p in [100.0, 101.0, 102.0] {
             src.try_push(MarketDataEvent::Tick {
-                symbol: sym(),
+                instrument: btc_spot(),
                 tick: tick(p),
             });
         }
@@ -479,9 +482,9 @@ mod tests {
     #[tokio::test]
     async fn replay_source_emits_ticks_in_fifo_order() {
         let src = ReplayStreamSource::new("/tmp/nonexistent.csv")
-            .with_ticks(sym(), vec![tick(100.0), tick(101.0), tick(102.0)]);
+            .with_ticks(btc_spot(), vec![tick(100.0), tick(101.0), tick(102.0)]);
         let mut src = src;
-        let _ = src.subscribe(&[sym()]).await;
+        let _ = src.subscribe(&[btc_spot()]).await;
         assert!(src.is_connected());
         assert_eq!(src.remaining(), 3);
 
@@ -496,9 +499,9 @@ mod tests {
 
     #[tokio::test]
     async fn replay_source_drains_to_none_after_last_tick() {
-        let mut src =
-            ReplayStreamSource::new("/tmp/nonexistent.csv").with_ticks(sym(), vec![tick(100.0)]);
-        let _ = src.subscribe(&[sym()]).await;
+        let mut src = ReplayStreamSource::new("/tmp/nonexistent.csv")
+            .with_ticks(btc_spot(), vec![tick(100.0)]);
+        let _ = src.subscribe(&[btc_spot()]).await;
         let _ = src.next_event().await.expect("first");
         let none = src.next_event().await;
         assert!(none.is_none());
@@ -510,7 +513,7 @@ mod tests {
     async fn replay_source_subscribe_fails_when_no_ticks_and_no_path() {
         // 既无 ticks 又无 path → FileNotFound
         let mut src = ReplayStreamSource::new("/tmp/this_should_not_exist_12345.csv");
-        let result = src.subscribe(&[sym()]).await;
+        let result = src.subscribe(&[btc_spot()]).await;
         assert!(matches!(result, Err(StreamError::FileNotFound(_))));
     }
 
@@ -518,8 +521,8 @@ mod tests {
     async fn replay_source_subscribe_succeeds_with_ticks_even_if_path_missing() {
         // 有 ticks 但 path 不存在 → 仍能 subscribe(测试场景,不在意真实文件)
         let mut src = ReplayStreamSource::new("/tmp/this_should_not_exist_67890.csv")
-            .with_ticks(sym(), vec![tick(100.0)]);
-        let result = src.subscribe(&[sym()]).await;
+            .with_ticks(btc_spot(), vec![tick(100.0)]);
+        let result = src.subscribe(&[btc_spot()]).await;
         assert!(result.is_ok());
     }
 
