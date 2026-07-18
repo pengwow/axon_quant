@@ -578,6 +578,41 @@ impl BacktestEngine {
                     .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        // 0.6.0 新增(Phase 2):funding 自动调度(在 rebalance 之前)
+        //   遍历 `funding_schedules`,若 `next_funding_ts(prev) <= bar_ts` 推
+        //   funding event;bar 跨多个 8h 边界(回测跳秒)用 while 循环多次推。
+        //   mark_aware = true 用 `mark_cache`,否则 fallback 0
+        //   ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
+        //   调 `push_funding(&mut self)` 的 borrow 冲突
+        let bar_ts = self.config.clock.now();
+        let schedules: Vec<(Instrument, FundingSchedule)> = self
+            .funding_schedules
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        for (instrument, schedule) in schedules {
+            let prev_ts = self
+                .last_funding_ts
+                .get(&instrument)
+                .copied()
+                .unwrap_or(Timestamp::from_nanos(0));
+            let mut next_ts = schedule.next_funding_ts(prev_ts);
+            while next_ts.nanos <= bar_ts.nanos {
+                let mark = if schedule.mark_aware {
+                    self.bt_state
+                        .mark_cache
+                        .get(&instrument)
+                        .copied()
+                        .unwrap_or_else(|| Price::from_f64(0.0))
+                        .as_f64()
+                } else {
+                    0.0
+                };
+                self.push_funding(instrument.clone(), schedule.fixed_rate, mark, next_ts);
+                self.last_funding_ts.insert(instrument.clone(), next_ts);
+                next_ts = schedule.next_funding_ts(next_ts);
+            }
+        }
         // 0.6.0 新增(Phase 1):bar 末自动 rebalance
         //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
         //     阈值,所有 leg 都在阈值内,no-op
