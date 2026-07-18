@@ -33,7 +33,7 @@ pub mod types;
 pub use builder::EventBuilder;
 pub use error::{EventError, EventResult};
 pub use fill::FillEvent;
-pub use funding::FundingEvent;
+pub use funding::{FundingEvent, FundingSchedule};
 pub use handler::EventHandler;
 pub use mark::MarkEvent;
 pub use market::{MarketDataEvent, MarketDataPayload};

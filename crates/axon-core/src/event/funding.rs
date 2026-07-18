@@ -178,3 +178,100 @@ mod tests {
         );
     }
 }
+
+/// 0.6.0 新增(Phase 2):funding 8h 自动调度配置
+///
+/// 引擎在每根 bar 末(`begin_bar` 收尾)检查 schedule:若
+/// `last_funding_ts[instrument] + interval_ns <= bar_ts` 合成 `FundingEvent`
+/// 推入 `EventQueue`(走 `push_funding` 派发路径)。
+///
+/// `mark_aware = true` 时使用 `mark_cache[instrument]`(若 cache 为空则
+/// fallback 0.0,真实回测中 mark 缺失等价 funding 不发生);`false` 时用
+/// 当前 `fallback_mark` 价(通常为 fill_price,需用户先 fill 过)。
+///
+/// 真实交易所(Binance / OKX)典型 8h 一次,UTC 00:00 / 08:00 / 16:00 整点;
+/// `interval_ns` 是**相对**间隔,不强制对齐到整点(用户可用 `next_funding_ts`
+/// 自定义对齐逻辑)。
+///
+/// # 示例
+///
+/// ```ignore
+/// use axon_core::event::FundingSchedule;
+/// use axon_core::types::{Instrument, SwapInstrument, SwapSettle, Symbol};
+///
+/// let btc_perp = Instrument::Swap(SwapInstrument {
+///     base: Symbol::from("BTC"),
+///     quote: Symbol::from("USDT"),
+///     settle: SwapSettle::UsdMargin,
+///     contract_size: 1.0,
+/// });
+/// let schedule = FundingSchedule::fixed_8h(btc_perp, 0.0001);
+/// assert_eq!(schedule.interval_ns, 8 * 3600 * 1_000_000_000);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FundingSchedule {
+    /// 永续合约品种(只对 swap 生效;spot 收到会被引擎忽略)
+    pub instrument: Instrument,
+    /// 结算间隔(ns)。典型 8h = 28_800_000_000_000
+    pub interval_ns: i64,
+    /// 资金费率(正 = long 付 short,负 = short 付 long)
+    ///
+    /// 回测常用固定费率;若需历史回放真实 funding,改用 `Event::Funding`
+    /// 直接推入(`with_funding_schedule` 关闭后用 `push_funding`)。
+    pub fixed_rate: f64,
+    /// `true`:用 `mark_cache[instrument]`(推荐);`false`:fallback 0
+    pub mark_aware: bool,
+}
+
+impl FundingSchedule {
+    /// 构造 8h 固定费率 schedule(回测最常用)
+    ///
+    /// 默认 `mark_aware = true`,依赖引擎 mark cache。
+    pub fn fixed_8h(instrument: Instrument, rate: f64) -> Self {
+        Self {
+            instrument,
+            interval_ns: 8 * 3600 * 1_000_000_000,
+            fixed_rate: rate,
+            mark_aware: true,
+        }
+    }
+
+    /// 计算下一次 funding 时间戳(相对 `prev_ts + interval_ns`)
+    ///
+    /// 不强制对齐到整点;若用户要 UTC 00:00 / 08:00 / 16:00 对齐,自行
+    /// 在 `last_funding_ts` 初始化时 set 0(默认 0,首次 bar 末即触发)。
+    #[inline]
+    pub fn next_funding_ts(&self, prev_ts: Timestamp) -> Timestamp {
+        Timestamp::from_nanos(prev_ts.nanos + self.interval_ns)
+    }
+}
+
+#[cfg(test)]
+mod schedule_tests {
+    use super::*;
+    use crate::types::{SwapInstrument, SwapSettle, Symbol};
+
+    fn btc_perp() -> Instrument {
+        Instrument::Swap(SwapInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+            settle: SwapSettle::UsdMargin,
+            contract_size: 1.0,
+        })
+    }
+
+    #[test]
+    fn test_fixed_8h_default_interval() {
+        let s = FundingSchedule::fixed_8h(btc_perp(), 0.0001);
+        assert_eq!(s.interval_ns, 28_800_000_000_000);
+        assert!((s.fixed_rate - 0.0001).abs() < 1e-12);
+        assert!(s.mark_aware);
+    }
+
+    #[test]
+    fn test_next_funding_ts_adds_interval() {
+        let s = FundingSchedule::fixed_8h(btc_perp(), 0.0);
+        let next = s.next_funding_ts(Timestamp::from_nanos(0));
+        assert_eq!(next.nanos, 28_800_000_000_000);
+    }
+}
