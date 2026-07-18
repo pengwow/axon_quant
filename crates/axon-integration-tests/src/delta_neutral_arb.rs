@@ -579,6 +579,9 @@ fn mark_funding_combined_unrealized_pnl() {
 
 /// 端到端 rebalance(0.5.0 Phase D):预挂对手盘 → set_target_position → rebalance
 /// 触发市价单 → position 推到目标。
+///
+/// 0.6.0 改(Phase 1):依赖 `begin_bar` 收尾自动 rebalance,不再手写调用。
+/// 用户只需 `with_auto_rebalance` + `set_target` + `begin_bar`。
 #[test]
 fn rebalance_end_to_end_pnl_aware() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -592,13 +595,13 @@ fn rebalance_end_to_end_pnl_aware() {
     });
 
     engine.run();
-    // 预挂 sell 后再设 target + rebalance
+    // 0.6.0 改:启用自动 rebalance + 设 target + 调 begin_bar 收尾触发
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 0.1);
-    let triggered = engine.rebalance_to_target(Some(1e-6));
-    assert_eq!(triggered, 1, "应触发 1 笔 rebalance 单");
+    engine.begin_bar(50_000.0, btc_spot());
     assert!(
         (engine.get_position(&btc_spot()) - 0.1).abs() < 1e-9,
-        "rebalance 后 spot 应=+0.1"
+        "begin_bar 收尾 rebalance 后 spot 应=+0.1"
     );
 
     let result = engine.run();
@@ -611,6 +614,8 @@ fn rebalance_end_to_end_pnl_aware() {
 
 /// 端到端 delta-neutral rebalance:spot long +1 + perp short -1
 /// 同步 rebalance → 两 leg 净额 0(delta 中性)
+///
+/// 0.6.0 改(Phase 1):依赖 `begin_bar` 收尾自动 rebalance。
 #[test]
 fn rebalance_two_legs_delta_neutral() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -630,12 +635,12 @@ fn rebalance_two_legs_delta_neutral() {
     });
 
     engine.run();
-    // 设 delta-neutral 目标
+    // 0.6.0 改:启用 auto_rebalance,设两个 leg target,单次 begin_bar 触发
+    // (rebalance 内部遍历所有 legs,与 begin_bar 的 instrument 参数无关)
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 1.0);
     engine.set_target_position(btc_perp(), -1.0);
-    let triggered = engine.rebalance_to_target(Some(1e-6));
-    // 2 笔 fill(spot + perp 各 1)
-    assert_eq!(triggered, 2, "应触发 2 笔 rebalance 单");
+    engine.begin_bar(50_000.0, btc_spot());
     // 验证 delta-neutral
     let spot_q = engine.get_position(&btc_spot());
     let perp_q = engine.get_position(&btc_perp());
@@ -653,6 +658,8 @@ fn rebalance_two_legs_delta_neutral() {
 
 /// 端到端 rebalance + funding 组合:delta-neutral 入场 + rebalance 触发 +
 /// 后续 funding 结算验证整套 0.5.0 Phase C/D 链路。
+///
+/// 0.6.0 改(Phase 1):入场用 `begin_bar` 收尾自动 rebalance。
 #[test]
 fn delta_neutral_full_lifecycle_funding_and_rebalance() {
     let mut engine = make_backtest_engine(100_000.0, |b, q| {
@@ -673,10 +680,11 @@ fn delta_neutral_full_lifecycle_funding_and_rebalance() {
 
     engine.run();
 
-    // 2) 设 delta-neutral 目标 + rebalance 入场
+    // 2) 0.6.0 改:auto_rebalance + set_targets + begin_bar 一次性入场
+    engine.with_auto_rebalance(1e-6);
     engine.set_target_position(btc_spot(), 1.0);
     engine.set_target_position(btc_perp(), -1.0);
-    engine.rebalance_to_target(Some(1e-6));
+    engine.begin_bar(50_000.0, btc_spot());
     assert!((engine.get_position(&btc_spot()) - 1.0).abs() < 1e-9);
     assert!((engine.get_position(&btc_perp()) - (-1.0)).abs() < 1e-9);
 
