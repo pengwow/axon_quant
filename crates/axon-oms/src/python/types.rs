@@ -25,6 +25,7 @@ use pyo3::types::PyDict;
 use crate::types::{
     Order as RustOrder, OrderStatus as RustStatus, OrderType as RustType, Side as RustSide,
 };
+use axon_core::types::{Instrument, SpotInstrument, SwapInstrument, SwapSettle, Symbol};
 
 use super::decimal::py_to_decimal;
 
@@ -332,6 +333,87 @@ fn decimal_to_string<'py>(v: &Bound<'py, pyo3::types::PyAny>) -> PyResult<String
     v.extract::<String>()
 }
 
+/// Python dict → Rust [`Instrument`]
+///
+/// 与 `axon-backtest::python::parse_instrument` 行为对齐,供 PyOrder
+/// `.with_instrument({...})` 使用:
+///
+/// - spot:`{"kind": "spot", "base": "BTC", "quote": "USDT"}`
+/// - swap:`{"kind": "swap", "base": "BTC", "quote": "USDT",
+///         "settle": "usd_margin" | "coin_margin",
+///         "contract_size": 1.0}`
+///
+/// 字段大小写:`kind` / `settle` 不敏感;`base` / `quote` / `contract_size` 严格。
+///
+/// 错误:
+/// - 缺 `kind` / `base` / `quote` → `PyKeyError`
+/// - `kind` 值非法 / `settle` 值非法 → `PyValueError`
+///
+/// 不在 `axon-core::python-utils` 共享的理由:本函数只 30 行,且 OMS 不
+/// 依赖 backtest;重复实现避免反向依赖(cargo 循环风险)。两边一旦发生
+/// 行为漂移,跨 leg 测试 `test_cross_leg_risk_oms_backtest` 会兜底。
+fn parse_instrument_dict<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Instrument> {
+    use pyo3::exceptions::{PyKeyError, PyValueError};
+    use pyo3::types::PyAnyMethods;
+
+    let kind_any = dict
+        .get_item("kind")?
+        .ok_or_else(|| PyKeyError::new_err("missing 'kind'"))?;
+    let kind: String = kind_any.extract()?;
+    match kind.to_lowercase().as_str() {
+        "spot" => {
+            let base: String = dict
+                .get_item("base")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'base'"))?
+                .extract()?;
+            let quote: String = dict
+                .get_item("quote")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'quote'"))?
+                .extract()?;
+            Ok(Instrument::Spot(SpotInstrument {
+                base: Symbol::from(base),
+                quote: Symbol::from(quote),
+            }))
+        }
+        "swap" => {
+            let base: String = dict
+                .get_item("base")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'base'"))?
+                .extract()?;
+            let quote: String = dict
+                .get_item("quote")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'quote'"))?
+                .extract()?;
+            let settle: String = dict
+                .get_item("settle")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'settle'"))?
+                .extract()?;
+            let contract_size: f64 = dict
+                .get_item("contract_size")?
+                .ok_or_else(|| PyKeyError::new_err("missing 'contract_size'"))?
+                .extract()?;
+            let settle_enum = match settle.to_lowercase().as_str() {
+                "usd_margin" => SwapSettle::UsdMargin,
+                "coin_margin" => SwapSettle::CoinMargin,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "invalid settle: {other} (expected 'usd_margin' / 'coin_margin')"
+                    )));
+                }
+            };
+            Ok(Instrument::Swap(SwapInstrument {
+                base: Symbol::from(base),
+                quote: Symbol::from(quote),
+                settle: settle_enum,
+                contract_size,
+            }))
+        }
+        other => Err(PyValueError::new_err(format!(
+            "invalid instrument kind: {other} (expected 'spot' / 'swap')"
+        ))),
+    }
+}
+
 // ─── Order ──────────────────────────────────────────────
 
 /// Python 端 `Order` —— 字段全用 str repr
@@ -378,6 +460,24 @@ impl PyOrder {
     #[getter]
     fn symbol(&self) -> String {
         self.inner.instrument_id.clone()
+    }
+
+    /// 0.6.0 新增:把结构化 `Instrument`(spot / swap)注入 `Order`。
+    ///
+    /// Python 端 `Order` 构造只支持 `instrument_id: str`,新调用方构造
+    /// Order 后用 `.with_instrument({...})` 链式注入(供跨 leg 风险约束 /
+    /// 路由使用)。`dict` 格式与 `axon-backtest` 的 `parse_instrument`
+    /// 对齐:`{"kind": "spot", "base": "BTC", "quote": "USDT"}` 或
+    /// `{"kind": "swap", "base": "BTC", "quote": "USDT",
+    ///   "settle": "usd_margin", "contract_size": 1.0}`。
+    #[pyo3(signature = (instrument))]
+    fn with_instrument<'py>(
+        &mut self,
+        instrument: &Bound<'py, pyo3::types::PyDict>,
+    ) -> PyResult<()> {
+        let parsed = parse_instrument_dict(instrument)?;
+        self.inner = self.inner.clone().with_instrument(parsed);
+        Ok(())
     }
     #[getter]
     fn side(&self) -> PySide {

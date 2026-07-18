@@ -120,8 +120,15 @@ def limit_order(
     quantity: float | str | Decimal,
     price: float | str | Decimal,
     idempotency_key: Optional[str] = None,
+    instrument: Optional[dict] = None,
 ) -> Order:
     """构造 limit Order。
+
+    0.6.0 起:可选 ``instrument`` 参数字段,值为 dict 协议(由
+    ``axon_quant.backtest.spot_instrument()`` / ``swap_instrument()`` 构造
+    或手写但需匹配 Rust 端 ``parse_instrument`` 协议);提供时通过
+    ``Order.with_instrument()`` 链式注入,供跨 leg 风险约束 / 路由使用。
+    不提供时仅以 ``symbol`` 字符串作为规范化标识符(向后兼容)。
 
     Args:
         symbol: 交易对符号,如 ``"BTC-USDT"``
@@ -129,12 +136,13 @@ def limit_order(
         quantity: 订单数量(浮点 / 字符串 / ``Decimal``,推荐字符串保精度)
         price: 限价单价(同 quantity)
         idempotency_key: 幂等性键(可选,同一 key 不能重复提交)
+        instrument: 0.6.0 新增,结构化交易品种 dict(可选,见上)
 
     Returns:
         ``Order`` 实例(可传入 ``OrderManager.submit``)
     """
     py_side = Side.Buy if str(side).strip().lower() == "buy" else Side.Sell
-    return Order(
+    order = Order(
         symbol=str(symbol),
         side=py_side,
         order_type=OrderType.Limit,
@@ -142,6 +150,9 @@ def limit_order(
         price=Decimal(str(price)),
         idempotency_key=idempotency_key,
     )
+    if instrument is not None:
+        order.with_instrument(instrument)
+    return order
 
 
 def market_order(
@@ -149,20 +160,24 @@ def market_order(
     side: str,
     quantity: float | str | Decimal,
     idempotency_key: Optional[str] = None,
+    instrument: Optional[dict] = None,
 ) -> Order:
     """构造 market Order(price 传 0,撮合端按市价吃单)。
+
+    0.6.0 起:可选 ``instrument`` 参数,语义与 ``limit_order`` 一致。
 
     Args:
         symbol: 交易对符号
         side: ``"Buy"`` / ``"Sell"``
         quantity: 订单数量
         idempotency_key: 幂等性键(可选)
+        instrument: 0.6.0 新增,结构化交易品种 dict(可选)
 
     Returns:
         ``Order`` 实例
     """
     py_side = Side.Buy if str(side).strip().lower() == "buy" else Side.Sell
-    return Order(
+    order = Order(
         symbol=str(symbol),
         side=py_side,
         order_type=OrderType.Market,
@@ -170,6 +185,9 @@ def market_order(
         price=Decimal("0"),
         idempotency_key=idempotency_key,
     )
+    if instrument is not None:
+        order.with_instrument(instrument)
+    return order
 
 
 # ═══════════════════════════════════════════════════════════════════════════

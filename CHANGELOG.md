@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`axon-oms` Python 绑定 `Order.with_instrument(dict)` builder**:
+  - 在 PyOrder 上暴露 Rust 端 `Order::with_instrument(Instrument)` 链式方法,
+    Python 端可传入 `{"kind": "spot"/"swap", "base": ..., "quote": ...,
+    "settle": ..., "contract_size": ...}` 字典注入结构化 `Instrument`,
+    与 `axon-backtest::parse_instrument` 行为对齐
+  - `axon_quant.oms.limit_order` / `market_order` 工厂新增可选 `instrument: dict` 形参,
+    传值时自动调用 `with_instrument`,供跨 leg 风险约束 / 路由使用;
+    不传时仅以 `symbol` 字符串作为规范化标识符(向后兼容)
+  - `parse_instrument_dict` 内联在 `axon-oms/src/python/types.rs`,不复用
+    `axon-backtest` 避免反向 cargo 依赖(两边行为漂移由跨 leg e2e 兜底)
+
+### Documentation
+
+- **`docs/en/reference/defi.md`** — 同步中英版:header 升级到 `AXON v0.6.0+`,
+  API Reference 表格标注 "new in 0.3.0, stable in 0.6.0"(对照中文版的
+  "0.3.0 起" + 当前 release 状态)
+- **`docs/en/reference/swarm-orchestration.md`** — 标题"as of 0.4.1" → "as of 0.6.0",
+  与中文版"基于 0.6.0"对齐
+- **`examples/11_oms/oms_demo.py`** — 0.6.0 OMS 演示启用 `instrument=BTC_SPOT` /
+  `ETH_SPOT` 注入(从 `axon_quant.backtest` 复用 `spot_instrument` 工厂),
+  替代注释中"待后续版本"占位
+
 ### Fixed
 
 - **pyo3 0.27 Python 绑定构建失败**(`fix(ci): port 0.5.0 pyo3 0.27 fixes to 0.6.0 + complete leg-pair coverage`,commit `abcbdea`):
