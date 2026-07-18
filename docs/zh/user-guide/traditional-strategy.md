@@ -176,19 +176,13 @@ class SimpleMomentumStrategy:
         quantity = Decimal(str(notional / bar.close))
         
         return Order(
-            client_order_id=OrderId.new(),
-            symbol=Symbol("BTCUSDT"),
+            # 0.6.0 Python `axon_quant.oms.Order` 字段集:`(symbol, side, order_type, quantity, price, idempotency_key=None)`
+            symbol="BTCUSDT",
             side=side,
             order_type=OrderType.Market,
-            price=None,
             quantity=quantity,
-            time_in_force=TimeInForce.Gtc,
-            exchange=ExchangeId.Binance,
-            meta={
-                "strategy": "SimpleMomentum",
-                "signal_confidence": str(signal.confidence),
-                "signal_reason": signal.reason,
-            },
+            price=Decimal("0"),  # 市价单 price 传 0
+            idempotency_key=f"momentum-{signal.confidence:.2f}",
         )
     
     def get_stats(self) -> Dict:
@@ -681,20 +675,12 @@ class TrendFollowingStrategy:
         quantity = Decimal(str(notional / price))
         
         return Order(
-            client_order_id=OrderId.new(),
-            symbol=Symbol("BTCUSDT"),
+            symbol="BTCUSDT",
             side=side,
             order_type=OrderType.Market,
-            price=None,
             quantity=quantity,
-            time_in_force=TimeInForce.Gtc,
-            exchange=ExchangeId.Binance,
-            meta={
-                "strategy": "TrendFollowing",
-                "reason": reason,
-                "stop_loss": str(stop_loss),
-                "take_profit": str(take_profit),
-            },
+            price=Decimal("0"),
+            idempotency_key=f"trend-{reason[:16]}",
         )
 
 

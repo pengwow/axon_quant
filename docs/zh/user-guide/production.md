@@ -663,24 +663,24 @@ async def trading_loop(adapter: BinanceAdapter):
 async def place_order(adapter: BinanceAdapter):
     """
     下单示例: 市价买入 0.001 BTC。
+
+    0.6.0 Python 端 `place_order` 仅接受 dict(非 `Order` 实例),
+    dict 字段见 `axon_quant.exchange.BinanceAdapter.place_order` docstring。
     """
-    order = Order(
-        client_order_id=OrderId.new(),  # UUID v7
-        symbol=Symbol("BTCUSDT"),
-        side=Side.Buy,
-        order_type=OrderType.Market,
-        price=None,                    # 市价单不需要价格
-        quantity=Decimal("0.001"),
-        time_in_force=TimeInForce.Gtc,
-        exchange=ExchangeId.Binance,
-        meta={"strategy": "momentum_v1"},
-    )
-    
-    order_id = await adapter.send_order(order)
+    order = {
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "type": "market",            # 市价单
+        "quantity": "0.001",
+        "tif": "GTC",
+        "meta": {"strategy": "momentum_v1"},
+    }
+
+    order_id = await adapter.place_order(order)
     print(f"订单已发送,客户端 ID: {order_id}")
     return order_id
 
-async def cancel_order(adapter: BinanceAdapter, order_id: OrderId):
+async def cancel_order(adapter: BinanceAdapter, order_id: str):
     """撤单: Binance 需要 symbol + clientOrderId。"""
     await adapter.cancel_order(order_id)
     print(f"订单 {order_id} 已撤销")

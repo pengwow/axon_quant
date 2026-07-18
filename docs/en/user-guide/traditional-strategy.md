@@ -280,8 +280,10 @@ class HybridMomentumRL:
             return Order(
                 symbol=bar.symbol,
                 side=side,
+                order_type=OrderType.Limit,  # use Limit so price matters
                 quantity=quantity,
                 price=bar.close,
+                idempotency_key=f"rl-env-{signal}",
             )
         
         return None

@@ -454,8 +454,8 @@ config = ExchangeConfig(
 adapter = BinanceAdapter(config)
 await adapter.connect()
 
-# Subscribe to market data
-await adapter.subscribe([Symbol("BTCUSDT"), Symbol("ETHUSDT")])
+# Subscribe to market data (0.6.0 Python adapter.subscribe accepts only str list)
+await adapter.subscribe(["BTCUSDT", "ETHUSDT"])
 
 # Get market data channel
 market_rx = adapter.market_data_rx()
@@ -467,19 +467,16 @@ while True:
         case "Trade":
             print(f"Trade: {msg.data.price} x {msg.data.quantity}")
 
-# Place order
-order = Order(
-    client_order_id=OrderId.new(),
-    symbol=Symbol("BTCUSDT"),
-    side=Side.Buy,
-    order_type=OrderType.Market,
-    price=None,
-    quantity=Decimal("0.001"),
-    time_in_force=TimeInForce.Gtc,
-    exchange=ExchangeId.Binance,
-    meta={"strategy": "momentum_v1"},
-)
-order_id = await adapter.send_order(order)
+# Place order (0.6.0 Python adapter.place_order accepts only dict, not Order instance)
+order = {
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "market",
+    "quantity": "0.001",
+    "tif": "GTC",
+    "meta": {"strategy": "momentum_v1"},
+}
+order_id = await adapter.place_order(order)
 
 # Cancel order
 await adapter.cancel_order(order_id)

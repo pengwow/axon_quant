@@ -112,7 +112,7 @@
 proptest! {
     #[test]
     fn order_quantity_always_positive(qty in 0.01f64..1000.0) {
-        let order = Order::new(..., Quantity::from_f64(qty), ...);
+        let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Market, Quantity::from_f64(qty), TimeInForce::GTC);
         assert!(order.quantity.as_f64() > 0.0);
     }
 

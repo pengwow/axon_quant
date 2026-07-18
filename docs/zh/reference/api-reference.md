@@ -454,8 +454,8 @@ config = ExchangeConfig(
 adapter = BinanceAdapter(config)
 await adapter.connect()
 
-# 订阅行情
-await adapter.subscribe([Symbol("BTCUSDT"), Symbol("ETHUSDT")])
+# 订阅行情(0.6.0 Python 端仅接受字符串 symbol 列表,无 Symbol 类)
+await adapter.subscribe(["BTCUSDT", "ETHUSDT"])
 
 # 获取行情通道
 market_rx = adapter.market_data_rx()
@@ -467,19 +467,16 @@ while True:
         case "Trade":
             print(f"成交: {msg.data.price} x {msg.data.quantity}")
 
-# 下单
-order = Order(
-    client_order_id=OrderId.new(),
-    symbol=Symbol("BTCUSDT"),
-    side=Side.Buy,
-    order_type=OrderType.Market,
-    price=None,
-    quantity=Decimal("0.001"),
-    time_in_force=TimeInForce.Gtc,
-    exchange=ExchangeId.Binance,
-    meta={"strategy": "momentum_v1"},
-)
-order_id = await adapter.send_order(order)
+# 下单(0.6.0 Python 端 place_order 仅接受 dict,非 Order 实例)
+order = {
+    "symbol": "BTCUSDT",
+    "side": "buy",
+    "type": "market",
+    "quantity": "0.001",
+    "tif": "GTC",
+    "meta": {"strategy": "momentum_v1"},
+}
+order_id = await adapter.place_order(order)
 
 # 撤单
 await adapter.cancel_order(order_id)
