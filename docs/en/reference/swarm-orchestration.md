@@ -202,7 +202,7 @@ See [`examples/18_harness/swarm_demo.py`](https://github.com/pengwow/axon_quant/
 
 **Total**: 322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 all pass**.
 
-## 6. Current Status and Unimplemented Items (as of 0.4.1)
+## 6. Current Status and Unimplemented Items (as of 0.6.0)
 
 ### Completed Roadmap Items (0.3.x / 0.4.x)
 
