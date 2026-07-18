@@ -447,9 +447,10 @@ impl BacktestEngine {
             rebalances_triggered: 0,
             // 0.6.0 新增(Phase 1):bar 计数器从 0 开始,`begin_bar` 每次 +1
             bar_id: 0,
-            // 0.6.0 新增(Phase 1):尚未触发过 rebalance(0 表示"未触发"
-            // 状态,首次 rebalance 必在 bar_id >= 1 后发生,保证不等式生效)
-            last_rebalance_bar_id: 0,
+            // 0.6.0 新增(Phase 1):用 u64::MAX 表示"从未 rebalance",
+            // 保证首次调用 `rebalance_to_target` 时 guard 不误伤(bar_id=0
+            // 不会等于 u64::MAX,首次必通过)
+            last_rebalance_bar_id: u64::MAX,
         }
     }
 
@@ -528,6 +529,11 @@ impl BacktestEngine {
     /// 参数 `symbol: Symbol` 替换为 `instrument: Instrument` 以支持
     /// 多品种路由(seed 用 `Order::spot(instrument.base(), ...)` 构造)。
     pub fn begin_bar(&mut self, mid_price: f64, instrument: Instrument) {
+        // 0.6.0 新增(Phase 1):bar_id 自增,放最前以保证每次 begin_bar 都推进
+        // bar_id(无论 seed_liquidity 是否启用)。这样:
+        // - guard 让同 bar 多次 `rebalance_to_target` 只触发一次
+        // - 用户用 begin_bar 显式跨 bar 时,新 bar 必能重新 rebalance
+        self.bar_id += 1;
         let Some(cfg) = self.seed_liquidity_config else {
             return;
         };
@@ -1250,6 +1256,12 @@ impl BacktestEngine {
     ///
     /// 实际发出去的 rebalance 单数(便于 `RunResult::rebalances_triggered` 统计)。
     pub fn rebalance_to_target(&mut self, threshold_override: Option<f64>) -> u64 {
+        // 0.6.0 新增(Phase 1):bar_id guard——本 bar 已 rebalance 过则 no-op,
+        // 与 `begin_bar` 收尾的自动 rebalance 配合,避免同 bar 多次触发
+        if self.last_rebalance_bar_id == self.bar_id {
+            return 0;
+        }
+
         // 确定本轮阈值(`override` 优先;否则读 auto_rebalance_threshold;
         // 都没有说明 rebalance 关闭 → 直接返回 0)
         let threshold = threshold_override
@@ -1327,6 +1339,12 @@ impl BacktestEngine {
         // 0.5.0 新增(Phase D):把本次 fill 数累计到引擎字段,
         // `build_result` 时统一写到 `RunResult.rebalances_triggered`
         self.rebalances_triggered += triggered;
+        // 0.6.0 新增(Phase 1):本 bar 已 rebalance,记 bar_id
+        // (仅当 triggered > 0 时记录,确保"无 target / 全在阈值内"场景
+        // 不会浪费 guard —— 用户多次无操作 rebalance 仍可继续尝试)
+        if triggered > 0 {
+            self.last_rebalance_bar_id = self.bar_id;
+        }
         triggered
     }
 
@@ -3018,6 +3036,9 @@ mod tests {
     ///
     /// 关键:每次 rebalance 的 fill 数都应累加到 `RunResult.rebalances_triggered`。
     /// 第一轮:0→+1(1 fill);第二轮:1→+2(再 1 fill);合计 2。
+    ///
+    /// 0.6.0 改:每次 rebalance 之间用 `begin_bar` 跨 bar,避免 bar_id guard
+    /// (Phase 1)在同 bar 拦掉第二次 rebalance。
     #[test]
     fn test_rebalances_triggered_accumulate_across_calls() {
         let mut q = EventQueue::new();
@@ -3031,10 +3052,13 @@ mod tests {
         engine.run();
         engine.set_target_position(btc_spot.clone(), 1.0);
 
-        // 第一次:0→+1 → 1 fill
+        // 第一次:0→+1 → 1 fill(bar_id=0,首次 rebalance 通过 guard)
         let t1 = engine.rebalance_to_target(Some(1e-6));
         assert_eq!(t1, 1);
         assert!((engine.get_position(&btc_spot) - 1.0).abs() < 1e-9);
+
+        // begin_bar 推进 bar_id → guard 让 t2 重新允许
+        engine.begin_bar(50_000.0, btc_spot.clone());
 
         // 第二次:+1→+2 → 再 1 fill(总累计 2)
         engine.set_target_position(btc_spot.clone(), 2.0);
@@ -3042,7 +3066,7 @@ mod tests {
         assert_eq!(t2, 1);
         assert!((engine.get_position(&btc_spot) - 2.0).abs() < 1e-9);
 
-        // 第三次:阈值内,不发单
+        // 第三次:阈值内,不发单(bar_id 不再推进,因为 t3 不发单无影响)
         let t3 = engine.rebalance_to_target(Some(1e-6));
         assert_eq!(t3, 0);
 
