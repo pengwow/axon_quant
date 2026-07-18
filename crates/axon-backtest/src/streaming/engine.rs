@@ -300,7 +300,6 @@ impl StreamingEngine {
     /// 撮合产生的 fills 会累加 `total_trades`,但不更新 portfolio(portfolio 由
     /// `on_market_event` 走 strategy 路径时统一更新,避免重复记账)。
     pub fn submit_order(&mut self, order: Order) -> Result<u64, String> {
-        // 0.6.0:用 order.instrument 直接索引(原 T2.2 过渡 helper `instrument_to_key` 已删)
         let order_id = order.id;
         let inst_key = order.instrument.clone();
 
