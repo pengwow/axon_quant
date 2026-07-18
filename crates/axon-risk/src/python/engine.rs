@@ -480,6 +480,16 @@ impl PyRiskReason {
                 fields.insert("available".into(), available);
                 "InsufficientMargin"
             }
+            RustReason::LegPairNetExposureExceeded {
+                pair,
+                current,
+                limit,
+            } => {
+                str_fields.insert("pair".into(), pair);
+                fields.insert("current".into(), current);
+                fields.insert("limit".into(), limit);
+                "LegPairNetExposureExceeded"
+            }
         }
         .to_string();
         Self {
@@ -620,7 +630,7 @@ fn dict_to_order(dict: &Bound<'_, PyDict>) -> PyResult<CoreOrder> {
     // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
     let (base, quote) = match symbol.split_once('-') {
         Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
-        None => (Symbol::from(&symbol), Symbol::from("USDT")),
+        None => (Symbol::from(symbol.as_str()), Symbol::from("USDT")),
     };
     Ok(CoreOrder::spot(
         id,
