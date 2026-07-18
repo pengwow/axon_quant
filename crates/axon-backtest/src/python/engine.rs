@@ -189,9 +189,44 @@ impl PyBacktestEngine {
     ///   是 no-op(默认 trait 实现,见 `matching::engine::MatchingEngine`)。
     /// - `L1MatchingEngine` / `ImpactedMatchingEngine` 都重写了该方法,
     ///   提供完整实现。
+    /// - **0.7.0 起**:`with_seed_liquidity(...)` 设为 **default** 配线,
+    ///   用 `with_seed_liquidity_for(instrument, ...)` 设 per-leg 覆写;
+    ///   `begin_bar(price, instrument)` 优先 per-leg,fallback default。
     fn with_seed_liquidity(&mut self, half_spread: f64, depth_levels: usize, size_per_level: f64) {
         self.inner
             .with_seed_liquidity(half_spread, depth_levels, size_per_level);
+    }
+
+    /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
+    ///
+    /// 给定 instrument 设置独立的 `SeedLiquidityConfig`,优先于
+    /// `with_seed_liquidity(...)` 设的 default。允许 spot 和 perp 各用
+    /// 不同 half_spread / depth / size(spot 紧 / perp 松 的真实市场规律)。
+    ///
+    /// Args:
+    /// - `instrument`: 交易品种 dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
+    /// - `half_spread`: 每层价差
+    /// - `depth_levels`: 每侧挂单层数
+    /// - `size_per_level`: 每层挂单数量
+    ///
+    /// Example:
+    /// ```python
+    /// engine = BacktestEngine(100_000.0)
+    /// engine.with_seed_liquidity(0.1, 5, 0.1)                # default
+    /// engine.with_seed_liquidity_for(spot_inst, 0.01, 10, 0.5)  # spot 紧
+    /// engine.with_seed_liquidity_for(perp_inst, 0.5, 5, 0.1)    # perp 松
+    /// ```
+    fn with_seed_liquidity_for(
+        &mut self,
+        instrument: &Bound<'_, PyAny>,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
+        self.inner
+            .with_seed_liquidity_for(inst, half_spread, depth_levels, size_per_level);
+        Ok(())
     }
 
     /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
@@ -204,8 +239,10 @@ impl PyBacktestEngine {
     /// - `instrument`: 交易品种 dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
     ///
     /// 行为:
-    /// - 若未调 `with_seed_liquidity`:no-op(纯订单簿撮合,buy 单 → fills=0)
-    /// - 若已调:`matcher.clear_book()` + `seed_liquidity(price, ...)` 自动执行
+    /// - 若未调 `with_seed_liquidity` / `with_seed_liquidity_for`:no-op(纯订单簿撮合,buy 单 → fills=0)
+    /// - 若已调(任一):`matcher.clear_book_for(instrument)` 只清该 instrument 的
+    ///   book(0.7.0 起,**不**再清其他 leg),再 `seed_liquidity(price, ...)` 挂
+    ///   限价单。配线优先 per-leg,fallback default。
     #[pyo3(signature = (price, instrument))]
     fn begin_bar(
         &mut self,
@@ -215,6 +252,39 @@ impl PyBacktestEngine {
     ) -> PyResult<()> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.begin_bar(price, inst);
+        Ok(())
+    }
+
+    /// 0.7.0 新增:多 leg 同 bar seed(spot + perp 套利场景)
+    ///
+    /// 在同一根 bar 内对多个 instrument 同时 seed liquidity,常用于 delta-neutral
+    /// 套利(spot 和 perp 各自挂对手盘,策略单两边都能成交)。
+    ///
+    /// Args:
+    /// - `legs`: `dict[instrument_dict, price]`,key 是 instrument dict
+    ///   (由 `spot_instrument()` / `swap_instrument()` 工厂构造),
+    ///   value 是该 leg 的 mid_price
+    ///
+    /// Example:
+    /// ```python
+    /// engine.begin_bar_multi({
+    ///     spot_instrument("BTC", "USDT"): 100.0,
+    ///     swap_instrument("BTC", "USDT", "UsdMargin", 1.0): 200.5,
+    /// })
+    /// ```
+    ///
+    /// 与多次 `begin_bar(price, instrument)` 的区别:
+    /// - 多次 `begin_bar` 会 bar_id 自增多次 + funding 调度多次 + 末次 rebalance,
+    ///   **不**适合多 leg 同 bar
+    /// - `begin_bar_multi` 调一次,bar_id +1,funding 调度一次,末次 rebalance
+    fn begin_bar_multi(&mut self, _py: Python<'_>, legs: &Bound<'_, PyDict>) -> PyResult<()> {
+        let mut parsed: Vec<(axon_core::types::Instrument, f64)> = Vec::with_capacity(legs.len());
+        for (key, value) in legs.iter() {
+            let inst = super::types::parse_instrument(key.cast::<PyDict>()?)?;
+            let price: f64 = value.extract()?;
+            parsed.push((inst, price));
+        }
+        self.inner.begin_bar_multi(parsed);
         Ok(())
     }
 
