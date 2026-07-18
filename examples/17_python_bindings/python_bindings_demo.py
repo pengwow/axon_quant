@@ -75,10 +75,10 @@ def demo_backtest() -> None:
     from axon_quant.backtest import (
         L1MatchingEngine, BacktestEngine,
         limit_order, market_order,
-        spot_instrument, swap_instrument,  # 0.5.0+:Instrument 工厂,替代 "BTC-USDT" 字符串
+        spot_instrument, swap_instrument,  # 0.6.0:Instrument 工厂,替代 "BTC-USDT" 字符串
     )
 
-    # 0.5.0+ 多 leg 路径统一用 `spot_instrument` / `swap_instrument` 工厂
+    # 0.6.0 多 leg 路径统一用 `spot_instrument` / `swap_instrument` 工厂
     btc_spot = spot_instrument("BTC", "USDT")
     eth_spot = spot_instrument("ETH", "USDT")
 

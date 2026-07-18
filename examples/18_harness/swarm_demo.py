@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AXON Swarm 4-Agent Pipeline Demo(0.3.0 P0 工作流 B 收口)。
+"""AXON Swarm 4-Agent Pipeline Demo(0.6.0 P0 工作流 B 收口)。
 
 演示内容:
   1. SwarmOrchestrator 构造 + 4 类 agent 注册(Market / Risk / Execution / Audit)
