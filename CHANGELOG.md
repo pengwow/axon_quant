@@ -6,11 +6,33 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-07-19
+
+0.7.0 主线:per-fill observability + per-leg seed liquidity + 致命 hotfix(seed_liquidity 死循环导致 50GB 内存爆炸)。所有 0.6.0 后续 hotfix(OMS `with_instrument`、pyo3 0.27 fixes、en docs 同步)合并到本段发布。
 
 ### Added
 
-- **`axon-oms` Python 绑定 `Order.with_instrument(dict)` builder**:
+- **`RunResult.fills_detail` per-fill observability**(`feat(backtest): add RunResult.fills_detail per-fill observability (0.7.0 Phase 1)`,commit `a573b9a`):
+  - 新增 `BacktestEngineState.fills: Vec<FillRecord>` 收集**每笔 fill**(同向加仓、部分 fill、反手 全记)
+  - `RunResult.fills_detail: list[dict]` getter,7 字段:``timestamp_ns`` / ``instrument`` / ``taker_order_id`` / ``maker_order_id`` / ``taker_side`` / ``price`` / ``quantity``
+  - Python 绑定同步:``RunResult.fills_detail`` 通过 `axon_quant.backtest.RunResult` 暴露
+  - 区分:``trades``(只记 round-trip,有 realized_pnl)vs ``fills_detail``(每笔 fill 完整审计)
+  - 单测:`crates/axon-backtest/tests/test_fills_detail.rs`,覆盖同向加仓 → `fills=2, trades=0, fills_detail=2` 和 round-trip → `fills=2, trades=1, fills_detail=2`
+
+- **Per-leg seed liquidity**(`feat(backtest): per-leg seed liquidity + begin_bar_multi (0.7.0 Phase 2)`,commit `a15a7d0`):
+  - `BacktestEngine` 字段拆分:`seed_liquidity_config` → `seed_liquidity_per_leg: HashMap<Instrument, SeedLiquidityConfig>` + `default_seed_liquidity_config: Option<SeedLiquidityConfig>`
+  - `with_seed_liquidity_for(instrument, half_spread, depth_levels, size_per_level)`:**per-leg 覆写**,spot 和 perp 可用独立配线(spot 紧 / perp 松 的真实市场规律)
+  - `with_seed_liquidity(...)` 仍存在,设为 **default 配线**(向后兼容 0.6.0);`begin_bar(price, instrument)` 优先 per-leg,fallback default
+  - `begin_bar_multi(legs: IntoIterator<Item=(Instrument, f64)>)` 新 API:**多 leg 同 bar seed**(spot+perp 套利场景),bar_id +1,funding 调度 1 次,末次 rebalance
+  - `MatchingEngine::clear_book_for(&Instrument)` 新增 trait 方法(默认 no-op),L1MatchingEngine override 只清该 instrument 的 book,**不**再误清其他 leg
+  - e2e 测试:`crates/axon-backtest/tests/e2e_per_leg_seed_liquidity.rs`,4 个测试覆盖 per-leg 独立 / begin_bar_multi / 不清其他 leg / default fallback
+
+- **PyO3 绑定**`with_seed_liquidity_for` / `begin_bar_multi`(`feat(backtest): expose with_seed_liquidity_for / begin_bar_multi to Python (0.7.0 Phase 2)`,commit `28a690a`):
+  - `PyBacktestEngine::with_seed_liquidity_for(instrument, half_spread, depth_levels, size_per_level)` Python 端可调
+  - `PyBacktestEngine::begin_bar_multi(legs: dict[instrument, price])` 接收 `dict[instrument_dict, price]`,key 用 `super::types::parse_instrument` 解析
+  - `axon_quant/backtest.py` docstring 新增 "Per-leg seed liquidity(0.7.0 新增)" 章节 + 用法示例
+
+- **`axon-oms` Python 绑定 `Order.with_instrument(dict)` builder**(0.6.0 → 0.7.0 过渡 hotfix,commit `5c34dd6`):
   - 在 PyOrder 上暴露 Rust 端 `Order::with_instrument(Instrument)` 链式方法,
     Python 端可传入 `{"kind": "spot"/"swap", "base": ..., "quote": ...,
     "settle": ..., "contract_size": ...}` 字典注入结构化 `Instrument`,
@@ -33,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   替代注释中"待后续版本"占位
 
 ### Fixed
+
+- **🔥 致命:`seed_liquidity` 死循环 → 内存爆炸 50GB**(`fix(backtest): seed_liquidity 死循环 → 内存爆炸 50GB (0.7.0 hotfix)`,commit `fb5ab01`):
+  - **Root cause**:`seed_liquidity` 构造的 maker 限价单 `status=Created`(未 `activate()`),
+    `match_against_asks` 的 `apply_fill` 试图 `Created → Filled`,状态机不合法
+    (`Created` 只能 → `Pending`/`Rejected`),错误被 `let _` 吞掉,status 永远 `Created`,
+    `is_terminal()` 永远 `false`,循环不停 + 幽灵 fill(qty=0),**单进程内存增长至 50GB**
+  - **修复**:`seed_liquidity` 构造订单后显式 `order.activate()`(bid + ask 两侧)
+  - **加固**:循环退出条件 `taker.remaining_quantity() < f64::EPSILON` → `== 0.0`
+    (`0.0.abs() = 0.0` 不小于 EPSILON ≈ 2.22e-16,虽然不是 root cause 仍是潜在 bug)
+  - 加回 `partial_fill_records_in_order` 测试(buy 0.7 / 0.5/档 5 档)验证修复
 
 - **pyo3 0.27 Python 绑定构建失败**(`fix(ci): port 0.5.0 pyo3 0.27 fixes to 0.6.0 + complete leg-pair coverage`,commit `abcbdea`):
   - `axon-oms::python::portfolio::PyPortfolio::apply_fill` 补 `instrument: None`(`RustFill` 是 0.6.0 phase 5 `Fill` 的 alias,新增字段需要 Python 端兜底)

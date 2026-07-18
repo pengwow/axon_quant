@@ -83,6 +83,38 @@ Examples::
     #   fills == 2, trades == [], fills_detail == [fill_1, fill_2]
     # round-trip buy 0.5 + sell 0.5:
     #   fills == 2, trades == [trade_1], fills_detail == [fill_1, fill_2]
+
+Per-leg seed liquidity(0.7.0 新增)
+----------------------------------
+
+`BacktestEngine` 提供三档流动性种子 API,可叠加使用:
+
+- ``with_seed_liquidity(half_spread, depth_levels, size_per_level)``:**default**
+  配线,所有未单独配线的 instrument 走此配置(向后兼容 0.6.0 行为)
+- ``with_seed_liquidity_for(instrument, ...)``:**per-leg 覆写**,给单个 instrument
+  独立配置(spot 紧 / perp 松 的真实市场规律)
+- ``begin_bar(price, instrument)``:**单 leg** 触发 seed,bar_id 自增
+- ``begin_bar_multi(legs: dict[instrument, price])``:**多 leg 同 bar** 触发
+  (spot + perp 套利场景),bar_id 仅 +1,funding 调度 1 次
+
+0.7.0 起 ``begin_bar`` 只清指定 instrument 的订单簿(``clear_book_for``),
+**不**再误清其他 leg 的种子流动性。`begin_bar` 配线查找顺序:per-leg
+override → default → no-op(无 seed)。
+
+Examples::
+
+    spot = spot_instrument("BTC", "USDT")
+    perp = swap_instrument("BTC", "USDT", settle="usd_margin", contract_size=1.0)
+    engine = BacktestEngine(initial_cash=100_000.0)
+    # default 配线
+    engine.with_seed_liquidity(half_spread=0.1, depth_levels=5, size_per_level=0.1)
+    # spot 紧、perp 松(per-leg 覆写)
+    engine.with_seed_liquidity_for(spot, half_spread=0.01, depth_levels=10, size_per_level=0.5)
+    engine.with_seed_liquidity_for(perp, half_spread=0.5, depth_levels=5, size_per_level=0.1)
+    # 多 leg 同 bar seed(套利场景,bar_id 仅 +1)
+    engine.begin_bar_multi({spot: 50_000.0, perp: 50_010.0})
+    # ... push_event(order_submitted) ...
+    result = engine.run()
 """
 
 from __future__ import annotations
