@@ -227,12 +227,22 @@ fn fill_record_turnover_helper() {
     );
 }
 
-// ── 测试 6:partial fill 顺序保留 ──────────────────────
+// ── 测试 6:multi-level partial fill 跨档位 ─────────────
 
-/// 1 笔大单分多笔 partial fill,`fills_detail` 按 event timestamp 保留
+/// 1 笔大单跨 2 档 partial fill,`fills_detail` 按价格档位顺序记录
 ///
-/// buy 0.7 @ mid=100,half_spread=0.1 / depth=5 / size=1.0/档:
-/// 100.1 档(1.0 qty)被 partial fill 0.7 → 1 笔 fill 但 qty < maker qty
+/// buy 0.7 @ mid=100,half_spread=0.1 / depth=5 / size_per_level=0.5:
+/// 100.1 档(0.5 qty)被全部吃掉 + 100.2 档(0.5 qty)被 partial fill 0.2
+/// → 2 笔 fill,共 0.7 qty
+///
+/// ## 0.7.0 修复
+///
+/// 0.6.0 死循环:`seed_liquidity` 构造的 maker 限价单 status=Created(未 activate),
+/// `match_against_asks` 的 `apply_fill` 试图 `Created → Filled` 状态机不合法,
+/// 错误被 `let _` 吞掉,status 永远 Created,is_terminal() 永远 false,
+/// 导致循环不停 + 幽灵 fill(qty=0),内存爆炸到 50GB。
+/// 修复:seed_liquidity 构造后显式 `activate()` + 循环退出条件 `== 0.0`(EPSILON
+/// 检查对 0.0 无效)。
 #[test]
 fn partial_fill_records_in_order() {
     let inst = btc_spot();
@@ -240,30 +250,46 @@ fn partial_fill_records_in_order() {
     push_order(&mut q, 1_000_000_000, 1, &inst, Side::Buy, 0.7);
 
     let mut engine = BacktestEngine::new(base_config(), q);
-    // half_spread=0.1, 5 档,每档 1.0 qty → 100.1 档吃 0.7 partial fill
-    engine.with_seed_liquidity(0.1, 5, 1.0);
+    // half_spread=0.1, 5 档,每档 0.5 qty
+    // 100.1 档 0.5 全吃 + 100.2 档 0.2 partial → 2 笔 fill
+    engine.with_seed_liquidity(0.1, 5, 0.5);
     engine.begin_bar(100.0, inst.clone());
     let result = engine.run();
 
     assert_eq!(
-        result.fills, 1,
-        "buy 0.7 吃 100.1 档(1.0 qty)partial fill 应 = 1 笔, got {}",
+        result.fills, 2,
+        "buy 0.7 吃 0.5/档应 = 2 笔 fill, got {}",
         result.fills
     );
     assert_eq!(
         result.fills_detail.len(),
-        1,
-        "fills_detail.len() 应 = 1, got {}",
+        2,
+        "fills_detail.len() 应 = 2, got {}",
         result.fills_detail.len()
     );
-    let fr = &result.fills_detail[0];
-    assert_eq!(fr.taker_order_id, 1, "partial fill 共享 taker_order_id");
-    assert_eq!(fr.taker_side, Side::Buy);
-    assert_eq!(fr.instrument, inst);
+    // 全部 taker_order_id = 1(同一订单 partial fill)
+    for fr in &result.fills_detail {
+        assert_eq!(fr.taker_order_id, 1, "partial fill 共享 taker_order_id");
+        assert_eq!(fr.taker_side, Side::Buy);
+        assert_eq!(fr.instrument, inst);
+    }
+    // 验证两笔 fill 的价格档位顺序:100.1 < 100.2
     assert!(
-        (fr.quantity.as_f64() - 0.7).abs() < 1e-9,
-        "partial fill qty 应 = 0.7, got {}",
-        fr.quantity.as_f64()
+        result.fills_detail[0].price.as_f64() < result.fills_detail[1].price.as_f64(),
+        "fill 应按价格升序, got [{}] vs [{}]",
+        result.fills_detail[0].price.as_f64(),
+        result.fills_detail[1].price.as_f64()
+    );
+    // qty 加和应 = 0.7
+    let total_qty: f64 = result
+        .fills_detail
+        .iter()
+        .map(|f| f.quantity.as_f64())
+        .sum();
+    assert!(
+        (total_qty - 0.7).abs() < 1e-9,
+        "partial fill qty 加和应 = 0.7, got {}",
+        total_qty
     );
 }
 

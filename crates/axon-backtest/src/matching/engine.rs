@@ -215,6 +215,13 @@ impl L1Book {
             }
 
             loop {
+                // taker 已全部成交 → 退出(避免产生 qty=0 的"幽灵 fill")
+                // 0.7.0 修:之前用 `< f64::EPSILON` 是 bug——`0.0.abs() = 0.0`
+                // 不小于 EPSILON (≈ 2.22e-16),导致 taker 吃完后循环继续,
+                // 每次产生一条 qty=0 的 fill,死循环 + 内存爆炸
+                if taker.remaining_quantity().as_f64() == 0.0 {
+                    break;
+                }
                 // 取出队首 maker
                 let is_terminal = orders
                     .front()
@@ -303,6 +310,11 @@ impl L1Book {
                 }
 
                 loop {
+                    // taker 已全部成交 → 退出(避免产生 qty=0 的"幽灵 fill")
+                    // 0.7.0 修:同 `match_against_asks`,EPSILON 检查不严密
+                    if taker.remaining_quantity().as_f64() == 0.0 {
+                        break;
+                    }
                     let is_terminal = orders
                         .front()
                         .map(|m| m.status.is_terminal())
@@ -344,17 +356,15 @@ impl L1Book {
                     if let Some(maker) = orders.front_mut() {
                         let _ = maker.apply_fill(fill_qty);
                     }
-
-                    if (taker.remaining_quantity().as_f64()).abs() < f64::EPSILON {
-                        break;
-                    }
+                    // 注:taker 是否完全成交的检查在 loop 入口处(防止 qty=0
+                    // 幽灵 fill)。`stop` flag 在闭包外判断以驱动外层 break。
                 }
 
                 if orders.is_empty() {
                     empty_prices.push(price);
                 }
-                // 检查 taker 是否完全成交
-                (taker.remaining_quantity().as_f64()).abs() < f64::EPSILON
+                // 检查 taker 是否完全成交(精确比较,避免 EPSILON bug)
+                taker.remaining_quantity().as_f64() == 0.0
             };
             if stop {
                 break;
@@ -575,6 +585,12 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
+            let mut order = order;
+            // 0.7.0 修:必须 activate,否则 `match_against_asks` 的
+            // `apply_fill` 会因 `Created → Filled` 状态非法而失败,
+            // 错误被 `let _` 吞掉,status 永远停 Created,
+            // is_terminal() = false → 循环不停 + 幽灵 fill → 内存爆炸
+            let _ = order.activate();
             book.insert_passive(order);
             id += 1;
         }
@@ -595,6 +611,9 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
+            let mut order = order;
+            // 同上,seed maker 必须 activate,否则 buy 侧同样死循环
+            let _ = order.activate();
             book.insert_passive(order);
             id += 1;
         }
