@@ -213,7 +213,7 @@ impl PyBacktestEngine {
         price: f64,
         instrument: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.begin_bar(price, inst);
         Ok(())
     }
@@ -344,7 +344,7 @@ impl PyBacktestEngine {
         instrument: &Bound<'_, PyAny>,
         target: f64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.set_target_position(inst, target);
         Ok(())
     }
@@ -358,7 +358,7 @@ impl PyBacktestEngine {
         py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
     ) -> PyResult<Option<f64>> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.get_target_position(&inst))
     }
 
@@ -367,7 +367,7 @@ impl PyBacktestEngine {
     /// Returns:当前净持仓(单位 base,正=多,负=空)。未交易过返回 `0.0`。
     #[pyo3(signature = (instrument))]
     fn get_position(&self, py: Python<'_>, instrument: &Bound<'_, PyAny>) -> PyResult<f64> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         Ok(self.inner.get_position(&inst))
     }
 
@@ -390,14 +390,14 @@ impl PyBacktestEngine {
         price: f64,
         timestamp_ns: i64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         let mark = MarkEvent {
             instrument: inst,
             mark_price: Price::from_f64(price),
             timestamp: Timestamp::from_nanos(timestamp_ns),
         };
         // 复用现有事件路径,统一经 EventQueue 与 dispatcher
-        self.builder.mark(mark);
+        self.builder.mark(mark.clone());
         // 通过 push_event 路径进队(dispatcher 写入 mark_cache)
         // 实际 MarkEvent 没有对应的 push_event type 字符串,
         // 这里直接用 inner.push_event 绕过 type 字符串协议。
@@ -429,7 +429,7 @@ impl PyBacktestEngine {
         mark_price: f64,
         timestamp_ns: i64,
     ) -> PyResult<()> {
-        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.push_funding(
             inst,
             funding_rate,
@@ -677,7 +677,7 @@ impl PyRunResult {
         let d = PyDict::new(py);
         for (inst, price) in &self.inner.marks {
             let key = instrument_to_tuple(py, inst)?;
-            d.set_item(key, price.as_f64())?;
+            d.set_item(key, *price)?;
         }
         Ok(d)
     }
