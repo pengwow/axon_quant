@@ -47,9 +47,15 @@ fn eth() -> Symbol {
 }
 
 fn make_limit(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    let (base, quote) = match symbol.as_str() {
+        "BTC/USDT" => ("BTC", "USDT"),
+        "ETH/USDT" => ("ETH", "USDT"),
+        other => panic!("make_limit: unsupported symbol {other}"),
+    };
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -60,9 +66,15 @@ fn make_limit(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Orde
 }
 
 fn make_market(id: u64, symbol: Symbol, side: Side, qty: f64) -> Order {
-    Order::new(
+    let (base, quote) = match symbol.as_str() {
+        "BTC/USDT" => ("BTC", "USDT"),
+        "ETH/USDT" => ("ETH", "USDT"),
+        other => panic!("make_market: unsupported symbol {other}"),
+    };
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Market,
         Quantity::from_f64(qty),

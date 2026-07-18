@@ -25,7 +25,7 @@ use axon_core::market::Side;
 use axon_core::types::Symbol;
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 /// 把字符串写入 NamedTempFile,返回 path

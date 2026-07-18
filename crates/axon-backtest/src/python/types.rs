@@ -9,7 +9,7 @@
 //!
 //! Python ↔ Rust 的"主语"是 **Python**,所以:
 //! - `Order` / `MatchFill` / `SubmitResult` 不直接暴露为 `#[pyclass]`,
-//!   而是用 `dict` 协议:`{id, symbol, side, type, price, quantity, tif, ...}`。
+//!   而是用 `dict` 协议:`{id, instrument, side, type, price, quantity, tif, ...}`。
 //! - 这样可以避免在 Python 端需要 `axon_quant.backtest.Order()` 之类的
 //!   包装,直接用 `dict` 即可。
 //!
@@ -25,7 +25,7 @@
 //! - 解析 `side` / `type` / `tif` 字符串失败时返回 `PyValueError`,
 //!   携带失败字段名便于 Python 端排查。
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -33,9 +33,64 @@ use axon_core::dict_field;
 use axon_core::market::Side as CoreSide;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::parse_py_enum;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{
+    Instrument, Price, Quantity, SpotInstrument, SwapInstrument, SwapSettle, Symbol,
+};
 
 use crate::matching::types::{MatchFill, SubmitResult};
+
+// ─── Instrument 解析 ────────────────────────────────────
+
+/// Python dict → Rust [`Instrument`]
+///
+/// 支持的 wire 格式(flat 形式,Python 友好):
+/// - spot: `{"kind": "spot", "base": "BTC", "quote": "USDT"}`
+/// - swap: `{"kind": "swap", "base": "BTC", "quote": "USDT",
+///           "settle": "usd_margin" | "coin_margin",
+///           "contract_size": 1.0}`
+///
+/// 字段大小写:`kind` / `settle` 不敏感;`base` / `quote` / `contract_size` 严格。
+///
+/// 错误:
+/// - 缺 `kind` / `base` / `quote` → `PyKeyError`
+/// - `kind` 值非法 / `settle` 值非法 → `PyValueError`
+pub fn parse_instrument<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Instrument> {
+    let kind: String = dict_field!(dict, "kind", String);
+    match kind.to_lowercase().as_str() {
+        "spot" => {
+            let base: String = dict_field!(dict, "base", String);
+            let quote: String = dict_field!(dict, "quote", String);
+            Ok(Instrument::Spot(SpotInstrument {
+                base: Symbol::from(base),
+                quote: Symbol::from(quote),
+            }))
+        }
+        "swap" => {
+            let base: String = dict_field!(dict, "base", String);
+            let quote: String = dict_field!(dict, "quote", String);
+            let settle: String = dict_field!(dict, "settle", String);
+            let contract_size: f64 = dict_field!(dict, "contract_size", f64);
+            let settle_enum = match settle.to_lowercase().as_str() {
+                "usd_margin" => SwapSettle::UsdMargin,
+                "coin_margin" => SwapSettle::CoinMargin,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "invalid settle: {other} (expected 'usd_margin' / 'coin_margin')"
+                    )));
+                }
+            };
+            Ok(Instrument::Swap(SwapInstrument {
+                base: Symbol::from(base),
+                quote: Symbol::from(quote),
+                settle: settle_enum,
+                contract_size,
+            }))
+        }
+        other => Err(PyValueError::new_err(format!(
+            "invalid instrument kind: {other} (expected 'spot' / 'swap')"
+        ))),
+    }
+}
 
 // ─── Order 解析 ───────────────────────────────────────────
 
@@ -43,7 +98,7 @@ use crate::matching::types::{MatchFill, SubmitResult};
 ///
 /// 必填字段:
 /// - `id` (`int`):订单 ID
-/// - `symbol` (`str`):交易品种,如 `"BTC-USDT"`
+/// - `instrument` (`dict`):交易品种,由 [`parse_instrument`] 解析
 /// - `side` (`str`):`"buy"` / `"sell"`(大小写不敏感)
 /// - `type` (`str`):`"market"` / `"limit"`(仅这两种,`"stop"` 等留给 L2)
 /// - `quantity` (`float`):订单总数量
@@ -57,7 +112,14 @@ use crate::matching::types::{MatchFill, SubmitResult};
 /// - 字段类型不匹配 / 枚举值非法 → `PyValueError`
 pub fn dict_to_order<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Order> {
     let id: u64 = dict_field!(dict, "id", u64);
-    let symbol: String = dict_field!(dict, "symbol", String);
+    let instrument_obj: Bound<'py, PyDict> = {
+        let v = dict
+            .get_item("instrument")?
+            .ok_or_else(|| PyKeyError::new_err("missing 'instrument'"))?;
+        v.extract::<Bound<'py, PyDict>>()
+            .map_err(|_| PyValueError::new_err("field 'instrument' must be a dict"))?
+    };
+    let instrument = parse_instrument(&instrument_obj)?;
     let side_str: String = dict_field!(dict, "side", String);
     let side = parse_side(&side_str)?;
     let order_type_str: String = dict_field!(dict, "type", String);
@@ -80,14 +142,31 @@ pub fn dict_to_order<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Order> {
         }
     };
 
-    Ok(Order::new(
-        id,
-        Symbol::from(symbol),
-        side,
-        order_type,
-        Quantity::from_f64(quantity),
-        tif,
-    ))
+    // 按 instrument 变体选构造器:spot → Order::spot;swap → Order::swap。
+    // 同一个 instrument 一次解析,后续 handle_submit 路由会用同一份。
+    let order = match instrument {
+        Instrument::Spot(s) => Order::spot(
+            id,
+            s.base,
+            s.quote,
+            side,
+            order_type,
+            Quantity::from_f64(quantity),
+            tif,
+        ),
+        Instrument::Swap(s) => Order::swap(
+            id,
+            s.base,
+            s.quote,
+            s.settle,
+            s.contract_size,
+            side,
+            order_type,
+            Quantity::from_f64(quantity),
+            tif,
+        ),
+    };
+    Ok(order)
 }
 
 // ─── 枚举解析 ────────────────────────────────────────────
@@ -170,13 +249,27 @@ mod tests {
     use super::*;
     use pyo3::exceptions::PyKeyError;
 
-    /// `dict_to_order` 全部字段合法时返回正确 `Order`
+    /// 构造 spot instrument dict
+    fn make_spot_dict<'py>(
+        py: Python<'py>,
+        base: &str,
+        quote: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("kind", "spot")?;
+        d.set_item("base", base)?;
+        d.set_item("quote", quote)?;
+        Ok(d)
+    }
+
+    /// `dict_to_order` 全部字段合法时返回正确 `Order`(spot)
     #[test]
-    fn dict_to_order_full_fields() {
+    fn dict_to_order_full_fields_spot() {
         Python::attach(|py| {
             let d = PyDict::new(py);
             d.set_item("id", 42u64).unwrap();
-            d.set_item("symbol", "BTC-USDT").unwrap();
+            d.set_item("instrument", make_spot_dict(py, "BTC", "USDT").unwrap())
+                .unwrap();
             d.set_item("side", "buy").unwrap();
             d.set_item("type", "limit").unwrap();
             d.set_item("price", 100.0_f64).unwrap();
@@ -184,10 +277,58 @@ mod tests {
             d.set_item("tif", "GTC").unwrap();
             let order = dict_to_order(&d).unwrap();
             assert_eq!(order.id, 42);
-            assert_eq!(order.symbol, Symbol::from("BTC-USDT"));
+            assert!(matches!(order.instrument, Instrument::Spot(_)));
             assert_eq!(order.side, CoreSide::Buy);
             assert!(matches!(order.order_type, OrderType::Limit { .. }));
             assert_eq!(order.time_in_force, TimeInForce::GTC);
+        });
+    }
+
+    /// `dict_to_order` 全部字段合法时返回正确 `Order`(swap)
+    #[test]
+    fn dict_to_order_full_fields_swap() {
+        Python::attach(|py| {
+            let inst = PyDict::new(py);
+            inst.set_item("kind", "swap").unwrap();
+            inst.set_item("base", "ETH").unwrap();
+            inst.set_item("quote", "USDT").unwrap();
+            inst.set_item("settle", "usd_margin").unwrap();
+            inst.set_item("contract_size", 0.01_f64).unwrap();
+
+            let d = PyDict::new(py);
+            d.set_item("id", 7u64).unwrap();
+            d.set_item("instrument", inst).unwrap();
+            d.set_item("side", "sell").unwrap();
+            d.set_item("type", "market").unwrap();
+            d.set_item("quantity", 10.0_f64).unwrap();
+            d.set_item("tif", "IOC").unwrap();
+            let order = dict_to_order(&d).unwrap();
+            assert!(matches!(order.instrument, Instrument::Swap(_)));
+            if let Instrument::Swap(s) = &order.instrument {
+                assert_eq!(s.contract_size, 0.01);
+                assert_eq!(s.settle, SwapSettle::UsdMargin);
+                assert_eq!(s.base.as_str(), "ETH");
+            }
+        });
+    }
+
+    /// `dict_to_order` 缺 `instrument` 字段时返回 `PyKeyError`
+    #[test]
+    fn dict_to_order_missing_instrument_raises() {
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("id", 1u64).unwrap();
+            d.set_item("side", "buy").unwrap();
+            d.set_item("type", "market").unwrap();
+            d.set_item("quantity", 1.0_f64).unwrap();
+            d.set_item("tif", "GTC").unwrap();
+            let err = dict_to_order(&d).unwrap_err();
+            assert!(err.is_instance_of::<PyKeyError>(py));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("instrument"),
+                "expected 'instrument' in error, got: {msg}"
+            );
         });
     }
 
@@ -198,7 +339,8 @@ mod tests {
             let d = PyDict::new(py);
             // 故意少填 `tif`
             d.set_item("id", 1u64).unwrap();
-            d.set_item("symbol", "BTC-USDT").unwrap();
+            d.set_item("instrument", make_spot_dict(py, "BTC", "USDT").unwrap())
+                .unwrap();
             d.set_item("side", "buy").unwrap();
             d.set_item("type", "market").unwrap();
             d.set_item("quantity", 1.0_f64).unwrap();
@@ -215,13 +357,72 @@ mod tests {
         Python::attach(|py| {
             let d = PyDict::new(py);
             d.set_item("id", 1u64).unwrap();
-            d.set_item("symbol", "BTC-USDT").unwrap();
+            d.set_item("instrument", make_spot_dict(py, "BTC", "USDT").unwrap())
+                .unwrap();
             d.set_item("side", "buy").unwrap();
             d.set_item("type", "stop").unwrap(); // Stage 2 不支持 stop
             d.set_item("quantity", 1.0_f64).unwrap();
             d.set_item("tif", "GTC").unwrap();
             let err = dict_to_order(&d).unwrap_err();
             assert!(err.is_instance_of::<PyValueError>(py));
+        });
+    }
+
+    /// `parse_instrument` spot 路径
+    #[test]
+    fn parse_instrument_spot() {
+        Python::attach(|py| {
+            let d = make_spot_dict(py, "BTC", "USDT").unwrap();
+            let inst = parse_instrument(&d).unwrap();
+            assert!(matches!(inst, Instrument::Spot(_)));
+            assert_eq!(inst.base().as_str(), "BTC");
+            assert_eq!(inst.quote().as_str(), "USDT");
+        });
+    }
+
+    /// `parse_instrument` swap 路径
+    #[test]
+    fn parse_instrument_swap() {
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("kind", "swap").unwrap();
+            d.set_item("base", "BTC").unwrap();
+            d.set_item("quote", "USDT").unwrap();
+            d.set_item("settle", "coin_margin").unwrap();
+            d.set_item("contract_size", 1.0_f64).unwrap();
+            let inst = parse_instrument(&d).unwrap();
+            assert!(matches!(inst, Instrument::Swap(_)));
+            if let Instrument::Swap(s) = &inst {
+                assert_eq!(s.settle, SwapSettle::CoinMargin);
+                assert_eq!(s.contract_size, 1.0);
+            }
+        });
+    }
+
+    /// `parse_instrument` 非法 kind → `PyValueError`
+    #[test]
+    fn parse_instrument_invalid_kind() {
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("kind", "future").unwrap();
+            d.set_item("base", "BTC").unwrap();
+            d.set_item("quote", "USDT").unwrap();
+            let err = parse_instrument(&d).unwrap_err();
+            assert!(err.is_instance_of::<PyValueError>(py));
+        });
+    }
+
+    /// `parse_instrument` swap 缺 `settle` → `PyKeyError`
+    #[test]
+    fn parse_instrument_swap_missing_settle() {
+        Python::attach(|py| {
+            let d = PyDict::new(py);
+            d.set_item("kind", "swap").unwrap();
+            d.set_item("base", "BTC").unwrap();
+            d.set_item("quote", "USDT").unwrap();
+            d.set_item("contract_size", 1.0_f64).unwrap();
+            let err = parse_instrument(&d).unwrap_err();
+            assert!(err.is_instance_of::<PyKeyError>(py));
         });
     }
 

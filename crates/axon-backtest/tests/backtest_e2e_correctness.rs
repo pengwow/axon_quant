@@ -39,7 +39,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
@@ -167,9 +175,10 @@ impl SmaStrategy {
 
 /// 构造限价单 helper
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -181,9 +190,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 
 /// 构造市价单 helper
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -607,9 +617,10 @@ fn total_fees_equals_sum_per_fill() {
 
     // 终态持仓:三笔都是 buy,long 累加 = 0.1 + 0.05 + 0.2 = 0.35(force_liquidate=false 留仓)
     assert_eq!(result.positions.len(), 1);
+    let btc = btc_inst();
     assert!(
-        (result.positions["BTC-USDT"] - 0.35).abs() < 1e-9,
+        (result.positions[&btc] - 0.35).abs() < 1e-9,
         "expected long 0.35,got {}",
-        result.positions["BTC-USDT"]
+        result.positions[&btc]
     );
 }

@@ -12,14 +12,15 @@ use axon_backtest::impact::ImpactedMatchingEngine;
 use axon_core::impact::{LinearImpactModel, PowerLawImpactModel};
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 /// 构造一个限价单
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),

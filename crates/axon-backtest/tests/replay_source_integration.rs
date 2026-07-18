@@ -38,7 +38,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_tick(price: f64) -> Tick {
@@ -51,9 +51,10 @@ fn make_tick(price: f64) -> Tick {
 }
 
 fn make_market(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        btc(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -62,9 +63,10 @@ fn make_market(id: u64, side: Side, qty: f64) -> Order {
 }
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        btc(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -206,7 +208,12 @@ async fn replay_source_with_strategy_drives_fills_end_to_end() {
     assert_eq!(consumed, 6, "应消费 6 个 tick");
 
     // 验证 portfolio:买入 0.1 @2000 → 持仓 0.1 BTC,cash 减少 200
-    let pos = engine.portfolio().position(&btc()).expect("应有持仓");
+    // 0.5.0 起 Portfolio 用 Instrument key
+    let inst = axon_core::types::Instrument::from_symbol(&btc());
+    let pos = engine
+        .portfolio()
+        .position_by_instrument(&inst)
+        .expect("应有持仓");
     assert!(
         (pos.quantity.as_f64() - 0.1).abs() < 1e-9,
         "持仓 0.1 BTC,实为 {}",

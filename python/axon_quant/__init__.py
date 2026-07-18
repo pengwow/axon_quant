@@ -72,18 +72,21 @@ Rust 核心 + Python RL 接口，从回测到生产的全链路统一框架。
 
     # 回测引擎(Stage 2):L1 撮合 + 事件驱动回测
     from axon_quant.backtest import (
-        L1MatchingEngine, BacktestEngine, limit_order, BacktestError,
+        L1MatchingEngine, BacktestEngine, limit_order, market_order,
+        spot_instrument, swap_instrument,  # 0.5.0
+        BacktestError,
     )
     engine = L1MatchingEngine()
-    engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0))
-    result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    btc = spot_instrument("BTC", "USDT")
+    engine.submit(limit_order(1, btc, "Sell", 100.0, 1.0))
+    result = engine.submit(limit_order(2, btc, "Buy", 100.0, 1.0))
     print(result["is_filled"], len(result["fills"]))  # True 1
 
     bt = BacktestEngine(initial_cash=100_000.0)
     bt.push_event({
         "type": "order_submitted",
         "timestamp_ns": 1_000,
-        "order": limit_order(1, "BTCUSDT", "Buy", 100.0, 1.0),
+        "order": limit_order(1, btc, "Buy", 100.0, 1.0),
     })
     print(bt.run().final_nav)
 
@@ -184,6 +187,8 @@ from .backtest import (  # noqa: F401
     RunStats,
     limit_order,
     market_order,
+    spot_instrument,  # 0.5.0:Instrument 工厂
+    swap_instrument,  # 0.5.0:Instrument 工厂
 )
 
 # 重新导出 data 顶层 Python API(包装 _native.data,Stage 1)
@@ -372,6 +377,8 @@ __all__ = [  # noqa: F405
     "BacktestError",
     "limit_order",
     "market_order",
+    "spot_instrument",  # 0.5.0:Instrument 工厂
+    "swap_instrument",  # 0.5.0:Instrument 工厂
     "DataService", # Stage 1
     "DataRequest", # Stage 1
     "DataType",    # Stage 1

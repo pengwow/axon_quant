@@ -9,9 +9,10 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Price, Quantity, Symbol};
 
 fn make_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -91,9 +92,10 @@ pub fn run_market_impact_verification() {
         .inner_mut()
         .submit(make_order(1, Side::Sell, 100.0, 1.0));
     // 大单买入 → 应有冲击偏移
-    let big_buy = Order::new(
+    let big_buy = Order::spot(
         2,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(110.0),
@@ -263,13 +265,14 @@ use axon_backtest::matching::{BatchMode, CrossPair, MultiAssetMatchingEngine};
 /// L3 多资产路由：不同资产的订单应路由到正确引擎
 pub fn run_l3_multi_asset_routing() {
     let mut engine = MultiAssetMatchingEngine::new();
-    engine.register_asset(Symbol::from("BTC-USDT"));
-    engine.register_asset(Symbol::from("ETH-USDT"));
+    engine.register_asset(Symbol::from("BTC/USDT"));
+    engine.register_asset(Symbol::from("ETH/USDT"));
 
     // BTC 买单
-    let btc_buy = Order::new(
+    let btc_buy = Order::spot(
         1,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(50000.0),
@@ -281,9 +284,10 @@ pub fn run_l3_multi_asset_routing() {
     assert!(r1.is_empty(), "BTC 买单无对手方");
 
     // ETH 卖单
-    let eth_sell = Order::new(
+    let eth_sell = Order::spot(
         2,
-        Symbol::from("ETH-USDT"),
+        "ETH",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(3000.0),
@@ -295,8 +299,8 @@ pub fn run_l3_multi_asset_routing() {
     assert!(r2.is_empty(), "ETH 卖单无对手方");
 
     // 验证各自引擎有挂单
-    assert!(engine.engine(&Symbol::from("BTC-USDT")).is_some());
-    assert!(engine.engine(&Symbol::from("ETH-USDT")).is_some());
+    assert!(engine.engine(&Symbol::from("BTC/USDT")).is_some());
+    assert!(engine.engine(&Symbol::from("ETH/USDT")).is_some());
     assert_eq!(engine.asset_count(), 2);
 }
 
@@ -304,8 +308,8 @@ pub fn run_l3_multi_asset_routing() {
 pub fn run_l3_cross_pair_arbitrage() {
     let mut engine = MultiAssetMatchingEngine::new();
     let pair = CrossPair {
-        leg1: Symbol::from("BTC-USDT"),
-        leg2: Symbol::from("ETH-USDT"),
+        leg1: Symbol::from("BTC/USDT"),
+        leg2: Symbol::from("ETH/USDT"),
         ratio: 16.0,
         max_quantity: Quantity::from_f64(1.0),
     };
@@ -313,12 +317,13 @@ pub fn run_l3_cross_pair_arbitrage() {
     assert_eq!(engine.cross_pair_count(), 1);
 
     // 各挂一笔，使 mid price 不同
-    engine.register_asset(Symbol::from("BTC-USDT"));
-    engine.register_asset(Symbol::from("ETH-USDT"));
+    engine.register_asset(Symbol::from("BTC/USDT"));
+    engine.register_asset(Symbol::from("ETH/USDT"));
     engine
-        .submit(Order::new(
+        .submit(Order::spot(
             10,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(50000.0),
@@ -328,9 +333,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         ))
         .unwrap();
     engine
-        .submit(Order::new(
+        .submit(Order::spot(
             11,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Sell,
             OrderType::Limit {
                 price: Price::from_f64(51000.0),
@@ -340,9 +346,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         ))
         .unwrap();
     engine
-        .submit(Order::new(
+        .submit(Order::spot(
             20,
-            Symbol::from("ETH-USDT"),
+            "ETH",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(3000.0),
@@ -352,9 +359,10 @@ pub fn run_l3_cross_pair_arbitrage() {
         ))
         .unwrap();
     engine
-        .submit(Order::new(
+        .submit(Order::spot(
             21,
-            Symbol::from("ETH-USDT"),
+            "ETH",
+            "USDT",
             Side::Sell,
             OrderType::Limit {
                 price: Price::from_f64(3100.0),
@@ -377,13 +385,13 @@ pub fn run_l3_cross_pair_arbitrage() {
 /// L3 快照保存与恢复：状态一致性
 pub fn run_l3_snapshot_restore() {
     let mut engine = MultiAssetMatchingEngine::new();
-    engine.register_asset(Symbol::from("BTC-USDT"));
+    engine.register_asset(Symbol::from("BTC/USDT"));
     engine.set_batch_mode(BatchMode::Auction);
 
     // 创建快照
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.batch_mode, BatchMode::Auction);
-    assert!(snapshot.engines.contains_key(&Symbol::from("BTC-USDT")));
+    assert!(snapshot.engines.contains_key(&Symbol::from("BTC/USDT")));
 
     // 恢复到新引擎
     let mut engine2 = MultiAssetMatchingEngine::new();

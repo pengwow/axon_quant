@@ -47,10 +47,11 @@ fn sol() -> Symbol {
     Symbol::from("SOL/USDT")
 }
 
-fn make_limit(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+fn make_limit(id: u64, base: &str, quote: &str, side: Side, price: f64, qty: f64) -> Order {
+    Order::spot(
         id,
-        symbol,
+        base,
+        quote,
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -203,9 +204,9 @@ fn restore_clears_pending_batch_orders() {
     m.set_batch_mode(BatchMode::Auction);
 
     // Auction 模式 submit 3 笔:全部进 pending_batch,无 fill
-    let r1 = m.submit(make_limit(1, eth(), Side::Buy, 2_900.0, 1.0));
-    let r2 = m.submit(make_limit(2, eth(), Side::Buy, 2_950.0, 1.0));
-    let r3 = m.submit(make_limit(3, eth(), Side::Sell, 3_000.0, 1.0));
+    let r1 = m.submit(make_limit(1, "ETH", "USDT", Side::Buy, 2_900.0, 1.0));
+    let r2 = m.submit(make_limit(2, "ETH", "USDT", Side::Buy, 2_950.0, 1.0));
+    let r3 = m.submit(make_limit(3, "ETH", "USDT", Side::Sell, 3_000.0, 1.0));
     assert!(r1.is_ok());
     assert!(r2.is_ok());
     assert!(r3.is_ok());
@@ -257,7 +258,7 @@ fn restore_then_engine_can_continue_matching() {
 
     // 验证 m2 内部 L2 引擎可工作:直接通过 engine_mut 拿 L2 引用 + submit
     let btc_engine = m2.engine_mut(&btc()).expect("btc 已被 register");
-    let fill = btc_engine.submit(make_limit(100, btc(), Side::Sell, 50_000.0, 1.0));
+    let fill = btc_engine.submit(make_limit(100, "BTC", "USDT", Side::Sell, 50_000.0, 1.0));
     assert!(fill.fills.is_empty(), "无对手方,空撮合");
 
     let best_ask = btc_engine.best_ask();
@@ -268,7 +269,7 @@ fn restore_then_engine_can_continue_matching() {
     );
 
     // 撮合:对手 buy @ 50_000 → 1 笔 fill
-    let buy_fill = btc_engine.submit(make_limit(101, btc(), Side::Buy, 50_000.0, 1.0));
+    let buy_fill = btc_engine.submit(make_limit(101, "BTC", "USDT", Side::Buy, 50_000.0, 1.0));
     assert_eq!(buy_fill.fills.len(), 1, "对手买单应成交 1 笔");
     assert_eq!(buy_fill.fills[0].price, Price::from_f64(50_000.0));
 }

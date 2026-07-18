@@ -32,13 +32,14 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ───────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        btc(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -81,17 +82,19 @@ fn run_roundtrip(spread: f64) -> StreamingEngine {
 
     // strategy: Market Buy + Market Sell
     let strategy: Vec<StrategyAction> = vec![
-        StrategyAction::Submit(Order::new(
+        StrategyAction::Submit(Order::spot(
             1,
-            btc(),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Market,
             Quantity::from_f64(1.0),
             TimeInForce::IOC,
         )),
-        StrategyAction::Submit(Order::new(
+        StrategyAction::Submit(Order::spot(
             2,
-            btc(),
+            "BTC",
+            "USDT",
             Side::Sell,
             OrderType::Market,
             Quantity::from_f64(1.0),

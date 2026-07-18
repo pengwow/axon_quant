@@ -138,7 +138,7 @@ impl PyL1MatchingEngine {
     /// - `half_spread`: 每层价差(绝对价格单位)
     /// - `depth_levels`: 每侧挂单层数(典型 5~20)
     /// - `size_per_level`: 每层挂单数量
-    /// - `symbol`: 交易品种
+    /// - `instrument`: instrument dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
     /// - `next_id`: 下一个可用订单 id(避免与外部订单 id 冲突)
     ///
     /// Returns: 更新后的 `next_id` 计数器(供下次 seed 复用)
@@ -147,26 +147,28 @@ impl PyL1MatchingEngine {
         half_spread,
         depth_levels,
         size_per_level,
-        symbol,
+        instrument,
         next_id,
     ))]
     fn seed_liquidity(
         &mut self,
+        py: Python<'_>,
         mid_price: f64,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: &str,
+        instrument: &Bound<'_, PyAny>,
         next_id: u64,
-    ) -> u64 {
-        self.inner.seed_liquidity(
+    ) -> PyResult<u64> {
+        let inst = super::types::parse_instrument(&instrument.cast::<PyDict>()?)?;
+        Ok(self.inner.seed_liquidity(
             mid_price,
             half_spread,
             depth_levels,
             size_per_level,
-            Symbol::from(symbol),
+            inst,
             next_id,
-        )
+        ))
     }
 
     fn __repr__(&self) -> String {

@@ -10,6 +10,44 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ==================== 验证版本 ====================
+  verify-version:
+    name: Verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          # 从 Cargo.toml 提取 version(去掉 v 前缀以防万一)
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          CARGO_VERSION=${CARGO_VERSION#v}  # strip leading v if present
+          echo "Cargo.toml version: $CARGO_VERSION"
+          echo "version=$CARGO_VERSION" >> $GITHUB_OUTPUT
+
+      # push tag 触发时,校验 tag 必须带 v 前缀
+      - name: Verify tag version match (push tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${TAG_VERSION#v}  # strip v prefix
+          CARGO_VERSION=${{ steps.version.outputs.version }}
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "Cargo.toml: $CARGO_VERSION"
+            echo "Tag: $TAG_VERSION"
+            exit 1
+          fi
+          # 强制要求 tag 必须有 v 前缀
+          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
+            echo "ERROR: Tag must have 'v' prefix (e.g., v0.5.0), got: $GITHUB_REF"
+            exit 1
+          fi
+          echo "Version verified: v$CARGO_VERSION"
+
   # ==================== 构建 Wheels ====================
   build-wheels:
     name: Build wheels (${{ matrix.os }})
@@ -103,7 +141,7 @@ jobs:
   # ==================== GitHub Release ====================
   create-release:
     name: Create GitHub Release
-    needs: publish-pypi
+    needs: [publish-pypi, verify-version]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,3 +159,8 @@ jobs:
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'b') || contains(github.ref, 'rc') }}
+          # 关键:用 verify-version 输出的 version 显式拼接 v 前缀,
+          # 防止 workflow_dispatch 触发时 ref_name 是分支名(如 "0.5.0")
+          # 导致创建的 release name / tag 缺失 v 前缀
+          tag_name: v${{ needs.verify-version.outputs.version }}
+          name: Release v${{ needs.verify-version.outputs.version }}

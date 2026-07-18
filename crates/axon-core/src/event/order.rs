@@ -49,14 +49,15 @@ mod tests {
     use super::*;
     use crate::market::Side;
     use crate::order::{OrderType, TimeInForce};
-    use crate::types::{Price, Symbol};
+    use crate::types::Price;
 
     #[test]
     fn test_order_event_creation() {
         let ts = Timestamp::from_nanos(1_000);
-        let order = Order::new(
+        let order = Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             Side::Buy,
             OrderType::Limit {
                 price: Price::from_f64(100.0),

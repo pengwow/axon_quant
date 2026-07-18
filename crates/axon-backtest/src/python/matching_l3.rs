@@ -354,6 +354,9 @@ impl PyMultiAssetMatchingEngine {
 /// 设计:与 L2 `OrderBookEntry` 一样,`#[pyclass(from_py_object)]` 让 pyo3 0.28
 /// 自动生成 `FromPyObject` 实现,允许作为 `submit_dark_order` 参数,
 /// Python 端可以直接传 `DarkOrder(...)` 实例。
+///
+/// 0.5.0 起:`symbol: str` 拆成 `base / quote / settle / contract_size` 字段,
+/// 由 `kind` 区分 spot / swap;与 `Order::spot` / `Order::swap` 工厂对齐。
 #[pyclass(name = "DarkOrder", from_py_object)]
 #[derive(Debug, Clone)]
 pub struct PyDarkOrder {
@@ -363,7 +366,16 @@ pub struct PyDarkOrder {
     hidden_quantity: f64,
     /// 订单本体各字段
     order_id: u64,
-    symbol: String,
+    /// 交易品种 kind:`"spot"` / `"swap"`
+    instrument_kind: String,
+    /// 基础币种(spot / swap 共有)
+    base: String,
+    /// 计价币种(spot / swap 共有)
+    quote: String,
+    /// 结算方式(仅 swap,`"usd_margin"` / `"coin_margin"`)
+    settle: Option<String>,
+    /// 合约乘数(仅 swap)
+    contract_size: Option<f64>,
     side_str: String,
     order_type_str: String,
     price: Option<f64>,
@@ -377,7 +389,11 @@ impl PyDarkOrder {
     ///
     /// Args:
     /// - `order_id`:订单 ID
-    /// - `symbol`:交易品种
+    /// - `base`:基础币种(spot / swap 共有)
+    /// - `quote`:计价币种(spot / swap 共有)
+    /// - `kind`:交易品种,`"spot"`(默认)/ `"swap"`
+    /// - `settle`:仅 swap 必填,`"usd_margin"` / `"coin_margin"`
+    /// - `contract_size`:仅 swap 必填,合约乘数(默认 1.0)
     /// - `side`:`"buy"` / `"sell"`
     /// - `order_type`:`"market"` / `"limit"`
     /// - `price`:限价单必填
@@ -386,17 +402,21 @@ impl PyDarkOrder {
     /// - `visible_quantity`:可见数量(冰山部分)
     /// - `hidden_quantity`:隐藏总数量
     #[new]
-    #[pyo3(signature = (order_id, symbol, side, order_type, quantity, tif, visible_quantity, hidden_quantity, price=None))]
+    #[pyo3(signature = (order_id, base, quote, side, order_type, quantity, tif, visible_quantity, hidden_quantity, kind="spot", settle=None, contract_size=None, price=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         order_id: u64,
-        symbol: &str,
+        base: &str,
+        quote: &str,
         side: &str,
         order_type: &str,
         quantity: f64,
         tif: &str,
         visible_quantity: f64,
         hidden_quantity: f64,
+        kind: &str,
+        settle: Option<&str>,
+        contract_size: Option<f64>,
         price: Option<f64>,
     ) -> PyResult<Self> {
         // 提前校验 `side` / `tif`,沿用 `parse_side` / `parse_tif` 规则
@@ -410,11 +430,27 @@ impl PyDarkOrder {
         if order_type == "limit" && price.is_none() {
             return Err(PyValueError::new_err("limit order requires 'price'"));
         }
+        let kind_lc = kind.to_lowercase();
+        if kind_lc != "spot" && kind_lc != "swap" {
+            return Err(PyValueError::new_err(format!(
+                "unsupported instrument kind: {kind} (only 'spot' / 'swap')"
+            )));
+        }
+        // swap 必传 settle + contract_size
+        if kind_lc == "swap" && (settle.is_none() || contract_size.is_none()) {
+            return Err(PyValueError::new_err(
+                "swap instrument requires 'settle' and 'contract_size'",
+            ));
+        }
         Ok(Self {
             visible_quantity,
             hidden_quantity,
             order_id,
-            symbol: symbol.to_string(),
+            instrument_kind: kind_lc,
+            base: base.to_string(),
+            quote: quote.to_string(),
+            settle: settle.map(|s| s.to_string()),
+            contract_size,
             side_str: side.to_lowercase(),
             order_type_str: order_type.to_lowercase(),
             price,
@@ -428,9 +464,10 @@ impl PyDarkOrder {
         self.order_id
     }
 
+    /// 兼容字段:返回 `"{base}/{quote}"` 形式字符串
     #[getter]
-    fn symbol(&self) -> &str {
-        &self.symbol
+    fn symbol(&self) -> String {
+        format!("{}/{}", self.base, self.quote)
     }
 
     #[getter]
@@ -509,9 +546,15 @@ impl PyDarkOrder {
             "FAK" => TimeInForce::FAK,
             _ => unreachable!("`new` 已校验过 tif 合法性"),
         };
-        let order = Order::new(
+        // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
+        let (base, quote) = match self.symbol.split_once('-') {
+            Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+            None => (Symbol::from(&self.symbol), Symbol::from("USDT")),
+        };
+        let order = Order::spot(
             self.order_id,
-            Symbol::from(self.symbol.clone()),
+            base,
+            quote,
             side,
             order_type,
             Quantity::from_f64(self.quantity),

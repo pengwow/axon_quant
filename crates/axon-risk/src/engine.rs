@@ -143,9 +143,9 @@ impl RiskEngine for DefaultRiskEngine {
 
         let mut concentration_map = HashMap::new();
         if nav > 0.0 {
-            for (symbol, pos) in portfolio.positions() {
+            for (instrument, pos) in portfolio.positions() {
                 if let Some(mv) = pos.market_value() {
-                    concentration_map.insert(symbol.to_string(), mv as f64 / 1_000_000.0 / nav);
+                    concentration_map.insert(instrument.label(), mv as f64 / 1_000_000.0 / nav);
                 }
             }
         }
@@ -179,12 +179,13 @@ mod tests {
     use axon_core::market::Side;
     use axon_core::order::{OrderType, TimeInForce};
     use axon_core::portfolio::Currency;
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     fn make_limit_order(side: Side, price: f64, qty: f64) -> Order {
-        Order::new(
+        Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),

@@ -31,13 +31,30 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
+
+/// 构造 ETH/USDT 现货 Instrument(T3.5)
+fn eth_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── MultiSymbolAdapter:test-only thin wrapper(复制自 e2e_multi_symbol) ──────
 
 /// 多 symbol 撮合引擎适配器(同 e2e_multi_symbol.rs)
 struct MultiSymbolAdapter {
-    engines: HashMap<Symbol, L1MatchingEngine>,
+    /// T2.3 改: 改 Instrument key 以匹配 trait 签名(原 Symbol key)
+    engines: HashMap<Instrument, L1MatchingEngine>,
 }
 
 impl MultiSymbolAdapter {
@@ -56,7 +73,8 @@ impl Default for MultiSymbolAdapter {
 
 impl MatchingEngine for MultiSymbolAdapter {
     fn submit(&mut self, order: Order) -> SubmitResult {
-        let engine = self.engines.entry(order.symbol.clone()).or_default();
+        // T2.3 改: 直接用 order.instrument 作 key
+        let engine = self.engines.entry(order.instrument.clone()).or_default();
         engine.submit(order)
     }
 
@@ -108,16 +126,16 @@ impl MatchingEngine for MultiSymbolAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
-        let engine = self.engines.entry(symbol.clone()).or_default();
+        let engine = self.engines.entry(instrument.clone()).or_default();
         engine.seed_liquidity(
             mid_price,
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }
@@ -126,18 +144,15 @@ impl MatchingEngine for MultiSymbolAdapter {
 // ── 共享 helper ──────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
-fn eth() -> Symbol {
-    Symbol::from("ETH-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 /// 构造限价单 helper
-fn make_limit_order(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
+    Order::spot(
         id,
-        symbol,
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -148,10 +163,11 @@ fn make_limit_order(id: u64, symbol: Symbol, side: Side, price: f64, qty: f64) -
 }
 
 /// 构造市价单 helper
-fn make_market_order(id: u64, symbol: Symbol, side: Side, qty: f64) -> Order {
-    Order::new(
+fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
+    Order::spot(
         id,
-        symbol,
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -179,7 +195,7 @@ fn push_trade(
     ts: i64,
     counter_id: &mut u64,
     strat_id: &mut u64,
-    symbol: Symbol,
+    _symbol: Symbol,
     strategy_side: Side,
     price: f64,
     qty: f64,
@@ -194,13 +210,7 @@ fn push_trade(
     q.push(b.order(
         Timestamp::from_nanos(ts),
         cid,
-        OrderAction::Submitted(make_limit_order(
-            cid,
-            symbol.clone(),
-            counter_side,
-            price,
-            qty,
-        )),
+        OrderAction::Submitted(make_limit_order(cid, counter_side, price, qty)),
     ));
 
     // 2. 策略市价单吃单
@@ -209,7 +219,7 @@ fn push_trade(
     q.push(b.order(
         Timestamp::from_nanos(ts),
         sid,
-        OrderAction::Submitted(make_market_order(sid, symbol, strategy_side, qty)),
+        OrderAction::Submitted(make_market_order(sid, strategy_side, qty)),
     ));
 }
 
@@ -294,7 +304,7 @@ fn add_then_reverse_chains_state_machine() {
     );
 
     // 末态持仓 = -0.2(反手开反向)
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(
         (pos - (-0.2)).abs() < 1e-9,
         "末态持仓应为 -0.2(反手开反向), got {}",
@@ -381,7 +391,7 @@ fn add_then_partial_reverse() {
     );
 
     // 末态持仓 = +0.2(部分平仓,剩 0.2 long)
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(
         (pos - 0.2).abs() < 1e-9,
         "末态持仓应为 +0.2(部分平仓), got {}",
@@ -445,7 +455,7 @@ fn near_zero_remainder_routes_to_full_close() {
     );
 
     // 末态持仓 ≈ 0(被完全平仓)
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(pos.abs() < 1e-6, "末态持仓应 ≈ 0(完全平仓), got {}", pos);
 }
 
@@ -503,7 +513,7 @@ fn reverse_with_exact_size_routes_to_full_close() {
     );
 
     // 末态持仓 = 0
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(pos.abs() < 1e-9);
 }
 
@@ -543,7 +553,7 @@ fn multi_symbol_independent_fill_per_symbol() {
     q.push(b.order(
         Timestamp::from_nanos(2_000),
         eth_id,
-        OrderAction::Submitted(make_market_order(eth_id, eth(), Side::Buy, 0.1)),
+        OrderAction::Submitted(make_market_order(eth_id, Side::Buy, 0.1)),
     ));
 
     let mut engine = BacktestEngine::new(multi_symbol_config(), q);
@@ -553,7 +563,7 @@ fn multi_symbol_independent_fill_per_symbol() {
     assert_eq!(result.fills, 1, "BTC 1 笔 fill + ETH 0 笔");
 
     // BTC 仓位 = +1.5
-    let btc_pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let btc_pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(
         (btc_pos - 1.5).abs() < 1e-9,
         "BTC pos 应=+1.5, got {}",
@@ -561,7 +571,7 @@ fn multi_symbol_independent_fill_per_symbol() {
     );
 
     // ETH 仓位 = 0(订单被拒,无 fill)
-    let eth_pos = result.positions.get("ETH-USDT").copied().unwrap_or(0.0);
+    let eth_pos = result.positions.get(&eth_inst()).copied().unwrap_or(0.0);
     assert!(
         eth_pos.abs() < 1e-9,
         "ETH pos 应=0(无 fill), got {}",
@@ -576,4 +586,19 @@ fn multi_symbol_independent_fill_per_symbol() {
         "ETH 无对手盘订单应被拒,rejected={}",
         result.orders_rejected
     );
+}
+
+// ── T2.2 过渡 helper ──────────────────────────────────
+
+/// T2.2: Order::symbol -> Order::instrument 过渡期,把 Instrument 序列化为 HashMap key
+///
+/// T2.3 改: MultiSymbolAdapter 改 Instrument key 后,此函数已无调用点,
+/// 保留以备未来 Portfolio 仍按 string key 时的复用
+#[allow(dead_code)]
+fn instrument_to_key(inst: &axon_core::types::Instrument) -> axon_core::types::Symbol {
+    axon_core::types::Symbol::from(format!(
+        "{}/{}",
+        inst.base().as_str(),
+        inst.quote().as_str()
+    ))
 }

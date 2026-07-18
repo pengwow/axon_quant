@@ -26,7 +26,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_tick(price: f64, ts_nanos: i64) -> Tick {
@@ -45,9 +45,10 @@ fn engine_with_sma(short_win: usize, long_win: usize) -> StreamingEngine {
     engine.register_symbol(btc());
     engine.portfolio_mut().deposit(Currency::USD, 100_000.0);
     // 挂 Sell Limit maker(Market Buy 的对手盘)
-    let maker = Order::new(
+    let maker = Order::spot(
         900,
-        btc(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(200.0), // 高于所有测试价格,确保能撮合

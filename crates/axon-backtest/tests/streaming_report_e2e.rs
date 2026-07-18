@@ -25,7 +25,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn make_tick(price: f64) -> Tick {
@@ -44,9 +44,19 @@ fn engine_with_fills() -> StreamingEngine {
     }
     impl StreamingStrategy for BuyStrategy {
         fn on_tick(&mut self, symbol: &Symbol, _price: f64) -> Vec<StrategyAction> {
-            let order = Order::new(
+            // T3.2 改:按 '/' 拆 "BASE/QUOTE" 为 base/quote,送 Order::spot
+            // (新 L1MatchingEngine 按 `Instrument` 路由,base/quote 必须对齐;
+            //  否则 maker(基地=BTC,quote=USDT)和 taker(基地=BTC/USDT,quote=USDT)
+            //  落到不同 book 不成交 —— 这是 T3.2 暴露的旧测试 bug。)
+            let (base, quote) = {
+                let s = symbol.as_str();
+                let (b, q) = s.split_once('/').unwrap_or((s, "USDT"));
+                (b.to_string(), q.to_string())
+            };
+            let order = Order::spot(
                 self.id,
-                symbol.clone(),
+                base,
+                quote,
                 Side::Buy,
                 OrderType::Market,
                 Quantity::from_f64(0.1),
@@ -68,9 +78,10 @@ fn engine_with_fills() -> StreamingEngine {
     engine.set_initial_cash(100_000.0);
 
     // 挂 Sell Limit maker(给 Market Buy 对手盘)
-    let maker = Order::new(
+    let maker = Order::spot(
         900,
-        btc(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),

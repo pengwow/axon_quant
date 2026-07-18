@@ -33,13 +33,9 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
-
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
 
 fn base_config() -> BacktestEngineConfig {
     BacktestEngineConfig {
@@ -58,9 +54,10 @@ fn build_one_fill_queue() -> EventQueue {
     let mut b = EventBuilder::new(0);
 
     // 对手 sell
-    let counter = Order::new(
+    let counter = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),
@@ -75,9 +72,10 @@ fn build_one_fill_queue() -> EventQueue {
     ));
 
     // 策略 buy market
-    let strategy = Order::new(
+    let strategy = Order::spot(
         2,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Market,
         Quantity::from_f64(1.0),

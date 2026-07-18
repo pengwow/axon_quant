@@ -10,7 +10,7 @@ pub fn check_concentration(portfolio: &Portfolio, config: &RiskConfig) -> Vec<Ri
     if nav <= 0.0 {
         return alerts;
     }
-    for (symbol, position) in portfolio.positions() {
+    for (instrument, position) in portfolio.positions() {
         let mv = match position.market_value() {
             Some(v) => v as f64 / 1_000_000.0,
             None => continue,
@@ -20,7 +20,7 @@ pub fn check_concentration(portfolio: &Portfolio, config: &RiskConfig) -> Vec<Ri
             alerts.push(RiskAlert {
                 severity: AlertSeverity::Warning,
                 reason: RiskReason::ConcentrationTooHigh {
-                    instrument: symbol.to_string(),
+                    instrument: instrument.label(),
                     pct,
                 },
                 timestamp: now_unix_secs(),

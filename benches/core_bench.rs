@@ -29,7 +29,7 @@ use axon_core::market::orderbook::{OrderBookLevel, OrderBookSnapshot};
 use axon_core::market::{Bar, Tick};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 use axon_core::volatility::{EwmaVolatility, GarmanKlassVolatility, OhlcBar, VolatilityEstimator};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
@@ -62,9 +62,10 @@ fn make_sample_orderbook(levels: usize) -> OrderBookSnapshot {
 
 /// 构造一个限价单
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),

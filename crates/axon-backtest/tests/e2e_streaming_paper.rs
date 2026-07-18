@@ -63,9 +63,10 @@ impl StreamingStrategy for FixedStrategy {
 
 /// 构造限价单 helper(用作对手盘或策略订单)
 fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -77,9 +78,10 @@ fn make_limit(id: u64, side: Side, price: f64, qty: f64) -> Order {
 
 /// 构造市价单 helper
 fn make_market(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -98,7 +100,7 @@ fn make_tick(price: f64) -> Tick {
 }
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 /// 0.4.0:在 paper 模式下注入 `fill_probability=1.0` 的 paper engine,

@@ -31,7 +31,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity};
 
 // ── Adapter:让 ImpactedMatchingEngine 接入 BacktestEngine 的 MatchingEngine trait ──
 
@@ -106,7 +106,7 @@ impl MatchingEngine for ImpactedAdapter {
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-        symbol: Symbol,
+        instrument: Instrument, // 改: 原 symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         self.inner.seed_liquidity(
@@ -114,7 +114,7 @@ impl MatchingEngine for ImpactedAdapter {
             half_spread,
             depth_levels,
             size_per_level,
-            symbol,
+            instrument,
             next_id,
         )
     }
@@ -141,9 +141,10 @@ fn gen_uptrend(n: usize, base: f64, step: f64) -> Vec<Bar> {
 
 /// 构造限价单 helper
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -155,9 +156,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 
 /// 构造市价单 helper
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),

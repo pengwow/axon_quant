@@ -38,19 +38,16 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
 /// 构造限价单 helper
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64, tif: TimeInForce) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -62,9 +59,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64, tif: TimeInForce)
 
 /// 构造市价单 helper(撮合器对 Market 要求 IOC,见 `L1MatchingEngine::submit` 注释)
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),

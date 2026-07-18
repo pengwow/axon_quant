@@ -137,9 +137,16 @@ pub(crate) fn args_to_backtest_order(
         }
         (OrderKind::Market, _) => OrderType::Market,
     };
-    Ok(Order::new(
+    // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
+    let s = symbol.as_str();
+    let (base, quote) = match s.split_once('-') {
+        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+        None => (symbol, Symbol::from("USDT")),
+    };
+    Ok(Order::spot(
         order_id,
-        symbol,
+        base,
+        quote,
         side,
         order_type,
         Quantity::from_f64(args.quantity),

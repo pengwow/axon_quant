@@ -11,9 +11,10 @@ pub fn check_position_limit(
     portfolio: &Portfolio,
     config: &RiskConfig,
 ) -> RiskResult {
+    // 0.5.0 起 Portfolio::positions() 直接以 Instrument 作 key,无需 String 桥接
     let current_qty = portfolio
         .positions()
-        .get(&order.symbol)
+        .get(&order.instrument)
         .map(|p| p.quantity.as_f64())
         .unwrap_or(0.0);
 
@@ -25,7 +26,7 @@ pub fn check_position_limit(
 
     if new_qty > config.max_position_per_instrument {
         return RiskResult::Reject(RiskReason::PositionLimitExceeded {
-            instrument: order.symbol.to_string(),
+            instrument: order.instrument.label(),
             limit: config.max_position_per_instrument,
         });
     }
@@ -36,12 +37,13 @@ pub fn check_position_limit(
 mod tests {
     use super::*;
     use axon_core::order::{OrderType, TimeInForce};
-    use axon_core::types::{Price, Quantity, Symbol};
+    use axon_core::types::{Price, Quantity};
 
     fn make_order(side: Side, qty: f64) -> Order {
-        Order::new(
+        Order::spot(
             1,
-            Symbol::from("BTC-USDT"),
+            "BTC",
+            "USDT",
             side,
             OrderType::Limit {
                 price: Price::from_f64(100.0),

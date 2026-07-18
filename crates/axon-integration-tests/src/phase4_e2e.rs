@@ -18,7 +18,7 @@ use std::sync::Arc;
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::{Currency, Portfolio};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 use axon_exchange::lifecycle::OrderLifecycleManager;
 use axon_exchange::types::ExchangeId;
@@ -27,9 +27,10 @@ use axon_oms::{OrderManager, OrderStatus};
 use axon_risk::{DefaultRiskEngine, RiskConfig, RiskEngine, RiskResult};
 
 fn make_limit_order(price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         1,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(price),

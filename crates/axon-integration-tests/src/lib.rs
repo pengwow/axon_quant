@@ -19,6 +19,7 @@
 //! | [`error_recovery_and_concurrency`] | 多 crate | 错误恢复 + 并发 |
 //! | [`fuzz`] | axon-core + axon-backtest | 属性测试 / 模糊测试 |
 //! | [`contract`] | 所有 crate | API/数据契约稳定性 |
+//! | [`delta_neutral_arb`] | axon-core + axon-backtest | 0.5.0 spot+perp 两腿隔离 |
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -35,6 +36,9 @@ pub mod fuzz;
 
 /// 契约测试（API/数据契约稳定性）
 pub mod contract;
+
+/// Delta-neutral 套利集成测试(0.5.0 新增)
+pub mod delta_neutral_arb;
 
 pub mod e2e_pipeline;
 /// 集成测试模块（按 crate 维度组织）

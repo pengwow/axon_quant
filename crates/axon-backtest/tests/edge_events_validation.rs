@@ -26,19 +26,16 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
 /// 构造限价单 helper(合法)
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -137,9 +134,10 @@ fn zero_price_limit_order_is_rejected() {
     let mut b = EventBuilder::new(0);
 
     // 构造 price=0 的非法限价单
-    let bad = Order::new(
+    let bad = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(0.0),
@@ -173,9 +171,10 @@ fn zero_quantity_limit_order_is_rejected() {
     let mut b = EventBuilder::new(0);
 
     // 构造 qty=0 的非法限价单
-    let bad = Order::new(
+    let bad = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(100.0),
@@ -213,9 +212,10 @@ fn mixed_invalid_and_valid_orders_counters_consistent() {
     let mut b = EventBuilder::new(0);
 
     // 1) 零价买单
-    let bad_price = Order::new(
+    let bad_price = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Limit {
             price: Price::from_f64(0.0),
@@ -230,9 +230,10 @@ fn mixed_invalid_and_valid_orders_counters_consistent() {
     ));
 
     // 2) 零量卖单
-    let bad_qty = Order::new(
+    let bad_qty = Order::spot(
         2,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),

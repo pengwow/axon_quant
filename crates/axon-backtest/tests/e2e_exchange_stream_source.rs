@@ -35,11 +35,11 @@ use axon_core::types::{Price, Quantity, Symbol};
 // ── helpers ────────────────────────────────────────────────────────────
 
 fn btc() -> Symbol {
-    Symbol::from("BTC-USDT")
+    Symbol::from("BTC/USDT")
 }
 
 fn eth() -> Symbol {
-    Symbol::from("ETH-USDT")
+    Symbol::from("ETH/USDT")
 }
 
 fn make_tick(symbol: &Symbol, price: f64, ts_nanos: i64) -> MarketDataEvent {

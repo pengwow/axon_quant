@@ -28,7 +28,15 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 // ── L2Adapter(同 l2_engine_e2e.rs) ────────────────────────────────────
 
@@ -75,7 +83,7 @@ impl MatchingEngine for L2Adapter {
         _half_spread: f64,
         _depth_levels: usize,
         _size_per_level: f64,
-        _symbol: Symbol,
+        _instrument: Instrument, // 改: 原 _symbol: Symbol (T2.3)
         next_id: u64,
     ) -> u64 {
         next_id
@@ -84,14 +92,11 @@ impl MatchingEngine for L2Adapter {
 
 // ── 共享 helper ──────────────────────────────────────────────────────
 
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
-
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -102,9 +107,10 @@ fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
 }
 
 fn make_market_order(id: u64, side: Side, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        sym(),
+        "BTC",
+        "USDT",
         side,
         OrderType::Market,
         Quantity::from_f64(qty),
@@ -207,7 +213,7 @@ fn replace_l1_to_l2_preserves_state_and_continues() {
     );
 
     // 末态持仓 = 0(阶段 3 完全平仓 0.2 @ 130)
-    let pos = result.positions.get("BTC-USDT").copied().unwrap_or(0.0);
+    let pos = result.positions.get(&btc_inst()).copied().unwrap_or(0.0);
     assert!(pos.abs() < 1e-9, "末态持仓应=0(完全平仓), got {}", pos);
 
     // total_pnl 验证:

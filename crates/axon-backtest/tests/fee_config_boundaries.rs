@@ -26,13 +26,9 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Price, Quantity};
 
 // ── 共享 helper ──────────────────────────────────────────────────────
-
-fn sym() -> Symbol {
-    Symbol::from("BTC-USDT")
-}
 
 /// 构造配置(可指定 taker_rate)
 fn config_with_rate(initial_cash: f64, taker_rate: f64) -> BacktestEngineConfig {
@@ -55,9 +51,10 @@ fn build_one_fill_queue() -> EventQueue {
     let mut b = EventBuilder::new(0);
 
     // 对手 sell @ 100 qty=1
-    let counter = Order::new(
+    let counter = Order::spot(
         1,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Sell,
         OrderType::Limit {
             price: Price::from_f64(100.0),
@@ -72,9 +69,10 @@ fn build_one_fill_queue() -> EventQueue {
     ));
 
     // 策略 buy market 1
-    let strategy = Order::new(
+    let strategy = Order::spot(
         2,
-        sym(),
+        "BTC",
+        "USDT",
         Side::Buy,
         OrderType::Market,
         Quantity::from_f64(1.0),

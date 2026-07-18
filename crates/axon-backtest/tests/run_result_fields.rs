@@ -19,13 +19,22 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::queue::EventQueue;
 use axon_core::scheduler::SimulatedClock;
 use axon_core::time::Timestamp;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
+
+/// 构造 BTC/USDT 现货 Instrument(T3.5:RunResult.positions key 改 Instrument)
+fn btc_inst() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("BTC"),
+        quote: Symbol::from("USDT"),
+    })
+}
 
 /// 构造限价单 helper
 fn make_limit_order(id: u64, side: Side, price: f64, qty: f64) -> Order {
-    Order::new(
+    Order::spot(
         id,
-        Symbol::from("BTC-USDT"),
+        "BTC",
+        "USDT",
         side,
         OrderType::Limit {
             price: Price::from_f64(price),
@@ -386,9 +395,9 @@ fn reverse_partial_close() {
     // 终态:Long 0.1(还剩一半)
     assert_eq!(result.positions.len(), 1);
     assert!(
-        (result.positions["BTC-USDT"] - 0.1).abs() < 1e-9,
+        (result.positions[&btc_inst()] - 0.1).abs() < 1e-9,
         "expected position=0.1, got {}",
-        result.positions["BTC-USDT"]
+        result.positions[&btc_inst()]
     );
 }
 
@@ -438,9 +447,9 @@ fn reverse_flip_position() {
     // 终态:Short 0.1
     assert_eq!(result.positions.len(), 1);
     assert!(
-        (result.positions["BTC-USDT"] - (-0.1)).abs() < 1e-9,
+        (result.positions[&btc_inst()] - (-0.1)).abs() < 1e-9,
         "expected position=-0.1, got {}",
-        result.positions["BTC-USDT"]
+        result.positions[&btc_inst()]
     );
 }
 
@@ -506,7 +515,7 @@ fn total_pnl_account_view_with_unclosed_long() {
     );
     // 终态 long 0.1 BTC(未平仓)
     assert_eq!(result.positions.len(), 1);
-    assert!((result.positions["BTC-USDT"] - 0.1).abs() < 1e-9);
+    assert!((result.positions[&btc_inst()] - 0.1).abs() < 1e-9);
 }
 
 // ─── 测试 7: force_liquidate 强制平仓 ──────────────────────────────
@@ -619,7 +628,7 @@ fn no_force_liquidate_keeps_open_position() {
     assert_eq!(result.orders_accepted, 2);
     // 终态 long 0.1 @ mark=100
     assert_eq!(result.positions.len(), 1);
-    assert!((result.positions["BTC-USDT"] - 0.1).abs() < 1e-9);
+    assert!((result.positions[&btc_inst()] - 0.1).abs() < 1e-9);
     // total_pnl = final_nav - initial = -0.01(只扣手续费,持仓 mark 抵 cash)
     assert!(
         (result.total_pnl - (-0.01)).abs() < 1e-6,

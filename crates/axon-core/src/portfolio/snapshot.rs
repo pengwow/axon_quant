@@ -1,4 +1,4 @@
-//! 投资组合快照（用于时间序列记录）
+//! 投资组合快照(用于时间序列记录)
 
 use std::collections::HashMap;
 
@@ -7,21 +7,24 @@ use serde::{Deserialize, Serialize};
 use super::currency::Currency;
 use super::position::Position;
 use crate::time::Timestamp;
-use crate::types::Symbol;
+use crate::types::Instrument;
 
 /// 投资组合快照
 ///
-/// 用于：净值曲线、回放、状态持久化
+/// 用于:净值曲线、回放、状态持久化
+///
+/// **0.5.0 BREAKING**:`positions` 键类型从 `Symbol` 迁到 `Instrument`,
+/// 与 `Portfolio::positions` 保持一致。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortfolioSnapshot {
     /// 快照时间戳
     pub timestamp: Timestamp,
-    /// 净值（NAV）
+    /// 净值(NAV)
     pub nav: i64,
     /// 多币种现金
     pub cash: HashMap<Currency, i64>,
-    /// 持仓映射
-    pub positions: HashMap<Symbol, Position>,
+    /// 持仓映射(**0.5.0 BREAKING**:`HashMap<Instrument, Position>`)
+    pub positions: HashMap<Instrument, Position>,
     /// 已实现盈亏
     pub realized_pnl: i64,
     /// 未实现盈亏

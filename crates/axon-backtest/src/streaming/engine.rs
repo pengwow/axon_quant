@@ -21,7 +21,7 @@ use axon_core::event::{Event, FillEvent};
 use axon_core::market::{Side as MarketSide, Trade};
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::portfolio::Portfolio;
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 use crate::matching::{L1MatchingEngine, MatchingEngine};
 
@@ -187,8 +187,10 @@ impl StreamingEngine {
                 let tick_ts = tick.timestamp;
                 let tick_side = tick.side;
 
-                // 1. 更新 portfolio mark-to-market
-                self.portfolio.update_market_price(&symbol, tick_price);
+                // 1. 更新 portfolio mark-to-market(0.5.0:instrument-based)
+                let inst = Instrument::from_symbol(&symbol);
+                self.portfolio
+                    .update_market_price_instrument(&inst, tick_price);
 
                 // 2. 调 strategy 拿 actions(无 strategy 则空)
                 let actions = match &mut self.strategy {
@@ -296,7 +298,8 @@ impl StreamingEngine {
     /// 撮合产生的 fills 会累加 `total_trades`,但不更新 portfolio(portfolio 由
     /// `on_market_event` 走 strategy 路径时统一更新,避免重复记账)。
     pub fn submit_order(&mut self, order: Order) -> Result<u64, String> {
-        let symbol = order.symbol.clone();
+        // T2.2: Order::symbol -> Order::instrument; 用 Instrument 反向构造 Symbol key
+        let symbol = instrument_to_key(&order.instrument);
         let order_id = order.id;
 
         let engine = self
@@ -413,9 +416,12 @@ impl StreamingEngine {
         price: f64,
         qty: f64,
     ) -> Order {
-        Order::new(
+        // T2.2: 把 symbol 拆成 base/quote, 用 Order::spot 构造
+        let (base, quote) = split_symbol_to_base_quote(&symbol);
+        Order::spot(
             id,
-            symbol,
+            base,
+            quote,
             side,
             OrderType::Limit {
                 price: Price::from_f64(price),
@@ -492,5 +498,30 @@ mod tests {
         let engine =
             StreamingEngine::new(TradingMode::Backtest).with_strategy(Box::new(NoopStrategy));
         assert!(engine.has_strategy());
+    }
+}
+
+// ── T2.2 过渡 helpers ──────────────────────────────────
+// T2.2 follow-up: 这两个 helper 故意放在 tests 模块之后以减小 diff;
+// 后续 T3.x 重新组织 src/streaming 时再把它们移到 tests 之前。
+
+/// 把 `Instrument` 序列化为 streaming engine HashMap key 使用的字符串 (transitional)
+#[allow(clippy::items_after_test_module)]
+fn instrument_to_key(inst: &Instrument) -> Symbol {
+    Symbol::from(format!(
+        "{}/{}",
+        inst.base().as_str(),
+        inst.quote().as_str()
+    ))
+}
+
+/// 把 `Symbol` 拆为 `(base, quote)` (T2.2 过渡 helper)
+#[allow(clippy::items_after_test_module)]
+fn split_symbol_to_base_quote(sym: &Symbol) -> (Symbol, Symbol) {
+    let s = sym.as_str();
+    if let Some((base, quote)) = s.split_once('-').or_else(|| s.split_once('/')) {
+        (Symbol::from(base), Symbol::from(quote))
+    } else {
+        (sym.clone(), Symbol::from("USDT"))
     }
 }
