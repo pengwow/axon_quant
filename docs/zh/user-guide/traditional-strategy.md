@@ -30,12 +30,8 @@ from axon_quant import (
     BacktestEngine,
     MarketBar,
     Order,
-    OrderId,
     OrderType,
     Side,
-    TimeInForce,
-    Symbol,
-    ExchangeId,
 )
 
 
@@ -287,8 +283,7 @@ from typing import Optional, List
 from decimal import Decimal
 
 from axon_quant import (
-    MarketBar, Order, OrderId, OrderType, Side, TimeInForce,
-    Symbol, ExchangeId,
+    MarketBar, Order, OrderType, Side,
     LLMBackend, Message, ToolDefinition,
     DecisionRecorder, DecisionRecord,
 )
@@ -538,8 +533,7 @@ from typing import Optional, List
 from decimal import Decimal
 
 from axon_quant import (
-    MarketBar, Order, OrderId, OrderType, Side, TimeInForce,
-    Symbol, ExchangeId,
+    MarketBar, Order, OrderType, Side,
 )
 
 
@@ -736,8 +730,7 @@ from typing import Optional, Tuple
 from decimal import Decimal
 
 from axon_quant import (
-    MarketBar, Order, OrderId, OrderType, Side, TimeInForce,
-    Symbol, ExchangeId,
+    MarketBar, Order, OrderType, Side,
     TradingEnv, Observation, Action,
 )
 
@@ -887,18 +880,13 @@ class MeanReversionStrategy:
     def _create_order(self, side: Side, quantity: Decimal, reason: str) -> Order:
         """创建订单。"""
         return Order(
-            client_order_id=OrderId.new(),
-            symbol=Symbol("BTCUSDT"),
+            # 0.6.0 Python `axon_quant.oms.Order` 字段集
+            symbol="BTCUSDT",
             side=side,
             order_type=OrderType.Market,
-            price=None,
             quantity=quantity,
-            time_in_force=TimeInForce.Gtc,
-            exchange=ExchangeId.Binance,
-            meta={
-                "strategy": "MeanReversion",
-                "reason": reason,
-            },
+            price=Decimal("0"),  # 市价单 price 传 0
+            idempotency_key=f"mean-rev-{reason[:16]}",
         )
 
 
@@ -981,8 +969,7 @@ from decimal import Decimal
 from dataclasses import dataclass
 
 from axon_quant import (
-    MarketBar, Order, OrderId, OrderType, Side, TimeInForce,
-    Symbol, ExchangeId,
+    MarketBar, Order, OrderType, Side,
     DynamicWeightedEnsemble, ModelPerformance,
 )
 
@@ -1228,20 +1215,13 @@ class StatArbStrategy:
     def _make_order(self, symbol: str, side: Side, quantity: Decimal, signal: dict) -> Order:
         """创建单个订单。"""
         return Order(
-            client_order_id=OrderId.new(),
-            symbol=Symbol(symbol),
+            # 0.6.0 Python `axon_quant.oms.Order` 字段集
+            symbol=symbol,
             side=side,
             order_type=OrderType.Market,
-            price=None,
             quantity=quantity,
-            time_in_force=TimeInForce.Gtc,
-            exchange=ExchangeId.Binance,
-            meta={
-                "strategy": "StatArb",
-                "action": signal["action"],
-                "zscore": str(signal["zscore"]),
-                "spread": str(signal["spread"]),
-            },
+            price=Decimal("0"),  # 市价单 price 传 0
+            idempotency_key=f"stat-arb-{signal.get('action', 'na')[:8]}",
         )
     
     def _calculate_pair_pnl(self, pair: Pair, position: dict, exit_spread: float) -> float:

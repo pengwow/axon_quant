@@ -418,7 +418,6 @@ print(f"检测到新版本: {version_rx.borrow()}")
 from axon_quant import (
     BinanceAdapter, OkxAdapter,
     ExchangeConfig, ExchangeId,
-    Symbol, Order, OrderId, OrderType, Side, TimeInForce,
     RateLimitConfig, ReconnectConfig,
     MarginType, PositionMode,
 )
@@ -627,20 +626,19 @@ ModelStage.Archived     # 旧版本归档
 ModelStage.RolledBack   # 已回滚
 ```
 
-### 4.4 OrderType / TimeInForce（订单类型）
+### 4.4 OrderType（订单类型）
 
 ```python
-from axon_quant import OrderType, TimeInForce
+from axon_quant import OrderType
 
 OrderType.Limit         # 限价单
 OrderType.Market        # 市价单
 OrderType.StopLoss      # 止损单
 OrderType.StopLimit     # 限价止损单
 
-TimeInForce.Gtc         # Good Till Cancelled
-TimeInForce.Ioc         # Immediate Or Cancel
-TimeInForce.Fok         # Fill Or Kill
-```
+# 注:`tif`(time-in-force) 在 0.6.0 收口时统一为 `tif` 字段,
+# OMS `Order(symbol, ..., tif)` 接受 "GTC" / "IOC" / "FOK" 字符串字面量,
+# backtest OrderDict `tif` 字段同步。Rust 端无独立 `TimeInForce` 枚举类。
 
 ---
 

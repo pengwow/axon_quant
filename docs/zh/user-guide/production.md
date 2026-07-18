@@ -570,7 +570,6 @@ AXON 通过 `axon-exchange` 提供统一的交易所适配器，目前支持 Bin
 import asyncio
 from axon_quant import (
     BinanceAdapter, ExchangeConfig, ExchangeId,
-    Symbol, Order, OrderId, OrderType, Side, TimeInForce,
     RateLimitConfig, ReconnectConfig,
 )
 from decimal import Decimal
@@ -617,10 +616,10 @@ async def setup_binance() -> BinanceAdapter:
     await adapter.connect()
     print("Binance 连接成功")
     
-    # 订阅行情 (深度、Ticker、成交、K线)
+    # 订阅行情 (深度、Ticker、成交、K线) - 0.6.0 Python 端接受 List[str]
     await adapter.subscribe([
-        Symbol("BTCUSDT"),
-        Symbol("ETHUSDT"),
+        "BTCUSDT",
+        "ETHUSDT",
     ])
     print("行情订阅成功")
     
@@ -653,9 +652,9 @@ async def trading_loop(adapter: BinanceAdapter):
                 print(f"[{trade.symbol}] 成交: {trade.price} x {trade.quantity}")
             
             case "OrderUpdate":
-                # 订单状态更新
+                # 订单状态更新(0.6.0 Python 端 OrderUpdate 字段:`order_id` / `status`)
                 update = msg.data
-                print(f"订单 {update.client_order_id} 状态: {update.status}")
+                print(f"订单 {update.order_id} 状态: {update.status}")
             
             case _:
                 pass

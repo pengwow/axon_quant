@@ -263,13 +263,8 @@ config = EnvConfig(
 **A:** 使用 `ExchangeAdapter` 的批量订阅功能：
 
 ```python
-# 订阅多个交易对
-symbols = [
-    Symbol("BTCUSDT"),
-    Symbol("ETHUSDT"),
-    Symbol("SOLUSDT"),
-    Symbol("BNBUSDT"),
-]
+# 订阅多个交易对(0.6.0 Python 端 subscribe 接受 List[str])
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 await adapter.subscribe(symbols)
 
 # 在消息循环中区分交易对
@@ -277,10 +272,10 @@ market_rx = adapter.market_data_rx()
 while True:
     msg = await market_rx.recv()
     symbol = msg.data.symbol
-    
-    if symbol == Symbol("BTCUSDT"):
+
+    if symbol == "BTCUSDT":
         process_btc(msg.data)
-    elif symbol == Symbol("ETHUSDT"):
+    elif symbol == "ETHUSDT":
         process_eth(msg.data)
 ```
 

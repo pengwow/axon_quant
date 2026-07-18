@@ -418,7 +418,6 @@ print(f"New version detected: {version_rx.borrow()}")
 from axon_quant import (
     BinanceAdapter, OkxAdapter,
     ExchangeConfig, ExchangeId,
-    Symbol, Order, OrderId, OrderType, Side, TimeInForce,
     RateLimitConfig, ReconnectConfig,
     MarginType, PositionMode,
 )
