@@ -397,6 +397,11 @@ pub struct BacktestEngine {
     /// 0.5.0 由调用方在 bar 末手动触发 rebalance 时累加;
     /// 0.5.1+ 可在 `begin_bar` 收尾自动 rebalance 时累加。
     rebalances_triggered: u64,
+    /// 0.6.0 新增(Phase 1):bar 计数器,`begin_bar` 每次自增,
+    /// `rebalance_to_target` 用它做"本 bar 已 rebalance"防重 guard。
+    bar_id: u64,
+    /// 0.6.0 新增(Phase 1):上一次 rebalance 触发的 bar_id(供 guard 检查)
+    last_rebalance_bar_id: u64,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -440,6 +445,11 @@ impl BacktestEngine {
             rebalance_next_id: std::sync::atomic::AtomicU64::new(REBALANCE_ID_BASE),
             // 0.5.0 新增(Phase D):rebalance 触发累计起点 0
             rebalances_triggered: 0,
+            // 0.6.0 新增(Phase 1):bar 计数器从 0 开始,`begin_bar` 每次 +1
+            bar_id: 0,
+            // 0.6.0 新增(Phase 1):尚未触发过 rebalance(0 表示"未触发"
+            // 状态,首次 rebalance 必在 bar_id >= 1 后发生,保证不等式生效)
+            last_rebalance_bar_id: 0,
         }
     }
 
