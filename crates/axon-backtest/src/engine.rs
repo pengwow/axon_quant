@@ -534,33 +534,41 @@ impl BacktestEngine {
         // - guard 让同 bar 多次 `rebalance_to_target` 只触发一次
         // - 用户用 begin_bar 显式跨 bar 时,新 bar 必能重新 rebalance
         self.bar_id += 1;
-        let Some(cfg) = self.seed_liquidity_config else {
-            return;
-        };
-        // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
-        if mid_price <= 0.0
-            || cfg.half_spread <= 0.0
-            || cfg.depth_levels == 0
-            || cfg.size_per_level <= 0.0
-        {
-            return;
+        // 1) 清空上一 bar 的种子挂单 + 2) 重新挂单(seed id 单调递增)
+        // 0.6.0 改:用 if let 嵌套而非早 return,确保末尾自动 rebalance
+        // 永远会执行(无论 seed_liquidity 是否启用)
+        if let Some(cfg) = self.seed_liquidity_config {
+            // ponytail:无效参数(no-op)与有效参数走同一路径,避免 L1 内部再判一次
+            if mid_price > 0.0
+                && cfg.half_spread > 0.0
+                && cfg.depth_levels != 0
+                && cfg.size_per_level > 0.0
+            {
+                // 1) 清空上一 bar 的种子挂单
+                self.config.matching_engine.clear_book();
+                // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
+                let next_id = self
+                    .seed_liquidity_next_id
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let new_next_id = self.config.matching_engine.seed_liquidity(
+                    mid_price,
+                    cfg.half_spread,
+                    cfg.depth_levels,
+                    cfg.size_per_level,
+                    instrument, // 改: 原 symbol (T2.3)
+                    next_id,
+                );
+                self.seed_liquidity_next_id
+                    .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
+            }
         }
-        // 1) 清空上一 bar 的种子挂单
-        self.config.matching_engine.clear_book();
-        // 2) 重新挂单(seed id 单调递增,避免与策略订单 id 冲突)
-        let next_id = self
-            .seed_liquidity_next_id
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let new_next_id = self.config.matching_engine.seed_liquidity(
-            mid_price,
-            cfg.half_spread,
-            cfg.depth_levels,
-            cfg.size_per_level,
-            instrument, // 改: 原 symbol (T2.3)
-            next_id,
-        );
-        self.seed_liquidity_next_id
-            .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
+        // 0.6.0 新增(Phase 1):bar 末自动 rebalance
+        //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
+        //     阈值,所有 leg 都在阈值内,no-op
+        //   - 用户手写 `rebalance_to_target` 与自动模式冲突:bar_id guard
+        //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
+        //     执行,本 bar 自动 rebalance 会被 guard 跳过)
+        self.rebalance_to_target(None);
     }
 
     /// 当前已注册的源数量（队列中剩余事件数）
