@@ -3,7 +3,7 @@
 > **完整可运行示例**: [`examples/17_python_bindings/python_bindings_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/17_python_bindings/python_bindings_demo.py)
 > 覆盖本文档全部 6 个模块（Backtest / Risk / OMS / Exchange / Inference / LLM Trading），一键执行。
 
-> 适用版本:AXON v0.3.0+ Python 绑定(Stage K 交付)
+> 适用版本:AXON v0.6.0+ Python 绑定(Stage K 交付)
 
 AXON 通过 PyO3 把核心 Rust 类型暴露给 Python,提供 `axon_quant` 包。
 

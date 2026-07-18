@@ -1,8 +1,8 @@
-# `axon-inference` 模型热更新(0.3.0 P0 Stage 6 收口)
+# `axon-inference` 模型热更新(0.6.0 P0 Stage 6 收口)
 
-> 适用版本:`axon-inference` v0.3.0+
+> 适用版本:`axon-inference` v0.6.0+
 > 状态:**已实现**(Stage 6 收口)
-> 上游 plan:`.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` 工作流 C
+> 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` 工作流 C
 
 `ModelHotReloader` 提供不中断推理服务的模型权重热更新能力,核心目标:
 

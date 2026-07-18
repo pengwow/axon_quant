@@ -1,8 +1,8 @@
-# `axon-inference` Model Hot Reload (0.3.0 P0 Stage 6 closure)
+# `axon-inference` Model Hot Reload (0.6.0 P0 Stage 6 closure)
 
-> Version: `axon-inference` v0.3.0+
+> Version: `axon-inference` v0.6.0+
 > Status: **Implemented** (Stage 6 closure)
-> Plan ref: `.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` Workflow C
+> Plan ref: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` Workflow C
 
 `ModelHotReloader` provides model weight hot-reload without interrupting inference. Goals:
 

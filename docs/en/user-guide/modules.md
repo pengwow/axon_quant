@@ -494,7 +494,7 @@ The `axon` command-line entry point (Phase 0 only prints a banner; later stages 
 - Uses compile-time constants like `env!("CARGO_PKG_VERSION")` / `env!("RUSTC_VERSION")` / `target_triple`
 
 ### Applicable Scenarios
-- Current stage (0.4.0): verify build, version, platform info
+- Current stage (0.6.0): verify build, version, platform info
 - Future (plan 0.5+): unified entry for subcommands like `axon backtest run` / `axon train ppo` / `axon serve`
 
 ### Non-applicable Scenarios
@@ -505,7 +505,7 @@ The `axon` command-line entry point (Phase 0 only prints a banner; later stages 
 
 ```bash
 $ cargo run -p axon-cli
-axon 0.4.0
+axon 0.6.0
 Rust 1.97.0 (aarch64-apple-darwin)
 Stage: Phase 0 — Architecture & Infrastructure
 ```
@@ -1791,9 +1791,14 @@ print(f"active={oms.active_count()} history={oms.history_count()}")
 ```rust
 use axon_oms::{OrderManager, Order, OrderStatus, Side, OrderType};
 use rust_decimal::Decimal;
+use axon_core::instruments::{Instrument, SpotInstrument};
 
 let oms = OrderManager::new();
-let order = Order::new("BTC-USDT".into(), Side::Buy, OrderType::Limit,
+// 0.6.0 起:`Order::new(instrument_id, ...)` 仍兼容,但推荐显式注入结构化
+// `Instrument`(供跨 leg 风险约束 / 路由使用)。`Order::spot()` 工厂等价于
+// `Order::new` + `with_instrument(SpotInstrument)` 链式调用。
+let btc_spot: Instrument = SpotInstrument::new("BTC", "USDT").into();
+let order = Order::spot(btc_spot, Side::Buy, OrderType::Limit,
     Decimal::new(1, 3), Decimal::from(50_000));
 let id = oms.submit(order)?;
 oms.update_status(id, OrderStatus::Acknowledged)?;
@@ -1849,7 +1854,7 @@ Production monitoring: atomic metrics (Counter / Gauge / Histogram) + alert rule
 | **Output destination** | Rust-side write → `axum` HTTP `/metrics` endpoint → Prometheus scrape | Python uses `prometheus_client` to scrape directly; no need to go through PyO3 |
 | **Python equivalent** | — | `axon-tracker` already covers training/experiment monitoring (`MLflow` / `WandB` / `Local` / `Memory` backends) |
 
-Code-level confirmation (as of `0.4.1`):
+Code-level confirmation (as of `0.6.0`):
 
 - `crates/axon-monitor/Cargo.toml` has **no `python` feature**
 - `crates/axon-monitor/src/` has **no `python/` sub-module** (`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` have no `#[pyclass]`)
@@ -2277,7 +2282,7 @@ Python unified entry `axon_quant._native`: aggregates each crate's PyO3 bindings
 
 ```python
 import axon_quant
-print(axon_quant.__version__)  # 0.4.0
+print(axon_quant.__version__)  # 0.6.0
 
 # Submodules
 env = axon_quant.rl.TradingEnv(...)

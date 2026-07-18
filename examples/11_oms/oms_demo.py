@@ -78,6 +78,14 @@ def main() -> int:
     )
     from axon_quant.oms import limit_order, market_order
 
+    # 0.6.0 OMS 说明:`Order` 在 Rust 端已支持 `instrument: Option<Instrument>`
+    # 结构化字段(供跨 leg 风险约束 / 路由使用),但 Python 端 `limit_order` /
+    # `market_order` 工厂暂时仍以 `instrument_id: str` 作为规范化标识符构造,
+    # 后续会通过 `with_instrument()` builder 暴露。这里统一用 `BTC-USDT` /
+    # `ETH-USDT` 形式的 `instrument_id` 字符串。
+    BTC_USDT = "BTC-USDT"
+    ETH_USDT = "ETH-USDT"
+
     header("AXON OMS (Order Management System) 演示", "📋")
 
     # ── 1. 创建 OrderManager 并入金 ────────────────────────────────
@@ -91,7 +99,7 @@ def main() -> int:
     # ── 2. 提交限价买单 ──────────────────────────────────────────
     step(2, "提交限价买单: 买入 0.1 BTC @ 50,000")
     oid = oms.submit(
-        limit_order("BTC-USDT", "Buy", 0.1, 50_000, idempotency_key="demo-001")
+        limit_order(BTC_USDT, "Buy", 0.1, 50_000, idempotency_key="demo-001")
     )
     value("订单 ID", oid)
     status = oms.get_order_status(oid)
@@ -109,7 +117,7 @@ def main() -> int:
     oms.add_fill(
         order_id=oid,
         fill_id="fill-001",
-        symbol="BTC-USDT",
+        symbol=BTC_USDT,
         price=50_000.0,
         quantity=0.05,
         fee=0.25,
@@ -123,7 +131,7 @@ def main() -> int:
     oms.add_fill(
         order_id=oid,
         fill_id="fill-002",
-        symbol="BTC-USDT",
+        symbol=BTC_USDT,
         price=50_000.0,
         quantity=0.05,
         fee=0.25,
@@ -151,7 +159,7 @@ def main() -> int:
     # ── 5. 批量订单提交 ──────────────────────────────────────────
     step(7, "批量提交 3 个 ETH-USDT 限价买单")
     orders = [
-        limit_order("ETH-USDT", "Buy", 1.0, 3_000, idempotency_key=f"batch-{i}")
+        limit_order(ETH_USDT, "Buy", 1.0, 3_000, idempotency_key=f"batch-{i}")
         for i in range(3)
     ]
     ids = oms.batch_submit(orders)

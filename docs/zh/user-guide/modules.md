@@ -497,7 +497,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 - 用 `env!("CARGO_PKG_VERSION")` / `env!("RUSTC_VERSION")` / `target_triple` 等编译期常量
 
 ### 适用场景
-- 当前阶段（0.4.0）：验证构建、版本号、平台信息
+- 当前阶段（0.6.0）：验证构建、版本号、平台信息
 - 未来（plan 0.5+）：`axon backtest run` / `axon train ppo` / `axon serve` 等子命令的统一入口
 
 ### 不适用场景
@@ -508,7 +508,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 
 ```bash
 $ cargo run -p axon-cli
-axon 0.4.0
+axon 0.6.0
 Rust 1.97.0 (aarch64-apple-darwin)
 阶段：Phase 0 — 架构与基础设施
 ```
@@ -1794,9 +1794,14 @@ print(f"active={oms.active_count()} history={oms.history_count()}")
 ```rust
 use axon_oms::{OrderManager, Order, OrderStatus, Side, OrderType};
 use rust_decimal::Decimal;
+use axon_core::instruments::{Instrument, SpotInstrument};
 
 let oms = OrderManager::new();
-let order = Order::new("BTC-USDT".into(), Side::Buy, OrderType::Limit,
+// 0.6.0 起:`Order::new(instrument_id, ...)` 仍兼容,但推荐显式注入结构化
+// `Instrument`(供跨 leg 风险约束 / 路由使用)。`Order::spot()` 工厂等价于
+// `Order::new` + `with_instrument(SpotInstrument)` 链式调用。
+let btc_spot: Instrument = SpotInstrument::new("BTC", "USDT").into();
+let order = Order::spot(btc_spot, Side::Buy, OrderType::Limit,
     Decimal::new(1, 3), Decimal::from(50_000));
 let id = oms.submit(order)?;
 oms.update_status(id, OrderStatus::Acknowledged)?;
@@ -1852,7 +1857,7 @@ oms.update_status(id, OrderStatus::Acknowledged)?;
 | **输出去向** | Rust 端写 → `axum` HTTP `/metrics` 端点 → Prometheus 抓取 | Python 端用 `prometheus_client` 直接 scrape，无需走 PyO3 |
 | **Python 等价物** | — | 已有 `axon-tracker` 承担训练/实验监控（`MLflow` / `WandB` / `Local` / `Memory` backends） |
 
-代码层确认（`0.4.1` 状态）：
+代码层确认（`0.6.0` 状态）：
 
 - `crates/axon-monitor/Cargo.toml` **无 `python` feature**
 - `crates/axon-monitor/src/` **无 `python/` 子模块**（`metrics.rs` / `registry.rs` / `alert.rs` / `health.rs` 都无 `#[pyclass]`）
@@ -2279,7 +2284,7 @@ Python 统一入口 `axon_quant._native`：把各 crate 的 PyO3 绑定 + 共享
 
 ```python
 import axon_quant
-print(axon_quant.__version__)  # 0.4.0
+print(axon_quant.__version__)  # 0.6.0
 
 # 子模块
 env = axon_quant.rl.TradingEnv(...)

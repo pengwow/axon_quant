@@ -298,7 +298,7 @@ for fee in [100, 500, 3000, 10000]:
 
 ### V3Router — on-chain swap
 
-`V3Router` wraps `SwapRouter02` (canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`) for real swap transactions. The Python-side `swap()` lands in 0.3.x follow-up; in 0.3.0 the public API is `build_tx` (offline construction) plus address exposure.
+`V3Router` wraps `SwapRouter02` (canonical `0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`) for real swap transactions. The Python-side `swap()` is available from 0.6.0 onwards (`axon_quant.defi.UniswapV3.swap()`); in 0.3.0 the public API was `build_tx` (offline construction) plus address exposure.
 
 ```python
 # Available in 0.3.0
@@ -403,7 +403,7 @@ bundle_hash = await client.submit_transaction(signed_tx_hex)
 # Returns "0x..." (real Flashbots bundleHash)
 ```
 
-> **Signature requirement**:in production, `X-Flashbots-Signature` needs HMAC (signing-key + body). The 0.3.0 release ships a placeholder header that includes the real signing key; HMAC signing lands in a follow-up 0.3.x release.
+> **Signature requirement**:in production, `X-Flashbots-Signature` needs HMAC (signing-key + body). As of 0.6.0 the client ships a placeholder header that includes the real signing key (sufficient for development); full production HMAC support is targeted for 0.7.0+ (see [axon-defi Roadmap](https://github.com/pengwow/axon_quant/issues)).
 
 ---
 

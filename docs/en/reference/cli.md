@@ -1,6 +1,6 @@
 # CLI Commands
 
-> Applicable version: axon-cli v0.3.0+
+> Applicable version: axon-cli v0.6.0+
 > Installation: `cargo install --path crates/axon-cli --locked`
 
 axon-cli is AXON's command-line entry point, providing subcommands for backtesting, training, optimization, validation, tracking, and more.

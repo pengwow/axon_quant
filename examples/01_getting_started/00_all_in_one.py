@@ -181,20 +181,25 @@ def demo_backtest() -> None:
         L2MatchingEngine,
         limit_order,
         market_order,
+        spot_instrument,
     )
+
+    # 0.6.0 起:`symbol` 字符串改 `instrument` 字典(spot / swap 区分)
+    btc_spot = spot_instrument("BTC", "USDT")
+    eth_spot = spot_instrument("ETH", "USDT")
 
     # 1. L1 撮合引擎：限价单撮合
     step(1, "L1 撮合引擎 —— 限价单匹配")
     engine = L1MatchingEngine()
 
     # 先挂一个卖单
-    sell_result = engine.submit(limit_order(1, "BTCUSDT", "Sell", 100.0, 1.0))
+    sell_result = engine.submit(limit_order(1, btc_spot, "Sell", 100.0, 1.0))
     value("卖单 ID", 1)
     value("是否成交", sell_result["is_filled"])
     info("卖单挂单成功，等待买单匹配")
 
     # 提交买单，价格匹配
-    buy_result = engine.submit(limit_order(2, "BTCUSDT", "Buy", 100.0, 1.0))
+    buy_result = engine.submit(limit_order(2, btc_spot, "Buy", 100.0, 1.0))
     value("买单 ID", 2)
     value("是否成交", buy_result["is_filled"])
     value("成交笔数", len(buy_result["fills"]))
@@ -203,8 +208,8 @@ def demo_backtest() -> None:
     # 2. L1 撮合引擎：市价单
     step(2, "L1 撮合引擎 —— 市价单吃单")
     engine2 = L1MatchingEngine()
-    engine2.submit(limit_order(10, "ETHUSDT", "Sell", 2000.0, 5.0))
-    mkt_result = engine2.submit(market_order(11, "ETHUSDT", "Buy", 2.0))
+    engine2.submit(limit_order(10, eth_spot, "Sell", 2000.0, 5.0))
+    mkt_result = engine2.submit(market_order(11, eth_spot, "Buy", 2.0))
     value("市价买单是否成交", mkt_result["is_filled"])
     if mkt_result["fills"]:
         fill = mkt_result["fills"][0]
@@ -220,12 +225,12 @@ def demo_backtest() -> None:
         {
             "type": "order_submitted",
             "timestamp_ns": 1_000_000_000,
-            "order": limit_order(1, "BTCUSDT", "Buy", 50_000.0, 0.1),
+            "order": limit_order(1, btc_spot, "Buy", 50_000.0, 0.1),
         },
         {
             "type": "order_submitted",
             "timestamp_ns": 2_000_000_000,
-            "order": limit_order(2, "BTCUSDT", "Buy", 50_000.0, 0.1),
+            "order": limit_order(2, btc_spot, "Buy", 50_000.0, 0.1),
         },
     ]
     for evt in events:

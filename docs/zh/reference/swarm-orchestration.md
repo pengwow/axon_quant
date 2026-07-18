@@ -1,8 +1,8 @@
-# `axon-llm::swarm` 多 Agent 编排(0.3.0 P0 工作流 B 收口)
+# `axon-llm::swarm` 多 Agent 编排(0.6.0 P0 工作流 B 收口)
 
-> 适用版本:`axon-llm` v0.3.0+
+> 适用版本:`axon-llm` v0.6.0+
 > 状态:**已实现**(工作流 B Batch 1-4 全收口)
-> 上游 plan:`.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
+> 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
 
 `SwarmOrchestrator` 把 4 类 agent (Market / Risk / Execution / Audit) 串成可运行 pipeline,
 配合 `HarnessBridge` 做最终裁决,`TradingBackend` 真下单到 `MockTradingBackend` / 交易所。
@@ -200,7 +200,7 @@ orch.stop()
 
 **总测试数**:322 lib unittests + 74 integration + 3 doctests + 25 Python E2E = **424 全过**。
 
-## 6. 现状与未实现项(基于 0.4.1)
+## 6. 现状与未实现项(基于 0.6.0)
 
 ### 已完成的 0.3.x / 0.4.x 路线图
 

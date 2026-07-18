@@ -1,8 +1,8 @@
-# `axon-llm::swarm` Multi-Agent Orchestration (0.3.0 P0 Workflow B Wrap-up)
+# `axon-llm::swarm` Multi-Agent Orchestration (0.6.0 P0 Workflow B Wrap-up)
 
-> Applies to: `axon-llm` v0.3.0+
+> Applies to: `axon-llm` v0.6.0+
 > Status: **Implemented** (Workflow B Batch 1-4 fully wrapped up)
-> Plan: `.axon-internal/plans/2026-07-06-v0.3.0-p0-implementation.md` §3
+> Plan: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
 
 `SwarmOrchestrator` chains 4 agents (Market / Risk / Execution / Audit) into a runnable pipeline,
 integrated with `HarnessBridge` for final adjudication, and `TradingBackend` for real order

@@ -681,23 +681,23 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. Version Compatibility
 
-AXON current version is `0.3.0`, all crate versions unified:
+AXON current version is `0.6.0`, all crate versions unified:
 
 | Crate | Version | Minimum Rust Version |
 |-------|---------|---------------------|
-| axon-core | 0.3.0 | 1.97.0 |
-| axon-rl | 0.3.0 | 1.97.0 |
-| axon-llm | 0.3.0 | 1.97.0 |
-| axon-inference | 0.3.0 | 1.97.0 |
-| axon-exchange | 0.3.0 | 1.97.0 |
-| axon-ensemble | 0.3.0 | 1.97.0 |
-| axon-explain | 0.3.0 | 1.97.0 |
-| axon-backtest | 0.3.0 | 1.97.0 |
-| axon-hpo | 0.3.0 | 1.97.0 |
-| axon-walk-forward | 0.3.0 | 1.97.0 |
-| axon-tracker | 0.3.0 | 1.97.0 |
-| axon-registry | 0.3.0 | 1.97.0 |
-| axon-distributed | 0.3.0 | 1.97.0 |
-| axon-monitor | 0.3.0 | 1.97.0 |
-| axon-risk | 0.3.0 | 1.97.0 |
-| axon-compliance | 0.3.0 | 1.97.0 |
+| axon-core | 0.6.0 | 1.96.0 |
+| axon-rl | 0.6.0 | 1.96.0 |
+| axon-llm | 0.6.0 | 1.96.0 |
+| axon-inference | 0.6.0 | 1.96.0 |
+| axon-exchange | 0.6.0 | 1.96.0 |
+| axon-ensemble | 0.6.0 | 1.96.0 |
+| axon-explain | 0.6.0 | 1.96.0 |
+| axon-backtest | 0.6.0 | 1.96.0 |
+| axon-hpo | 0.6.0 | 1.96.0 |
+| axon-walk-forward | 0.6.0 | 1.96.0 |
+| axon-tracker | 0.6.0 | 1.96.0 |
+| axon-registry | 0.6.0 | 1.96.0 |
+| axon-distributed | 0.6.0 | 1.96.0 |
+| axon-monitor | 0.6.0 | 1.96.0 |
+| axon-risk | 0.6.0 | 1.96.0 |
+| axon-compliance | 0.6.0 | 1.96.0 |
