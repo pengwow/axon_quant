@@ -2557,6 +2557,22 @@ mod tests {
         )));
     }
 
+    /// 0.6.0 新增(Phase 2):推 mark 事件到队列(走 BacktestEngine 派发后
+    /// 写入 `bt_state.mark_cache`,供 funding schedule 读取)
+    fn push_mark_event(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        inst: Instrument,
+        mark: f64,
+        ts_ns: i64,
+    ) {
+        q.push(b.mark(MarkEvent::new(
+            inst,
+            Price::from_f64(mark),
+            Timestamp::from_nanos(ts_ns),
+        )));
+    }
+
     /// Funding 派发:long 0.5 @ 0.0001 @ mark 50_000 → long 付 2.5
     ///
     /// 验证:
@@ -2894,6 +2910,45 @@ mod tests {
                 base,
                 quote,
                 Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(price),
+                },
+                Quantity::from_f64(qty),
+                TimeInForce::GTC,
+            )),
+        ));
+    }
+
+    /// 0.6.0 新增(Phase 2):推 perp BUY limit 单(让后续 rebalance SELL perp 能撮合)
+    fn push_perp_buy(
+        q: &mut EventQueue,
+        b: &mut EventBuilder,
+        id: u64,
+        instrument: Instrument,
+        price: f64,
+        qty: f64,
+    ) {
+        let (base, quote, settle, contract_size) = match &instrument {
+            Instrument::Swap(s) => (
+                s.base.clone(),
+                s.quote.clone(),
+                s.settle,
+                s.contract_size,
+            ),
+            Instrument::Spot(_) => {
+                panic!("push_perp_buy 需要 swap instrument,收到 spot")
+            }
+        };
+        q.push(b.order(
+            Timestamp::from_nanos(0),
+            id,
+            OrderAction::Submitted(Order::swap(
+                id,
+                base,
+                quote,
+                settle,
+                contract_size,
+                Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(price),
                 },
@@ -3257,5 +3312,120 @@ mod tests {
         // 第二次 rebalance:同 bar_id=0,last=0,guard 触发,return 0
         let t2 = engine.rebalance_to_target(None);
         assert_eq!(t2, 0, "同 bar 第二次 rebalance 应被 guard 拦掉");
+    }
+
+    // ── Phase 2(0.6.0)新增:funding 8h 自动调度 ─────────────────
+
+    /// 0.6.0 新增(Phase 2):8h funding schedule 触发 1 次结算
+    ///
+    /// 流程:
+    /// 1) 推 perp mark 让 mark_cache 有值
+    /// 2) run() 消费 mark + rebalance 入场 perp short -0.1
+    /// 3) push 1 个 funding 事件(短时一步到位,不走 schedule)
+    /// 4) enable 8h schedule + clock 跳到 8h 后
+    /// 5) begin_bar → funding 调度触发 1 次
+    #[test]
+    fn funding_schedule_uses_mark_cache() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        // 1) 推 perp mark 50_000(让 mark_cache 有值)
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        // 2) 预挂 perp BUY 0.1(让 rebalance SELL perp 能撮合)
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        // 让 mark + seed 事件先派发写 mark_cache
+        engine.run();
+        // 入场 perp short -0.1
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        // sanity:perp short 已就位
+        assert!(
+            (engine.get_position(&btc_perp) - (-0.1)).abs() < 1e-9,
+            "perp short 应=-0.1,got {}",
+            engine.get_position(&btc_perp)
+        );
+
+        // 3) 启用 8h funding schedule
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 4) 跳 8h 后 begin_bar → schedule 触发 1 次
+        engine.config.clock.set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        // 5) 期望:1 次 funding 结算,perp short 收 0.0001 × 50000 × 0.1 = +0.5
+        let result = engine.run();
+        assert!(
+            (result.total_funding_pnl - 0.5).abs() < 1e-6,
+            "8h funding 1 次应累计=+0.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.6.0 新增(Phase 2):bar 跨多个 8h 边界 → 多次 funding 结算
+    #[test]
+    fn funding_schedule_multiple_boundaries_in_one_bar() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+
+        // 跳 24h(跨 3 个 8h 边界)→ 3 次 funding 结算
+        engine.config.clock.set(Timestamp::from_nanos(24 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        let result = engine.run();
+        // 3 × 0.5 = 1.5
+        assert!(
+            (result.total_funding_pnl - 1.5).abs() < 1e-6,
+            "24h 跳秒应累计 3 次 funding=+1.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.6.0 新增(Phase 2):`with_funding_schedule_disable` 后无 funding 结算
+    #[test]
+    fn funding_schedule_disabled_no_settlement() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run();
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 关闭 funding schedule
+        engine.with_funding_schedule_disable(&btc_perp);
+
+        engine.config.clock.set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert!(
+            result.total_funding_pnl.abs() < 1e-9,
+            "disable 后无 funding 结算,got {}",
+            result.total_funding_pnl
+        );
     }
 }
