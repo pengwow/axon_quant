@@ -1822,10 +1822,7 @@ impl BacktestEngine {
         //    0.7.1 PR-D:用 sharpe_ratio_annualized 便捷方法,修复 0.7.0 错传
         //    `35_040_f64.sqrt()` 导致实际年化因子比正确值小一个数量级的 bug
         let win_rate = self.bt_state.trading_metrics.win_rate();
-        let sharpe_ratio = self
-            .bt_state
-            .trading_metrics
-            .sharpe_ratio_annualized(900.0); // 15-min bar
+        let sharpe_ratio = self.bt_state.trading_metrics.sharpe_ratio_annualized(900.0); // 15-min bar
 
         // 6b. 0.7.0 新增(Phase 4):从 positions + sharpe_ratio 派生风险敞口报告
         //     注意:必须在 `RunResult { positions, ... }` 移动 positions 之前构造,
@@ -3793,9 +3790,18 @@ mod tests {
             result.bar_nav_curve.len()
         );
         // 时间戳单调递增(无事件仅时间跳进)
-        assert_eq!(result.bar_nav_curve[0].0, Timestamp::from_nanos(1_000_000_000));
-        assert_eq!(result.bar_nav_curve[1].0, Timestamp::from_nanos(2_000_000_000));
-        assert_eq!(result.bar_nav_curve[2].0, Timestamp::from_nanos(3_000_000_000));
+        assert_eq!(
+            result.bar_nav_curve[0].0,
+            Timestamp::from_nanos(1_000_000_000)
+        );
+        assert_eq!(
+            result.bar_nav_curve[1].0,
+            Timestamp::from_nanos(2_000_000_000)
+        );
+        assert_eq!(
+            result.bar_nav_curve[2].0,
+            Timestamp::from_nanos(3_000_000_000)
+        );
     }
 
     /// 0.7.1 新增:`bar_nav_curve` 与 `equity_curve` 区别
@@ -3843,9 +3849,15 @@ mod tests {
         let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
 
         engine.set_clock(Timestamp::from_nanos(1_000_000_000));
-        engine.begin_bar_multi(vec![(btc_spot.clone(), 50_000.0), (btc_perp.clone(), 50_010.0)]);
+        engine.begin_bar_multi(vec![
+            (btc_spot.clone(), 50_000.0),
+            (btc_perp.clone(), 50_010.0),
+        ]);
         engine.set_clock(Timestamp::from_nanos(2_000_000_000));
-        engine.begin_bar_multi(vec![(btc_spot.clone(), 50_100.0), (btc_perp.clone(), 50_110.0)]);
+        engine.begin_bar_multi(vec![
+            (btc_spot.clone(), 50_100.0),
+            (btc_perp.clone(), 50_110.0),
+        ]);
 
         let result = engine.run();
         assert_eq!(
@@ -3854,8 +3866,14 @@ mod tests {
             "2 次 begin_bar_multi 应采 2 帧,got {}",
             result.bar_nav_curve.len()
         );
-        assert_eq!(result.bar_nav_curve[0].0, Timestamp::from_nanos(1_000_000_000));
-        assert_eq!(result.bar_nav_curve[1].0, Timestamp::from_nanos(2_000_000_000));
+        assert_eq!(
+            result.bar_nav_curve[0].0,
+            Timestamp::from_nanos(1_000_000_000)
+        );
+        assert_eq!(
+            result.bar_nav_curve[1].0,
+            Timestamp::from_nanos(2_000_000_000)
+        );
     }
 
     /// 0.7.1 新增:同 bar 多次 `begin_bar`(同 clock time)→ 末帧覆盖,不重复追加
@@ -4008,9 +4026,7 @@ mod tests {
         let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
 
         // 先设 0.001,后设 0.005,后生效
-        engine
-            .with_fee_config(0.001)
-            .with_fee_config(0.005);
+        engine.with_fee_config(0.001).with_fee_config(0.005);
 
         assert!(
             (engine.config.fee_config.taker_rate - 0.005).abs() < 1e-9,

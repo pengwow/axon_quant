@@ -281,7 +281,11 @@ mod tests {
         }
         let r = m.sharpe_ratio_annualized(0.0);
         assert!(!r.is_nan(), "bar_duration_secs=0 不应得 NaN, got {}", r);
-        assert!(r.is_finite() || r == 0.0, "0 间隔应返回 0 或有限值, got {}", r);
+        assert!(
+            r.is_finite() || r == 0.0,
+            "0 间隔应返回 0 或有限值, got {}",
+            r
+        );
     }
 
     /// 0.7.1:边界 — 样本数为 0 调用便捷方法
