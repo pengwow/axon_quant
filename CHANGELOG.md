@@ -29,6 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - e2e:`tests/python/test_backtest_0_7_0_e2e.py` 追加 5 个 case(空/3 帧/无事件区分/multi/to_dict);`crates/axon-backtest/src/engine.rs` 追加 5 个 Rust 单元测试。
   - 用途:Python 端用 `bar_nav_curve` 重算 Sharpe 时按 bar 频率归一化(年化因子 = `sqrt(bar_per_year)`,1h bar = `sqrt(8760)`,15m bar = `sqrt(35040)`)。
 
+- **`with_*` 方法统一返回 chainable** (`refactor(backtest): chainable with_* methods`):
+  - 0.7.0 的 `BacktestEngine.with_*` 方法(如 `with_fee_config` / `with_seed_liquidity` / `with_auto_rebalance` / `with_funding_schedule` 等)返回值不一致:部分返回 `()`,部分返回 `&mut Self`。
+  - 0.7.1 统一为 `&mut Self`(Rust) / `PyRefMut<'py, Self>`(Python),支持 `engine.with_x().with_y().with_z()` 链式。
+  - 受影响方法:`with_matching_engine` / `with_fee_config` / `with_force_liquidate` / `with_seed_liquidity` / `with_seed_liquidity_for` / `with_auto_rebalance` / `with_auto_rebalance_disable` / `with_funding_schedule` / `with_funding_schedule_disable`。
+  - **BREAKING(轻)**:Python 端 `with_*` 不再返回 `None` 而是返回 `engine`;之前用 `engine.with_x()` 然后忽略返回值的代码不受影响(`engine.with_x()` 后 bind 到 `None` 不报错,只是 PyLance 会提示)。
+  - e2e: `tests/python/test_backtest_0_7_0_e2e.py` 追加 3 个 case(`test_with_methods_chainable_in_python` / `test_with_fee_config_and_funding_schedule_chainable` / `test_with_methods_overwrite_semantics_in_chain`);`crates/axon-backtest/src/engine.rs` 追加 3 个 Rust 单元测试。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.7.1-begin-bar-multi-fix.md` PR-C 章节。
+
+### Improved
+
+- **`TradingMetrics::sharpe_ratio_annualized(bar_duration_secs)` 便捷方法** + **样本不足 tracing::warn! 警告** (`feat(metrics): sharpe_ratio_annualized + sample-size warning`):
+  - 0.7.0 调用方需手算 `periods_per_year` 然后再 `sqrt(...)`,容易漏乘 `sqrt` 致年化因子偏小一个数量级(`BacktestEngine::build_result` 中 0.7.0 错传 `35_040_f64.sqrt()` 即此 bug)。
+  - 0.7.1 新增 `sharpe_ratio_annualized(secs)`:传 bar 持续秒数(如 15min → `900.0`),内部自动算 `periods_per_year = 365*24*3600 / secs`,调用方不再需要心算。
+  - 0.7.1 新增样本不足警告:`log_return_count < 30` 时 `tracing::warn!` 提示统计意义不足(0.7.0 静默 `return 0.0`,用户得不到反馈误以为公式错)。
+  - 防御:`bar_duration_secs <= 0.0` → 返回 `0.0`(避免除零 NaN)。
+  - **BUG FIX**:`BacktestEngine::build_result` 中错传 `35_040_f64.sqrt()`(实为 `sqrt(35_040) ≈ 187.2`,内部再 `* periods_per_year.sqrt()` 得 `sqrt(sqrt(35040)) ≈ 13.7`)改为 `trading_metrics.sharpe_ratio_annualized(900.0)`,15-min bar 年化因子恢复正确 `sqrt(35040) ≈ 187.2`。
+  - 单测:`crates/axon-core/src/metrics/trading_metrics.rs` 追加 4 个 case(单样本/便捷法匹配手算/0 间隔/0 样本);`tests/python/test_backtest_0_7_0_e2e.py` 追加 2 个 case(单 bar → 0.0 / 多 bar 有限数)。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.7.1-begin-bar-multi-fix.md` PR-D 章节。
+
 ## [0.7.0] - 2026-07-19
 
 0.7.0 主线:per-fill observability + per-leg seed liquidity + 致命 hotfix(seed_liquidity 死循环导致 50GB 内存爆炸)。所有 0.6.0 后续 hotfix(OMS `with_instrument`、pyo3 0.27 fixes、en docs 同步)合并到本段发布。

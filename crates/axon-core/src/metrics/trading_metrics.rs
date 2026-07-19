@@ -63,11 +63,33 @@ impl TradingMetrics {
 
     /// 夏普比率(基于 log return 年化)
     ///
+    /// # Args
+    /// - `periods_per_year`:一年 bar 数(不是 sqrt!内部会自动 `sqrt()`)。
+    ///   常见值:
+    ///   - 15-min bar → 35_040 (`365 * 24 * 4`)
+    ///   - 1h bar    → 8_760 (`365 * 24`)
+    ///   - 1d bar    → 365
+    ///   - 1min bar  → 525_600 (`365 * 24 * 60`)
+    ///
+    /// # 边界
+    /// - 样本数 `< 2` → 返回 `0.0`(无统计意义)
+    /// - 样本数 `< 30` → `tracing::warn!` 提示统计意义不足
+    /// - 方差 `<= 0`(单调行情)→ 返回 `0.0`
+    ///
+    /// # 公式
     /// `sqrt(periods_per_year) * mean(log_return) / std(log_return)`
     pub fn sharpe_ratio(&self, periods_per_year: f64) -> f64 {
         let n = self.log_return_count.load(Ordering::Relaxed);
         if n < 2 {
             return 0.0;
+        }
+        if n < 30 {
+            // 0.7.1 PR-D:统计意义不足时 warn,而不是静默 0
+            tracing::warn!(
+                n,
+                "sharpe_ratio has weak statistical significance (n={} < 30 samples), result may be misleading",
+                n
+            );
         }
         let n_f = n as f64;
         let mean = self.log_return_sum.load(Ordering::Relaxed) as f64 / 1e9 / n_f;
@@ -78,6 +100,37 @@ impl TradingMetrics {
             return 0.0;
         }
         mean / var.sqrt() * periods_per_year.sqrt()
+    }
+
+    /// 0.7.1 新增:便捷夏普比率(传 bar 持续秒数,自动算年化因子)
+    ///
+    /// 比手算 `sharpe_ratio(periods_per_year)` 更安全(避免漏乘 `sqrt`,
+    /// 避免 `35_040_f64.sqrt()` 这种 0.7.0 错传 bug)。
+    ///
+    /// # Args
+    /// - `bar_duration_secs`: 单根 bar 持续秒数,常见值:
+    ///   - 15-min bar → `900.0`
+    ///   - 1h bar    → `3_600.0`
+    ///   - 1d bar    → `86_400.0`
+    ///   - 1min bar  → `60.0`
+    ///
+    /// # 边界
+    /// - `bar_duration_secs <= 0.0` → 返回 `0.0`(避免除零 NaN)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let m = TradingMetrics::new();
+    /// // ... record some trades
+    /// let s = m.sharpe_ratio_annualized(900.0);  // 15-min bar
+    /// ```
+    pub fn sharpe_ratio_annualized(&self, bar_duration_secs: f64) -> f64 {
+        // 0.7.1 PR-D:防御性检查,避免 0 / 负数间隔除零
+        if !(bar_duration_secs > 0.0) {
+            return 0.0;
+        }
+        const SECS_PER_YEAR: f64 = 365.0 * 24.0 * 3600.0;
+        let periods_per_year = SECS_PER_YEAR / bar_duration_secs;
+        self.sharpe_ratio(periods_per_year)
     }
 
     /// 总盈亏(f64)
@@ -154,5 +207,88 @@ mod tests {
         m.record_trade(-500_000, 100_000);
         assert!((m.total_pnl_f64() - 0.5).abs() < 1e-6);
         assert!((m.total_fees_f64() - 0.2).abs() < 1e-6);
+    }
+
+    // ─── 0.7.1 PR-D:样本不足警告 + 便捷年化方法 ────────────────────
+
+    /// n=1:样本不足 → 0.0,无 panic
+    #[test]
+    fn test_sharpe_single_sample_returns_zero() {
+        let m = TradingMetrics::new();
+        m.record_log_return(100_000_000); // 0.1
+        assert_eq!(m.sharpe_ratio(252.0), 0.0);
+    }
+
+    /// 0.7.1:便捷方法 sharpe_ratio_annualized(secs) 与手算 sharpe_ratio(periods_per_year) 数值一致
+    /// - 15-min bar → 900s → 35_040 bars/year
+    /// - 1h bar    → 3600s → 8_760 bars/year
+    /// - 1d bar    → 86_400s → 365 bars/year
+    #[test]
+    fn test_sharpe_annualized_matches_manual() {
+        let m = TradingMetrics::new();
+        // log_return: [0.1, 0.2, 0.15, 0.18, 0.12, 0.16, 0.14, 0.19, 0.13, 0.17]
+        for v in [0.1, 0.2, 0.15, 0.18, 0.12, 0.16, 0.14, 0.19, 0.13, 0.17] {
+            m.record_log_return((v * 1e9) as i64);
+        }
+        // 15-min bar: 35_040 bars/year
+        let via_annualized_15m = m.sharpe_ratio_annualized(900.0);
+        let via_manual_15m = m.sharpe_ratio(35_040.0);
+        assert!(
+            (via_annualized_15m - via_manual_15m).abs() < 1e-9,
+            "sharpe_ratio_annualized(900) 应 == sharpe_ratio(35040), got {} vs {}",
+            via_annualized_15m,
+            via_manual_15m
+        );
+
+        // 1h bar: 8_760 bars/year
+        let via_annualized_1h = m.sharpe_ratio_annualized(3_600.0);
+        let via_manual_1h = m.sharpe_ratio(8_760.0);
+        assert!(
+            (via_annualized_1h - via_manual_1h).abs() < 1e-9,
+            "sharpe_ratio_annualized(3600) 应 == sharpe_ratio(8760), got {} vs {}",
+            via_annualized_1h,
+            via_manual_1h
+        );
+
+        // 1d bar: 365 bars/year
+        let via_annualized_1d = m.sharpe_ratio_annualized(86_400.0);
+        let via_manual_1d = m.sharpe_ratio(365.0);
+        assert!(
+            (via_annualized_1d - via_manual_1d).abs() < 1e-9,
+            "sharpe_ratio_annualized(86400) 应 == sharpe_ratio(365), got {} vs {}",
+            via_annualized_1d,
+            via_manual_1d
+        );
+
+        // 数量级关系:15min 的 annualized 应该 = 1h 的 * sqrt(35040/8760) = 1h 的 * 2
+        let ratio = via_annualized_15m / via_annualized_1h;
+        let expected = (35_040.0_f64 / 8_760.0).sqrt();
+        assert!(
+            (ratio - expected).abs() < 1e-9,
+            "15min annualized / 1h annualized 应 = sqrt(35040/8760)={}, got {}",
+            expected,
+            ratio
+        );
+    }
+
+    /// 0.7.1:边界 — bar_duration_secs=0.0 会除零,需安全处理
+    /// (返回 0.0 而不是 NaN/Inf,让上层能判别)
+    #[test]
+    fn test_sharpe_annualized_zero_interval_safe() {
+        let m = TradingMetrics::new();
+        for v in [0.1, 0.2, 0.15] {
+            m.record_log_return((v * 1e9) as i64);
+        }
+        let r = m.sharpe_ratio_annualized(0.0);
+        assert!(!r.is_nan(), "bar_duration_secs=0 不应得 NaN, got {}", r);
+        assert!(r.is_finite() || r == 0.0, "0 间隔应返回 0 或有限值, got {}", r);
+    }
+
+    /// 0.7.1:边界 — 样本数为 0 调用便捷方法
+    #[test]
+    fn test_sharpe_annualized_no_samples() {
+        let m = TradingMetrics::new();
+        // 0 样本 → 0.0
+        assert_eq!(m.sharpe_ratio_annualized(900.0), 0.0);
     }
 }
