@@ -478,7 +478,12 @@ impl MultiAssetMatchingEngine {
 impl MatchingEngine for MultiAssetMatchingEngine {
     fn submit(&mut self, order: Order) -> SubmitResult {
         let instrument = order.instrument.clone();
-        match self.submit(order) {
+        // 显式 UFCS:调 inherent `MultiAssetMatchingEngine::submit`,
+        // 返回 `MatchingL3Result<Vec<MatchFill>>`(多资产路径),
+        // 与 trait 要的 `SubmitResult` 不同,所以需要 match 转。
+        // 显式 UFCS 避免依赖 method resolution(inherent 优先 trait,
+        // 这里签名不同所以必定调 inherent,但显式让意图清晰 + 防 regression)。
+        match Self::submit(self, order) {
             Ok(fills) => {
                 if fills.is_empty() {
                     SubmitResult::empty(Quantity::from_f64(0.0))

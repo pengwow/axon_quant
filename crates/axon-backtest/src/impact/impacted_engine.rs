@@ -487,27 +487,37 @@ fn _hashmap_anchor() -> HashMap<String, f64> {
 // `seed_liquidity` 透传到 inherent 方法(inherent 走 inner.seed_liquidity)。
 // `clear_book_for(instrument)` 透传到 inner L1(inherent 没有,这里直接调
 // inner)。
+//
+// 注:所有 trait 方法用 UFCS `Self::method(self, args)` 显式调 inherent,
+// 避免依赖 method resolution 隐式优先 inherent 的行为 — 这是隐性依赖,
+// 未来如果 inherent 重构(比如改成调 trait submit)会立刻无限递归。
+// 显式 UFCS 让编译器在 inherent 签名不匹配时报错,而不是运行时爆栈。
 impl MatchingEngine for ImpactedMatchingEngine {
     fn submit(&mut self, order: Order) -> SubmitResult {
-        self.submit(order)
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::submit
+        // (内部会计算 impact + 转发 self.inner.submit)
+        Self::submit(self, order)
     }
 
     fn cancel(&mut self, order_id: u64) -> bool {
-        self.cancel(order_id)
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::cancel
+        Self::cancel(self, order_id)
     }
 
     fn best_bid(&self) -> Option<Price> {
         // 注意:Impacted 版本已叠加永久冲击偏移,不是裸 L1 价
-        self.best_bid()
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::best_bid
+        Self::best_bid(self)
     }
 
     fn best_ask(&self) -> Option<Price> {
-        self.best_ask()
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::best_ask
+        Self::best_ask(self)
     }
 
     /// spread 用 inherent 实现(也用偏移后价)
     fn spread(&self) -> Option<Price> {
-        match (self.best_bid(), self.best_ask()) {
+        match (Self::best_bid(self), Self::best_ask(self)) {
             (Some(b), Some(a)) => Some(Price::from_f64(a.as_f64() - b.as_f64())),
             _ => None,
         }
@@ -547,11 +557,14 @@ impl MatchingEngine for ImpactedMatchingEngine {
     }
 
     fn active_order_count(&self) -> usize {
-        self.active_order_count()
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::active_order_count
+        Self::active_order_count(self)
     }
 
     fn clear_book(&mut self) {
         // 不清 permanent_offset / stats — 跨 bar 累计
+        // 直接调 inner L1(inherent clear_book 也走这里,但 trait 这里更直接,
+        // 避免 1 层 inherent 转发)
         self.inner.clear_book();
     }
 
@@ -570,7 +583,9 @@ impl MatchingEngine for ImpactedMatchingEngine {
         instrument: Instrument,
         next_id: u64,
     ) -> u64 {
-        self.seed_liquidity(
+        // 显式 UFCS:调 inherent ImpactedMatchingEngine::seed_liquidity
+        Self::seed_liquidity(
+            self,
             mid_price,
             half_spread,
             depth_levels,

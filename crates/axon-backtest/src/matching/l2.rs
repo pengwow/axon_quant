@@ -310,25 +310,36 @@ impl L2MatchingEngine {
 //   与 L2 inherent method 路径完全一致,行为零差异。
 // - `clear_book_for(instrument)` 透传到 L1(L1 已经按 instrument 路由)。
 // - `spread` / `depth` / `active_order_count` 全部从 inner 取,不再有自有实现。
+//
+// 注:所有 trait 方法用 UFCS `Self::method(self, args)` 显式调 inherent,
+// 避免依赖 method resolution 隐式优先 inherent 的行为 — 这是隐性依赖,
+// 未来如果 inherent 重构(比如改成调 trait submit)会立刻无限递归。
+// 显式 UFCS 让编译器在 inherent 签名不匹配时报错,而不是运行时爆栈。
 impl MatchingEngine for L2MatchingEngine {
     fn submit(&mut self, order: Order) -> SubmitResult {
-        self.submit(order)
+        // 显式 UFCS:调 inherent L2MatchingEngine::submit
+        // (inherent 内部走 self.inner.submit + update_stats)
+        Self::submit(self, order)
     }
 
     fn cancel(&mut self, order_id: u64) -> bool {
-        self.cancel(order_id)
+        // 显式 UFCS:调 inherent L2MatchingEngine::cancel
+        Self::cancel(self, order_id)
     }
 
     fn best_bid(&self) -> Option<Price> {
-        self.best_bid()
+        // 显式 UFCS:调 inherent L2MatchingEngine::best_bid
+        Self::best_bid(self)
     }
 
     fn best_ask(&self) -> Option<Price> {
-        self.best_ask()
+        // 显式 UFCS:调 inherent L2MatchingEngine::best_ask
+        Self::best_ask(self)
     }
 
     fn spread(&self) -> Option<Price> {
-        self.spread()
+        // 显式 UFCS:调 inherent L2MatchingEngine::spread
+        Self::spread(self)
     }
 
     fn depth(
@@ -338,11 +349,13 @@ impl MatchingEngine for L2MatchingEngine {
         Vec<super::types::OrderBookLevel>,
         Vec<super::types::OrderBookLevel>,
     ) {
-        self.depth(levels)
+        // 显式 UFCS:调 inherent L2MatchingEngine::depth
+        Self::depth(self, levels)
     }
 
     fn active_order_count(&self) -> usize {
-        self.active_order_count()
+        // 显式 UFCS:调 inherent L2MatchingEngine::active_order_count
+        Self::active_order_count(self)
     }
 
     fn clear_book(&mut self) {
@@ -371,6 +384,8 @@ impl MatchingEngine for L2MatchingEngine {
         instrument: Instrument,
         next_id: u64,
     ) -> u64 {
+        // 直接调 inner L1(不走 inherent seed_liquidity,因为 L2 没有额外逻辑,
+        // inherent 也是透传 inner)— 节省 1 层转发
         self.inner.seed_liquidity(
             mid_price,
             half_spread,

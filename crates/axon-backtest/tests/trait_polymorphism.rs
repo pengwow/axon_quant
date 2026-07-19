@@ -205,3 +205,32 @@ fn polymorphic_seed_liquidity_returns_updated_id() {
         assert_eq!(engine.active_order_count(), 4, "{name}: 4 笔 maker");
     }
 }
+
+// ─── 递归防护:`Box<dyn MatchingEngine>` 不会爆栈 ────────
+
+/// 回归测试:`MatchingEngine::submit` 显式转发到 inherent `submit`,
+/// 而不是递归调用自身。如果将来有人把 trait impl 改成 `self.submit(...)`
+/// 形式(method resolution 隐式优先 inherent,隐性依赖),仍然要保证
+/// 没有爆栈。
+///
+/// 本测试跑 1000 次 trait submit,如果某次 submit 内部有 ~10 层递归
+/// (impacted + l2 + multi_asset 的 trait → inherent → inner),则累计
+/// 1000 × N 层,远超默认 8MB 栈,会 stack overflow 触发测试失败。
+#[test]
+fn trait_submit_does_not_recurse_under_load() {
+    // Impacted engine 包裹链最深(L1 ← L2 ← Impacted),最容易暴露递归
+    let model = Box::new(LinearImpactModel::default());
+    let mut engine: Box<dyn MatchingEngine> = Box::new(ImpactedMatchingEngine::new(model));
+
+    // 1) seed liquidity 挂卖单 @ 100
+    let _ = engine.seed_liquidity(100.0, 0.5, 2, 1.0, btc_spot(), 1);
+
+    // 2) 循环 1000 次 buy 限价单,每次都调 trait submit
+    for i in 0..1000u64 {
+        let order_id = 100_000 + i;
+        let buy = make_limit_order(order_id, Side::Buy, 100.0, 0.01);
+        // 显式调 trait 形式(不是 inherent)
+        let _result = MatchingEngine::submit(&mut *engine, buy);
+    }
+    // 不爆栈就 OK(没具体断言,只有不 panic)
+}
