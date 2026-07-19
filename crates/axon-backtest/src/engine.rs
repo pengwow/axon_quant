@@ -214,6 +214,14 @@ pub struct RunResult {
     pub total_fees: f64,
     /// NAV 曲线(`(timestamp_ns, nav)`),每笔 fill 后采样
     pub equity_curve: Vec<(Timestamp, f64)>,
+    /// 0.7.1 新增:每 bar 末 mark-to-market NAV 曲线(`(timestamp_ns, nav)`)
+    ///
+    /// 与 `equity_curve` 区别:`bar_nav_curve` 由 `begin_bar` / `begin_bar_multi`
+    /// 在 bar 末**每 bar 一帧**采样,无 fill / mark 事件的 bar 也留帧。
+    /// 用法:Python 端拿 `result.bar_nav_curve` 计算 Sharpe / max_drawdown /
+    /// win rate 等"按 bar 频率"的指标,避免短回测 + 无 fill 时 `equity_curve`
+    /// 末帧 = initial_cash 失真。
+    pub bar_nav_curve: Vec<(Timestamp, f64)>,
     /// NAV 历史峰值(用于计算 max_drawdown_pct)
     pub nav_peak: f64,
     /// 最大回撤百分比(`max_drawdown / nav_peak`,0~1)
@@ -271,6 +279,8 @@ impl Default for RunResult {
             fills_detail: Vec::new(),
             total_fees: 0.0,
             equity_curve: Vec::new(),
+            // 0.7.1 新增:每 bar 末 NAV 曲线
+            bar_nav_curve: Vec::new(),
             nav_peak: 0.0,
             max_drawdown_pct: 0.0,
             win_rate: 0.0,
@@ -383,6 +393,18 @@ struct BacktestState {
     mark_cache: HashMap<Instrument, Price>,
     /// 0.5.0 新增(Phase C):累计 funding 结算 PnL(`Event::Funding` 累加)
     total_funding_pnl: f64,
+    /// 0.7.1 新增:每 bar 末 mark-to-market NAV 曲线(`(Timestamp, nav)`)
+    ///
+    /// 与 `equity_curve` 区别:
+    /// - `equity_curve` 只在 fill / mark / funding 事件触发时采样,无事件 bar 不留帧
+    /// - `bar_nav_curve` 在 `begin_bar` / `begin_bar_multi` 收尾时**每 bar 一帧**采样,
+    ///   用于计算 Sharpe / max_drawdown 时不会因短回测 + 无 fill 失真
+    /// (短回测若全无 fill,`equity_curve` 末帧 = initial_cash,得不出波动率;
+    /// 而 `bar_nav_curve` 在 `mark_cache` 已有值后能反映"持仓沿 mark 波动")
+    ///
+    /// 时间戳为 `begin_bar` 收尾时的 `clock.now()`(bar 末 funding 调度后)。
+    /// 若 `mark_cache` 为空,NAV = cash(无未实现 PnL)。
+    bar_nav_curve: Vec<(Timestamp, f64)>,
 }
 
 /// Leg 配置(策略目标仓位)
@@ -738,6 +760,8 @@ impl BacktestEngine {
         //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
         //     执行,本 bar 自动 rebalance 会被 guard 跳过)
         self.rebalance_to_target(None);
+        // 0.7.1 新增:bar 末采样 NAV 到 `bar_nav_curve`(`mid_price` 作为 mark fallback)
+        self.sample_bar_nav(mid_price);
     }
 
     /// 0.7.0 新增:多 leg 同 bar seed(spot+perp 套利场景)
@@ -775,7 +799,10 @@ impl BacktestEngine {
         //    与 `seed_liquidity_per_leg.get()` 的借用冲突
         let per_leg: HashMap<Instrument, SeedLiquidityConfig> = self.seed_liquidity_per_leg.clone();
         let default_cfg = self.default_seed_liquidity_config;
+        // 0.7.1 新增:记录最后一个 leg 的 mid_price,作为 NAV 采样时的 mark fallback
+        let mut last_mid: f64 = 0.0;
         for (instrument, mid_price) in legs {
+            last_mid = mid_price;
             let cfg = per_leg.get(&instrument).copied().or(default_cfg);
             if let Some(cfg) = cfg
                 && mid_price > 0.0
@@ -802,6 +829,32 @@ impl BacktestEngine {
         // 2) 跑一次 funding 调度 + bar 末 rebalance(同单 leg begin_bar)
         self.run_funding_schedule_for_bar();
         self.rebalance_to_target(None);
+        // 0.7.1 新增:bar 末采样 NAV 到 `bar_nav_curve`(末 leg mid 作为 mark fallback)
+        self.sample_bar_nav(last_mid);
+    }
+
+    /// 0.7.1 新增:bar 末采样 NAV 推入 `bar_nav_curve`
+    ///
+    /// 在 `begin_bar` / `begin_bar_multi` 收尾时调用,记录当前 mark-to-market NAV
+    /// 到 `bt_state.bar_nav_curve`。时间戳用 `clock.now()`(此时 funding 调度已
+    /// 跑完,clock 仍是用户 set 的 bar 起始时间)。
+    ///
+    /// `mark_fallback` 来自 `begin_bar(mid_price, ...)` 或 `begin_bar_multi` 的
+    /// 末 leg mid,用于 `mark_cache[instrument]` 缺失时回退估值(常见于新 bar
+    /// 首根、mark 事件还没推过来的场景)。
+    ///
+    /// de-dup:若 `bar_nav_curve` 末帧时间戳与当前相同(同 bar 二次采样),覆盖
+    /// 末帧而非追加,避免重复点污染 Sharpe / max_drawdown 计算。
+    fn sample_bar_nav(&mut self, mark_fallback: f64) {
+        let ts = self.config.clock.now();
+        let nav = self.compute_nav(ts, mark_fallback);
+        if let Some(last) = self.bt_state.bar_nav_curve.last_mut() {
+            if last.0 == ts {
+                last.1 = nav;
+                return;
+            }
+        }
+        self.bt_state.bar_nav_curve.push((ts, nav));
     }
 
     /// 0.7.0 抽离:bar 末 funding 自动调度(从 `begin_bar` 抽出供 `begin_bar_multi` 复用)
@@ -1768,6 +1821,8 @@ impl BacktestEngine {
             fills_detail: self.bt_state.fills_detail.clone(),
             total_fees: self.bt_state.fee_accumulator,
             equity_curve: self.bt_state.equity_curve.clone(),
+            // 0.7.1 新增:bar 末 NAV 曲线(每 bar 一帧,供 Sharpe / max_drawdown 重算)
+            bar_nav_curve: self.bt_state.bar_nav_curve.clone(),
             nav_peak,
             max_drawdown_pct,
             win_rate,
@@ -3673,6 +3728,198 @@ mod tests {
             result.total_funding_pnl.abs() < 1e-9,
             "disable 后无 funding 结算,got {}",
             result.total_funding_pnl
+        );
+    }
+
+    // ── 0.7.1 新增:bar_nav_curve per-bar NAV 曲线 ─────────────
+
+    /// 0.7.1 新增:`begin_bar` 每根 bar 末采样 NAV 到 `bar_nav_curve`
+    ///
+    /// 场景:不调 `begin_bar` 时 `bar_nav_curve` 为空;调 3 次 `begin_bar` 后
+    /// 应有 3 帧,且时间戳单调递增。
+    #[test]
+    fn bar_nav_curve_sampled_per_begin_bar_call() {
+        let btc_spot = btc_spot_inst();
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+
+        // 未调 begin_bar 前 bar_nav_curve 为空
+        let r0 = engine.run();
+        assert!(
+            r0.bar_nav_curve.is_empty(),
+            "未调 begin_bar 时 bar_nav_curve 应为空,got {} 帧",
+            r0.bar_nav_curve.len()
+        );
+
+        // 调 3 次 begin_bar,各设不同时间戳
+        engine.set_clock(Timestamp::from_nanos(1_000_000_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        engine.set_clock(Timestamp::from_nanos(2_000_000_000));
+        engine.begin_bar(50_100.0, btc_spot.clone());
+        engine.set_clock(Timestamp::from_nanos(3_000_000_000));
+        engine.begin_bar(50_200.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert_eq!(
+            result.bar_nav_curve.len(),
+            3,
+            "3 次 begin_bar 应采 3 帧,got {}",
+            result.bar_nav_curve.len()
+        );
+        // 时间戳单调递增(无事件仅时间跳进)
+        assert_eq!(result.bar_nav_curve[0].0, Timestamp::from_nanos(1_000_000_000));
+        assert_eq!(result.bar_nav_curve[1].0, Timestamp::from_nanos(2_000_000_000));
+        assert_eq!(result.bar_nav_curve[2].0, Timestamp::from_nanos(3_000_000_000));
+    }
+
+    /// 0.7.1 新增:`bar_nav_curve` 与 `equity_curve` 区别
+    ///
+    /// 场景:无 fill / mark 事件但调 `begin_bar` 3 次:
+    /// - `equity_curve` 仍为空(没事件触发采样)
+    /// - `bar_nav_curve` 有 3 帧(每 bar 末都采样)
+    ///
+    /// 这是 PR-B 的核心动机:短回测 + 无 fill 时 `equity_curve` 失真(末帧 =
+    /// initial_cash),`bar_nav_curve` 反映"沿 mark 估值的 NAV 波动"。
+    #[test]
+    fn bar_nav_curve_differs_from_equity_curve_when_no_events() {
+        let btc_spot = btc_spot_inst();
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+
+        // 3 次 begin_bar 不发任何事件
+        engine.set_clock(Timestamp::from_nanos(1_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        engine.set_clock(Timestamp::from_nanos(2_000));
+        engine.begin_bar(50_100.0, btc_spot.clone());
+        engine.set_clock(Timestamp::from_nanos(3_000));
+        engine.begin_bar(50_200.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert!(
+            result.equity_curve.is_empty(),
+            "无 fill/mark 事件时 equity_curve 应仍为空,got {} 帧",
+            result.equity_curve.len()
+        );
+        assert_eq!(
+            result.bar_nav_curve.len(),
+            3,
+            "无事件但 3 次 begin_bar 仍应采 3 帧,got {}",
+            result.bar_nav_curve.len()
+        );
+    }
+
+    /// 0.7.1 新增:`begin_bar_multi` 也采 NAV 到 `bar_nav_curve`(单帧)
+    ///
+    /// 多 leg 同 bar seed(spot+perp 套利)也应在 bar 末采一帧 NAV。
+    #[test]
+    fn bar_nav_curve_sampled_for_begin_bar_multi() {
+        let btc_spot = btc_spot_inst();
+        let btc_perp = btc_swap_inst();
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+
+        engine.set_clock(Timestamp::from_nanos(1_000_000_000));
+        engine.begin_bar_multi(vec![(btc_spot.clone(), 50_000.0), (btc_perp.clone(), 50_010.0)]);
+        engine.set_clock(Timestamp::from_nanos(2_000_000_000));
+        engine.begin_bar_multi(vec![(btc_spot.clone(), 50_100.0), (btc_perp.clone(), 50_110.0)]);
+
+        let result = engine.run();
+        assert_eq!(
+            result.bar_nav_curve.len(),
+            2,
+            "2 次 begin_bar_multi 应采 2 帧,got {}",
+            result.bar_nav_curve.len()
+        );
+        assert_eq!(result.bar_nav_curve[0].0, Timestamp::from_nanos(1_000_000_000));
+        assert_eq!(result.bar_nav_curve[1].0, Timestamp::from_nanos(2_000_000_000));
+    }
+
+    /// 0.7.1 新增:同 bar 多次 `begin_bar`(同 clock time)→ 末帧覆盖,不重复追加
+    ///
+    /// de-dup 逻辑验证:用户在同 bar 内多次 `begin_bar`(罕见但可能)不应在
+    /// `bar_nav_curve` 留重复点,避免 Sharpe / max_drawdown 被污染。
+    #[test]
+    fn bar_nav_curve_dedup_same_timestamp_overwrites_last() {
+        let btc_spot = btc_spot_inst();
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+
+        // 两次 begin_bar 用同一 clock time(罕见但测试 de-dup)
+        engine.set_clock(Timestamp::from_nanos(1_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        engine.begin_bar(50_100.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert_eq!(
+            result.bar_nav_curve.len(),
+            1,
+            "同 ts 第二次 begin_bar 应覆盖末帧,got {} 帧",
+            result.bar_nav_curve.len()
+        );
+    }
+
+    /// 0.7.1 新增:`bar_nav_curve` 含已实现 PnL 变化(用 fill 后再 begin_bar)
+    ///
+    /// 场景:先 push 一笔 fill 让 cash 减少(buy 0.1 @ 50_001 含 0.1% taker 费),
+    /// 再 begin_bar:
+    /// - 无 mark 事件 → mark_cache 为空,fallback = 50_000
+    /// - cash = 100_000 - 0.1 * 50_001 - fee(0.001 * 0.1 * 50_001) = 94_994.8999
+    /// - NAV = cash + 0.1 * 50_000(持仓按 fallback mark 估) = 94_994.8999 + 5_000
+    ///        = 99_994.8999
+    #[test]
+    fn bar_nav_curve_reflects_cash_change_via_compute_nav() {
+        let btc_spot = btc_spot_inst();
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+
+        // 1) sell 50_001 (做市方) + buy 50_001 (策略方) → 成交 buy 0.1 @ 50_001
+        q.push(b.order(
+            Timestamp::from_nanos(0),
+            1,
+            OrderAction::Submitted(Order::spot(
+                1,
+                Symbol::from("BTC"),
+                Symbol::from("USDT"),
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(50_001.0),
+                },
+                Quantity::from_f64(0.1),
+                TimeInForce::GTC,
+            )),
+        ));
+        q.push(b.order(
+            Timestamp::from_nanos(1),
+            2,
+            OrderAction::Submitted(Order::spot(
+                2,
+                Symbol::from("BTC"),
+                Symbol::from("USDT"),
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(50_001.0),
+                },
+                Quantity::from_f64(0.1),
+                TimeInForce::IOC,
+            )),
+        ));
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        engine.run(); // 先消费 fill 事件
+
+        // 验证:fill 后 cash = 100_000 - 0.1*50_001 - 0.001*0.1*50_001 = 94_994.8999
+        let pos = engine.get_position(&btc_spot);
+        assert!((pos - 0.1).abs() < 1e-9, "fill 后应持 0.1,got {}", pos);
+
+        // 调 begin_bar:mark_cache 为空,fallback = 50_000
+        // → NAV = cash(94_994.8999) + 持仓(0.1 * 50_000) = 99_994.8999
+        engine.set_clock(Timestamp::from_nanos(1_000));
+        engine.begin_bar(50_000.0, btc_spot.clone());
+
+        let result = engine.run();
+        assert_eq!(result.bar_nav_curve.len(), 1);
+        let (_, nav) = result.bar_nav_curve[0];
+        // 期望 ≈ 99_994.8999(浮点容差)
+        assert!(
+            (nav - 99_994.8999).abs() < 1.0,
+            "bar_nav NAV 应≈99_994.8999(cash 含费 + 持仓按 fallback 估),got {}",
+            nav
         );
     }
 }

@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - e2e: `tests/python/test_backtest_0_7_0_e2e.py` 追加 3 个 case(`test_begin_bar_multi_list_tuple` / `test_begin_bar_multi_list_tuple_wrong_arity` / `test_begin_bar_multi_dict_form_rejected`)。
   - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.7.1-begin-bar-multi-fix.md`。
 
+### Added
+
+- **`RunResult.bar_nav_curve` 每 bar 末 mark-to-market NAV 曲线** (`feat(backtest): bar_nav_curve per-bar NAV curve for Sharpe / max_drawdown`):
+  - 0.7.0 的 `equity_curve` 只在 fill / mark / funding 事件触发时采样,**无事件 bar 不留帧**,导致短回测 + 无 fill 时末帧 = `initial_cash`,Sharpe / max_drawdown 计算失真。
+  - 0.7.1 新增 `bar_nav_curve: Vec<(Timestamp, f64)>`,在 `begin_bar` / `begin_bar_multi` 收尾时**每 bar 一帧**采样,时间戳 = `clock.now()`,NAV = `compute_nav(ts, mid_price)`(用 `mark_cache` + `mid_price` fallback)。
+  - de-dup:同 bar 多次 `begin_bar`(同 `clock.now()`)覆盖末帧而非追加,避免重复点污染 Sharpe。
+  - Python 端:`result.bar_nav_curve` 暴露 list[tuple[int, float]];`result.to_dict()` 暴露 `bar_nav_curve_points` 计数;`python/axon_quant/backtest.py` 顶层 docstring 给出 numpy 重算 Sharpe 示例。
+  - e2e:`tests/python/test_backtest_0_7_0_e2e.py` 追加 5 个 case(空/3 帧/无事件区分/multi/to_dict);`crates/axon-backtest/src/engine.rs` 追加 5 个 Rust 单元测试。
+  - 用途:Python 端用 `bar_nav_curve` 重算 Sharpe 时按 bar 频率归一化(年化因子 = `sqrt(bar_per_year)`,1h bar = `sqrt(8760)`,15m bar = `sqrt(35040)`)。
+
 ## [0.7.0] - 2026-07-19
 
 0.7.0 主线:per-fill observability + per-leg seed liquidity + 致命 hotfix(seed_liquidity 死循环导致 50GB 内存爆炸)。所有 0.6.0 后续 hotfix(OMS `with_instrument`、pyo3 0.27 fixes、en docs 同步)合并到本段发布。

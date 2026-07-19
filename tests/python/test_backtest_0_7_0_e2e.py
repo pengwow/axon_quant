@@ -349,3 +349,108 @@ def test_begin_bar_multi_dict_form_rejected() -> None:
     with pytest.raises((TypeError, ValueError), match=r"(?i)(dict|hashable|iterable)"):
         # begin_bar_multi 现在要求 PyList,dict 被 PyO3 拒绝
         bt.begin_bar_multi({SPOT_BTC: 100.0, PERP_BTC: 100.0})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 7) 0.7.1 新增: bar_nav_curve 每 bar 末 NAV 采样
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_bar_nav_curve_empty_without_begin_bar() -> None:
+    """0.7.1 新增:不调 `begin_bar` 时 `bar_nav_curve` 应为空 list。
+
+    验证:空回测(只有初始资金,无 begin_bar 调用)→ `bar_nav_curve == []`。
+    """
+    bt = _make_engine(initial_cash=100_000.0)
+    result = bt.run()
+    assert result.bar_nav_curve == [], (
+        f"未调 begin_bar 时 bar_nav_curve 应为空,got {result.bar_nav_curve}"
+    )
+
+
+def test_bar_nav_curve_sampled_per_begin_bar() -> None:
+    """0.7.1 新增:3 次 `begin_bar` → `bar_nav_curve` 有 3 帧,时间戳单调递增。
+
+    验证:`set_clock` + `begin_bar` 3 次,每根 bar 都产生 1 帧 NAV 采样。
+    """
+    bt = _make_engine(initial_cash=100_000.0)
+    # 3 根 bar,各设不同时间戳
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar(price=50_000.0, instrument=SPOT_BTC)
+    bt.set_clock(2_000_000_000)
+    bt.begin_bar(price=50_100.0, instrument=SPOT_BTC)
+    bt.set_clock(3_000_000_000)
+    bt.begin_bar(price=50_200.0, instrument=SPOT_BTC)
+
+    result = bt.run()
+    assert len(result.bar_nav_curve) == 3, (
+        f"3 次 begin_bar 应采 3 帧,got {len(result.bar_nav_curve)}"
+    )
+    # 时间戳单调递增
+    assert result.bar_nav_curve[0][0] == 1_000_000_000
+    assert result.bar_nav_curve[1][0] == 2_000_000_000
+    assert result.bar_nav_curve[2][0] == 3_000_000_000
+    # NAV 单调应反映 begin_bar 价递增(无持仓 → NAV=cash=100_000)
+    for ts, nav in result.bar_nav_curve:
+        assert nav == pytest.approx(100_000.0, abs=0.01), (
+            f"无持仓时 NAV 应=cash=100_000,got ts={ts} nav={nav}"
+        )
+
+
+def test_bar_nav_curve_differs_from_equity_curve_no_events() -> None:
+    """0.7.1 新增:`bar_nav_curve` 区别于 `equity_curve`:无 fill 时 bar_nav 仍有帧。
+
+    场景:3 次 `begin_bar` 不发任何 order / mark / funding 事件:
+    - `equity_curve` 应为空(没事件触发采样)
+    - `bar_nav_curve` 应有 3 帧(每 bar 末都采样)
+
+    这是 PR-B 的核心动机:短回测 + 无 fill 时 `equity_curve` 末帧 = initial_cash,
+    无法反映波动;`bar_nav_curve` 在 mark_cache 已有值时能反映 NAV 沿 mark 变化。
+    """
+    bt = _make_engine(initial_cash=100_000.0)
+    for i in range(3):
+        bt.set_clock(1_000 * (i + 1))
+        bt.begin_bar(price=50_000.0 + i * 100, instrument=SPOT_BTC)
+
+    result = bt.run()
+    assert result.equity_curve == [], (
+        f"无 fill/mark/funding 事件时 equity_curve 应仍为空,got {len(result.equity_curve)} 帧"
+    )
+    assert len(result.bar_nav_curve) == 3, (
+        f"3 次 begin_bar 应采 3 帧 bar_nav_curve,got {len(result.bar_nav_curve)}"
+    )
+
+
+def test_bar_nav_curve_sampled_for_begin_bar_multi() -> None:
+    """0.7.1 新增:`begin_bar_multi` 也产生 1 帧 `bar_nav_curve`(per-call 单帧)。"""
+    bt = _make_engine(initial_cash=1_000_000.0)
+    # 2 次 begin_bar_multi(spot+perp 套利场景)
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar_multi([(SPOT_BTC, 50_000.0), (PERP_BTC, 50_010.0)])
+    bt.set_clock(2_000_000_000)
+    bt.begin_bar_multi([(SPOT_BTC, 50_100.0), (PERP_BTC, 50_110.0)])
+
+    result = bt.run()
+    assert len(result.bar_nav_curve) == 2, (
+        f"2 次 begin_bar_multi 应采 2 帧,got {len(result.bar_nav_curve)}"
+    )
+    assert result.bar_nav_curve[0][0] == 1_000_000_000
+    assert result.bar_nav_curve[1][0] == 2_000_000_000
+
+
+def test_bar_nav_curve_exposed_via_to_dict() -> None:
+    """0.7.1 新增:`result.to_dict()` 暴露 `bar_nav_curve_points` 字段。"""
+    bt = _make_engine(initial_cash=100_000.0)
+    bt.set_clock(1_000)
+    bt.begin_bar(price=50_000.0, instrument=SPOT_BTC)
+    bt.set_clock(2_000)
+    bt.begin_bar(price=50_100.0, instrument=SPOT_BTC)
+    result = bt.run()
+
+    d = result.to_dict()
+    assert "bar_nav_curve_points" in d, (
+        f"to_dict 缺 bar_nav_curve_points 字段,keys={list(d.keys())}"
+    )
+    assert d["bar_nav_curve_points"] == 2
+    # 同时 equity_curve_points 仍为 0(无 fill)
+    assert d["equity_curve_points"] == 0

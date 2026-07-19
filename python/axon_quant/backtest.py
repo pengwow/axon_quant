@@ -77,6 +77,19 @@ RunResult 字段语义对照(0.7.0 起)
 - 审计每笔成交 / partial fill 分析 → 用 ``fills_detail``
 - 快速看成交笔数 → 用 ``fills``
 
+**NAV 曲线对照**(0.7.1 新增 ``bar_nav_curve``):
+
+- ``equity_curve`` (``list[tuple[timestamp_ns, nav]]``):**每笔 fill / mark / funding 后**采样,
+  无事件的 bar 不留帧。短回测 + 无 fill 时末帧 = ``initial_cash``,无法反映波动。
+- ``bar_nav_curve`` (``list[tuple[timestamp_ns, nav]]``,0.7.1 新增):**每根 bar 末**采样
+  (由 ``begin_bar`` / ``begin_bar_multi`` 收尾触发),无事件 bar 也留帧。**推荐用于**
+  计算 Sharpe / max_drawdown(避免短回测 + 无 fill 失真),代码片段::
+
+    import numpy as np
+    bnav = np.array(result.bar_nav_curve, dtype=[("ts", "i8"), ("nav", "f8")])
+    log_ret = np.diff(np.log(bnav["nav"]))
+    sharpe = log_ret.mean() / log_ret.std() * np.sqrt(annualization_factor)
+
 Examples::
 
     # 同向加仓 2 笔 buy 0.5 + buy 0.3:

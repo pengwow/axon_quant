@@ -796,6 +796,31 @@ impl PyRunResult {
         Ok(list)
     }
 
+    /// 0.7.1 新增:每 bar 末 NAV 曲线(`[(timestamp_ns, nav), ...]`)
+    ///
+    /// 与 `equity_curve` 区别:
+    /// - `equity_curve` 只在 fill / mark / funding 事件触发时采样,无事件 bar 不留帧
+    /// - `bar_nav_curve` 在 `begin_bar` / `begin_bar_multi` 收尾时**每 bar 一帧**采样,
+    ///   用于短回测 + 无 fill 时计算 Sharpe / max_drawdown 不会失真
+    ///   (此时 `equity_curve` 末帧 = `initial_cash`,无法反映波动)
+    ///
+    /// Python 端推荐用法:
+    /// ```python
+    /// import numpy as np
+    /// bnav = np.array(result.bar_nav_curve, dtype=[("ts", "i8"), ("nav", "f8")])
+    /// returns = np.diff(np.log(bnav["nav"]))  # log returns
+    /// sharpe = returns.mean() / returns.std() * np.sqrt(35040)  # 15m 年化
+    /// ```
+    #[getter]
+    fn bar_nav_curve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for (ts, nav) in &self.inner.bar_nav_curve {
+            let tup = (ts.nanos, *nav);
+            list.append(tup)?;
+        }
+        Ok(list)
+    }
+
     /// NAV 历史峰值(用于 max_drawdown_pct)
     #[getter]
     fn nav_peak(&self) -> f64 {
@@ -954,6 +979,8 @@ impl PyRunResult {
         d.set_item("sharpe_ratio", self.inner.sharpe_ratio)?;
         d.set_item("trades_count", self.inner.trades.len())?;
         d.set_item("equity_curve_points", self.inner.equity_curve.len())?;
+        // 0.7.1 新增:bar 末 NAV 曲线(每 bar 一帧,用于重算 Sharpe)
+        d.set_item("bar_nav_curve_points", self.inner.bar_nav_curve.len())?;
         d.set_item("positions", self.positions(py)?)?;
         // 0.7.0 新增(Phase 4):组合级风险敞口
         d.set_item("risk_metrics", self.risk_metrics(py)?)?;
