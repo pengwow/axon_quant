@@ -1,11 +1,16 @@
 //! 调度器主结构
 //!
-//! 该模块使用 `*mut EventQueue` 以避免生命周期约束；
-//! `Scheduler` 仅在单线程事件循环中使用。
-
-#![allow(unsafe_code)] // 裸指针用于跨生命周期的事件队列访问
+//! 0.8.0 改:用 `Arc<Mutex<EventQueue>>` 替代 `*mut EventQueue`,
+//! 消除 5 处 unsafe(见 `super::context`)。回调通过 `Arc<Mutex<>>`
+//! 安全共享事件队列,无裸指针。
+//!
+//! API 破坏性:`run_until` / `tick` 从 `&mut EventQueue` 改为
+//! `&Arc<Mutex<EventQueue>>`。0.7.1 验证:axon-core scheduler 自包含,
+//! 无外部 crate 调用。影响范围:axon-core scheduler 测试(改 `&mut q` →
+//! `Arc::new(Mutex::new(q))`)。
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -212,11 +217,14 @@ impl Scheduler {
         self.tasks.len()
     }
 
-    /// 推进时钟到指定时间，执行所有到期任务
+    /// 推进时钟到指定时间,执行所有到期任务
+    ///
+    /// 0.8.0 改:`event_queue` 从 `&mut EventQueue` 改为 `&Arc<Mutex<EventQueue>>`,
+    /// 配合 [`SchedulerContext`] 新签名,消除 5 处 unsafe。
     pub fn run_until(
         &mut self,
         until: Timestamp,
-        event_queue: &mut EventQueue,
+        event_queue: &Arc<Mutex<EventQueue>>,
     ) -> SchedulerResult<u64> {
         let mut fired_count = 0u64;
 
@@ -252,7 +260,12 @@ impl Scheduler {
     }
 
     /// 单步执行：执行下一个到期任务
-    pub fn tick(&mut self, event_queue: &mut EventQueue) -> SchedulerResult<Option<TaskId>> {
+    ///
+    /// 0.8.0 改：同 [`run_until`](Self::run_until) — `&mut EventQueue` → `&Arc<Mutex<EventQueue>>`。
+    pub fn tick(
+        &mut self,
+        event_queue: &Arc<Mutex<EventQueue>>,
+    ) -> SchedulerResult<Option<TaskId>> {
         let next_time = match self.time_index.iter().next() {
             Some((&time, _)) => time,
             None => return Ok(None),
@@ -270,12 +283,14 @@ impl Scheduler {
         Ok(None)
     }
 
-    /// 触发单个任务；返回 `true` 表示已触发
+    /// 触发单个任务;返回 `true` 表示已触发
+    ///
+    /// 0.8.0 改:同 [`run_until`](Self::run_until) — `&mut EventQueue` → `&Arc<Mutex<EventQueue>>`。
     fn fire_task(
         &mut self,
         task_id: TaskId,
         fire_time: Timestamp,
-        event_queue: &mut EventQueue,
+        event_queue: &Arc<Mutex<EventQueue>>,
     ) -> bool {
         let task = match self.tasks.get(&task_id) {
             Some(t) if t.status != TaskStatus::Cancelled => t,
@@ -285,7 +300,7 @@ impl Scheduler {
         // 执行回调
         let mut ctx = SchedulerContext {
             current_time: fire_time,
-            event_queue: event_queue as *mut EventQueue,
+            event_queue: Some(Arc::clone(event_queue)),
             user_data: HashMap::new(),
         };
 
@@ -405,8 +420,8 @@ mod tests {
             c.fetch_add(1, Ordering::Relaxed);
         })
         .unwrap();
-        let mut q = EventQueue::new();
-        let fired = s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let fired = s.run_until(Timestamp::from_millis(200), &q).unwrap();
         assert_eq!(fired, 1);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
@@ -421,8 +436,8 @@ mod tests {
         })
         .unwrap();
         // 推进 100ms（应触发一次）
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(100), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(100), &q).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
@@ -436,8 +451,8 @@ mod tests {
         })
         .unwrap();
         // 推进 300ms → 触发 6 次（50, 100, 150, 200, 250, 300）
-        let mut q = EventQueue::new();
-        let fired = s.run_until(Timestamp::from_millis(300), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let fired = s.run_until(Timestamp::from_millis(300), &q).unwrap();
         assert_eq!(fired, 6);
         assert_eq!(counter.load(Ordering::Relaxed), 6);
     }
@@ -453,8 +468,8 @@ mod tests {
             })
             .unwrap();
         // 推进到 25ms，未到第一次触发
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(25), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(25), &q).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 0);
 
         // 取消任务
@@ -462,7 +477,7 @@ mod tests {
         assert!(result);
 
         // 推进到 200ms，已取消，不会触发
-        s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        s.run_until(Timestamp::from_millis(200), &q).unwrap();
         assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
@@ -502,8 +517,8 @@ mod tests {
         })
         .unwrap();
 
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(200), &q).unwrap();
         let r = order.lock().unwrap();
         assert_eq!(*r, vec![2, 1]);
     }
@@ -513,8 +528,8 @@ mod tests {
         let mut s = Scheduler::new(Timestamp::from_nanos(0));
         s.schedule_at(Timestamp::from_millis(100), |_| {}).unwrap();
         s.schedule_at(Timestamp::from_millis(200), |_| {}).unwrap();
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(200), &q).unwrap();
         // 时钟应推进到 200ms（所有任务执行完毕）
         assert_eq!(s.now(), Timestamp::from_millis(200));
     }
@@ -524,22 +539,22 @@ mod tests {
         let mut s = Scheduler::new(Timestamp::from_nanos(0));
         s.schedule_at(Timestamp::from_millis(100), |_| {}).unwrap();
         s.schedule_at(Timestamp::from_millis(200), |_| {}).unwrap();
-        let mut q = EventQueue::new();
-        let first = s.tick(&mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let first = s.tick(&q).unwrap();
         assert!(first.is_some());
         assert_eq!(s.now(), Timestamp::from_millis(100));
-        let second = s.tick(&mut q).unwrap();
+        let second = s.tick(&q).unwrap();
         assert!(second.is_some());
         assert_eq!(s.now(), Timestamp::from_millis(200));
-        let third = s.tick(&mut q).unwrap();
+        let third = s.tick(&q).unwrap();
         assert!(third.is_none());
     }
 
     #[test]
     fn test_tick_on_empty_returns_none() {
         let mut s = Scheduler::new(Timestamp::from_nanos(0));
-        let mut q = EventQueue::new();
-        let result = s.tick(&mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let result = s.tick(&q).unwrap();
         assert!(result.is_none());
     }
 
@@ -561,8 +576,8 @@ mod tests {
         let mut s = Scheduler::with_end(Timestamp::from_nanos(0), Timestamp::from_millis(50));
         s.schedule_at(Timestamp::from_millis(100), |_| {}).unwrap();
         s.schedule_at(Timestamp::from_millis(200), |_| {}).unwrap();
-        let mut q = EventQueue::new();
-        let fired = s.run_until(Timestamp::from_millis(1000), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let fired = s.run_until(Timestamp::from_millis(1000), &q).unwrap();
         // 时钟已耗尽，应不触发任何任务
         assert_eq!(fired, 0);
     }
@@ -581,8 +596,8 @@ mod tests {
     fn test_reset_clears_state() {
         let mut s = Scheduler::new(Timestamp::from_nanos(0));
         s.schedule_at(Timestamp::from_millis(100), |_| {}).unwrap();
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(200), &q).unwrap();
         s.reset();
         assert_eq!(s.task_count(), 0);
         assert_eq!(s.now(), Timestamp::from_nanos(0));
@@ -598,8 +613,8 @@ mod tests {
             c.store(ctx.current_time.nanos as u64, Ordering::Relaxed);
         })
         .unwrap();
-        let mut q = EventQueue::new();
-        s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        s.run_until(Timestamp::from_millis(200), &q).unwrap();
         assert_eq!(captured.load(Ordering::Relaxed), 100_000_000);
     }
 
@@ -637,8 +652,8 @@ mod tests {
             c3.fetch_add(1, Ordering::Relaxed);
         })
         .unwrap();
-        let mut q = EventQueue::new();
-        let fired = s.run_until(Timestamp::from_millis(200), &mut q).unwrap();
+        let q = Arc::new(Mutex::new(EventQueue::new()));
+        let fired = s.run_until(Timestamp::from_millis(200), &q).unwrap();
         assert_eq!(fired, 3);
         assert_eq!(counter.load(Ordering::Relaxed), 3);
     }
