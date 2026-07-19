@@ -128,10 +128,15 @@ impl PyBacktestEngine {
     /// 用户自定义的撮合引擎类)。通过 `PyMatchingEngine` 桥接成
     /// Rust `MatchingEngine` trait object,**真替换**引擎内部默认的
     /// `L1MatchingEngine`。
-    fn with_matching_engine(&mut self, py_engine: &Bound<'_, PyAny>) -> PyResult<()> {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_matching_engine<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        py_engine: &Bound<'_, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let py_matcher = PyMatchingEngine::new(py_engine)?;
-        self.inner.replace_matching_engine(Box::new(py_matcher));
-        Ok(())
+        slf.inner.replace_matching_engine(Box::new(py_matcher));
+        Ok(slf)
     }
 
     /// 注入手续费配置(Stage 3 阶段 B 任务 B4)
@@ -192,9 +197,17 @@ impl PyBacktestEngine {
     /// - **0.7.0 起**:`with_seed_liquidity(...)` 设为 **default** 配线,
     ///   用 `with_seed_liquidity_for(instrument, ...)` 设 per-leg 覆写;
     ///   `begin_bar(price, instrument)` 优先 per-leg,fallback default。
-    fn with_seed_liquidity(&mut self, half_spread: f64, depth_levels: usize, size_per_level: f64) {
-        self.inner
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_seed_liquidity<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
             .with_seed_liquidity(half_spread, depth_levels, size_per_level);
+        Ok(slf)
     }
 
     /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
@@ -209,6 +222,8 @@ impl PyBacktestEngine {
     /// - `depth_levels`: 每侧挂单层数
     /// - `size_per_level`: 每层挂单数量
     ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    ///
     /// Example:
     /// ```python
     /// engine = BacktestEngine(100_000.0)
@@ -216,17 +231,17 @@ impl PyBacktestEngine {
     /// engine.with_seed_liquidity_for(spot_inst, 0.01, 10, 0.5)  # spot 紧
     /// engine.with_seed_liquidity_for(perp_inst, 0.5, 5, 0.1)    # perp 松
     /// ```
-    fn with_seed_liquidity_for(
-        &mut self,
+    fn with_seed_liquidity_for<'py>(
+        mut slf: PyRefMut<'py, Self>,
         instrument: &Bound<'_, PyAny>,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
-        self.inner
+        slf.inner
             .with_seed_liquidity_for(inst, half_spread, depth_levels, size_per_level);
-        Ok(())
+        Ok(slf)
     }
 
     /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
@@ -540,13 +555,24 @@ impl PyBacktestEngine {
     /// Args:
     /// - `threshold`: 最小 delta(绝对值)。建议 `1e-6` 避免抖动;
     ///   `0.0` 等价"每 tick rebalance"。
-    fn with_auto_rebalance(&mut self, threshold: f64) {
-        self.inner.with_auto_rebalance(threshold);
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_auto_rebalance<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        threshold: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_auto_rebalance(threshold);
+        Ok(slf)
     }
 
     /// 关闭自动 rebalance(回到默认 `None` 状态)
-    fn with_auto_rebalance_disable(&mut self) {
-        self.inner.with_auto_rebalance_disable();
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_auto_rebalance_disable<'py>(
+        mut slf: PyRefMut<'py, Self>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_auto_rebalance_disable();
+        Ok(slf)
     }
 
     /// 手动设置模拟时钟(0.6.0 新增 Phase 2)
@@ -590,15 +616,17 @@ impl PyBacktestEngine {
     /// - `interval_ns`: 结算间隔(ns)。典型 8h = 28_800_000_000_000
     /// - `fixed_rate`: 资金费率(正 = long 付)
     /// - `mark_aware`: 是否用 `mark_cache` 读 mark(默认 True)
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
     #[pyo3(signature = (instrument, interval_ns, fixed_rate, mark_aware = true))]
-    fn with_funding_schedule(
-        &mut self,
+    fn with_funding_schedule<'py>(
+        mut slf: PyRefMut<'py, Self>,
         _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         interval_ns: i64,
         fixed_rate: f64,
         mark_aware: bool,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         let schedule = FundingSchedule {
             instrument: inst,
@@ -606,22 +634,24 @@ impl PyBacktestEngine {
             fixed_rate,
             mark_aware,
         };
-        self.inner.with_funding_schedule(schedule);
-        Ok(())
+        slf.inner.with_funding_schedule(schedule);
+        Ok(slf)
     }
 
     /// 关闭指定 instrument 的 funding 自动调度(0.6.0 新增 Phase 2)
     ///
     /// Args:
     /// - `instrument`: 永续合约 dict
-    fn with_funding_schedule_disable(
-        &mut self,
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_funding_schedule_disable<'py>(
+        mut slf: PyRefMut<'py, Self>,
         _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
-        self.inner.with_funding_schedule_disable(&inst);
-        Ok(())
+        slf.inner.with_funding_schedule_disable(&inst);
+        Ok(slf)
     }
 
     fn __repr__(&self) -> String {

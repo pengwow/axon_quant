@@ -593,8 +593,12 @@ impl BacktestEngine {
     ///
     /// 调用后,所有 fill 都按 `notional * taker_rate` 累计手续费;
     /// 不传任何参数时使用 `FeeConfig::default()`(0.1% taker)。
-    pub fn with_fee_config(&mut self, taker_rate: f64) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用(如 `engine.with_fee_config(0.001).with_force_liquidate(true)`)。
+    /// 0.7.1 之前返回 `()`(in-place mutator)。
+    pub fn with_fee_config(&mut self, taker_rate: f64) -> &mut Self {
         self.config.fee_config = FeeConfig { taker_rate };
+        self
     }
 
     /// EOD 强制平仓开关(回测结束把未平仓持仓按市价平掉)
@@ -604,8 +608,11 @@ impl BacktestEngine {
     ///   (所有 PnL 转为已实现,胜率/夏普统计更准;但末根 bar 的"末日单"会污染 PnL)
     ///
     /// 可重复调用,生效于下一次 `run()`。
-    pub fn with_force_liquidate(&mut self, on: bool) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    pub fn with_force_liquidate(&mut self, on: bool) -> &mut Self {
         self.config.force_liquidate = on;
+        self
     }
 
     /// 启用虚拟流动性种子(回测"瞬时对手盘"语义)
@@ -637,17 +644,20 @@ impl BacktestEngine {
     ///
     /// 可重复调用(更新配置);但**不**自动调用 `clear_book` —— 已有种子会保留,
     /// 下次 `begin_bar` 触发时一起清。配置变更语义"下次生效"。
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
     pub fn with_seed_liquidity(
         &mut self,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-    ) {
+    ) -> &mut Self {
         self.default_seed_liquidity_config = Some(SeedLiquidityConfig {
             half_spread,
             depth_levels,
             size_per_level,
         });
+        self
     }
 
     /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
@@ -668,13 +678,15 @@ impl BacktestEngine {
     /// # 重复设置
     ///
     /// 同 instrument 多次调用,**后调覆盖前调**。
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
     pub fn with_seed_liquidity_for(
         &mut self,
         instrument: Instrument,
         half_spread: f64,
         depth_levels: usize,
         size_per_level: f64,
-    ) {
+    ) -> &mut Self {
         self.seed_liquidity_per_leg.insert(
             instrument,
             SeedLiquidityConfig {
@@ -683,6 +695,7 @@ impl BacktestEngine {
                 size_per_level,
             },
         );
+        self
     }
 
     /// 每根 bar 开始时由应用层调用:同步执行 `clear_book_for + seed_liquidity`
@@ -1586,13 +1599,19 @@ impl BacktestEngine {
     /// # 关闭
     ///
     /// `with_auto_rebalance_disable()` 关闭(回到 `None` 状态)。
-    pub fn with_auto_rebalance(&mut self, threshold: f64) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    pub fn with_auto_rebalance(&mut self, threshold: f64) -> &mut Self {
         self.auto_rebalance_threshold = Some(threshold);
+        self
     }
 
     /// 0.5.0 新增(Phase D):关闭自动 rebalance
-    pub fn with_auto_rebalance_disable(&mut self) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    pub fn with_auto_rebalance_disable(&mut self) -> &mut Self {
         self.auto_rebalance_threshold = None;
+        self
     }
 
     /// 0.6.0 新增(Phase 2):配置 funding 自动调度 schedule
@@ -1605,19 +1624,25 @@ impl BacktestEngine {
     ///
     /// 初始化:首次配置时 `last_funding_ts[instrument] = Timestamp::from_nanos(0)`,
     /// 故首次 `begin_bar`(bar_ts > 0)即触发 1 次 funding 结算。
-    pub fn with_funding_schedule(&mut self, schedule: FundingSchedule) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    pub fn with_funding_schedule(&mut self, schedule: FundingSchedule) -> &mut Self {
         self.last_funding_ts
             .entry(schedule.instrument.clone())
             .or_insert(Timestamp::from_nanos(0));
         self.funding_schedules
             .insert(schedule.instrument.clone(), schedule);
+        self
     }
 
     /// 0.6.0 新增(Phase 2):关闭指定 instrument 的 funding 自动调度
     ///
     /// `last_funding_ts` 保留(以备重新启用时复用历史;若需重置,手动清空)。
-    pub fn with_funding_schedule_disable(&mut self, instrument: &Instrument) {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    pub fn with_funding_schedule_disable(&mut self, instrument: &Instrument) -> &mut Self {
         self.funding_schedules.remove(instrument);
+        self
     }
 
     /// 0.5.0 新增(Phase D):手动触发 rebalance
@@ -1793,12 +1818,14 @@ impl BacktestEngine {
             .collect();
 
         // 6. win_rate / sharpe_ratio 从 TradingMetrics 取
-        //    默认年化因子:15m bar 一年 35040 根(24h * 4 * 365)
+        //    默认按 15-min bar 年化(每根 bar 900s,一年 35040 根)
+        //    0.7.1 PR-D:用 sharpe_ratio_annualized 便捷方法,修复 0.7.0 错传
+        //    `35_040_f64.sqrt()` 导致实际年化因子比正确值小一个数量级的 bug
         let win_rate = self.bt_state.trading_metrics.win_rate();
         let sharpe_ratio = self
             .bt_state
             .trading_metrics
-            .sharpe_ratio(35_040_f64.sqrt());
+            .sharpe_ratio_annualized(900.0); // 15-min bar
 
         // 6b. 0.7.0 新增(Phase 4):从 positions + sharpe_ratio 派生风险敞口报告
         //     注意:必须在 `RunResult { positions, ... }` 移动 positions 之前构造,
@@ -3920,6 +3947,75 @@ mod tests {
             (nav - 99_994.8999).abs() < 1.0,
             "bar_nav NAV 应≈99_994.8999(cash 含费 + 持仓按 fallback 估),got {}",
             nav
+        );
+    }
+
+    // ── 0.7.1 新增:with_* 链式调用 ─────────────────────────
+
+    /// 0.7.1 新增:`with_*` 方法返回 `&mut Self`,可链式调用
+    ///
+    /// 场景:连用 3 个 `with_*` 配线,验证单条链式调用生效
+    /// (避免 `engine.with_x(); engine.with_y(); engine.with_z();` 3 行式样板)。
+    #[test]
+    fn with_methods_return_mut_self_for_chaining() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        let btc_spot = btc_spot_inst();
+        let schedule = FundingSchedule::fixed_8h(btc_spot.clone(), 0.0001);
+
+        // 单条链式调用 3 个 with_* 方法
+        let _ = engine
+            .with_fee_config(0.002)
+            .with_force_liquidate(false)
+            .with_auto_rebalance(1e-6)
+            .with_auto_rebalance_disable()
+            .with_funding_schedule(schedule)
+            .with_funding_schedule_disable(&btc_spot);
+
+        // 验证:链式调用后所有配置生效
+        assert!((engine.config.fee_config.taker_rate - 0.002).abs() < 1e-9);
+        assert!(!engine.config.force_liquidate);
+        assert!(engine.auto_rebalance_threshold.is_none()); // 最后被 disable 覆盖
+        assert!(engine.funding_schedules.is_empty()); // 最后被 disable 覆盖
+    }
+
+    /// 0.7.1 新增:`with_seed_liquidity` / `with_seed_liquidity_for` 可链式
+    #[test]
+    fn with_seed_liquidity_chainable() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+        let btc_spot = btc_spot_inst();
+        let btc_perp = btc_swap_inst();
+
+        // default + per-leg spot + per-leg perp 一条链
+        let _ = engine
+            .with_seed_liquidity(0.1, 5, 0.1)
+            .with_seed_liquidity_for(btc_spot.clone(), 0.01, 10, 0.5)
+            .with_seed_liquidity_for(btc_perp.clone(), 0.5, 5, 0.1);
+
+        // default 已设
+        assert!(engine.default_seed_liquidity_config.is_some());
+        let default_cfg = engine.default_seed_liquidity_config.unwrap();
+        assert!((default_cfg.half_spread - 0.1).abs() < 1e-9);
+        // per-leg spot/perp 已设
+        assert!(engine.seed_liquidity_per_leg.contains_key(&btc_spot));
+        assert!(engine.seed_liquidity_per_leg.contains_key(&btc_perp));
+    }
+
+    /// 0.7.1 新增:链式调用风格无副作用(顺序敏感)
+    ///
+    /// 验证 `with_*` 链中后调覆盖前调(已有文档约定的"set 最新生效"语义)。
+    #[test]
+    fn with_methods_chained_overwrite_previous() {
+        let mut engine = BacktestEngine::new(simple_config(), EventQueue::new());
+
+        // 先设 0.001,后设 0.005,后生效
+        engine
+            .with_fee_config(0.001)
+            .with_fee_config(0.005);
+
+        assert!(
+            (engine.config.fee_config.taker_rate - 0.005).abs() < 1e-9,
+            "链式 with_fee_config 后调应覆盖前调,got {}",
+            engine.config.fee_config.taker_rate
         );
     }
 }

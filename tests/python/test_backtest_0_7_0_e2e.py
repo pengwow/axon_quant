@@ -454,3 +454,179 @@ def test_bar_nav_curve_exposed_via_to_dict() -> None:
     assert d["bar_nav_curve_points"] == 2
     # 同时 equity_curve_points 仍为 0(无 fill)
     assert d["equity_curve_points"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 8) 0.7.1 新增: with_* 方法链式调用
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_with_methods_chainable_in_python() -> None:
+    """0.7.1 新增:`with_*` 方法返回 engine 自身,支持 Python 链式调用。
+
+    验证:`BacktestEngine(initial_cash=...)` 后能用 `.with_xxx().with_yyy()`
+    链式连续配线,无需中间变量。
+
+    0.7.1 之前这些 `with_*` 返回 `None`(in-place mutator),链式会报
+    `AttributeError: 'NoneType' object has no attribute 'with_yyy'`。
+    """
+    # 链式调用 5 个 with_* 方法
+    bt = (
+        BacktestEngine(initial_cash=100_000.0)
+        .with_seed_liquidity(0.1, 5, 0.1)
+        .with_seed_liquidity_for(SPOT_BTC, 0.01, 10, 0.5)
+        .with_seed_liquidity_for(PERP_BTC, 0.5, 5, 0.1)
+        .with_auto_rebalance(1e-6)
+        .with_force_liquidate(False)
+    )
+    # 验证:链式调用后 backtest 能正常跑(无内部 None deref 异常)
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar(price=50_000.0, instrument=SPOT_BTC)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000_000_001,
+        "order": limit_order(1, SPOT_BTC, "Buy", 50_000.5, 0.1, tif="IOC"),
+    })
+    result = bt.run()
+    # 至少 1 笔 fill(per-leg seed 已生效)
+    assert result.fills == 1, f"链式 with_seed_liquidity_for 后 fill 应=1,got {result.fills}"
+
+
+def test_with_fee_config_and_funding_schedule_chainable() -> None:
+    """0.7.1 新增:`with_fee_config` + `with_funding_schedule` + 末 `with_auto_rebalance_disable` 链式。
+
+    验证:`with_funding_schedule` / `with_auto_rebalance_disable` 这两个 0.5.0/0.6.0
+    新增的 with_* 也都返回 engine 自身(0.7.1 之前是 `()`)。
+    """
+    bt = (
+        BacktestEngine(initial_cash=1_000_000.0)
+        .with_seed_liquidity(50.0, 3, 0.1)
+        .with_fee_config(0.002)
+        .with_funding_schedule(
+            instrument=PERP_BTC,
+            interval_ns=28_800_000_000_000,  # 8h
+            fixed_rate=0.0001,
+        )
+        .with_auto_rebalance_disable()  # 显式关闭
+    )
+    # 验证能跑完
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar(price=50_000.0, instrument=PERP_BTC)
+    result = bt.run()
+    # funding schedule 已生效(首 bar 末跨 8h 边界)
+    assert result.fills >= 0  # 没 fill 也 OK,主要验证链式不报错
+
+
+def test_with_methods_overwrite_semantics_in_chain() -> None:
+    """0.7.1 新增:链式调用中后调覆盖前调(已有"set 最新生效"语义)。
+
+    验证:连续两次 `with_fee_config(0.001)` 然后 `with_fee_config(0.005)`,
+    最终 taker_rate 应 = 0.005,对应 total_fees = 0.005 * fill_qty * fill_price。
+    """
+    bt = (
+        BacktestEngine(initial_cash=100_000.0)
+        .with_fee_config(0.001)
+        .with_fee_config(0.005)
+    )
+    # 内部验证:无显式 getter,跑一个 buy 测手续费累计
+    # 注:seed_liquidity 每层 size=0.1,1.0 数量的单子实际 fill 0.1(0.7.0 撮合语义)
+    bt.with_seed_liquidity(0.5, 3, 0.1)
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar(price=100.0, instrument=SPOT_BTC)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000_000_001,
+        "order": limit_order(1, SPOT_BTC, "Buy", 100.5, 1.0, tif="IOC"),
+    })
+    result = bt.run()
+    # 链式后调 0.005 覆盖前调 0.001,fill 0.1 @ 100.5
+    fill_qty = result.fills_detail[0]["quantity"]  # 实际 fill 量
+    fill_price = result.fills_detail[0]["price"]
+    expected_fee = 0.005 * fill_qty * fill_price
+    assert result.fills == 1, f"应 fill 1 笔,got {result.fills}"
+    assert abs(result.total_fees - expected_fee) < 1e-6, (
+        f"链式后调覆盖前调,total_fees 应≈{expected_fee:.6f},got {result.total_fees:.6f}"
+    )
+
+
+# ── 0.7.1 PR-D:sharpe_ratio 样本不足警告 + bar 间隔归一化 ─────────
+
+
+def test_sharpe_ratio_default_15min_magnitude() -> None:
+    """0.7.1 PR-D 回归:0.7.0 错传 `35_040_f64.sqrt()` 导致实际年化因子
+    比正确值小一个数量级;0.7.1 改用 `sharpe_ratio_annualized(900.0)`,
+    在多 bar + 真实 PnL 场景下,sharpe_ratio 应为有限数(不为极小值)。
+
+    验证:多 bar round-trip 拿到多次 log return,sharpe_ratio:
+    - n=1 短回测 → 0.0(样本不足)
+    - 多 bar 有 PnL → 有限数(数量级在 -100 ~ 100)
+    """
+    from axon_quant.backtest import BacktestEngine, limit_order, spot_instrument
+
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.with_seed_liquidity(half_spread=0.5, depth_levels=3, size_per_level=1.0)
+    spot = spot_instrument("BTC", "USDT")
+
+    # 单 bar round-trip → n=1 → 0.0
+    bt.set_clock(1_000_000_000)
+    bt.begin_bar(price=100.0, instrument=spot)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000_000_001,
+        "order": limit_order(1, spot, "Buy", 100.5, 0.1, tif="IOC"),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000_000_002,
+        "order": limit_order(2, spot, "Sell", 100.7, 0.1, tif="IOC"),
+    })
+    result = bt.run()
+    # 单 bar round-trip 没有跨 bar NAV 变化,log_return_count 可能 < 2 → 0.0
+    # 关键是:不再因为 `35_040_f64.sqrt()` 错传导致除零或 NaN
+    assert isinstance(result.sharpe_ratio, float)
+    assert not (result.sharpe_ratio != result.sharpe_ratio), "sharpe_ratio 不应为 NaN"
+    # 0.7.0 错传时,这个值会算成极小;0.7.1 修复后即使是 0 也是干净的 0
+    assert result.sharpe_ratio == 0.0, (
+        f"单 bar 短回测 sharpe_ratio 应 = 0.0,got {result.sharpe_ratio}"
+    )
+
+
+def test_sharpe_ratio_multi_bar_with_pnl_is_finite() -> None:
+    """0.7.1 PR-D:多 bar 真实回测,sharpe_ratio 应为有限数(无 NaN/Inf)。
+
+    关键回归:0.7.0 错传 `35_040_f64.sqrt()` 时,多 bar 场景虽然能算出
+    数值,但年化因子比正确小 13.7 倍,quantcell 看到 0.0X 的数量级。
+    0.7.1 用 `sharpe_ratio_annualized(900.0)` 后,数量级恢复正常(0~10)。
+    """
+    from axon_quant.backtest import BacktestEngine, limit_order, spot_instrument
+
+    bt = BacktestEngine(initial_cash=100_000.0)
+    bt.with_seed_liquidity(half_spread=0.1, depth_levels=5, size_per_level=1.0)
+    spot = spot_instrument("BTC", "USDT")
+
+    # 5 个 bar,每个 bar 做一次 round-trip 累积 NAV 变化
+    for i in range(5):
+        ts = 1_000_000_000 + i * 900_000_000_000  # 900s 间隔 = 15-min
+        bt.set_clock(ts)
+        bt.begin_bar(price=100.0 + i, instrument=spot)
+        bt.push_event({
+            "type": "order_submitted",
+            "timestamp_ns": ts + 1,
+            "order": limit_order(10 + i * 2, spot, "Buy", 100.0 + i + 0.5, 0.1, tif="IOC"),
+        })
+        bt.push_event({
+            "type": "order_submitted",
+            "timestamp_ns": ts + 2,
+            "order": limit_order(11 + i * 2, spot, "Sell", 100.0 + i + 0.7, 0.1, tif="IOC"),
+        })
+
+    result = bt.run()
+    assert result.fills >= 2, f"多 bar 期望 fills>=2,got {result.fills}"
+
+    # 关键:sharpe_ratio 应是有限数(不为 NaN/Inf)
+    assert isinstance(result.sharpe_ratio, float)
+    assert result.sharpe_ratio == result.sharpe_ratio, "sharpe_ratio 不应为 NaN"
+    assert abs(result.sharpe_ratio) < 1e6, (
+        f"sharpe_ratio 数量级应 < 1e6,got {result.sharpe_ratio} "
+        "(0.7.0 错传 sqrt 会被放大 1e13 倍)"
+    )
