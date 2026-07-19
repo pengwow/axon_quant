@@ -384,6 +384,7 @@ impl MultiAssetMatchingEngine {
             side_leg1,
             OrderType::Limit { price: leg1_price },
             quantity,
+            TimeInForce::GTC,
         );
         let leg2_order = build_leg_order(
             0,
@@ -391,6 +392,7 @@ impl MultiAssetMatchingEngine {
             leg2_side,
             OrderType::Limit { price: leg2_price },
             quantity,
+            TimeInForce::GTC,
         );
 
         let mut fills = self.submit(leg1_order)?;
@@ -600,12 +602,20 @@ impl MatchingEngine for MultiAssetMatchingEngine {
 
 /// 0.6.0 新增:按 `Instrument` 类型分派构造 leg 订单(spot → `Order::spot`,
 /// swap → `Order::swap`)。替代 0.5.0 `split_symbol_to_base_quote` 字符串桥。
-fn build_leg_order(
+///
+/// 0.7.0 抽离:加 `tif` 参数变通用 helper,供以下场景共用,避免 spot/swap
+/// 派发不一致:
+/// - `L1MatchingEngine::seed_liquidity` → GTC Limit(seed 流动性)
+/// - `BacktestEngine::liquidate_eod` → IOC Market(EOD 强制平仓)
+/// - `BacktestEngine::rebalance_to_target` → IOC Market(rebalance 市价单)
+/// - `MultiAssetMatchingEngine::execute_arbitrage` → GTC Limit(套利)
+pub(crate) fn build_leg_order(
     id: u64,
     instrument: &Instrument,
     side: Side,
     order_type: OrderType,
     quantity: Quantity,
+    tif: TimeInForce,
 ) -> Order {
     match instrument {
         Instrument::Spot(s) => Order::spot(
@@ -615,7 +625,7 @@ fn build_leg_order(
             side,
             order_type,
             quantity,
-            TimeInForce::GTC,
+            tif,
         ),
         Instrument::Swap(s) => Order::swap(
             id,
@@ -626,7 +636,7 @@ fn build_leg_order(
             side,
             order_type,
             quantity,
-            TimeInForce::GTC,
+            tif,
         ),
     }
 }
@@ -689,6 +699,7 @@ mod tests {
                 price: Price::from_f64(price),
             },
             Quantity::from_f64(qty),
+            TimeInForce::GTC,
         );
         // 测试里给 created_at 写 0 让排序稳定
         let mut o = order;

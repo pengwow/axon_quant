@@ -1017,16 +1017,15 @@ impl BacktestEngine {
             // qty > 0 → 持 long,平仓卖;qty < 0 → 持 short,平仓买
             let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
             let close_qty = qty.abs();
-            // 从 instrument 自身拆出 base/quote,真正反映"平的是哪个品种"
-            // (不再像旧版那样硬编码 Symbol::from("..."))。
-            let (base, quote) = match &instrument {
-                Instrument::Spot(s) => (s.base.clone(), s.quote.clone()),
-                Instrument::Swap(s) => (s.base.clone(), s.quote.clone()),
-            };
-            let order = Order::spot(
+            // 0.7.0 修:按 instrument 类型分派 `Order::spot` / `Order::swap`。
+            // 旧版一律 `Order::spot`,perp 持仓被强行当成 spot 平,发到
+            // `books.entry(Spot(BTC/USDT))` 找对手盘 — 该 book 不存在,
+            // 订单被拒,**perp 持仓残留**,`final_nav` 错。
+            //
+            // 0.5.0 在 `rebalance_to_target` 修过同类 bug,这条 EOD 路径漏修。
+            let order = crate::matching::l3::engine_l3::build_leg_order(
                 EOD_LIQUIDATE_ID_BASE + idx as u64,
-                base,
-                quote,
+                &instrument,
                 side,
                 OrderType::Market,
                 Quantity::from_f64(close_qty),
@@ -1632,28 +1631,16 @@ impl BacktestEngine {
             let order_id = self
                 .rebalance_next_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let order = match &instrument {
-                Instrument::Spot(s) => Order::spot(
-                    order_id,
-                    s.base.clone(),
-                    s.quote.clone(),
-                    side,
-                    OrderType::Market,
-                    Quantity::from_f64(qty),
-                    TimeInForce::IOC,
-                ),
-                Instrument::Swap(s) => Order::swap(
-                    order_id,
-                    s.base.clone(),
-                    s.quote.clone(),
-                    s.settle,
-                    s.contract_size,
-                    side,
-                    OrderType::Market,
-                    Quantity::from_f64(qty),
-                    TimeInForce::IOC,
-                ),
-            };
+            // 0.7.0 改:用 build_leg_order 复用 seed_liquidity / liquidate_eod 的
+            // 派发逻辑,避免 4 处分散维护(防止其中一处漏改 spot/swap 派发)。
+            let order = crate::matching::l3::engine_l3::build_leg_order(
+                order_id,
+                &instrument,
+                side,
+                OrderType::Market,
+                Quantity::from_f64(qty),
+                TimeInForce::IOC,
+            );
             // 同步提交走 MatchingEngine(同 EOD 模式,不入事件队列)
             let result = self.config.matching_engine.submit(order);
             for fill in &result.fills {

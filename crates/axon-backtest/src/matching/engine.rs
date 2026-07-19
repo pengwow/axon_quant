@@ -27,6 +27,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
 use super::error::{MatchingError, MatchingResult};
+use super::l3::engine_l3::build_leg_order;
 use super::types::{MatchFill, OrderBookLevel, SubmitResult};
 
 /// 撮合引擎 trait
@@ -605,7 +606,6 @@ impl L1MatchingEngine {
         }
         // T3.2:路由到对应 instrument 的 L1Book(自动创建)
         let book = self.books.entry(instrument.clone()).or_default();
-        let (base, quote) = (instrument.base().clone(), instrument.quote().clone());
         let mut id = next_id;
         // 卖盘：ask 在 mid 之上，按 spread 阶梯递增
         for level in 1..=depth_levels {
@@ -614,10 +614,12 @@ impl L1MatchingEngine {
                 // 防御性:正常参数下不会触发,但 mid/half_spread 为 NaN/负时跳过
                 continue;
             }
-            let order = Order::spot(
+            // 0.7.0 修:用 build_leg_order 派发 Spot→Order::spot / Swap→Order::swap,
+            // 避免 seed swap 品种时 instrument 字段被错写为 Spot(0.5.0 已在
+            // rebalance_to_target 修过同类 bug,seed 这条路径漏修)。
+            let mut order = build_leg_order(
                 id,
-                base.clone(),
-                quote.clone(),
+                &instrument,
                 Side::Sell,
                 OrderType::Limit {
                     price: Price::from_f64(ask_price),
@@ -625,12 +627,17 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
-            let mut order = order;
             // 0.7.0 修:必须 activate,否则 `match_against_asks` 的
             // `apply_fill` 会因 `Created → Filled` 状态非法而失败,
             // 错误被 `let _` 吞掉,status 永远停 Created,
             // is_terminal() = false → 循环不停 + 幽灵 fill → 内存爆炸
-            let _ = order.activate();
+            //
+            // 0.7.0 加固:`let _` 吞错会让 50GB bug 静默回归(任何重构导致
+            // activate 失败都会无声触发)。改为 expect 显式 panic,把 invariant
+            // 错误暴露到测试,而不是悄无声息地吃掉。
+            order
+                .activate()
+                .expect("seed_liquidity 构造的 Order 必为 Created 状态,activate 不该失败");
             book.insert_passive(order);
             id += 1;
         }
@@ -640,10 +647,10 @@ impl L1MatchingEngine {
             if bid_price <= 0.0 {
                 break;
             }
-            let order = Order::spot(
+            // 0.7.0 修:同 ask 侧 — 派发 spot/swap,保留 instrument 字段
+            let mut order = build_leg_order(
                 id,
-                base.clone(),
-                quote.clone(),
+                &instrument,
                 Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(bid_price),
@@ -651,9 +658,10 @@ impl L1MatchingEngine {
                 Quantity::from_f64(size_per_level),
                 TimeInForce::GTC,
             );
-            let mut order = order;
             // 同上,seed maker 必须 activate,否则 buy 侧同样死循环
-            let _ = order.activate();
+            order
+                .activate()
+                .expect("seed_liquidity 构造的 Order 必为 Created 状态,activate 不该失败");
             book.insert_passive(order);
             id += 1;
         }

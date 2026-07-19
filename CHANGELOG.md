@@ -107,6 +107,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 1 个 Python e2e(`tests/python/test_backtest_0_7_0_e2e.py::test_risk_metrics_python_dict_exposed`):delta-neutral 跑回测 + 验证 6 字段 dict 全部正确
   - 范围限制:gamma / vega 暂时为 0(无 mark 历史 + 无 IV 源),留 TODO 0.8.0 接入 mark 历史 + IV 源;per-instrument delta 假设 `unit_delta = 1.0`,`contract_size` 维度留 0.8.0
 
+### Hotfix (pre-release)
+
+发布前扫洞察发现 3 个 P0 bug,统一修复以保证 0.7.0 不会带着以下隐患上 PyPI。
+
+- **`build_leg_order` 抽离共享 helper + `tif` 参数化**(`refactor(backtest): use UFCS in MatchingEngine trait impls to avoid implicit recursion`,commit `3e7fbc5` + 本 hotfix):
+  - `MultiAssetMatchingEngine::execute_arbitrage` 内的 `build_leg_order` 由 `fn` 升级为 `pub(crate) fn`,加 `tif: TimeInForce` 参数
+  - 4 处调用点(seed_liquidity / liquidate_eod / rebalance_to_target / execute_arbitrage)统一通过 `build_leg_order` 派发 `Order::spot` / `Order::swap`,消除分散维护导致的 spot/swap 派发不一致
+
+- **`L1MatchingEngine::seed_liquidity` 对 Swap 品种保留 instrument 字段**:
+  - **Root cause**:旧实现 `Order::spot(id, base, quote, ...)`,对 Swap 品种 seed 时 `Order::instrument` 字段被错写为 `Spot(base, quote)`,撮合仍正常(book 按 Instrument key 路由)但 L3Book / 报告 / 审计读 `seed_order.instrument` 看到错类型
+  - **修复**:替换为 `build_leg_order(&instrument, ...)` — Spot 走 `Order::spot`、Swap 走 `Order::swap`,`order.instrument` 与 `book key` 一致
+
+- **`BacktestEngine::liquidate_eod` 平 perp 仓位走 swap book(force_liquidate=true)**:
+  - **Root cause**:旧实现 `Order::spot`,perp 持仓的平仓单被发到 `books.entry(Spot(BTC/USDT))` 找对手盘 — 该 book 不存在,订单被拒,**perp 持仓残留**,`final_nav` 错(0.5.0 在 `rebalance_to_target` 修过同类 bug,这条 EOD 路径漏修)
+  - **修复**:用 `build_leg_order` 派发,perp 仓位 → `Order::swap` → 进 perp book → 命中 seed maker → 平仓成功
+
+- **`seed_liquidity` 移除 `let _ = order.activate()` 吞错**:
+  - **Root cause**:`let _` 让 50GB 内存爆炸 bug 静默回归的风险持续存在 — 任何未来重构让 `activate` 失败都会被吞,seed 单 status 永远 `Created`,撮合循环不停 + 幽灵 fill(qty=0),**内存爆炸**
+  - **修复**:`activate()` 改 `expect("seed_liquidity 构造的 Order 必为 Created 状态,activate 不该失败")`,把 invariant 错误显式 panic,暴露到测试
+  - **测试覆盖**:`e2e_0_7_0_hotfix_spot_swap_dispatch::activate_expect_panics_on_already_active_order` — 重复 activate → 走 `expect()` 路径 → panic → 验证防御生效
+
+- **`e2e_0_7_0_hotfix_spot_swap_dispatch.rs` 新增 5 个测试**:
+  - `seed_liquidity_swap_preserves_instrument_field` — 验证 Swap 品种 seed 单 `order.instrument == Swap(...)`
+  - `seed_liquidity_spot_preserves_instrument_field` — 双向验证 Spot 品种不误升为 Swap
+  - `liquidate_eod_closes_perp_position_via_swap_book` — 端到端验证 `force_liquidate=true` 平 perp 仓位归 0
+  - `activate_expect_panics_on_already_active_order` — 验证 `expect()` 防御模式生效
+  - `rebalance_target_uses_swap_for_perp_leg` — 验证 `rebalance_to_target` 对 perp 走 `Order::swap`
+
+- **`stress_0_7_0.rs` 新增 5 个压力 / 边界测试**:
+  - `stress_10k_fills_memory_and_order` — 1 万 fill 内存 + 顺序 + 单调性
+  - `stress_l3book_deep_book_perf` — L3Book 在 100 价位 × 100 单(10K 限价单)下的 seed + L3Book 转换 + JSON 序列化性能
+  - `edge_empty_run_consistency` — 空 run 状态一致性 + risk_metrics 默认值
+  - `edge_repeated_seed_liquidity_same_instrument` — 单根 bar 多次 `begin_bar`(同 instrument)行为
+  - `edge_begin_bar_multi_vs_loop_behavior` — `begin_bar_multi` vs 多次 `begin_bar` 行为差异
+
 ## [0.6.0] - 2026-07-18
 
 ### BREAKING CHANGES
