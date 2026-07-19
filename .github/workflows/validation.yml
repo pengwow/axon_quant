@@ -111,6 +111,19 @@ jobs:
         # 默认 features 已能覆盖 6 个 crate 的 lib 文档。
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+  # ==================== 中英 docs 结构漂移检测(0.8.0 Phase 1.2) ====================
+  docs-drift:
+    name: Docs drift check (zh vs en)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check structural alignment between docs/zh/ and docs/en/
+        # 翻译内容差异属预期行为;本 job 只检测结构性 drift:
+        # - .md 文件列表是否完全对齐
+        # - 子目录结构是否对称
+        # - mkdocs.yml / mkdocs-en.yml nav 引用是否全部命中
+        run: bash scripts/check-docs-drift.sh
+
   # ==================== 安全审计 ====================
   security-audit:
     name: Security Audit
@@ -136,13 +149,15 @@ jobs:
       - build
       - msrv
       - docs
+      - docs-drift
     steps:
       - name: Check critical jobs
         run: |
           if [[ "${{ needs.fmt.result }}" != "success" ]] ||
              [[ "${{ needs.clippy.result }}" != "success" ]] ||
              [[ "${{ needs.test.result }}" != "success" ]] ||
-             [[ "${{ needs.build.result }}" != "success" ]]; then
+             [[ "${{ needs.build.result }}" != "success" ]] ||
+             [[ "${{ needs.docs-drift.result }}" != "success" ]]; then
             echo "Critical jobs failed!"
             exit 1
           fi
