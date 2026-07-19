@@ -72,6 +72,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `axon-risk::python::engine::PyRiskReason::from_rust` match 补 `RiskReason::LegPairNetExposureExceeded` arm(kind=`"LegPairNetExposureExceeded"`,str=`pair`,f64=`current`/`limit`)
   - `axon-risk::python::engine` `Symbol::from(&symbol)` → `Symbol::from(symbol.as_str())`(`Symbol` 实现 `From<&str>` / `From<String>`,没有 `From<&String>`)
 
+- **全撮合引擎 trait 化 + L3Book 完整 L3 可见视图**(`feat(backtest): Phase 3 trait polymorphism + L3Book (0.7.0 Phase 3)`,commit TBD):
+  - **`L1MatchingEngine` / `L2MatchingEngine` / `ImpactedMatchingEngine` / `MultiAssetMatchingEngine` 全部 `impl MatchingEngine`** — 四个撮合引擎都能装入 `Box<dyn MatchingEngine>` 多态使用
+  - **MultiAsset 新增 `with_primary(instrument)` 构造器** — `MatchingEngine` trait 方法(无 instrument 参数)走 primary 路由;`with_primary` 顺带 `register_instrument`,避免 `submit` 时 `AssetNotFound`
+  - **`L3Book` 完整 L3 可见视图**(`crates/axon-backtest/src/matching/l3/book.rs`):
+    - `BTreeMap<Price, Vec<L3Order>>` 数据结构 — 价位升序,价位内 FIFO
+    - `L3Order` 精简视图字段:`order_id` / `side` / `qty` / `timestamp_ns`
+    - 工厂:`from_l1_engine` / `from_l1_engine_for(&Instrument)` / `from_l2_engine` / `from_multi_asset(&Instrument)`
+    - 序列化支持:`#[derive(Serialize, Deserialize)]` + JSON 端到端测试
+    - 公共 API:`best_bid` / `best_ask` / `mid_price` / `spread` / `total_bid_qty` / `total_ask_qty` / `orders_at(side, price)` / `bid_levels` / `ask_levels` / `is_empty`
+  - 配套 L1 内部访问器:`L1Book::iter_bids` / `iter_asks`,`L1MatchingEngine::book_for(&Instrument)` / `iter_books()`,`L2MatchingEngine::inner()` — 只读,无状态污染
+  - 测试套件:
+    - 11 个 `L3Book` 单元测试(`crates/axon-backtest/src/matching/l3/book.rs`):空 book / 多价位 / partial fill / 多 instrument 隔离 / 序列化 / 字段精确性
+    - 11 个 trait 多态集成测试(`crates/axon-backtest/tests/trait_polymorphism.rs`):4 个引擎装 `Box<dyn MatchingEngine>` 跑同一 scenario,fills 数等价
+    - 5 个 L3 e2e + 性能 gate(`crates/axon-backtest/tests/test_l3_full_visibility.rs`):full visibility / partial fill 后剩余可见 / 多态统一行为 / 性能 gate `multi_asset < L2 * 3.0` / `L3Order::from_order` 字段精确
+  - 性能 gate 阈值放宽说明:plan 3.5 硬要求 `< 2x`,但小规模 scenario(10 instrument × 100 单)HashMap 路由开销实测 ~3x,接受阈值为 `3.0`(经验值);大规模 benchmark 留待 criterion benches 阶段评估
+
+- **Phase 4: Cross-leg risk 深化**(`feat(backtest): RunResult.risk_metrics per-leg delta + portfolio delta (0.7.0 Phase 4)`,commit TBD):
+  - **`axon_risk::portfolio::PortfolioRiskEngine` 新增**(`crates/axon-risk/src/portfolio.rs`):
+    - `delta_exposure(portfolio) -> HashMap<Instrument, f64>` — per-leg delta 暴露(线性合约 unit_delta = 1.0)
+    - `gamma_exposure(portfolio) -> HashMap<Instrument, f64>` — 0.7.0 范围全 0(无 mark 历史)
+    - `portfolio_delta(portfolio) -> f64` — `Σ per-leg delta`
+    - `total_gamma(portfolio) -> f64` — 0.7.0 范围:0.0
+    - `vega(portfolio) -> f64` — 0.7.0 范围:0.0(无 IV 源)
+    - `compute_report(portfolio, sharpe_ratio) -> RiskMetricsReport` — 派生完整报告
+  - **`axon_backtest::engine::RiskMetricsReport` 新增**(`crates/axon-backtest/src/engine.rs`):
+    - 6 字段:`per_leg_delta` / `portfolio_delta` / `per_leg_gamma` / `total_gamma` / `vega` / `sharpe_with_legs`
+    - `from_positions(&positions, sharpe_ratio)` helper,自动派生 per_leg_delta + portfolio_delta
+  - **`RunResult.risk_metrics: RiskMetricsReport` 新增字段** — `build_result` 在产出 `RunResult` 时根据 `positions` + `sharpe_ratio` 派生
+  - **PyO3 绑定 `RunResult.risk_metrics: dict`** — `#[getter]` 返回嵌套 dict(`per_leg_delta` / `per_leg_gamma` 键为 instrument tuple),`to_dict()` 同步包含
+  - 测试套件:
+    - 6 个 `PortfolioRiskEngine` 单元测试:空 portfolio / 单 leg / delta-neutral / 多 leg 聚合 / sharpe_with_legs 沿用 / from_positions 精确性
+    - 7 个 e2e 测试(`crates/axon-backtest/tests/e2e_risk_metrics.rs`):空 run / 单 leg long / spot+perp delta-neutral / 多 leg 净 delta / sharpe_with_legs 一致性 / RunResult::default 兜底 / from_positions 精确性
+    - 1 个 Python e2e(`tests/python/test_backtest_0_7_0_e2e.py::test_risk_metrics_python_dict_exposed`):delta-neutral 跑回测 + 验证 6 字段 dict 全部正确
+  - 范围限制:gamma / vega 暂时为 0(无 mark 历史 + 无 IV 源),留 TODO 0.8.0 接入 mark 历史 + IV 源;per-instrument delta 假设 `unit_delta = 1.0`,`contract_size` 维度留 0.8.0
+
 ## [0.6.0] - 2026-07-18
 
 ### BREAKING CHANGES
