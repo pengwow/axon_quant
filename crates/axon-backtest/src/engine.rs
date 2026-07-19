@@ -399,8 +399,9 @@ struct BacktestState {
     /// - `equity_curve` 只在 fill / mark / funding 事件触发时采样,无事件 bar 不留帧
     /// - `bar_nav_curve` 在 `begin_bar` / `begin_bar_multi` 收尾时**每 bar 一帧**采样,
     ///   用于计算 Sharpe / max_drawdown 时不会因短回测 + 无 fill 失真
-    /// (短回测若全无 fill,`equity_curve` 末帧 = initial_cash,得不出波动率;
-    /// 而 `bar_nav_curve` 在 `mark_cache` 已有值后能反映"持仓沿 mark 波动")
+    ///
+    ///   (短回测若全无 fill,`equity_curve` 末帧 = initial_cash,得不出波动率;
+    ///   而 `bar_nav_curve` 在 `mark_cache` 已有值后能反映"持仓沿 mark 波动")
     ///
     /// 时间戳为 `begin_bar` 收尾时的 `clock.now()`(bar 末 funding 调度后)。
     /// 若 `mark_cache` 为空,NAV = cash(无未实现 PnL)。
@@ -861,11 +862,11 @@ impl BacktestEngine {
     fn sample_bar_nav(&mut self, mark_fallback: f64) {
         let ts = self.config.clock.now();
         let nav = self.compute_nav(ts, mark_fallback);
-        if let Some(last) = self.bt_state.bar_nav_curve.last_mut() {
-            if last.0 == ts {
-                last.1 = nav;
-                return;
-            }
+        if let Some(last) = self.bt_state.bar_nav_curve.last_mut()
+            && last.0 == ts
+        {
+            last.1 = nav;
+            return;
         }
         self.bt_state.bar_nav_curve.push((ts, nav));
     }
@@ -3906,7 +3907,7 @@ mod tests {
     /// - 无 mark 事件 → mark_cache 为空,fallback = 50_000
     /// - cash = 100_000 - 0.1 * 50_001 - fee(0.001 * 0.1 * 50_001) = 94_994.8999
     /// - NAV = cash + 0.1 * 50_000(持仓按 fallback mark 估) = 94_994.8999 + 5_000
-    ///        = 99_994.8999
+    ///   = 99_994.8999
     #[test]
     fn bar_nav_curve_reflects_cash_change_via_compute_nav() {
         let btc_spot = btc_spot_inst();
@@ -3960,9 +3961,9 @@ mod tests {
         let result = engine.run();
         assert_eq!(result.bar_nav_curve.len(), 1);
         let (_, nav) = result.bar_nav_curve[0];
-        // 期望 ≈ 99_994.8999(浮点容差)
+        // 期望 ≈ 99_994.899_9(浮点容差)
         assert!(
-            (nav - 99_994.8999).abs() < 1.0,
+            (nav - 99_994.899_9).abs() < 1.0,
             "bar_nav NAV 应≈99_994.8999(cash 含费 + 持仓按 fallback 估),got {}",
             nav
         );

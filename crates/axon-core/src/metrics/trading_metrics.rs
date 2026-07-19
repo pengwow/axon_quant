@@ -124,8 +124,10 @@ impl TradingMetrics {
     /// let s = m.sharpe_ratio_annualized(900.0);  // 15-min bar
     /// ```
     pub fn sharpe_ratio_annualized(&self, bar_duration_secs: f64) -> f64 {
-        // 0.7.1 PR-D:防御性检查,避免 0 / 负数间隔除零
-        if !(bar_duration_secs > 0.0) {
+        // 0.7.1 PR-D:防御性检查,避免 0 / 负数 / NaN 间隔除零
+        // 用 `is_nan() || <= 0.0` 而非 `!(x > 0.0)`,因为 f64 部分有序,
+        // 后者在 NaN 时会反转为 true(隐式行为),clippy::neg_cmp_op_on_partial_ord 告警
+        if bar_duration_secs.is_nan() || bar_duration_secs <= 0.0 {
             return 0.0;
         }
         const SECS_PER_YEAR: f64 = 365.0 * 24.0 * 3600.0;
