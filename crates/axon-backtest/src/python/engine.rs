@@ -255,33 +255,52 @@ impl PyBacktestEngine {
         Ok(())
     }
 
-    /// 0.7.0 新增:多 leg 同 bar seed(spot + perp 套利场景)
+    /// 0.7.0 新增,0.7.1 修正:多 leg 同 bar seed(spot + perp 套利场景)
     ///
     /// 在同一根 bar 内对多个 instrument 同时 seed liquidity,常用于 delta-neutral
     /// 套利(spot 和 perp 各自挂对手盘,策略单两边都能成交)。
     ///
     /// Args:
-    /// - `legs`: `dict[instrument_dict, price]`,key 是 instrument dict
-    ///   (由 `spot_instrument()` / `swap_instrument()` 工厂构造),
-    ///   value 是该 leg 的 mid_price
+    /// - `legs`: `list[tuple[instrument_dict, price]]`,
+    ///   每项是 `(instrument_dict, price)`,instrument 由
+    ///   `spot_instrument()` / `swap_instrument()` 工厂构造,
+    ///   price 是该 leg 的 mid_price
     ///
     /// Example:
     /// ```python
-    /// engine.begin_bar_multi({
-    ///     spot_instrument("BTC", "USDT"): 100.0,
-    ///     swap_instrument("BTC", "USDT", "UsdMargin", 1.0): 200.5,
-    /// })
+    /// engine.begin_bar_multi([
+    ///     (spot_instrument("BTC", "USDT"), 100.0),
+    ///     (swap_instrument("BTC", "USDT", "UsdMargin", 1.0), 200.5),
+    /// ])
     /// ```
     ///
     /// 与多次 `begin_bar(price, instrument)` 的区别:
     /// - 多次 `begin_bar` 会 bar_id 自增多次 + funding 调度多次 + 末次 rebalance,
     ///   **不**适合多 leg 同 bar
     /// - `begin_bar_multi` 调一次,bar_id +1,funding 调度一次,末次 rebalance
-    fn begin_bar_multi(&mut self, _py: Python<'_>, legs: &Bound<'_, PyDict>) -> PyResult<()> {
+    ///
+    /// 0.7.1 BREAKING:0.7.0 文档承诺的 `dict[instrument, price]` 形式因 Python
+    /// `dict` key 必须可哈希,无法用 `instrument_dict` 作为 key,实际不可用。
+    /// 0.7.1 改为 `list[tuple]` 形式,语义等价。Workaround(连续 2 次 `begin_bar`)
+    /// 在 0.7.1 仍可用。
+    #[pyo3(signature = (legs))]
+    fn begin_bar_multi(&mut self, legs: &Bound<'_, PyList>) -> PyResult<()> {
         let mut parsed: Vec<(axon_core::types::Instrument, f64)> = Vec::with_capacity(legs.len());
-        for (key, value) in legs.iter() {
-            let inst = super::types::parse_instrument(key.cast::<PyDict>()?)?;
-            let price: f64 = value.extract()?;
+        for item in legs.iter() {
+            let tuple: &Bound<'_, PyTuple> = item.cast().map_err(|_| {
+                PyValueError::new_err(
+                    "begin_bar_multi legs must be a list of (instrument_dict, price) tuples",
+                )
+            })?;
+            if tuple.len() != 2 {
+                return Err(PyValueError::new_err(format!(
+                    "begin_bar_multi leg must be (instrument_dict, price) tuple, got len={}",
+                    tuple.len()
+                )));
+            }
+            let inst_dict = tuple.get_item(0)?;
+            let inst = super::types::parse_instrument(inst_dict.cast::<PyDict>()?)?;
+            let price: f64 = tuple.get_item(1)?.extract()?;
             parsed.push((inst, price));
         }
         self.inner.begin_bar_multi(parsed);

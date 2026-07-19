@@ -6,6 +6,19 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-19
+
+### Fixed
+
+- **`BacktestEngine.begin_bar_multi` 接受 `list[tuple]`** (`fix(backtest): begin_bar_multi 接受 list[tuple] (0.7.1 hotfix)`):
+  - 0.7.0 文档承诺 `dict[instrument_dict, price]` 但 Python `dict` key 必须可哈希,无法用 `instrument_dict` 作 key,实测 `TypeError: unhashable type: 'dict'`,API 实际不可用。
+  - 0.7.1 改为 `list[tuple[instrument_dict, price]]` 形式,语义等价(bar_id +1 / funding 调度 1 次 / 末次 rebalance)。
+  - 行为不变(内部 `Vec<(Instrument, f64)>` 累积 + 调一次 `inner.begin_bar_multi`)。
+  - **BREAKING(轻)**:0.7.0 dict 形式用户需迁移到 list[tuple] 形式;0.7.0 dict 形式实际不可用,故实际迁移负担 = 0。
+  - workaround(连续 2 次 `begin_bar`)在 0.7.1 仍可用,无需迁移。
+  - e2e: `tests/python/test_backtest_0_7_0_e2e.py` 追加 3 个 case(`test_begin_bar_multi_list_tuple` / `test_begin_bar_multi_list_tuple_wrong_arity` / `test_begin_bar_multi_dict_form_rejected`)。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.7.1-begin-bar-multi-fix.md`。
+
 ## [0.7.0] - 2026-07-19
 
 0.7.0 主线:per-fill observability + per-leg seed liquidity + 致命 hotfix(seed_liquidity 死循环导致 50GB 内存爆炸)。所有 0.6.0 后续 hotfix(OMS `with_instrument`、pyo3 0.27 fixes、en docs 同步)合并到本段发布。

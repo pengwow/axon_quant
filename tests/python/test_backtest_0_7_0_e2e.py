@@ -163,8 +163,8 @@ def test_perp_funding_and_mark() -> None:
     注:0.7.0 的 `begin_bar_multi(legs: dict[instrument, price])` 当前有 API bug
     —— dict 不可哈希作为 dict key,所以本测试用 2 次 `begin_bar` 替代(每个
     bar 末次 rebalance + funding 调度各 1 次,可控范围更小)。
-    0.7.1 应改 `begin_bar_multi` 接受 `list[tuple[instrument, price]]` 或
-    让 `parse_instrument` 支持 tuple key。
+    0.7.1 已修:`begin_bar_multi` 接受 `list[tuple[instrument, price]]`,
+    见 `test_begin_bar_multi_list_tuple`。
     """
     bt = _make_engine(initial_cash=1_000_000.0)
     # 启用 8h funding 自动调度(fixed_rate=0.0001 = 1bp / 8h)
@@ -279,3 +279,73 @@ def test_risk_metrics_python_dict_exposed() -> None:
 
     # sharpe_with_legs 沿用 sharpe_ratio
     assert rm["sharpe_with_legs"] == pytest.approx(result.sharpe_ratio, abs=1e-9)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 6) 0.7.1 hotfix: begin_bar_multi 接受 list[tuple] (不再 dict)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_begin_bar_multi_list_tuple() -> None:
+    """0.7.1 修复:begin_bar_multi 接受 list[tuple] 而非 dict。
+
+    Regression: 0.7.0 dict 形式因 dict 不可哈希,Python 端无法构造
+    `dict[instrument_dict, price]`,实测 `TypeError: unhashable type: 'dict'`。
+
+    修复:0.7.1 接受 `[(instrument_dict, price), ...]` 列表形式,
+    语义等价,bar_id +1 / funding 调度 1 次 / 末次 rebalance。
+    """
+    bt = _make_engine(initial_cash=1_000_000.0)
+
+    # 推 buy spot + sell perp 订单(在 begin_bar_multi 之前推入)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, SPOT_BTC, "Buy", 100.5, 0.1, tif="IOC"),
+    })
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_001,
+        "order": limit_order(2, PERP_BTC, "Sell", 99.5, 0.1, tif="IOC"),
+    })
+
+    # 关键:list[tuple] 形式,语义等价于 dict 但 key 可 hash
+    bt.begin_bar_multi([
+        (SPOT_BTC, 100.0),
+        (PERP_BTC, 100.0),
+    ])
+    result = bt.run()
+
+    # spot buy 0.1 + perp sell 0.1 = 2 fills
+    assert result.fills == 2, f"expected 2 fills, got {result.fills}"
+    # 终态 delta-neutral
+    assert result.positions.get(SPOT_KEY, 0.0) == pytest.approx(0.1, abs=1e-9)
+    assert result.positions.get(PERP_KEY, 0.0) == pytest.approx(-0.1, abs=1e-9)
+
+
+def test_begin_bar_multi_list_tuple_wrong_arity() -> None:
+    """0.7.1 修复:list 项不是 (instrument, price) tuple → 抛清晰 ValueError。"""
+    bt = _make_engine()
+    # 三元组 → PyValueError (expected len=2, got len=3)
+    with pytest.raises(ValueError, match=r"len=3"):
+        bt.begin_bar_multi([(SPOT_BTC, 100.0, "extra")])
+    # 单元组 → PyValueError (expected len=2, got len=1)
+    with pytest.raises(ValueError, match=r"len=1"):
+        bt.begin_bar_multi([(SPOT_BTC,)])
+    # 字符串元素 → PyValueError (cast to PyTuple 失败)
+    with pytest.raises(ValueError, match=r"must be a list of"):
+        bt.begin_bar_multi(["not_a_tuple"])
+
+
+def test_begin_bar_multi_dict_form_rejected() -> None:
+    """0.7.1:dict 形式(0.7.0 文档承诺但不可用)→ 抛错误而非 silently 接受。
+
+    不再是隐式的 `TypeError: unhashable type: 'dict'`(用户无法构造 dict key),
+    而是 PyO3 在 `Bound<PyList>` 边界拒绝 dict(实际报 dict 不可 hash,
+    因为 PyO3 内部用 HashMap 区分 sequence 和 mapping)。
+    用户应迁移到 `list[tuple]` 形式。
+    """
+    bt = _make_engine()
+    with pytest.raises((TypeError, ValueError), match=r"(?i)(dict|hashable|iterable)"):
+        # begin_bar_multi 现在要求 PyList,dict 被 PyO3 拒绝
+        bt.begin_bar_multi({SPOT_BTC: 100.0, PERP_BTC: 100.0})

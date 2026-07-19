@@ -94,12 +94,17 @@ Per-leg seed liquidity(0.7.0 新增)
 - ``with_seed_liquidity_for(instrument, ...)``:**per-leg 覆写**,给单个 instrument
   独立配置(spot 紧 / perp 松 的真实市场规律)
 - ``begin_bar(price, instrument)``:**单 leg** 触发 seed,bar_id 自增
-- ``begin_bar_multi(legs: dict[instrument, price])``:**多 leg 同 bar** 触发
+- ``begin_bar_multi(legs: list[tuple[instrument, price]])``:**多 leg 同 bar** 触发
   (spot + perp 套利场景),bar_id 仅 +1,funding 调度 1 次
 
 0.7.0 起 ``begin_bar`` 只清指定 instrument 的订单簿(``clear_book_for``),
 **不**再误清其他 leg 的种子流动性。`begin_bar` 配线查找顺序:per-leg
 override → default → no-op(无 seed)。
+
+0.7.1 修正:``begin_bar_multi`` 接受 ``list[tuple[instrument_dict, price]]``
+而非 0.7.0 文档承诺的 ``dict[instrument, price]`` —— 因为 Python ``dict``
+key 必须可哈希,``instrument_dict`` 不可哈希无法构造。0.7.1 改为 list[tuple]
+形式语义等价,workaround(连续 2 次 ``begin_bar``)仍可用。
 
 Examples::
 
@@ -111,8 +116,8 @@ Examples::
     # spot 紧、perp 松(per-leg 覆写)
     engine.with_seed_liquidity_for(spot, half_spread=0.01, depth_levels=10, size_per_level=0.5)
     engine.with_seed_liquidity_for(perp, half_spread=0.5, depth_levels=5, size_per_level=0.1)
-    # 多 leg 同 bar seed(套利场景,bar_id 仅 +1)
-    engine.begin_bar_multi({spot: 50_000.0, perp: 50_010.0})
+    # 多 leg 同 bar seed(套利场景,bar_id 仅 +1,list[tuple] 形式)
+    engine.begin_bar_multi([(spot, 50_000.0), (perp, 50_010.0)])
     # ... push_event(order_submitted) ...
     result = engine.run()
 """
