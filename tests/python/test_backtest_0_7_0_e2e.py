@@ -218,3 +218,64 @@ def test_perp_funding_and_mark() -> None:
     assert PERP_KEY in result.marks
     assert result.marks[SPOT_KEY] == pytest.approx(50_005.0, abs=0.01)
     assert result.marks[PERP_KEY] == pytest.approx(50_015.0, abs=0.01)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 5) 0.7.0 Phase 4: RunResult.risk_metrics 暴露到 Python 端
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_risk_metrics_python_dict_exposed() -> None:
+    """验证 `RunResult.risk_metrics` 是 dict 且 6 个字段都正确填充。
+
+    场景:spot + perp delta-neutral(spot long 0.1 / perp short 0.1)
+    → portfolio_delta ≈ 0,per_leg_delta[spot]=+0.1,per_leg_delta[perp]=-0.1
+    → total_gamma=0 / vega=0 / sharpe_with_legs 沿用 sharpe_ratio
+    """
+    bt = _make_engine(initial_cash=1_000_000.0)
+
+    # Bar 1:spot seed + buy 0.1 @ 100.5
+    bt.begin_bar(price=100.0, instrument=SPOT_BTC)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 1_000,
+        "order": limit_order(1, SPOT_BTC, "Buy", 100.5, 0.1, tif="IOC"),
+    })
+    # Bar 2:perp seed + sell 0.1 @ 99.5
+    bt.begin_bar(price=100.0, instrument=PERP_BTC)
+    bt.push_event({
+        "type": "order_submitted",
+        "timestamp_ns": 2_000,
+        "order": limit_order(2, PERP_BTC, "Sell", 99.5, 0.1, tif="IOC"),
+    })
+    result = bt.run()
+
+    # risk_metrics 必须是 dict
+    rm = result.risk_metrics
+    assert isinstance(rm, dict), f"expected dict, got {type(rm)}"
+    # 6 个字段
+    for key in (
+        "per_leg_delta",
+        "portfolio_delta",
+        "per_leg_gamma",
+        "total_gamma",
+        "vega",
+        "sharpe_with_legs",
+    ):
+        assert key in rm, f"missing key: {key}"
+
+    # delta-neutral 验证
+    assert rm["per_leg_delta"][SPOT_KEY] == pytest.approx(0.1, abs=1e-9)
+    assert rm["per_leg_delta"][PERP_KEY] == pytest.approx(-0.1, abs=1e-9)
+    assert rm["portfolio_delta"] == pytest.approx(0.0, abs=1e-9), (
+        f"delta-neutral 应 portfolio_delta=0, got {rm['portfolio_delta']}"
+    )
+
+    # gamma / vega 0.7.0 范围全 0
+    assert rm["per_leg_gamma"][SPOT_KEY] == 0.0
+    assert rm["per_leg_gamma"][PERP_KEY] == 0.0
+    assert rm["total_gamma"] == 0.0
+    assert rm["vega"] == 0.0
+
+    # sharpe_with_legs 沿用 sharpe_ratio
+    assert rm["sharpe_with_legs"] == pytest.approx(result.sharpe_ratio, abs=1e-9)

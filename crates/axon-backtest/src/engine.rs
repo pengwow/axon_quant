@@ -21,6 +21,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use axon_core::event::{
     Event, FillEvent, FundingEvent, FundingSchedule, MarkEvent, OrderAction, OrderEvent,
 };
@@ -107,6 +109,59 @@ const EOD_LIQUIDATE_ID_BASE: u64 = 2_000_000_000;
 /// 2_000_000_000..3_000_000_000(EOD 平仓)区间,从 3_000_000_000 开始递增。
 const REBALANCE_ID_BASE: u64 = 3_000_000_000;
 
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 4: RiskMetricsReport — 组合级风险敞口报告
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 0.7.0 Phase 4 新增:由 `BacktestEngine::run()` 在产出 `RunResult` 时填充,
+// 通过 PyO3 binding 暴露到 `run_result["risk_metrics"]` dict。
+//
+// 字段定义(0.7.0 范围,刻意保持简单):
+// - per_leg_delta = position.quantity(spot / swap 线性合约,unit_delta = 1.0)
+// - per_leg_gamma = 0(无 mark 历史,无 IV 源)
+// - portfolio_delta = Σ per_leg_delta
+// - vega = 0(无 IV 源)
+//
+// 留 0.8.0:跨 instrument 协方差 / vol-based vega / contract_size 修正。
+
+/// 组合级风险敞口报告
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RiskMetricsReport {
+    /// 每个 instrument 的 delta 暴露(`instrument -> delta`)
+    pub per_leg_delta: HashMap<Instrument, f64>,
+    /// 组合总 delta(Σ per-leg delta)
+    pub portfolio_delta: f64,
+    /// 每个 instrument 的 gamma 暴露(`instrument -> gamma`)
+    pub per_leg_gamma: HashMap<Instrument, f64>,
+    /// 组合总 gamma
+    pub total_gamma: f64,
+    /// vega(0.7.0 范围:0.0)
+    pub vega: f64,
+    /// 多 leg Sharpe(沿用 `RunResult.sharpe_ratio`)
+    pub sharpe_with_legs: f64,
+}
+
+impl RiskMetricsReport {
+    /// 从 per-leg positions + Sharpe 计算完整报告
+    pub fn from_positions(positions: &HashMap<Instrument, f64>, sharpe_ratio: f64) -> Self {
+        let per_leg_delta: HashMap<Instrument, f64> = positions
+            .iter()
+            .map(|(inst, qty)| (inst.clone(), *qty))
+            .collect();
+        let per_leg_gamma: HashMap<Instrument, f64> =
+            positions.keys().map(|inst| (inst.clone(), 0.0)).collect();
+        let portfolio_delta: f64 = per_leg_delta.values().sum();
+        Self {
+            per_leg_delta,
+            portfolio_delta,
+            per_leg_gamma,
+            total_gamma: 0.0,
+            vega: 0.0,
+            sharpe_with_legs: sharpe_ratio,
+        }
+    }
+}
+
 /// 回测运行结果
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunResult {
@@ -188,6 +243,13 @@ pub struct RunResult {
     /// 个 `|target - current| > threshold` 的 leg 发市价单,本字段累计所有
     /// **实际**发出去的 rebalance 单数(`rebalance_to_target()` 内部循环计数)。
     pub rebalances_triggered: u64,
+    /// 0.7.0 新增(Phase 4):组合级风险敞口报告
+    ///
+    /// 包含 per-leg delta / portfolio delta / per-leg gamma / total_gamma / vega /
+    /// sharpe_with_legs。由 `BacktestEngine::run()` 在产出 RunResult 时根据
+    /// `positions` + `sharpe_ratio` 派生,通过 PyO3 binding 暴露到
+    /// `run_result["risk_metrics"]` dict。
+    pub risk_metrics: RiskMetricsReport,
 }
 
 impl Default for RunResult {
@@ -221,6 +283,8 @@ impl Default for RunResult {
             total_funding_pnl: 0.0,
             // 0.5.0 新增(Phase D)
             rebalances_triggered: 0,
+            // 0.7.0 新增(Phase 4)
+            risk_metrics: RiskMetricsReport::default(),
         }
     }
 }
@@ -1696,6 +1760,11 @@ impl BacktestEngine {
             .trading_metrics
             .sharpe_ratio(35_040_f64.sqrt());
 
+        // 6b. 0.7.0 新增(Phase 4):从 positions + sharpe_ratio 派生风险敞口报告
+        //     注意:必须在 `RunResult { positions, ... }` 移动 positions 之前构造,
+        //     否则 borrow checker 拒绝(HashMap 不 Copy)
+        let risk_metrics = RiskMetricsReport::from_positions(&positions, sharpe_ratio);
+
         RunResult {
             events_processed: self.stats.events_processed,
             orders_accepted: self.stats.orders_accepted,
@@ -1725,6 +1794,8 @@ impl BacktestEngine {
             // 0.5.0 新增(Phase D):rebalance 触发次数(累计所有
             // `rebalance_to_target()` 调用产出的实际 fill 数)
             rebalances_triggered: self.rebalances_triggered,
+            // 0.7.0 新增(Phase 4):从 positions + sharpe_ratio 派生风险敞口
+            risk_metrics,
         }
     }
 }

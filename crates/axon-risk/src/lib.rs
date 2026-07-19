@@ -53,6 +53,7 @@ pub mod engine;
 pub mod error;
 pub mod handler;
 pub mod metrics;
+pub mod portfolio;
 pub mod utils;
 
 // Stage 3:`axon-risk` 的 PyO3 Python 绑定(`axon_quant.risk` 子模块)。

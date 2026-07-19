@@ -851,6 +851,47 @@ impl PyRunResult {
         Ok(d)
     }
 
+    /// 0.7.0 新增(Phase 4):组合级风险敞口报告
+    ///
+    /// 返回 dict,包含:
+    /// - `per_leg_delta`: `{instrument_tuple: delta}` 每条 leg 的 delta 暴露
+    /// - `portfolio_delta`: `Σ per_leg_delta` 组合总 delta
+    /// - `per_leg_gamma`: `{instrument_tuple: gamma}`(0.7.0 范围全 0)
+    /// - `total_gamma`: 组合总 gamma
+    /// - `vega`: 0.7.0 范围 0(无 IV 源)
+    /// - `sharpe_with_legs`: 多 leg Sharpe(沿用 `RunResult.sharpe_ratio`)
+    #[getter]
+    fn risk_metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let rm = &self.inner.risk_metrics;
+
+        // per_leg_delta
+        let per_leg_delta = PyDict::new(py);
+        for (inst, delta) in &rm.per_leg_delta {
+            let key = instrument_to_tuple(py, inst)?;
+            per_leg_delta.set_item(key, *delta)?;
+        }
+        d.set_item("per_leg_delta", per_leg_delta)?;
+
+        // portfolio_delta
+        d.set_item("portfolio_delta", rm.portfolio_delta)?;
+
+        // per_leg_gamma
+        let per_leg_gamma = PyDict::new(py);
+        for (inst, gamma) in &rm.per_leg_gamma {
+            let key = instrument_to_tuple(py, inst)?;
+            per_leg_gamma.set_item(key, *gamma)?;
+        }
+        d.set_item("per_leg_gamma", per_leg_gamma)?;
+
+        // total_gamma / vega / sharpe_with_legs
+        d.set_item("total_gamma", rm.total_gamma)?;
+        d.set_item("vega", rm.vega)?;
+        d.set_item("sharpe_with_legs", rm.sharpe_with_legs)?;
+
+        Ok(d)
+    }
+
     /// 累计 funding 结算 PnL(0.5.0 新增 Phase C)
     ///
     /// 正值=累计净收(perp short + 正 funding),负值=累计净付。
@@ -895,6 +936,8 @@ impl PyRunResult {
         d.set_item("trades_count", self.inner.trades.len())?;
         d.set_item("equity_curve_points", self.inner.equity_curve.len())?;
         d.set_item("positions", self.positions(py)?)?;
+        // 0.7.0 新增(Phase 4):组合级风险敞口
+        d.set_item("risk_metrics", self.risk_metrics(py)?)?;
         Ok(d)
     }
 
