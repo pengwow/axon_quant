@@ -39,9 +39,13 @@ use serde::{Deserialize, Serialize};
 
 /// 0.7.0 Phase 4 新增:风险敞口报告
 ///
-/// 由 [`BacktestEngine::run`](axon_backtest::engine::BacktestEngine::run) 填充
-/// 到 [`RunResult.risk_metrics`](axon_backtest::engine::RunResult::risk_metrics),
-/// 同时通过 PyO3 binding 暴露到 `run_result["risk_metrics"]` dict。
+/// 由 `BacktestEngine::run` 填充
+/// 到 `RunResult.risk_metrics`,同时通过 PyO3 binding 暴露到
+/// `run_result["risk_metrics"]` dict。
+///
+/// 注:本结构定义在 `axon-risk`,反向依赖 `axon-backtest`,所以
+/// rustdoc intra-doc links 不指向 `axon_backtest::*`(避免循环依赖
+/// 解析失败 — 在 `axon-risk` 内 `axon_backtest` 不可见)。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RiskMetricsReport {
     /// 每个 instrument 的 delta 暴露
@@ -56,7 +60,7 @@ pub struct RiskMetricsReport {
     pub total_gamma: f64,
     /// vega(暂时 0.0,无 IV 源)
     pub vega: f64,
-    /// 多 leg Sharpe(沿用 [`RunResult.sharpe_ratio`](axon_backtest::engine::RunResult::sharpe_ratio))
+    /// 多 leg Sharpe(沿用 `RunResult.sharpe_ratio`)
     pub sharpe_with_legs: f64,
 }
 
@@ -158,8 +162,7 @@ impl PortfolioRiskEngine {
 
     /// 计算完整 `RiskMetricsReport`
     ///
-    /// 由 [`BacktestEngine::run`](axon_backtest::engine::BacktestEngine::run)
-    /// 在产出 `RunResult` 时调用。
+    /// 由 `BacktestEngine::run` 在产出 `RunResult` 时调用。
     pub fn compute_report(&self, portfolio: &Portfolio, sharpe_ratio: f64) -> RiskMetricsReport {
         let per_leg_delta = self.delta_exposure(portfolio);
         let per_leg_gamma = self.gamma_exposure(portfolio);
