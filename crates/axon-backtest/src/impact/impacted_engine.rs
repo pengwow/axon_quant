@@ -475,6 +475,112 @@ fn _hashmap_anchor() -> HashMap<String, f64> {
     HashMap::new()
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 3.1.2: ImpactedMatchingEngine impl MatchingEngine
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ImpactedMatchingEngine 包装 L1 + 冲击模型,所有 trait 方法透传到 inherent
+// 实现。注意 `best_bid` / `best_ask` 已叠加永久冲击偏移 — 与 L1 引擎不一致
+// (L1 报裸价,Impacted 报偏移后价格)。这是"按 instrument 路由 + 冲击感知
+// 视图"的撮合引擎,适合做策略回测。
+//
+// `seed_liquidity` 透传到 inherent 方法(inherent 走 inner.seed_liquidity)。
+// `clear_book_for(instrument)` 透传到 inner L1(inherent 没有,这里直接调
+// inner)。
+impl MatchingEngine for ImpactedMatchingEngine {
+    fn submit(&mut self, order: Order) -> SubmitResult {
+        self.submit(order)
+    }
+
+    fn cancel(&mut self, order_id: u64) -> bool {
+        self.cancel(order_id)
+    }
+
+    fn best_bid(&self) -> Option<Price> {
+        // 注意:Impacted 版本已叠加永久冲击偏移,不是裸 L1 价
+        self.best_bid()
+    }
+
+    fn best_ask(&self) -> Option<Price> {
+        self.best_ask()
+    }
+
+    /// spread 用 inherent 实现(也用偏移后价)
+    fn spread(&self) -> Option<Price> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some(b), Some(a)) => Some(Price::from_f64(a.as_f64() - b.as_f64())),
+            _ => None,
+        }
+    }
+
+    fn depth(
+        &self,
+        levels: usize,
+    ) -> (
+        Vec<crate::matching::types::OrderBookLevel>,
+        Vec<crate::matching::types::OrderBookLevel>,
+    ) {
+        // 从 inner L1 拿裸 depth,再叠加 permanent_offset(与 snapshot_with_offset 语义一致)
+        let (bids, asks) = self.inner.depth(levels);
+        let offset = self.permanent_offset;
+        let bids: Vec<crate::matching::types::OrderBookLevel> = bids
+            .iter()
+            .map(|l| {
+                crate::matching::types::OrderBookLevel::new(
+                    Price::from_f64(l.price.as_f64() - offset),
+                    l.quantity,
+                    l.order_count,
+                )
+            })
+            .collect();
+        let asks: Vec<crate::matching::types::OrderBookLevel> = asks
+            .iter()
+            .map(|l| {
+                crate::matching::types::OrderBookLevel::new(
+                    Price::from_f64(l.price.as_f64() - offset),
+                    l.quantity,
+                    l.order_count,
+                )
+            })
+            .collect();
+        (bids, asks)
+    }
+
+    fn active_order_count(&self) -> usize {
+        self.active_order_count()
+    }
+
+    fn clear_book(&mut self) {
+        // 不清 permanent_offset / stats — 跨 bar 累计
+        self.inner.clear_book();
+    }
+
+    fn clear_book_for(&mut self, instrument: &Instrument) {
+        // Impacted 自己的 inherent 没有 clear_book_for,直接调 inner
+        self.inner.clear_book_for(instrument);
+    }
+
+    /// 透传到 inherent `seed_liquidity`(inherent 内部走 inner L1)
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        instrument: Instrument,
+        next_id: u64,
+    ) -> u64 {
+        self.seed_liquidity(
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            instrument,
+            next_id,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

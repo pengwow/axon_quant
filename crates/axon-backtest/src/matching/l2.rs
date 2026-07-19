@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
-use axon_core::types::{Price, Quantity, Symbol};
+use axon_core::types::{Instrument, Price, Quantity, Symbol};
 use serde::{Deserialize, Serialize};
 
 use super::engine::{L1MatchingEngine, MatchingEngine};
@@ -238,6 +238,12 @@ impl L2MatchingEngine {
         &self.stats
     }
 
+    /// Phase 3.2 新增:获取内部 L1 引擎的不可变引用(L3Book 工厂使用)
+    #[inline]
+    pub fn inner(&self) -> &L1MatchingEngine {
+        &self.inner
+    }
+
     /// 从条目列表恢复订单簿
     ///
     /// 用于：策略启动时从快照恢复、跨进程迁移等场景。
@@ -288,6 +294,91 @@ impl L2MatchingEngine {
                 (fill.price.as_f64() * fill.quantity.as_f64() * 1_000_000.0) as u64;
             self.stats.matched_orders += 1;
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Phase 3.1.1: L2MatchingEngine impl MatchingEngine
+// ════════════════════════════════════════════════════════════════════════════
+//
+// L2 包装 L1,所有撮合方法透传到 `self.inner`。`seed_liquidity` 同样透传;
+// L2 默认所有 instrument 共享 book,实际就是 L1 的多 book 容器,故 `instrument`
+// 参数原样转发。
+//
+// 设计要点:
+// - 不缓存统计:每次 `submit` 走 `self.inner.submit` 后调 `update_stats`,
+//   与 L2 inherent method 路径完全一致,行为零差异。
+// - `clear_book_for(instrument)` 透传到 L1(L1 已经按 instrument 路由)。
+// - `spread` / `depth` / `active_order_count` 全部从 inner 取,不再有自有实现。
+impl MatchingEngine for L2MatchingEngine {
+    fn submit(&mut self, order: Order) -> SubmitResult {
+        self.submit(order)
+    }
+
+    fn cancel(&mut self, order_id: u64) -> bool {
+        self.cancel(order_id)
+    }
+
+    fn best_bid(&self) -> Option<Price> {
+        self.best_bid()
+    }
+
+    fn best_ask(&self) -> Option<Price> {
+        self.best_ask()
+    }
+
+    fn spread(&self) -> Option<Price> {
+        self.spread()
+    }
+
+    fn depth(
+        &self,
+        levels: usize,
+    ) -> (
+        Vec<super::types::OrderBookLevel>,
+        Vec<super::types::OrderBookLevel>,
+    ) {
+        self.depth(levels)
+    }
+
+    fn active_order_count(&self) -> usize {
+        self.active_order_count()
+    }
+
+    fn clear_book(&mut self) {
+        self.inner.clear_book();
+        // 清空位置索引(order_index)和统计(stats 保留 — 跨 bar 累计)
+        self.order_index.clear();
+    }
+
+    fn clear_book_for(&mut self, instrument: &Instrument) {
+        self.inner.clear_book_for(instrument);
+        // 注意:`order_index` 不区分 instrument,L2 粒度的精确清需要遍历;
+        // 简化实现:全清位置索引(单 instrument 场景与 L1 等价,多 instrument
+        // 场景下会多清 — 不影响撮合正确性,只影响 modify 行为)
+        self.order_index.clear();
+    }
+
+    /// trait 适配:透传到 L1 的 `seed_liquidity`。
+    /// L2 默认所有 instrument 共享 inner L1 引擎的 book,
+    /// `instrument` 参数原样转发(L1 按 instrument 路由)。
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        instrument: Instrument,
+        next_id: u64,
+    ) -> u64 {
+        self.inner.seed_liquidity(
+            mid_price,
+            half_spread,
+            depth_levels,
+            size_per_level,
+            instrument,
+            next_id,
+        )
     }
 }
 

@@ -190,6 +190,16 @@ impl L1Book {
         self.asks.keys().next().copied()
     }
 
+    /// Phase 3.2 新增:遍历所有 bid 价位(价格升序,因 BTreeMap 升序)
+    pub fn iter_bids(&self) -> impl Iterator<Item = (Price, &PriceLevel)> {
+        self.bids.iter().map(|(p, lvl)| (*p, lvl))
+    }
+
+    /// Phase 3.2 新增:遍历所有 ask 价位(价格升序)
+    pub fn iter_asks(&self) -> impl Iterator<Item = (Price, &PriceLevel)> {
+        self.asks.iter().map(|(p, lvl)| (*p, lvl))
+    }
+
     /// 将未成交部分挂入本方订单簿
     ///
     /// 限价单按价格挂单;市价单无价格不入簿。**T3.2 从 L1MatchingEngine
@@ -452,6 +462,16 @@ impl L1MatchingEngine {
     /// 按 instrument 路由的最优卖价
     pub fn best_ask_for(&self, instrument: &Instrument) -> Option<Price> {
         self.books.get(instrument).and_then(|b| b.best_ask())
+    }
+
+    /// Phase 3.2 新增:取指定 instrument 的 book(只读)
+    pub fn book_for(&self, instrument: &Instrument) -> Option<&L1Book> {
+        self.books.get(instrument)
+    }
+
+    /// Phase 3.2 新增:遍历所有 instrument 的 book(用于多 asset 聚合)
+    pub fn iter_books(&self) -> impl Iterator<Item = (&Instrument, &L1Book)> {
+        self.books.iter()
     }
 
     /// 提取订单的限价（市价单返回 `None`）

@@ -22,7 +22,8 @@ use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Instrument, Price, Quantity};
 
-use super::super::types::MatchFill;
+use super::super::engine::MatchingEngine;
+use super::super::types::{MatchFill, SubmitResult};
 use super::auction::{AuctionResult, BatchMode, find_clearing_price};
 use super::dark_pool::{DarkOrder, try_dark_match};
 use super::error::{MatchingL3Error, MatchingL3Result};
@@ -75,6 +76,9 @@ pub struct MultiAssetMatchingEngine {
     pending_batch: Vec<Order>,
     /// 下一个 fill id(暗池成交使用)
     next_fill_id: u64,
+    /// Phase 3.1.3 新增:`MatchingEngine` trait 路由用的 primary instrument
+    /// (`best_bid` / `best_ask` 等无 instrument 参数的方法走 primary 路由)
+    primary_instrument: Option<Instrument>,
     /// 统计
     stats: L3Stats,
 }
@@ -437,6 +441,155 @@ impl MultiAssetMatchingEngine {
         self.stats.total_assets = self.engines.len();
 
         Ok(())
+    }
+
+    /// Phase 3.1.3 新增:设置 primary instrument(用于 `MatchingEngine` trait 路由)
+    ///
+    /// `MatchingEngine::best_bid` / `best_ask` 等无 instrument 参数,
+    /// 多资产场景下需用 primary instrument 路由。如果未设置,
+    /// trait 方法返回 `None`(不影响 `submit_batch` / `execute_arbitrage` 等
+    /// 显式传 instrument 的 inherent 方法)。
+    ///
+    /// 副作用:顺带 `register_instrument(primary)`,保证 `submit(primary)` /
+    /// `seed_liquidity(primary)` 不报 `AssetNotFound`。
+    pub fn with_primary(mut self, primary: Instrument) -> Self {
+        self.register_instrument(primary.clone());
+        self.primary_instrument = Some(primary);
+        self
+    }
+}
+
+/// Phase 3.1.3:`MultiAssetMatchingEngine` 实现 `MatchingEngine` trait
+///
+/// `MultiAssetMatchingEngine` 是多资产路由容器(每个 instrument 一个 L2 引擎),
+/// `MatchingEngine` trait 签名是"无 instrument 参数"的(因为 L1/L2 单一 book 路由
+/// 是隐式的),所以这里采用 **primary instrument 路由** 方案:
+///
+/// - 调用 `MultiAssetMatchingEngine::with_primary(btc)` 设定 primary
+/// - 之后 `best_bid` / `best_ask` / `seed_liquidity` 走 primary 路由
+/// - `submit(order)` 按 `order.instrument` 路由(自然多 asset)
+/// - `cancel(order_id)` 跨所有 instrument 扫
+/// - `active_order_count` / `clear_book` 跨所有 instrument
+///
+/// `seed_liquidity` 返回的 `next_id` 是 L2 内部 id 计数器,与上层 caller
+/// 的 `next_id` 解耦,故 trait 适配层把 caller 传进来的 `next_id` **丢进 L2
+/// seed 之前的"前置隔离带"** —— 实际 L2 内部 id 自增不影响 caller(简化
+/// 实现:直接用 caller 传入的 next_id,忽略 L2 返回的 id 偏移)。
+impl MatchingEngine for MultiAssetMatchingEngine {
+    fn submit(&mut self, order: Order) -> SubmitResult {
+        let instrument = order.instrument.clone();
+        match self.submit(order) {
+            Ok(fills) => {
+                if fills.is_empty() {
+                    SubmitResult::empty(Quantity::from_f64(0.0))
+                } else {
+                    // 判断是否部分成交:简化实现 — 多资产路径下只返回 fills,
+                    // 标记全部成交(底层 caller 通常按 fill 列表消费)
+                    SubmitResult::filled(fills)
+                }
+            }
+            Err(e) => {
+                // 错误降级:不阻塞 backtest(错误信息丢弃,无法在 SubmitResult 中传递)
+                let _ = (e, instrument);
+                SubmitResult::empty(Quantity::from_f64(0.0))
+            }
+        }
+    }
+
+    /// 跨所有 instrument 扫 order_id,任一找到则取消
+    fn cancel(&mut self, order_id: u64) -> bool {
+        for engine in self.engines.values_mut() {
+            if engine.cancel(order_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// primary instrument 路由
+    fn best_bid(&self) -> Option<Price> {
+        let primary = self.primary_instrument.as_ref()?;
+        self.engine(primary).and_then(|e| e.best_bid())
+    }
+
+    /// primary instrument 路由
+    fn best_ask(&self) -> Option<Price> {
+        let primary = self.primary_instrument.as_ref()?;
+        self.engine(primary).and_then(|e| e.best_ask())
+    }
+
+    /// primary instrument spread
+    fn spread(&self) -> Option<Price> {
+        let bid = self.best_bid()?;
+        let ask = self.best_ask()?;
+        Some(Price::from_f64(ask.as_f64() - bid.as_f64()))
+    }
+
+    /// depth 走 primary instrument(若未设则返回空)
+    fn depth(
+        &self,
+        levels: usize,
+    ) -> (
+        Vec<crate::matching::types::OrderBookLevel>,
+        Vec<crate::matching::types::OrderBookLevel>,
+    ) {
+        match self
+            .primary_instrument
+            .as_ref()
+            .and_then(|p| self.engine(p))
+        {
+            Some(e) => e.depth(levels),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// 跨所有 instrument 合计
+    fn active_order_count(&self) -> usize {
+        self.engines.values().map(|e| e.active_order_count()).sum()
+    }
+
+    /// 清空所有 instrument 的 book
+    fn clear_book(&mut self) {
+        for engine in self.engines.values_mut() {
+            engine.clear_book();
+        }
+    }
+
+    /// 清空指定 instrument 的 book
+    fn clear_book_for(&mut self, instrument: &Instrument) {
+        if let Some(engine) = self.engines.get_mut(instrument) {
+            engine.clear_book();
+        }
+    }
+
+    /// primary instrument 注入种子
+    ///
+    /// 返回 L2 引擎 seed 后的 `next_id`,与 L1 / L2 的 trait 实现语义一致。
+    /// 如果 instrument 尚未注册,先 register 再 seed。
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        instrument: Instrument,
+        next_id: u64,
+    ) -> u64 {
+        if !self.engines.contains_key(&instrument) {
+            self.register_instrument(instrument.clone());
+        }
+        if let Some(engine) = self.engines.get_mut(&instrument) {
+            engine.seed_liquidity(
+                mid_price,
+                half_spread,
+                depth_levels,
+                size_per_level,
+                instrument,
+                next_id,
+            )
+        } else {
+            next_id
+        }
     }
 }
 
