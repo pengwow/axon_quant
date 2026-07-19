@@ -93,6 +93,38 @@ order = limit_order(1, btc_spot, "Buy", 50_001.0, 0.1)
 - `leg_targets: dict[instrument, float]` — target snapshot
 - `marks: dict[instrument, float]` — latest mark prices
 
+### Chained `with_*` configuration (0.7.1+)
+
+Since 0.7.1, all `BacktestEngine.with_*` methods return `&mut Self` (Python: `PyRefMut<...>`) instead of `()`, so you can chain configuration fluently:
+
+```python
+bt = (BacktestEngine(initial_cash=100_000.0)
+      .with_seed_liquidity(half_spread=0.5, depth_levels=2, size_per_level=2.0)
+      .with_fee_config(0.0005)
+      .with_auto_rebalance(threshold=0.01)
+      .with_funding_schedule(period_secs=28_800))  # 8h funding
+```
+
+Affected methods: `with_matching_engine`, `with_fee_config`, `with_force_liquidate`, `with_seed_liquidity`, `with_seed_liquidity_for`, `with_auto_rebalance`, `with_auto_rebalance_disable`, `with_funding_schedule`, `with_funding_schedule_disable`. **BREAKING (light)**: Python callers that bound the return value to a name will see `engine` instead of `None`; call-and-discard code is unaffected.
+
+### `bar_nav_curve` per-bar NAV curve (0.7.1+)
+
+`RunResult.equity_curve` only samples on `fill / mark / funding` events. For a short backtest with zero fills the last frame is `initial_cash`, which makes Sharpe / max-drawdown calculations meaningless. Since 0.7.1, every `begin_bar` / `begin_bar_multi` call also appends one frame to `bar_nav_curve: list[tuple[ts_ns, nav]]` where `nav = compute_nav(clock.now(), mark_fallback)`.
+
+```python
+result = bt.run()
+import numpy as np
+arr = np.asarray(result.bar_nav_curve, dtype=np.float64)  # shape (N, 2)
+ts_s  = arr[:, 0] * 1e-9
+nav   = arr[:, 1]
+# Annualised Sharpe from per-bar returns (15-min bars → 35_040 bars/year)
+log_r = np.diff(np.log(nav))
+bar_per_year = 365 * 24 * 4  # 15-min
+sharpe = log_r.mean() / log_r.std(ddof=1) * np.sqrt(bar_per_year)
+```
+
+Same-`ts` de-dup: if you call `begin_bar` multiple times with the same `clock.now()` (e.g. across multiple legs), the last frame overwrites the previous one — no duplicate points pollute the Sharpe series.
+
 ## End-to-End Example: Delta-Neutral Entry (Funding > 0)
 
 **Strategy logic**: when `funding > 0`, perp shorts receive funding (funding rate paid from longs to shorts), so the strategy simultaneously holds spot long + perp short, eating funding.
