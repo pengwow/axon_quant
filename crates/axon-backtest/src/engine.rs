@@ -760,20 +760,25 @@ impl BacktestEngine {
                     .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        // 0.6.0 新增(Phase 2):funding 自动调度(在 rebalance 之前)
-        //   遍历 `funding_schedules`,若 `next_funding_ts(prev) <= bar_ts` 推
-        //   funding event;bar 跨多个 8h 边界(回测跳秒)用 while 循环多次推。
-        //   mark_aware = true 用 `mark_cache`,否则 fallback 0
-        //   ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
-        //   调 `push_funding(&mut self)` 的 borrow 冲突
-        self.run_funding_schedule_for_bar();
-        // 0.6.0 新增(Phase 1):bar 末自动 rebalance
+        // 0.6.0 新增(Phase 2):bar 末自动 rebalance
         //   - `auto_rebalance_threshold: None` → rebalance_to_target 内部用 +∞
         //     阈值,所有 leg 都在阈值内,no-op
         //   - 用户手写 `rebalance_to_target` 与自动模式冲突:bar_id guard
         //     保证同 bar 只触发一次(用户的手写 rebalance 在 begin_bar 之前
         //     执行,本 bar 自动 rebalance 会被 guard 跳过)
         self.rebalance_to_target(None);
+        // 0.8.0 PR-B 后半修:funding dispatch 移到 rebalance 之后
+        //   原顺序:seed → funding → rebalance(语义混乱,虽然 run() 消费时
+        //   rebalance 已同步 apply_fill 完,但若 rebalance 未来改成异步
+        //   走事件队列,funding 会读到 rebalance 前的 position)
+        //   新顺序:seed → rebalance → funding(语义清晰:bar 末 rebalance
+        //   入场/调仓后,再按 schedule 结算 funding)
+        //   同 bar 跨 8h 边界场景:funding event timestamp = 8h(校准边界),
+        //   持仓取 rebalance 后(本 bar 末)持仓,语义近似"funding_ts 那一刻
+        //   的持仓"最接近的合理近似。
+        //   ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
+        //   调 `push_funding(&mut self)` 的 borrow 冲突
+        self.run_funding_schedule_for_bar();
         // 0.7.1 新增:bar 末采样 NAV 到 `bar_nav_curve`(`mid_price` 作为 mark fallback)
         self.sample_bar_nav(mid_price);
     }
@@ -840,9 +845,11 @@ impl BacktestEngine {
                     .store(new_next_id, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        // 2) 跑一次 funding 调度 + bar 末 rebalance(同单 leg begin_bar)
-        self.run_funding_schedule_for_bar();
+        // 2) 跑一次 rebalance(同单 leg begin_bar)→ funding(0.8.0 PR-B 后半修)
+        //    原顺序:funding → rebalance;新顺序:rebalance → funding。
+        //    详见单 leg `begin_bar` 中的 0.8.0 PR-B 注释。
         self.rebalance_to_target(None);
+        self.run_funding_schedule_for_bar();
         // 0.7.1 新增:bar 末采样 NAV 到 `bar_nav_curve`(末 leg mid 作为 mark fallback)
         self.sample_bar_nav(last_mid);
     }
@@ -872,6 +879,21 @@ impl BacktestEngine {
     }
 
     /// 0.7.0 抽离:bar 末 funding 自动调度(从 `begin_bar` 抽出供 `begin_bar_multi` 复用)
+    ///
+    /// 0.8.0 PR-B 后半修:**在 `begin_bar` / `begin_bar_multi` 内部于
+    /// `rebalance_to_target` 之后调用**(语义上"bar 末 funding 结算")。
+    /// - 遍历 `funding_schedules`,若 `next_funding_ts(prev) <= bar_ts` 推
+    ///   funding event;bar 跨多个 8h 边界(回测跳秒)用 while 循环多次推。
+    /// - mark_aware = true 用 `mark_cache`,否则 fallback 0
+    /// - **dispatch 时机**:`run_funding_schedule_for_bar` 在 begin_bar 中
+    ///   rebalance 之后调用,确保 `handle_funding` 派发时 position 是 rebalance
+    ///   后的持仓。
+    /// - **BREAKING(无)**:`run()` 消费事件时,fill event timestamp 取决于
+    ///   `clock.now()`(== bar_ts),funding event timestamp 是
+    ///   `next_funding_ts`(8h 校准边界),通常 fill 早于 funding 消费,
+    ///   fill 先 apply_fill,funding 后读 position,语义清晰。
+    /// - ponytail:先 collect (instrument, schedule) 避免 `iter()` 期间
+    ///   调 `push_funding(&mut self)` 的 borrow 冲突
     fn run_funding_schedule_for_bar(&mut self) {
         let bar_ts = self.config.clock.now();
         let schedules: Vec<(Instrument, FundingSchedule)> = self
@@ -3752,6 +3774,141 @@ mod tests {
         assert!(
             result.total_funding_pnl.abs() < 1e-9,
             "disable 后无 funding 结算,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.8.0 Phase 2 PR-B 后半修复验证:funding dispatch 必须用 rebalance 后的 position
+    ///
+    /// 场景(同 bar 内 rebalance + funding):
+    /// 1) 推 perp mark 50000 + 预挂 perp BUY 0.1(让 rebalance SELL 能撮合)
+    /// 2) `engine.run()` 消费初始 mark + 种子
+    /// 3) 设 `auto_rebalance` + `set_target_position(perp, -0.1)`
+    /// 4) 启用 8h funding schedule
+    /// 5) `set_clock(8h)` 直接跳到第一个 funding 边界
+    /// 6) **第一次** `begin_bar(8h)` 一次性:
+    ///    - rebalance_to_target:rebalance 入场 perp short -0.1(同步 apply_fill)
+    ///    - run_funding_schedule_for_bar:推 1 个 funding event(ts=8h)
+    /// 7) `engine.run()` 消费 funding event → handle_funding 读 position
+    ///
+    /// 期望:perp position = -0.1(已 rebalance),funding 用 rebalance 后 position 计算:
+    ///   cash_delta = -(-0.1) × 0.0001 × 50000 = +0.5
+    ///   total_funding_pnl = 0.5
+    ///
+    /// 旧顺序(0.7.0/0.7.1):funding event 在 rebalance 之前入队,虽然 rebalance
+    /// 同步 apply_fill 完,position 已经是 rebalance 后的;新顺序(0.8.0 PR-B 后半修)
+    /// 把 funding 移到 rebalance 之后,**语义更清晰**(bar 末 rebalance 后再
+    /// funding 结算),为未来 rebalance 异步化做铺垫。
+    #[test]
+    fn funding_dispatch_after_rebalance_same_bar() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        // 1) 推 perp mark + 预挂 perp BUY 0.1
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        // 2) 消费 mark + 种子
+        engine.run();
+        // 3) 启用 auto_rebalance + 目标 perp short -0.1
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        // 4) 启用 8h funding schedule
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 5) 直接跳 8h(不先 begin_bar 让 rebalance 入场)
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        // 6) 第一次 begin_bar(8h) 一次性:rebalance + funding
+        engine.begin_bar(50_000.0, btc_spot.clone());
+        // 7) 消费 funding event
+        let result = engine.run();
+        // sanity:perp position = -0.1
+        assert!(
+            (engine.get_position(&btc_perp) - (-0.1)).abs() < 1e-9,
+            "perp short 应=-0.1,got {}",
+            engine.get_position(&btc_perp)
+        );
+        // 期望:funding 用 rebalance 后 position 结算
+        assert!(
+            (result.total_funding_pnl - 0.5).abs() < 1e-6,
+            "同 bar funding 派发应使用 rebalance 后 position,total_funding_pnl 期望=0.5,got {}",
+            result.total_funding_pnl
+        );
+    }
+
+    /// 0.8.0 PR-B 后半:验证 `begin_bar_multi` 路径的 funding dispatch 时机
+    ///
+    /// 与 `funding_dispatch_after_rebalance_same_bar` 相同逻辑,但走
+    /// `begin_bar_multi`(spot+perp 多 leg 同 bar)。验证多 leg 路径下
+    /// rebalance → funding 顺序也正确,perp 持仓 0.1 short,fee=0.0001
+    /// × 50000 × 0.1 = +0.5。
+    #[test]
+    fn funding_dispatch_after_rebalance_begin_bar_multi() {
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let btc_perp = btc_swap_inst();
+        let btc_spot = btc_spot_inst();
+
+        // 1) 推 perp mark + 预挂 perp BUY 0.1
+        push_mark_event(&mut q, &mut b, btc_perp.clone(), 50_000.0, 1_000);
+        push_perp_buy(&mut q, &mut b, 2, btc_perp.clone(), 50_001.0, 0.1);
+        // 预挂 spot ask(让 begin_bar_multi rebalance spot long 能撮合)
+        q.push(b.order(
+            Timestamp::from_nanos(4_000),
+            3,
+            OrderAction::Submitted(Order::spot(
+                3,
+                "BTC",
+                "USDT",
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(50_001.0),
+                },
+                Quantity::from_f64(1.0),
+                TimeInForce::GTC,
+            )),
+        ));
+
+        let mut engine = BacktestEngine::new(simple_config(), q);
+        // 2) 消费 mark + 种子
+        engine.run();
+        // 3) 启用 auto_rebalance + 目标 spot long +1, perp short -0.1
+        engine.with_auto_rebalance(1e-6);
+        engine.set_target_position(btc_spot.clone(), 1.0);
+        engine.set_target_position(btc_perp.clone(), -0.1);
+        // 4) 启用 8h funding schedule(只对 perp)
+        engine.with_funding_schedule(FundingSchedule::fixed_8h(btc_perp.clone(), 0.0001));
+        // 5) 跳 8h
+        engine
+            .config
+            .clock
+            .set(Timestamp::from_nanos(8 * 3600 * 1_000_000_000));
+        // 6) begin_bar_multi(spot+perp 同 bar):rebalance → funding
+        let legs: Vec<(axon_core::types::Instrument, f64)> =
+            vec![(btc_spot.clone(), 50_000.0), (btc_perp.clone(), 50_000.0)];
+        engine.begin_bar_multi(legs);
+        // 7) 消费 funding event
+        let result = engine.run();
+        // sanity:spot long +1, perp short -0.1
+        assert!(
+            (engine.get_position(&btc_spot) - 1.0).abs() < 1e-9,
+            "spot 应=+1.0,got {}",
+            engine.get_position(&btc_spot)
+        );
+        assert!(
+            (engine.get_position(&btc_perp) - (-0.1)).abs() < 1e-9,
+            "perp 应=-0.1,got {}",
+            engine.get_position(&btc_perp)
+        );
+        // 期望:perp short -0.1 收 funding = +0.5(spot 无 funding,跳过)
+        assert!(
+            (result.total_funding_pnl - 0.5).abs() < 1e-6,
+            "begin_bar_multi 路径同 bar funding 派发=+0.5,got {}",
             result.total_funding_pnl
         );
     }

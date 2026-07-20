@@ -6,6 +6,93 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - Unreleased
+
+0.8.0 主线:L3 matching 完整重写 + 风险与组合深化(gamma/vega 接真实 IV 源 + contract_size 修正 delta + 跨 instrument gamma 协方差)+ 基础设施(Scheduler 0 unsafe + 中英 docs 完整同步)。当前 0.8.0 进展:Phase 1 基础设施已完成(1.1 Scheduler 重构 / 1.2 docs 同步 / 1.3 publish.yml dry-run);Phase 2 风险深化 B1 `MarketDataSource` trait + B2 per-instrument delta 接入 `contract_size` + B3 跨 instrument gamma 协方差(Ledoit-Wolf 收缩)已完成;PR-B 后半(funding dispatch 时机修复)已完成;Phase 3 L3 matching / Phase 4 RL/HPO / Phase 5 发布 进行中。
+
+### Added
+
+- **`MarketDataSource` trait + `InMemoryMarketData` / `CsvMarketData` 内置实现** (`feat(core): MarketDataSource trait + InMemory + Csv 接入 axon-risk gamma/vega (0.8.0 Phase 2 B1)`):
+  - 0.7.0 风险敞口:delta ✅、gamma/vega 全 `0.0`(无 mark 历史、无 IV 源)。
+  - 0.8.0 新增 `axon_core::data::MarketDataSource` trait,提供 3 类查询:
+    - `mark_history(instrument, lookback) -> Vec<MarkPoint>`:按 ts 升序的历史 mark。
+    - `implied_vol(instrument) -> Option<f64>`:隐含波动率(空 = 无对应期权,spot 通常 `None`)。
+    - `latest_mark(instrument) -> Option<MarkPoint>`:最新一帧(`mark_history(.., 1).last()` 便捷封装)。
+  - 2 个内置实现:
+    - `InMemoryMarketData`:`push_mark` / `set_iv` 增量写入(测试 / 单元回测用),`Send + Sync` 通过 `std::sync::Mutex` 保证。
+    - `CsvMarketData`:`from_path` / `parse` 一次性加载 CSV(offline / 回放用),IV 列可选,乱序自动按 ts 排序。
+  - `PortfolioRiskEngine` 扩展:
+    - 新增 `with_source(Arc<dyn MarketDataSource>)` 构造器 + `with_gamma_lookback(usize)` 配置器。
+    - `gamma_exposure` 公式升级为 `qty × mark_variance`(B1)+ `× contract_size²`(B2)。
+    - `vega` 公式升级为 `Σ (qty × IV × contract_size)`(B1 IV + B2 contract_size)。
+  - 真实源(Deribit / Akash / Binance options)推 0.9.0,本段只交付 trait + 2 个内置实现。
+  - **0.7.0 兼容**:无 source 时 `gamma_exposure` / `vega` 仍返回 `0.0`,已有 `BacktestEngine` 调用方不受影响。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.1 章节。
+
+### Changed
+
+- **`PortfolioRiskEngine` 风险敞口公式按 `contract_size` 修正** (`feat(risk): per-instrument delta/gamma/vega 接入 SwapInstrument.contract_size (0.8.0 Phase 2 B2)`):
+  - 0.7.0 范围:所有 leg 的 delta / gamma / vega 直接用 `position.quantity`,**隐式** 假设 `contract_size = 1.0`,对 ETH perp(典型 `contract_size = 0.01`)等小额合约不准确:
+    - 例:ETH perp 100 张,0.7.0 → `delta = 100`(实际应为 `100 × 0.01 = 1.0`)。
+    - 例:BTC spot 1.0 long + ETH perp 100 张 short,0.7.0 → `delta = -99`;0.8.0 → `delta = 0.0`(完全对冲)。
+  - 0.8.0 B2 接入 `SwapInstrument.contract_size`:
+    - `delta_per_leg = qty × contract_size`(spot 默认 `1.0`)。
+    - `vega = Σ (qty × IV × contract_size)`(B1 的 IV × B2 的 contract_size)。
+    - `gamma_per_leg = qty × mark_variance × contract_size²`(B1 的 mark_variance × B2 的 contract_size 平方)。
+  - 集中入口 `contract_size_of(Instrument) -> f64`,避免 `delta_exposure` / `vega` / `gamma_exposure` 重复 `match` 分支。
+  - **BREAKING(语义)**:perp leg 的 delta / gamma / vega 量级在 0.8.0 与 0.7.x 不同:
+    - 影响范围:任何持仓非 `contract_size = 1.0` 的 swap leg(典型 ETH / alt perp)。
+    - 0.7.x 升级到 0.8.0:回测结果数字若以 `portfolio_delta` / `vega` 为指标,需在 0.7.x 重算 baseline 对比。
+    - spot leg 行为不变(`contract_size = 1.0`),向后兼容。
+  - 9 个新单测(`axon-risk/src/portfolio.rs::tests`):
+    - `b2_delta_eth_perp_contract_size_001`:核心场景(ETH perp 100 张 → delta = 1.0)。
+    - `b2_delta_spot_unchanged` / `b2_vega_btc_spot_unchanged` / `b2_gamma_btc_spot_unchanged`:spot 向后兼容。
+    - `b2_delta_spot_perp_hedge_with_contract_size`:多 leg 套保(BTC spot 1.0 + ETH perp 100 张 → 完全对冲 delta = 0)。
+    - `b2_vega_eth_perp_contract_size` / `b2_gamma_eth_perp_contract_size_squared`:vega / gamma 公式覆盖。
+    - `b2_multi_leg_combined_report`:综合 risk report(同时校验 delta + vega 数值正确)。
+    - `b2_contract_size_helper`:`contract_size_of` 白盒测试。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.2 章节。
+
+### Added
+
+- **`MarketDataSource::mark_returns` 简单收益率序列 + `gamma_covariance_matrix` 跨 instrument 协方差** (`feat(risk): 跨 instrument gamma 协方差 + Ledoit-Wolf 收缩 (0.8.0 Phase 2 B3)`):
+  - 0.7.0 / 0.8.0 B1/B2 范围:risk engine 只算 per-leg gamma(对角矩阵),`total_gamma = Σ per-leg gamma`,**忽略跨 instrument 相关性**。
+    - 多 leg 高相关组合(BTC spot long + BTC perp short,或者 BTC + ETH 同涨同跌)重复计入 gamma 风险,实际 portfolio gamma 应折扣。
+  - 0.8.0 B3 新增:
+    - `MarketDataSource::mark_returns(instrument, lookback) -> Vec<f64>`:从 `mark_history` 派生简单收益率 `r_t = mark_t / mark_{t-1} - 1`,`InMemoryMarketData` / `CsvMarketData` 默认实现继承。
+    - `MarketDataSource::latest_return(instrument) -> Option<f64>`:最新一帧 mark 收益率便捷接口。
+    - `PortfolioRiskEngine::gamma_covariance_matrix(portfolio) -> HashMap<(Instrument, Instrument), f64>`:跨 instrument n×n 协方差矩阵(对称半正定,只存上三角 `i <= j`,长度 `p(p+1)/2`)。
+      - 对角 `(i, i)` = `var(returns_i) × qty_i² × contract_size_i²`
+      - 非对角 `(i, j)` (i < j) = `cov(returns_i, returns_j) × qty_i × qty_j × contract_size_i × contract_size_j`
+    - `PortfolioRiskEngine::portfolio_gamma_with_covariance(portfolio) -> f64`:含协方差的组合 gamma = `Σ_i Σ_j Cov(i, j)`,为套保组合提供真实 gamma 风险聚合。
+  - **数值稳定 — Ledoit-Wolf 收缩**:N(样本数) < p(instrument 数)时样本协方差矩阵高度奇异,触发简化 Ledoit-Wolf 收缩(`alpha = 0.2` 常量,标量目标 = `mean_var × I`),保证矩阵正定。
+  - **BREAKING(轻)**:新增方法,不修改现有 API。`gamma_exposure` / `total_gamma` 行为不变(B1/B2 仅对角和),callers 选择性使用新协方差方法。
+  - 单测:
+    - `crates/axon-core/src/data/{inmemory,csv}.rs`:5 个新 case(基本 returns / 数据不足 / lookback trim / latest_return / CSV 继承默认实现)。
+    - `crates/axon-risk/src/portfolio.rs::tests`:17 个 B3 case,覆盖 `sample_covariance` / `ledoit_wolf_shrink` 私有 helper + `gamma_covariance_matrix` / `portfolio_gamma_with_covariance` 公开方法:
+      - `b3_sample_covariance_*`:2 legs 独立 / 完全相关(2 个 helper 白盒测试)。
+      - `b3_ledoit_wolf_*`:`alpha=0` 是单位 / `alpha=1` 是对角 / 正定 / `mean_var > 0` 公式验证(4 个 helper 白盒测试)。
+      - `b3_gamma_covariance_*`:`no_source` / `empty_portfolio` / `insufficient_data` / `single_leg` / `two_legs_perfectly_correlated` / `with_contract_size`(ETH perp 0.01 × 100 张)/ `singular_no_panic`(N=2 < p=3 触发 LW 收缩)/ `dedupes_instruments`(7 个端到端测试)。
+      - `b3_portfolio_gamma_with_covariance_*`:`single_leg` / `uncorrelated_reduces_to_diagonal` / `correlated_exceeds_diagonal`(3 个组合 gamma 验证)。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.3 章节。
+
+### Fixed
+
+- **`BacktestEngine` funding dispatch 时机调整到 rebalance 之后** (`fix(backtest): funding dispatch 移到 rebalance 之后 (0.8.0 PR-B 后半)`):
+  - 0.7.0 / 0.7.1 遗留:`run_funding_schedule_for_bar()` 在 `rebalance_to_target` 之前入队,导致:
+    - 当前实现下 fill event 仍先于 funding event 被消费(rebalance 同步 `apply_fill` 完成,position 是 rebalance 后的),`total_funding_pnl` 终值正确。
+    - 但语义混乱(bar 末先 funding 后 rebalance,资金费结算"早于"实际持仓变化)。
+    - 为未来 rebalance 异步化留隐患(funding event 读到 rebalance 前的 position)。
+  - 0.8.0 修复:`begin_bar` / `begin_bar_multi` 内部顺序调整为 `seed → rebalance → funding → sample_bar_nav`。
+    - bar 末 rebalance 入场/调仓完成后,再按 schedule 推 funding event 到队列。
+    - `run()` 消费时:fill event(同步 apply_fill 完成) → funding event → mark sampling。
+  - **BREAKING**:无。`total_funding_pnl` 终值与 0.7.0/0.7.1 完全一致(同步 apply_fill 路径下,position 在 funding 消费前已 rebalance 完成);仅事件入队顺序调整,语义更清晰、为未来 rebalance 异步化做铺垫。
+  - 单测:`crates/axon-backtest/src/engine.rs::tests` 追加 2 个 case:
+    - `funding_dispatch_after_rebalance_same_bar`:单 leg 路径(perp short -0.1 + funding 0.0001 → `total_funding_pnl = 0.5`)。
+    - `funding_dispatch_after_rebalance_begin_bar_multi`:多 leg 路径(spot long +1 + perp short -0.1 + funding 0.0001 → funding = 0.5,spot 不结算)。
+  - 现有 funding 相关测试不退化:0.7.0/0.7.1 集成测试 `crates/axon-integration-tests/src/delta_neutral_arb.rs::funding_settle_end_to_end_delta_neutral` 等。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.2.1 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed

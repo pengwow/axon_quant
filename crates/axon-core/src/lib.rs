@@ -18,6 +18,7 @@
 //! | [`impact`] | Phase 1A P2 | 市场冲击模型（线性/幂律/自适应/Almgren-Chriss） |
 //! | [`latency`] | Phase 1A P2 | 延迟模型（固定/正态/指数/均匀/队列/组合） |
 //! | [`volatility`] | Phase 4 | 历史波动率估计器（EWMA/滚动/Garman-Klass） |
+//! | [`data`] | Phase 2 B1 | 历史市场数据源(`MarketDataSource` trait + InMemory + Csv) |
 //! | [`error`] | Phase 0+ | 统一错误类型 |
 //!
 //! # 设计原则
@@ -44,6 +45,9 @@ pub mod scheduler;
 pub mod time;
 pub mod types;
 pub mod volatility;
+
+// 0.8.0 Phase 2 B1 新增:历史市场数据源(`MarketDataSource` trait + InMemory + Csv)
+pub mod data;
 
 /// Harness 编排系统核心类型（AgentIntent / TaskContext / HarnessResult）
 pub mod harness_types;
@@ -129,4 +133,11 @@ pub use fee::{
 pub use volatility::{
     EwmaVolatility, GarmanKlassVolatility, OhlcBar, RollingVolatility, VolatilityError,
     VolatilityEstimator, VolatilityResult, VolatilitySource,
+};
+
+// 0.8.0 Phase 2 B1 新增:历史市场数据源 re-export
+// 让 `axon_core::InMemoryMarketData` / `axon_core::MarketDataSource` 等短路径可用,
+// 避免所有调用方写 `axon_core::data::InMemoryMarketData` 冗长路径。
+pub use data::{
+    CsvMarketData, CsvMarketDataError, InMemoryMarketData, MarkPoint, MarketDataSource,
 };
