@@ -1738,7 +1738,7 @@ mod tests {
         let latest = engine.latest_returns(&portfolio);
         // BTC 被跳过(数据不足),只剩 ETH
         assert_eq!(latest.len(), 1);
-        assert!(latest.get(&btc_spot()).is_none());
+        assert!(!latest.contains_key(&btc_spot()));
         let eth_lr = latest.get(&eth_perp()).copied().unwrap();
         let expected_eth = 3_100.0 / 3_000.0 - 1.0;
         assert!((eth_lr - expected_eth).abs() < 1e-12);

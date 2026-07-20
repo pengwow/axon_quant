@@ -919,9 +919,13 @@ impl BacktestEngine {
             && last.0 == ts
         {
             last.1 = nav;
+            // 0.8.0 B5:NAV 累加器也维护(覆盖 case 也要重记,确保 calmar 与 bar 末对齐)
+            self.bt_state.trading_metrics.record_nav(nav);
             return;
         }
         self.bt_state.bar_nav_curve.push((ts, nav));
+        // 0.8.0 B5:NAV 累加器维护(供 calmar_ratio 用)
+        self.bt_state.trading_metrics.record_nav(nav);
     }
 
     /// 0.7.0 抽离:bar 末 funding 自动调度(从 `begin_bar` 抽出供 `begin_bar_multi` 复用)
@@ -1527,6 +1531,8 @@ impl BacktestEngine {
         if nav > self.bt_state.nav_peak {
             self.bt_state.nav_peak = nav;
         }
+        // 0.8.0 B5:NAV 累加器维护(供 calmar_ratio 用)
+        self.bt_state.trading_metrics.record_nav(nav);
         // 避免连续 mark 在同一纳秒戳重复推 equity_curve
         if self
             .bt_state

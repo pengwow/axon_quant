@@ -115,6 +115,9 @@ impl StreamingMetrics {
             self.nav_peak = nav;
         }
 
+        // 3.5  0.8.0 B5:NAV 累加器(供 calmar_ratio 用)
+        self.trading_metrics.record_nav(nav);
+
         // 4. equity_curve 采样
         self.equity_curve.push(EquityPoint { timestamp, nav });
 
