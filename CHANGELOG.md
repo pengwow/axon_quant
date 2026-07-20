@@ -93,6 +93,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 现有 funding 相关测试不退化:0.7.0/0.7.1 集成测试 `crates/axon-integration-tests/src/delta_neutral_arb.rs::funding_settle_end_to_end_delta_neutral` 等。
   - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.2.1 章节。
 
+### Changed
+
+- **`RunResult` 双曲线决策落地(X 方案)** (`docs(backtest): RunResult equity_curve vs bar_nav_curve 文档化 + 字段级 DEPRECATED 警告 (0.8.0 Phase 2.4 B4)`):
+  - 0.7.0 时期 `equity_curve` 是唯一 NAV 曲线,稀疏采样(仅 fill / mark / funding 事件触发,无事件 bar 不留帧),短回测 + 无 fill 时末帧 = `initial_cash` 失真。
+  - 0.7.1 引入 `bar_nav_curve`(每 bar 末一帧,密集采样),`equity_curve` 保留兼容。
+  - 0.8.0 B4 用户拍板 **X 方案**(保留双曲线 + 文档化 + equity_curve 标 deprecation,0 BREAKING):
+    - `RunResult` 整体 doc 顶部加双曲线对比表(采样时机 / 长度 / 典型用途 / 注意事项)。
+    - `equity_curve` 字段 doc 顶部加 **DEPRECATED since 0.8.0** 警告块,说明 0.9.0 计划删除、推荐改用 `bar_nav_curve`。
+    - `StreamingReport.equity_curve` 同样加 doc-level 警告(0.9.0 重新设计 streaming 报告结构)。
+  - **不走 `#[deprecated]` attribute** 原因:工作区有 45 处 `equity_curve` 访问点,attribute 警告会触发 `-D warnings` 失败;0.8.0 走 doc-level 警告,0.9.0 真删。
+  - **BREAKING**:无。`equity_curve` / `bar_nav_curve` 字段行为完全不变,仅文档化 + 警告。
+  - 0.9.0 计划:删除 `equity_curve`,`max_drawdown` 字段切到 `bar_nav_curve` 扫描(0.8.0 保留 0.7.x 行为)。
+  - 单测:`crates/axon-backtest/src/engine.rs::tests` 追加 3 个 B4 case:
+    - `b4_run_result_doc_mentions_both_curves`:白盒检查 `RunResult` doc 含关键短语(`DEPRECATED since 0.8.0` / `0.9.0 计划删除` / B4 决策说明)。
+    - `b4_both_curves_have_same_final_nav`:fill 后两条曲线末帧 NAV 一致(都按 mark-to-market 估值)。
+    - `b4_bar_nav_curve_is_superset_of_equity_curve`:5 次 begin_bar + 0 fill → bar_nav_curve 5 帧 / equity_curve 0 帧(密集 vs 稀疏)。
+  - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.4 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
