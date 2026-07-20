@@ -3,8 +3,8 @@
 //! # 范围
 //!
 //! 提供 `PortfolioRiskEngine::delta_exposure` / `gamma_exposure` / `vega` /
-//! `gamma_covariance_matrix` / `portfolio_gamma_with_covariance` 五类风险敞口,
-//! 数据源是 `axon_core::portfolio::Portfolio.positions` +
+//! `latest_returns` / `gamma_covariance_matrix` / `portfolio_gamma_with_covariance`
+//! 六类风险敞口,数据源是 `axon_core::portfolio::Portfolio.positions` +
 //! 可选 `axon_core::data::MarketDataSource`(B1 接入)。
 //!
 //! ## 定义
@@ -16,6 +16,10 @@
 //! - **per-leg gamma** = `qty × mark_variance × contract_size²`(0.8.0 B1 + B2)
 //!   - 当 `MarketDataSource` 存在:用 `mark_history` 计算方差
 //!   - 当 source 不存在:`0.0`(0.7.0 兼容)
+//! - **per-leg latest return** = `MarketDataSource::latest_return`(0.8.0 B3 新增)
+//!   - 取最新 1 帧 mark 收益率(最小开销路径,`lookback = 2`)
+//!   - 当 source 不存在:返回空 `HashMap`(0.7.0 兼容)
+//!   - 适合实时 PnL 监控 / 跨周期风险预警 / tick-level risk gate
 //! - **跨 instrument gamma 协方差**(0.8.0 B3 新增):
 //!   - 返回 n×n 协方差矩阵 `HashMap<(Instrument, Instrument), f64>`
 //!   - 对角(i,i) = `var(returns_i) × qty_i² × contract_size_i²`
@@ -285,6 +289,47 @@ impl PortfolioRiskEngine {
             }
         }
         total
+    }
+
+    /// 0.8.0 B3 新增:返回每 instrument 的最新一帧 mark 收益率
+    ///
+    /// 与 `MarketDataSource::mark_returns` 的区别:本方法只取最新 1 帧
+    /// (内部走 `lookback = 2` 的最小路径),适合需要每个 tick / bar 都
+    /// 查询的实时场景(避免 `mark_returns(n)` 重新分配整个 returns 序列)。
+    ///
+    /// # 用途
+    ///
+    /// - 实时 PnL 监控:`latest_return × qty × contract_size × latest_mark`
+    /// - 跨周期风险预警(返回值 > 阈值时触发告警)
+    /// - 高频策略的 tick-level risk gate(每个 quote 都查一次)
+    ///
+    /// # 边界
+    ///
+    /// - 无 `source` → 返回空 `HashMap`(0.7.0 兼容行为)
+    /// - 无持仓 → 返回空 `HashMap`
+    /// - 单 instrument 数据不足(< 2 帧 mark)→ 该 instrument 不出现在结果中
+    ///
+    /// # 与 `mark_returns` 的对比
+    ///
+    /// | 方法 | 返回 | 单次查询开销 |
+    /// |------|------|------------|
+    /// | `mark_returns(inst, n)` | 整个 returns 序列(O(n)) | 重新分配 `Vec<f64>` |
+    /// | `latest_returns(portfolio)` | 每 instrument 最新 1 帧 | 只读 2 帧 mark |
+    pub fn latest_returns(&self, portfolio: &Portfolio) -> HashMap<Instrument, f64> {
+        let Some(source) = &self.source else {
+            return HashMap::new();
+        };
+        portfolio
+            .positions()
+            .iter()
+            .filter_map(|(inst, pos)| {
+                if pos.quantity.as_f64().abs() < 1e-9 {
+                    None
+                } else {
+                    source.latest_return(inst).map(|r| (inst.clone(), r))
+                }
+            })
+            .collect()
     }
 
     /// 0.8.0 B3 新增:计算跨 instrument 的 gamma 协方差矩阵
@@ -1627,5 +1672,91 @@ mod tests {
             off > 0.0,
             "前 5 帧完全相同 returns → off-diag > 0,got {off}"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 0.8.0 B3.6: `latest_returns` production use of `MarketDataSource::latest_return`
+    // (验证 trait method 真正被使用,而非只在 tests 出现)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// `latest_returns` 只取最新 1 帧 return,正确性验证
+    ///
+    /// BTC 3 帧 mark(100→105→110):
+    /// - `mark_returns` 返回 `[0.05, 0.0476...]`(2 帧)
+    /// - `latest_returns` 应只返回最后 1 帧 ≈ 110/105 - 1 ≈ 0.0476
+    #[test]
+    fn b3_latest_returns_takes_only_last_frame() {
+        let source = Arc::new(InMemoryMarketData::new());
+        let prices = [100.0, 105.0, 110.0];
+        for (i, &p) in prices.iter().enumerate() {
+            source.push_mark(btc_spot(), Timestamp::from_nanos((i as i64 + 1) * 100), p);
+        }
+        let engine = PortfolioRiskEngine::with_source(source);
+        let mut portfolio = Portfolio::new(Currency::USDT, 0.0);
+        apply_trade(&mut portfolio, &btc_spot(), Side::Buy, 100.0, 1.0);
+
+        let latest = engine.latest_returns(&portfolio);
+        // 单 instrument 持仓
+        assert_eq!(latest.len(), 1);
+        let lr = latest.get(&btc_spot()).copied().unwrap();
+        // latest return = 110/105 - 1(末两帧)
+        let expected = 110.0 / 105.0 - 1.0;
+        assert!(
+            (lr - expected).abs() < 1e-12,
+            "latest return 应 = 110/105-1,got {lr} vs {expected}"
+        );
+        // sanity:不等于第一帧 return(0.05)
+        assert!((lr - 0.05).abs() > 1e-3, "latest 不应是首帧 return");
+    }
+
+    /// `latest_returns` 在无 source 时返回空 HashMap(0.7.0 兼容)
+    #[test]
+    fn b3_latest_returns_no_source_returns_empty() {
+        let engine = PortfolioRiskEngine::new();
+        let mut portfolio = Portfolio::new(Currency::USDT, 0.0);
+        apply_trade(&mut portfolio, &btc_spot(), Side::Buy, 100.0, 1.0);
+
+        let latest = engine.latest_returns(&portfolio);
+        assert!(latest.is_empty(), "无 source → 空 HashMap");
+    }
+
+    /// 数据不足(< 2 帧 mark)的 instrument 不会出现在结果中
+    #[test]
+    fn b3_latest_returns_skips_instruments_with_insufficient_data() {
+        let source = Arc::new(InMemoryMarketData::new());
+        // BTC:仅 1 帧 mark → latest_return 返回 None → 被跳过
+        source.push_mark(btc_spot(), Timestamp::from_nanos(100), 50_000.0);
+        // ETH:2 帧 mark → 有 latest_return ≈ 0.0333
+        source.push_mark(eth_perp(), Timestamp::from_nanos(100), 3_000.0);
+        source.push_mark(eth_perp(), Timestamp::from_nanos(200), 3_100.0);
+
+        let engine = PortfolioRiskEngine::with_source(source);
+        let mut portfolio = Portfolio::new(Currency::USDT, 0.0);
+        apply_trade(&mut portfolio, &btc_spot(), Side::Buy, 50_000.0, 1.0);
+        apply_trade(&mut portfolio, &eth_perp(), Side::Buy, 3_000.0, 1.0);
+
+        let latest = engine.latest_returns(&portfolio);
+        // BTC 被跳过(数据不足),只剩 ETH
+        assert_eq!(latest.len(), 1);
+        assert!(latest.get(&btc_spot()).is_none());
+        let eth_lr = latest.get(&eth_perp()).copied().unwrap();
+        let expected_eth = 3_100.0 / 3_000.0 - 1.0;
+        assert!((eth_lr - expected_eth).abs() < 1e-12);
+    }
+
+    /// 零持仓 instrument 不出现在结果中(与 `mark_returns` 一致)
+    #[test]
+    fn b3_latest_returns_skips_zero_positions() {
+        let source = Arc::new(InMemoryMarketData::new());
+        source.push_mark(btc_spot(), Timestamp::from_nanos(100), 50_000.0);
+        source.push_mark(btc_spot(), Timestamp::from_nanos(200), 51_000.0);
+        // 同一 instrument,apply + 反向 apply 抵消 → 持仓 0
+        let engine = PortfolioRiskEngine::with_source(source);
+        let mut portfolio = Portfolio::new(Currency::USDT, 0.0);
+        apply_trade(&mut portfolio, &btc_spot(), Side::Buy, 50_000.0, 1.0);
+        apply_trade(&mut portfolio, &btc_spot(), Side::Sell, 51_000.0, 1.0);
+
+        let latest = engine.latest_returns(&portfolio);
+        assert!(latest.is_empty(), "零持仓 → 空 HashMap");
     }
 }
