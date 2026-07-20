@@ -65,3 +65,9 @@ uv.lock
 
 # maturin build 产物(本地验证 publish.yml 时生成,不入库)
 /dist/
+
+# Redis 持久化文件(二进制、体积大、含业务数据,由 Redis 重启时自动重建)
+/dump.rdb
+*.rdb
+appendonly.aof
+*.aof
