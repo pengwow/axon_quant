@@ -175,6 +175,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **BREAKING**:无。新增模块,对外 API 是 `L1MatchingEngine::tracker() -> &PartialFillTracker`,不影响现有 305 个 lib test。
   - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.2 A1.1 章节。
 
+- **`L3` 跨资产对账 API + e2e 测试 + 序列化稳定性** (`feat(backtest): L3 跨资产 tracker 透传 + 套利/暗池/拍卖 e2e + L3Book 序列化稳定性 (0.8.0 Phase 3 A1.2)`):
+  - **0.7.x → 0.8.0 A1.2 范围调整**:
+    - 原 plan:把 `L2MatchingEngine` 替换为 `L3CoreMatchingEngine` 做价位簿重做。
+    - A1.1 已决策 defer `L3CoreMatchingEngine` 重写至 0.9.0(SoA 化的触发条件是 A3)。
+    - A1.2 实际工作:不动内部 L2 引擎,补**跨资产对账 API + 端到端测试 + L3Book 序列化稳定性**。
+    - L2 包装 L1,L1 已有 PartialFillTracker → 2 行代码透传即可。
+  - **Tracker 透传层**:
+    - `L2MatchingEngine::tracker() -> &PartialFillTracker`:透传到 inner L1。
+    - `MultiAssetMatchingEngine::tracker() -> Option<&PartialFillTracker>`:走 primary instrument(同 `best_bid` / `best_ask` 路由语义)。
+    - `MultiAssetMatchingEngine::tracker_for(&Instrument) -> Option<&PartialFillTracker>`:per-instrument 路由,套利对账主要 API。
+    - `MultiAssetMatchingEngine::instruments() -> Vec<Instrument>`:列出已注册 instrument,避免暴露内部 `engines` HashMap。
+    - 套利对账典型用法:见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.3。
+  - **跨资产套利 e2e 测试** (`crates/axon-backtest/src/matching/l3/engine_l3.rs` +6 case):
+    - `test_cross_asset_arbitrage_full_lifecycle`:spot 50_000/50_100 + perp 50_200/50_300 → detect deviation > 0.3% + execute 2 fill + 双 leg tracker 验证。
+    - `test_cross_asset_arbitrage_no_liquidity`:无对手盘 detect None + execute 无 fill。
+    - `test_tracker_for_per_instrument_isolation`:btc + eth 各 2 笔撮合,tracker 互不串。
+    - `test_tracker_primary_routing`:`tracker()` 走 primary_instrument。
+    - `test_tracker_returns_none_without_primary`:未设 primary 时返回 None。
+    - `test_instruments_listing`:`instruments()` 列出全部已注册。
+  - **暗池 + 拍卖 e2e 测试** (+4 case):
+    - `test_dark_pool_match_records_tracker`:暗池撮合 stats 累加 + 暗池簿清空。
+    - `test_batch_auction_with_tracker`:Auction 模式 2 buy + 2 sell → run_auction → tracker 验证 fill 链。
+    - `test_batch_auction_one_sided`:单边拍卖无 fill(unfilled_orders 留底 1 笔 buy)。
+    - `test_batch_auction_cross_instrument_isolation`:run_auction(btc) 不动 eth 簿。
+  - **L3Book 序列化稳定性** (`crates/axon-backtest/src/matching/l3/book.rs` +6 case):
+    - `json_roundtrip_complex_book`:7 笔多价位 PartialEq 字段级一致。
+    - `json_roundtrip_multi_instrument`:多 instrument 聚合 round-trip。
+    - `json_roundtrip_empty_book`:空 book 边界。
+    - `l3_order_json_roundtrip`:L3Order 字段级精确(qty 0.123456 保留)。
+    - `multi_asset_book_json_roundtrip`:MultiAsset 引擎聚合。
+    - `json_schema_stable_field_names`:JSON 关键字段名锁定(`bids` / `asks` / `order_id` / `side` / `qty` / `timestamp_ns`),对外 wire format 契约。
+  - **A3.0 bench L3 multi asset** (`--quick`):
+    - L3 multi asset submit:**1.14µs ≤ 1.5µs gate** ✅
+    - L3 single asset submit:1.20µs
+    - L2 submit:1.06µs
+    - L1 submit:1.02µs
+    - L3/L2 ratio = 1.08x(在 2x perf gate 内)
+    - L3 multi asset depth scaling 10/50/100/500:1.13/1.14/1.16/1.13µs(几乎不随 depth 增长,HashMap 路由 O(1))
+  - **设计要点 / 局限**:
+    - 不动 L2 内部(2 行代码透传,无需 L3CoreMatchingEngine 重写)
+    - `BatchMode::Auction` 走 L2 → L1 tracker(已验证);`BatchMode::DarkPool` 走 `dark_orders` vec → 不入 L1 tracker(仅 stats 计数),A1.2 阶段接受,Phase 4 Strategy trait 可加 event bus
+    - 跨 instrument tracker 聚合需 caller 遍历 `instruments()`(未提供 `tracker_all()`)
+  - **BREAKING**:无。纯加 API + 测试,不影响现有 314 lib test。
+  - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.3 A1.2 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed

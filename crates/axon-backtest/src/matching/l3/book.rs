@@ -486,4 +486,130 @@ mod tests {
         engine.submit(make_limit(1, &inst, Side::Buy, 100.0, 1.0));
         assert!(!L3Book::from_l1_engine_for(&engine, &inst).is_empty());
     }
+
+    // ─── Phase 3.3 (A1.2):序列化稳定性 round-trip ───────────
+
+    /// JSON round-trip:多价位多订单复杂场景,确保 PartialEq / 字段一致
+    #[test]
+    fn json_roundtrip_complex_book() {
+        let mut engine = L1MatchingEngine::new();
+        let inst = btc_spot();
+        // 4 个 bid 价位 + 2 个 ask 价位
+        engine.submit(make_limit(1, &inst, Side::Buy, 99.0, 1.0));
+        engine.submit(make_limit(2, &inst, Side::Buy, 100.0, 2.0));
+        engine.submit(make_limit(3, &inst, Side::Buy, 100.0, 3.0));
+        engine.submit(make_limit(4, &inst, Side::Buy, 101.0, 1.5));
+        engine.submit(make_limit(5, &inst, Side::Sell, 103.0, 2.5));
+        engine.submit(make_limit(6, &inst, Side::Sell, 103.0, 1.0));
+        engine.submit(make_limit(7, &inst, Side::Sell, 104.0, 1.0));
+
+        let book = L3Book::from_l1_engine_for(&engine, &inst);
+        let json = serde_json::to_string(&book).expect("serialize ok");
+        let restored: L3Book = serde_json::from_str(&json).expect("deserialize ok");
+
+        // 字段级一致性(PartialEq)
+        assert_eq!(book, restored);
+
+        // 关键语义保留
+        assert_eq!(restored.best_bid(), Some(Price::from_f64(101.0)));
+        assert_eq!(restored.best_ask(), Some(Price::from_f64(103.0)));
+        assert_eq!(restored.total_bid_orders(), 4);
+        assert_eq!(restored.total_ask_orders(), 3);
+        // qty 累加验证
+        assert!(
+            (restored.total_bid_qty() - 7.5).abs() < 1e-9,
+            "1 + 2 + 3 + 1.5"
+        );
+        assert!(
+            (restored.total_ask_qty() - 4.5).abs() < 1e-9,
+            "2.5 + 1.0 + 1.0"
+        );
+    }
+
+    /// JSON round-trip:多 instrument 场景(from_l1_engine 聚合)
+    #[test]
+    fn json_roundtrip_multi_instrument() {
+        let mut engine = L1MatchingEngine::new();
+        let btc = btc_spot();
+        let eth = eth_spot();
+        engine.submit(make_limit(1, &btc, Side::Buy, 50_000.0, 1.0));
+        engine.submit(make_limit(2, &eth, Side::Buy, 3_000.0, 2.0));
+        engine.submit(make_limit(3, &eth, Side::Sell, 3_001.0, 1.5));
+
+        let book = L3Book::from_l1_engine(&engine);
+        let json = serde_json::to_string(&book).expect("serialize ok");
+        let restored: L3Book = serde_json::from_str(&json).expect("deserialize ok");
+
+        assert_eq!(book, restored);
+        assert_eq!(restored.total_bid_orders(), 2, "btc + eth 各 1 buy");
+        assert_eq!(restored.total_ask_orders(), 1, "eth 1 sell");
+    }
+
+    /// JSON round-trip:空 book 边界
+    #[test]
+    fn json_roundtrip_empty_book() {
+        let book = L3Book::new();
+        let json = serde_json::to_string(&book).expect("serialize ok");
+        let restored: L3Book = serde_json::from_str(&json).expect("deserialize ok");
+        assert_eq!(book, restored);
+        assert!(restored.is_empty());
+    }
+
+    /// L3Order 序列化稳定性:字段级精确
+    #[test]
+    fn l3_order_json_roundtrip() {
+        let mut engine = L1MatchingEngine::new();
+        let inst = btc_spot();
+        engine.submit(make_limit(12345, &inst, Side::Sell, 50_123.45, 0.123456));
+
+        let book = L3Book::from_l1_engine_for(&engine, &inst);
+        let orders = book.orders_at(Side::Sell, Price::from_f64(50_123.45));
+        assert_eq!(orders.len(), 1);
+        let json = serde_json::to_string(&orders[0]).expect("serialize ok");
+        let restored: L3Order = serde_json::from_str(&json).expect("deserialize ok");
+        assert_eq!(orders[0], restored);
+        assert_eq!(restored.order_id, 12345);
+        assert_eq!(restored.side, Side::Sell);
+        assert!((restored.qty - 0.123456).abs() < 1e-9);
+    }
+
+    /// L3Book.from_multi_asset 序列化稳定性
+    #[test]
+    fn multi_asset_book_json_roundtrip() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(eth_spot());
+        m.submit(make_limit(1, &btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(2, &eth_spot(), Side::Buy, 3_000.0, 1.0))
+            .unwrap();
+
+        let btc_book = L3Book::from_multi_asset(&m, &btc_spot());
+        let json = serde_json::to_string(&btc_book).expect("serialize ok");
+        let restored: L3Book = serde_json::from_str(&json).expect("deserialize ok");
+        assert_eq!(btc_book, restored);
+        assert_eq!(restored.total_bid_orders(), 1);
+        assert_eq!(restored.best_bid(), Some(Price::from_f64(50_000.0)));
+    }
+
+    /// L3Book 一致性:JSON schema 稳定(关键字段名)
+    #[test]
+    fn json_schema_stable_field_names() {
+        let mut engine = L1MatchingEngine::new();
+        let inst = btc_spot();
+        engine.submit(make_limit(42, &inst, Side::Buy, 100.0, 1.0));
+
+        let book = L3Book::from_l1_engine_for(&engine, &inst);
+        let json = serde_json::to_string(&book).expect("serialize ok");
+
+        // 关键字段名(对外 wire format 锁定)
+        assert!(json.contains("\"bids\""), "顶层 bids 字段");
+        assert!(json.contains("\"asks\""), "顶层 asks 字段");
+        assert!(json.contains("\"order_id\""), "L3Order.order_id 字段");
+        assert!(json.contains("\"side\""), "L3Order.side 字段");
+        assert!(json.contains("\"qty\""), "L3Order.qty 字段");
+        assert!(
+            json.contains("\"timestamp_ns\""),
+            "L3Order.timestamp_ns 字段"
+        );
+    }
 }

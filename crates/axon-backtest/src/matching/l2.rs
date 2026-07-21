@@ -244,6 +244,16 @@ impl L2MatchingEngine {
         &self.inner
     }
 
+    /// Phase 3.3 (A1.2) 新增:取 fill 链追踪器(只读,透传到 inner L1)
+    ///
+    /// L2 包装 L1,L1 内部维护 `PartialFillTracker`,L2 直接透传。供
+    /// `MultiAssetMatchingEngine::tracker_for(instrument)` 链路用,多 leg
+    /// 套利对账层可通过此 API 查询 fill 链。
+    #[inline]
+    pub fn tracker(&self) -> &crate::matching::PartialFillTracker {
+        self.inner.tracker()
+    }
+
     /// 从条目列表恢复订单簿
     ///
     /// 用于：策略启动时从快照恢复、跨进程迁移等场景。
