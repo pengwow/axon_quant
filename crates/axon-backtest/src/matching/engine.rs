@@ -26,6 +26,7 @@ use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Instrument, Price, Quantity, Symbol};
 
+use super::PartialFillTracker;
 use super::error::{MatchingError, MatchingResult};
 use super::l3::engine_l3::build_leg_order;
 use super::types::{MatchFill, OrderBookLevel, SubmitResult};
@@ -229,10 +230,16 @@ impl L1Book {
     /// `trade_sequence: &AtomicU64` 用于分配 fill id。关联函数化后
     /// 调用方可以同时借用 `self.books`(取 book)和 `self.trade_sequence`
     /// (取序号),彻底避免 borrow-check 冲突。
+    ///
+    /// 0.8.0 Phase 3.2 增:接收 `tracker: &mut PartialFillTracker`,
+    /// 每次 fill 后 push 到 taker + maker 链,撮合循环内 maker 全成
+    /// 立即 `mark_filled`(避免下个 fill 看到 maker 还在簿)。
     fn match_against_asks(
         book: &mut L1Book,
         taker: &mut Order,
+        taker_instrument: &Instrument,
         trade_sequence: &AtomicU64,
+        tracker: &mut PartialFillTracker,
     ) -> Vec<MatchFill> {
         let mut fills = Vec::new();
         let mut empty_prices = Vec::new();
@@ -287,6 +294,10 @@ impl L1Book {
                 };
                 fills.push(fill);
 
+                // 0.8.0 Phase 3.2:push fill 记录到 PartialFillTracker
+                // (taker 链 + maker 链同时记录)
+                tracker.track_fill(fills.last().expect("just pushed"), taker_instrument);
+
                 // 更新 taker 已成交量
                 taker.filled_quantity =
                     Quantity::from_f64(taker.filled_quantity.as_f64() + fill_qty.as_f64());
@@ -294,6 +305,10 @@ impl L1Book {
                 // 更新 maker 已成交量并更新状态
                 if let Some(maker) = orders.front_mut() {
                     let _ = maker.apply_fill(fill_qty);
+                    // 0.8.0 Phase 3.2:maker 此次 fill 后被吃光 → 升级最后 fill 为 Filled
+                    if maker.is_filled() {
+                        tracker.mark_filled(maker.id);
+                    }
                 }
 
                 // taker 已全部成交
@@ -317,10 +332,15 @@ impl L1Book {
     ///
     /// T3.2 改:同 `match_against_asks`,从 `&mut self` method 迁为
     /// `L1Book` 关联函数,接收 `trade_sequence: &AtomicU64`。
+    ///
+    /// 0.8.0 Phase 3.2 增:同 `match_against_asks`,接收 tracker
+    /// 用于 fill 链追踪。
     fn match_against_bids(
         book: &mut L1Book,
         taker: &mut Order,
+        taker_instrument: &Instrument,
         trade_sequence: &AtomicU64,
+        tracker: &mut PartialFillTracker,
     ) -> Vec<MatchFill> {
         let mut fills = Vec::new();
         let mut empty_prices = Vec::new();
@@ -379,6 +399,9 @@ impl L1Book {
                     };
                     fills.push(fill);
 
+                    // 0.8.0 Phase 3.2:push fill 记录到 PartialFillTracker
+                    tracker.track_fill(fills.last().expect("just pushed"), taker_instrument);
+
                     // 更新 taker 已成交量
                     taker.filled_quantity =
                         Quantity::from_f64(taker.filled_quantity.as_f64() + fill_qty.as_f64());
@@ -386,6 +409,10 @@ impl L1Book {
                     // 更新 maker
                     if let Some(maker) = orders.front_mut() {
                         let _ = maker.apply_fill(fill_qty);
+                        // 0.8.0 Phase 3.2:maker 全成 → mark_filled
+                        if maker.is_filled() {
+                            tracker.mark_filled(maker.id);
+                        }
                     }
                     // 注:taker 是否完全成交的检查在 loop 入口处(防止 qty=0
                     // 幽灵 fill)。`stop` flag 在闭包外判断以驱动外层 break。
@@ -413,11 +440,20 @@ impl L1Book {
 ///
 /// T3.2 改:从单 book 改为 `HashMap<Instrument, L1Book>`,实现
 /// 多 leg 路由(spot + swap 各自独立撮合,delta 中性套利基础)。
+///
+/// 0.8.0 Phase 3.2 增:`tracker: PartialFillTracker` 字段,跨 instrument
+/// 共享,持久化 per-order fill 链(详见 [`super::tracker`])。
 pub struct L1MatchingEngine {
     /// 每个 instrument 一个 book
     books: HashMap<Instrument, L1Book>,
     /// 成交序列号(单调递增,跨 instrument 共享)
     trade_sequence: AtomicU64,
+    /// per-order fill 链追踪器(0.8.0 Phase 3.2)
+    ///
+    /// 跨 instrument 共享,与 `trade_sequence` 平级(都是全局视角)。
+    /// 在撮合循环 / cancel / clear_book 时机由 `submit` / `cancel`
+    /// / `clear_book` / `clear_book_for` 驱动。
+    tracker: PartialFillTracker,
 }
 
 impl Default for L1MatchingEngine {
@@ -432,6 +468,7 @@ impl L1MatchingEngine {
         Self {
             books: HashMap::new(),
             trade_sequence: AtomicU64::new(0),
+            tracker: PartialFillTracker::new(),
         }
     }
 
@@ -473,6 +510,15 @@ impl L1MatchingEngine {
     /// Phase 3.2 新增:遍历所有 instrument 的 book(用于多 asset 聚合)
     pub fn iter_books(&self) -> impl Iterator<Item = (&Instrument, &L1Book)> {
         self.books.iter()
+    }
+
+    /// Phase 3.2 新增:取 fill 链追踪器(只读)
+    ///
+    /// 策略层 / 对账层通过 `engine.tracker().chain(order_id)` 查询订单 fill 链。
+    /// 内部 fill 记录由引擎在撮合 / cancel / clear 时机自动维护。
+    #[inline]
+    pub fn tracker(&self) -> &PartialFillTracker {
+        &self.tracker
     }
 
     /// 提取订单的限价（市价单返回 `None`）
@@ -713,17 +759,30 @@ impl MatchingEngine for L1MatchingEngine {
         }
 
         // 4. 撮合。`L1Book::match_against_*` 是关联函数,接受
-        //    `(book, taker, trade_sequence)` 三个独立借用,因此可以
-        //    同时持有 `self.books` (取 book) 和 `self.trade_sequence`
-        //    (取序号),无 borrow-check 冲突。
+        //    `(book, taker, taker_instrument, trade_sequence, tracker)` 五个
+        //    独立借用,因此可以同时持有 `self.books` / `self.trade_sequence`
+        //    / `self.tracker` 而无 borrow-check 冲突。
+        let taker_instrument = taker.instrument.clone();
         let fills = match taker.side {
             Side::Buy => {
                 let book = self.books.get_mut(&taker.instrument).unwrap();
-                L1Book::match_against_asks(book, &mut taker, &self.trade_sequence)
+                L1Book::match_against_asks(
+                    book,
+                    &mut taker,
+                    &taker_instrument,
+                    &self.trade_sequence,
+                    &mut self.tracker,
+                )
             }
             Side::Sell => {
                 let book = self.books.get_mut(&taker.instrument).unwrap();
-                L1Book::match_against_bids(book, &mut taker, &self.trade_sequence)
+                L1Book::match_against_bids(
+                    book,
+                    &mut taker,
+                    &taker_instrument,
+                    &self.trade_sequence,
+                    &mut self.tracker,
+                )
             }
         };
 
@@ -736,6 +795,12 @@ impl MatchingEngine for L1MatchingEngine {
             // IOC：取消剩余
             let _ = taker.cancel();
             to_insert = false;
+        }
+
+        // 0.8.0 Phase 3.2:taker 全部成交 → 升级 fill 链最后记录为 Filled
+        // (maker 链上的最后 fill 在 match_against 循环内已 mark_filled)
+        if is_filled {
+            self.tracker.mark_filled(taker.id);
         }
 
         // 6. 挂单(move taker 避免 clone)
@@ -755,6 +820,10 @@ impl MatchingEngine for L1MatchingEngine {
     }
 
     /// T3.2 改:遍历所有 books 查找 order_id 所在 book 并删除
+    ///
+    /// 0.8.0 Phase 3.2 增:从 book 移除 order 后,若 fill 链非空
+    /// (order 已被部分成交),调 `tracker.mark_cancelled_after_partial`
+    /// 升级最后一条 fill 状态为 `CancelledAfterPartial`。
     fn cancel(&mut self, order_id: u64) -> bool {
         for book in self.books.values_mut() {
             if let Some((side, price)) = book.order_index.remove(&order_id) {
@@ -778,6 +847,9 @@ impl MatchingEngine for L1MatchingEngine {
                         book_side.remove(&price);
                     }
                 }
+                // 0.8.0 Phase 3.2:fill 链状态升级(若有 fill)
+                // (No-op 当 fill 链为空,即从未成交就被 cancel)
+                self.tracker.mark_cancelled_after_partial(order_id);
                 return found;
             }
         }
@@ -850,20 +922,27 @@ impl MatchingEngine for L1MatchingEngine {
     /// T3.2 改:清空所有 books(每个 book 内部清,order_index 替换为新实例)
     ///
     /// `trade_sequence` 仍保留(跨 bar 连续递增)。
+    ///
+    /// 0.8.0 Phase 3.2 增:`tracker.clear()` 同步清 fill 链(与 books 一并清)。
     fn clear_book(&mut self) {
         for book in self.books.values_mut() {
             book.clear();
         }
+        self.tracker.clear();
     }
 
     /// 0.7.0 新增:只清空指定 instrument 的 book(per-leg seed 用)
     ///
     /// 若该 instrument 尚无 book(`books` 中没有),`get_mut` 返回 None → no-op。
     /// 避免误清空其他 leg 的 seed(spot 的 begin_bar 不应清掉 perp 的 book)。
+    ///
+    /// 0.8.0 Phase 3.2 增:`tracker.clear_for_instrument` 同步清该 instrument
+    /// 关联的 fill 链(spot seed 不应清掉 perp 的 fill 链)。
     fn clear_book_for(&mut self, instrument: &Instrument) {
         if let Some(book) = self.books.get_mut(instrument) {
             book.clear();
         }
+        self.tracker.clear_for_instrument(instrument);
     }
 
     /// trait 适配:委托给 `L1MatchingEngine::seed_liquidity` inherent 方法
@@ -1634,5 +1713,254 @@ mod tests {
             20,
             "二轮 seed 后 active_order_count 必须等于 20(无 ghost entry)"
         );
+    }
+
+    // ─── 0.8.0 Phase 3.2 A1.1:PartialFillTracker 与 L1 集成测试 ───────
+
+    use axon_core::order::FillState;
+
+    /// 简单场景:单笔 taker 完全成交 → fill 链正确(单条,Filled)
+    #[test]
+    fn test_tracker_full_fill_lifecycle() {
+        let mut engine = L1MatchingEngine::new();
+        // 卖单 @ 100, qty 1.0
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
+        // 买单 @ 100, qty 1.0 → 全部成交
+        engine.submit(make_limit_order(2, Side::Buy, 100.0, 1.0, 2_000));
+
+        // taker 链 1 条,状态 Filled
+        let taker_chain = engine.tracker().chain(2).unwrap();
+        assert_eq!(taker_chain.len(), 1);
+        assert_eq!(taker_chain[0].state, FillState::Filled);
+        // maker 链 1 条,状态 Filled(在 match_against 循环内 mark_filled)
+        let maker_chain = engine.tracker().chain(1).unwrap();
+        assert_eq!(maker_chain.len(), 1);
+        assert_eq!(maker_chain[0].state, FillState::Filled);
+    }
+
+    /// 多次部分成交 + 最终全成 → fill 链长度 = 部分成交次数
+    #[test]
+    fn test_tracker_multi_partial_fill_lifecycle() {
+        let mut engine = L1MatchingEngine::new();
+        // 3 个卖单 maker @ 100,各 qty 1.0(id 1, 2, 3)
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
+        engine.submit(make_limit_order(2, Side::Sell, 100.0, 1.0, 1_500));
+        engine.submit(make_limit_order(3, Side::Sell, 100.0, 1.0, 2_000));
+
+        // 买单 @ 100, qty 2.5 → 吃 1 + 2 + 3 各 1.0,余 0.5
+        let result = engine.submit(make_limit_order(4, Side::Buy, 100.0, 2.5, 3_000));
+        assert_eq!(result.fills.len(), 3, "应吃 3 笔 maker");
+        assert!(result.is_filled, "taker 全成");
+
+        // taker 链 3 条,最后一条 Filled
+        let taker_chain = engine.tracker().chain(4).unwrap();
+        assert_eq!(taker_chain.len(), 3);
+        assert_eq!(taker_chain[0].state, FillState::Active);
+        assert_eq!(taker_chain[1].state, FillState::Active);
+        assert_eq!(taker_chain[2].state, FillState::Filled);
+
+        // maker 1 / 2 各 1 条 fill,都是 Filled(在 match_against 循环内被吃光)
+        assert_eq!(engine.tracker().chain_len(1), 1);
+        assert_eq!(
+            engine.tracker().chain(1).unwrap()[0].state,
+            FillState::Filled
+        );
+        assert_eq!(engine.tracker().chain_len(2), 1);
+        assert_eq!(
+            engine.tracker().chain(2).unwrap()[0].state,
+            FillState::Filled
+        );
+        // maker 3 还在簿,fill 状态 Active(它还有 0.5 remaining)
+        assert_eq!(engine.tracker().chain_len(3), 1);
+        assert_eq!(
+            engine.tracker().chain(3).unwrap()[0].state,
+            FillState::Active
+        );
+    }
+
+    /// 部分成交后取消 → fill 链最后一条 CancelledAfterPartial
+    #[test]
+    fn test_tracker_partial_then_cancel() {
+        let mut engine = L1MatchingEngine::new();
+        // 卖单 maker @ 100, qty 5.0
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 5.0, 1_000));
+        // 买单 @ 100, qty 2.0 → 吃 2.0
+        engine.submit(make_limit_order(2, Side::Buy, 100.0, 2.0, 2_000));
+        // maker 1 还剩 3.0 在簿
+        assert_eq!(engine.best_ask(), Some(Price::from_f64(100.0)));
+
+        // 取消 maker 1(部分成交过)
+        let cancelled = engine.cancel(1);
+        assert!(cancelled);
+
+        // maker 1 fill 链 1 条,状态 CancelledAfterPartial
+        let chain = engine.tracker().chain(1).unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].state, FillState::CancelledAfterPartial);
+    }
+
+    /// 从未成交就被取消 → fill 链为空(没有 CancelledNoFill 记录)
+    #[test]
+    fn test_tracker_cancel_without_any_fill() {
+        let mut engine = L1MatchingEngine::new();
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
+
+        // 取消(无 fill)
+        let cancelled = engine.cancel(1);
+        assert!(cancelled);
+        // chain 返回 None(从未成交)
+        assert!(engine.tracker().chain(1).is_none());
+        assert_eq!(engine.tracker().chain_len(1), 0);
+    }
+
+    /// IOC 未成交 → fill 链空(taker 都没成交,自然无 fill)
+    #[test]
+    fn test_tracker_ioc_no_fill() {
+        let mut engine = L1MatchingEngine::new();
+        // 无对手盘,IOC 买单应立即取消
+        let ioc = Order::spot(
+            1,
+            "BTC",
+            "USDT",
+            Side::Buy,
+            OrderType::Limit {
+                price: Price::from_f64(100.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::IOC,
+        );
+        let result = engine.submit(ioc);
+        assert!(result.fills.is_empty());
+        // taker 1 无 fill 链
+        assert!(engine.tracker().chain(1).is_none());
+    }
+
+    /// 部分成交 + 剩余挂单 + 取消挂单部分 → CancelledAfterPartial
+    #[test]
+    fn test_tracker_partial_fill_then_cancel_remaining() {
+        let mut engine = L1MatchingEngine::new();
+        // 卖单 maker @ 100, qty 5.0
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 5.0, 1_000));
+        // 买单 @ 100, qty 2.0 → 吃 2.0,maker 1 剩 3.0 挂单
+        engine.submit(make_limit_order(2, Side::Buy, 100.0, 2.0, 2_000));
+
+        // 取消 maker 1(已部分成交过)
+        engine.cancel(1);
+
+        // fill 链 1 条,CancelledAfterPartial
+        let chain = engine.tracker().chain(1).unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].state, FillState::CancelledAfterPartial);
+        assert_eq!(chain[0].quantity, Quantity::from_f64(2.0));
+    }
+
+    /// 多 instrument 隔离:btc / eth 的 fill 链互不干扰
+    #[test]
+    fn test_tracker_multi_instrument_isolation() {
+        let mut engine = L1MatchingEngine::new();
+        let btc = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        });
+
+        // btc 撮合
+        engine.submit(Order::spot(
+            1,
+            "BTC",
+            "USDT",
+            Side::Sell,
+            OrderType::Limit {
+                price: Price::from_f64(100.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::GTC,
+        ));
+        engine.submit(Order::spot(
+            2,
+            "BTC",
+            "USDT",
+            Side::Buy,
+            OrderType::Limit {
+                price: Price::from_f64(100.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::GTC,
+        ));
+
+        // eth 撮合
+        engine.submit(Order::spot(
+            3,
+            "ETH",
+            "USDT",
+            Side::Sell,
+            OrderType::Limit {
+                price: Price::from_f64(200.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::GTC,
+        ));
+        engine.submit(Order::spot(
+            4,
+            "ETH",
+            "USDT",
+            Side::Buy,
+            OrderType::Limit {
+                price: Price::from_f64(200.0),
+            },
+            Quantity::from_f64(1.0),
+            TimeInForce::GTC,
+        ));
+
+        // 4 个 order 都有 fill 链
+        for id in [1, 2, 3, 4] {
+            assert!(
+                engine.tracker().chain(id).is_some(),
+                "order {id} 应有 fill 链"
+            );
+        }
+
+        // 验证 taker_instrument 索引正确(clear_for_instrument 用)
+        // 暂时不能直接访问 taker_instrument,但通过 clear_for_instrument 验证:
+        // clear btc 后,btc 的 fill 链应消失,eth 应保留
+        engine.clear_book_for(&btc);
+        assert!(engine.tracker().chain(1).is_none(), "btc maker 1 链应清空");
+        assert!(engine.tracker().chain(2).is_none(), "btc taker 2 链应清空");
+        assert!(engine.tracker().chain(3).is_some(), "eth maker 3 链应保留");
+        assert!(engine.tracker().chain(4).is_some(), "eth taker 4 链应保留");
+    }
+
+    /// `clear_book` 同步清 fill 链
+    #[test]
+    fn test_tracker_clear_book_also_clears_chain() {
+        let mut engine = L1MatchingEngine::new();
+        // 撮合一笔
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000));
+        engine.submit(make_limit_order(2, Side::Buy, 100.0, 1.0, 2_000));
+        assert!(engine.tracker().chain(1).is_some());
+
+        // clear
+        engine.clear_book();
+        assert!(engine.tracker().chain(1).is_none(), "clear 后链应消失");
+        assert_eq!(engine.tracker().total_records(), 0);
+    }
+
+    /// 重复 fill(同 taker 多次部分成交)fill 链按 fill_id 升序
+    #[test]
+    fn test_tracker_chain_ordering_by_fill_id() {
+        let mut engine = L1MatchingEngine::new();
+        // 卖单 maker @ 100, qty 5.0
+        engine.submit(make_limit_order(1, Side::Sell, 100.0, 5.0, 1_000));
+        // 多次部分成交
+        engine.submit(make_limit_order(2, Side::Buy, 100.0, 1.0, 2_000));
+        engine.submit(make_limit_order(3, Side::Buy, 100.0, 1.0, 3_000));
+        engine.submit(make_limit_order(4, Side::Buy, 100.0, 1.0, 4_000));
+
+        // maker 1 链 3 条,fill_id 单调
+        let chain = engine.tracker().chain(1).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert!(chain[0].fill_id < chain[1].fill_id);
+        assert!(chain[1].fill_id < chain[2].fill_id);
+        // maker 1 此时还剩 2.0 remaining(没全成,最后 fill 仍 Active)
+        assert_eq!(chain[2].state, FillState::Active);
     }
 }

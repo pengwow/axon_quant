@@ -12,15 +12,18 @@
 //! - [`status`]：订单状态机（7 态）与拒绝原因（8 种）
 //! - [`core`]：[`Order`] 主体结构与生命周期方法
 //! - [`error`]：错误类型
+//! - [`fill`]：per-fill 元数据 + 状态机(0.8.0 Phase 3.2 A1.1)
 
 pub mod core;
 pub mod error;
+pub mod fill;
 pub mod status;
 pub mod tif;
 pub mod types;
 
 pub use core::Order;
 pub use error::{OrderError, OrderResult};
+pub use fill::{FillRecord, FillState};
 pub use status::{OrderStatus, RejectReason};
 pub use tif::TimeInForce;
 pub use types::OrderType;

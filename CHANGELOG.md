@@ -135,6 +135,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 集成测试:`crates/axon-backtest/src/engine.rs::tests` 2 个 e2e case(`engine_router_integration_through_box_dyn` / `engine_router_routes_submit_event`),验证 router 通过 `Box<dyn MatchingEngine>` 真的参与 `BacktestEngine::run()` 撮合链路。
   - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.1 A2.1 章节。
 
+- **`PartialFillTracker` per-order fill 链追踪 + L1 撮合集成** (`feat(backtest): PartialFillTracker + L1 撮合 fill 链追踪 (0.8.0 Phase 3 A1.1)`):
+  - 0.7.0 现状:L1 撮合(`L1Book::match_against_asks` / `match_against_bids`)只对外暴露瞬时 `MatchFill` 列表(每次 submit 的 fill 列表),**没有持久化按 `OrderId` 索引的 fill 链**:
+    - 同一笔订单多次部分成交,fill 列表与 order 状态(PartiallyFilled)耦合,策略层 / 对账层无法从外部查询"该 order 历次 fill 的完整时间线"。
+    - 订单部分成交后取消,fill 列表已"飘散",无法判断"该 cancel 是不是发生在部分成交后"。
+    - 撮合后的 fill 链(per-order)与 `MatchFill`(per-match)是同一份数据的两视图,0.7.0 缺前者。
+  - 0.8.0 A1.1 交付:
+    - **`axon_core::order::FillRecord`**:`fill_id` / `taker_order_id` / `maker_order_id` / `price` / `quantity` / `timestamp` + `state: FillState`。`state` 字段 `#[serde(default)]` 向前兼容 0.7.x 数据(无 state → `Active`)。
+    - **`axon_core::order::FillState`** 状态机 4 态:`Active` / `Filled` / `CancelledAfterPartial` / `CancelledNoFill`。`Active` → 终态单向转换,终态不可再变。提供 `can_transition_to` / `transition_to` 防御 API。
+    - **`axon_backtest::matching::PartialFillTracker`**:`HashMap<OrderId, Vec<FillRecord>>` + `order_instrument: HashMap<OrderId, Instrument>` 索引。
+      - `track_fill(&MatchFill, &Instrument)`:push 一条 fill 到 taker + maker 链,同时记录 order 所属 instrument。
+      - `mark_filled(order_id)` / `mark_cancelled_after_partial(order_id)`:升级最后一条 fill 的 `state`。
+      - `chain(order_id) -> Option<&[FillRecord]>`:策略层 / 对账层只读访问。
+      - `clear()` / `clear_for_instrument(instrument)`:与 `L1MatchingEngine::clear_book` / `clear_book_for` 同步清。
+    - **`L1MatchingEngine` 集成**:`tracker: PartialFillTracker` 字段(跨 instrument 共享,与 `trade_sequence` 平级)。`L1Book::match_against_*` 关联函数签名加 `tracker: &mut PartialFillTracker` + `taker_instrument: &Instrument` 参数;撮合循环内 push fill 记录 + maker 全成时 `mark_filled(maker_id)`;`L1MatchingEngine::submit` 在 taker 全成时 `mark_filled(taker.id)`;`cancel` 在从 book 移除后 `mark_cancelled_after_partial(order_id)`。
+  - **设计要点**:
+    - **`Order` 不变**:`FillRecord` 是独立类型,不污染 `Order` 字段,保持 `Order` 的 serde schema 稳定(0.7.x 序列化数据兼容)。
+    - **fill 链与 order 状态独立**:`PartialFillTracker` 不读 `Order.status`,状态机由调用方(L1Book 撮合循环 + `submit` / `cancel`)显式驱动,可独立观察。
+    - **跨 instrument 共享**:tracker 挂在 `L1MatchingEngine` 上,跨 book 共享(全局 fill 序号 + 全局 fill 链)。
+    - **per-instrument 清空**:`clear_for_instrument` 同时清 taker 链 + maker 链(因 `order_instrument` 同时记录两者),per-leg seed 用,与 `clear_book_for` 同步。
+  - **性能** (A3.0 bench `--quick`):
+    - L1 submit:533ns → 1040ns(退化 1.95x,fill 链 push + `is_filled` 检查)。
+    - L2 submit:581ns → 1122ns(退化 1.93x)。
+    - L3 single asset:678ns → 1206ns(退化 1.78x)。
+    - L3 / L2 比:1206/1122 = **1.07x**(在 plan A1.3 perf gate 2x 内,远低于 baseline 0.68/0.58 = 1.17x 的 2x 上限)。
+    - 退化来源:每笔 fill 额外做 2 次 `FillRecord::new` + 2 次 `HashMap::entry().or_default().push()` + 1 次 `is_filled()` 调用。A3.x(Arena 分配 / SoA 簿)可压实,A1.1 优先保证正确性。
+  - **单测**:`crates/axon-backtest/src/matching/tracker.rs::tests` 16 个 case,覆盖:
+    - 基础 API:`new_is_empty` / `track_fill_pushes_to_both_chains` / `track_fill_appends_to_existing_chain` / `chain_returns_none_for_unknown_order` / `track_fill_initial_state_is_active`。
+    - 状态机:`mark_filled_upgrades_last_record` / `mark_filled_on_empty_chain_is_noop` / `mark_cancelled_after_partial_upgrades_last_record` / `mark_cancelled_after_partial_on_empty_chain_is_noop` / `mark_filled_after_cancelled_is_noop`(终态不可互转)。
+    - 清空:`clear_resets_everything` / `clear_for_instrument_filters_by_taker` / `clear_for_instrument_no_match_is_noop`。
+    - 端到端:`e2e_full_fill_lifecycle` / `e2e_partial_then_cancelled_lifecycle` / `e2e_maker_completely_filled`(maker 在第二次 fill 被吃光时 mark_filled)。
+  - **L1 集成测试**:`crates/axon-backtest/src/matching/engine.rs::tests` 9 个 e2e case:
+    - 基础:`tracker_full_fill_lifecycle` / `tracker_multi_partial_fill_lifecycle`(3 笔 maker 串行吃 → taker 链 3 条,前 2 Active + 最后 Filled,maker 1/2 Filled + maker 3 仍 Active)。
+    - 取消:`tracker_partial_then_cancel` / `tracker_cancel_without_any_fill` / `tracker_partial_fill_then_cancel_remaining`(部分成交后挂单剩余再 cancel → CancelledAfterPartial)。
+    - 边界:`tracker_ioc_no_fill`(IOC 无对手盘 → fill 链空)。
+    - 多 instrument:`tracker_multi_instrument_isolation`(btc/eth 隔离 + `clear_for_instrument` 验证)。
+    - 同步:`tracker_clear_book_also_clears_chain`。
+    - 链顺序:`tracker_chain_ordering_by_fill_id`(同 taker 多次部分成交,链按 fill_id 升序)。
+  - **BREAKING**:无。新增模块,对外 API 是 `L1MatchingEngine::tracker() -> &PartialFillTracker`,不影响现有 305 个 lib test。
+  - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.2 A1.1 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
