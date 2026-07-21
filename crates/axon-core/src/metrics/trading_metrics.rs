@@ -3,8 +3,8 @@
 //! 线程安全:原子字段用 `AtomicI64`,NAV 累加器用 `Mutex`
 //! (0.8.0 B5 新增)。所有累加器用定点数记录,避免浮点竞态。
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// 0.8.0 B5:样本不足警告阈值
 ///
@@ -130,7 +130,10 @@ impl TradingMetrics {
     /// - `nav < 0` 时仍记录(账户穿仓场景),但 `max_drawdown` 只算正回撤
     ///   (`peak - nav > 0` 才更新),`peak` 永远 ≥ 当前 nav 不会变
     pub fn record_nav(&self, nav: f64) {
-        let mut s = self.nav_state.lock().expect("TradingMetrics nav_state poisoned");
+        let mut s = self
+            .nav_state
+            .lock()
+            .expect("TradingMetrics nav_state poisoned");
         if nav > s.peak {
             s.peak = nav;
         }
@@ -143,17 +146,26 @@ impl TradingMetrics {
 
     /// 0.8.0 B5 新增:读取 NAV 历史峰值
     pub fn nav_peak(&self) -> f64 {
-        self.nav_state.lock().expect("TradingMetrics nav_state poisoned").peak
+        self.nav_state
+            .lock()
+            .expect("TradingMetrics nav_state poisoned")
+            .peak
     }
 
     /// 0.8.0 B5 新增:读取最大回撤(绝对值,USD 单位)
     pub fn nav_max_drawdown(&self) -> f64 {
-        self.nav_state.lock().expect("TradingMetrics nav_state poisoned").max_dd
+        self.nav_state
+            .lock()
+            .expect("TradingMetrics nav_state poisoned")
+            .max_dd
     }
 
     /// 0.8.0 B5 新增:读取 NAV 采样计数(`record_nav` 调用次数)
     pub fn nav_count(&self) -> u64 {
-        self.nav_state.lock().expect("TradingMetrics nav_state poisoned").count
+        self.nav_state
+            .lock()
+            .expect("TradingMetrics nav_state poisoned")
+            .count
     }
 
     /// 胜率
@@ -272,7 +284,11 @@ impl TradingMetrics {
             return 0.0;
         }
         assert_sample_size(n_lr as usize, SAMPLE_SIZE_WARN_THRESHOLD, "calmar_ratio");
-        assert_sample_size(n_nav as usize, SAMPLE_SIZE_WARN_THRESHOLD, "calmar_ratio (nav)");
+        assert_sample_size(
+            n_nav as usize,
+            SAMPLE_SIZE_WARN_THRESHOLD,
+            "calmar_ratio (nav)",
+        );
 
         let mean = self.log_return_sum.load(Ordering::Relaxed) as f64 / 1e9 / n_lr as f64;
         let max_dd = self.nav_max_drawdown();

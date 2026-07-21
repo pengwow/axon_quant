@@ -33,10 +33,10 @@
 
 use std::hint::black_box;
 
+use axon_backtest::matching::L1MatchingEngine;
 use axon_backtest::matching::engine::MatchingEngine;
 use axon_backtest::matching::l2::L2MatchingEngine;
 use axon_backtest::matching::l3::engine_l3::MultiAssetMatchingEngine;
-use axon_backtest::matching::L1MatchingEngine;
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Instrument, Price, Quantity, SpotInstrument};
@@ -68,7 +68,13 @@ fn btc_spot() -> Instrument {
 }
 
 /// 填充卖单簿(创建 N 档同价深度,避免首档吃掉后无单可撮)
-fn fill_ask_book_same_price<E: MatchingEngine>(engine: &mut E, start_id: u64, count: usize, price: f64, qty: f64) {
+fn fill_ask_book_same_price<E: MatchingEngine>(
+    engine: &mut E,
+    start_id: u64,
+    count: usize,
+    price: f64,
+    qty: f64,
+) {
     for i in 0..count {
         let order = make_spot_limit(start_id + i as u64, Side::Sell, price, qty);
         engine.submit(order);
@@ -76,7 +82,12 @@ fn fill_ask_book_same_price<E: MatchingEngine>(engine: &mut E, start_id: u64, co
 }
 
 /// 填充 N 档分层卖单簿(价位步进 0.5)
-fn fill_ask_book_layered<E: MatchingEngine>(engine: &mut E, start_id: u64, levels: usize, qty_per_level: f64) {
+fn fill_ask_book_layered<E: MatchingEngine>(
+    engine: &mut E,
+    start_id: u64,
+    levels: usize,
+    qty_per_level: f64,
+) {
     for i in 0..levels {
         let price = 100.0 + i as f64 * 0.5;
         let order = make_spot_limit(start_id + i as u64, Side::Sell, price, qty_per_level);
@@ -190,14 +201,7 @@ fn bench_l3_multi_asset_submit(c: &mut Criterion) {
         engine.register_instrument(inst);
         // 用 make_spot_limit_for 预填 100 档卖单
         for i in 0..100_usize {
-            let order = make_spot_limit_for(
-                (i + 1) as u64,
-                base,
-                quote,
-                Side::Sell,
-                100.0,
-                10.0,
-            );
+            let order = make_spot_limit_for((i + 1) as u64, base, quote, Side::Sell, 100.0, 10.0);
             let _ = engine.submit(order);
         }
     }
@@ -223,14 +227,8 @@ fn bench_l3_multi_asset_submit(c: &mut Criterion) {
                 1.0,
             );
             let r = engine.submit(buy);
-            let refill = make_spot_limit_for(
-                next_id + 1_000_000,
-                base,
-                quote,
-                Side::Sell,
-                100.0,
-                1.0,
-            );
+            let refill =
+                make_spot_limit_for(next_id + 1_000_000, base, quote, Side::Sell, 100.0, 1.0);
             let _ = engine.submit(refill);
             tick = tick.wrapping_add(1);
             next_id = next_id.wrapping_add(1);
