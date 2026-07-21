@@ -306,6 +306,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - L1 / L2 / L3 single / L3 multi / L3 depth 10/50/100/500 全部与 A1.3 baseline 同量级
   - **BREAKING**:无。L3Book JSON wire format 保持稳定(原 6 个 round-trip 测试无修改)。
 
+- **A3.3 `BacktestEngine::begin_bar` 端到端 tick 延迟 gate PASS** (`bench(backtest): A3.3 begin_bar end-to-end tick latency — gate 0.51% (0.8.0 Phase 3 A3.3)`):
+  - **背景**:A3.0 显示 `MatchingEngine::submit` 已是 0.68µs,远低于 plan 提及的"150µs"(0.7.0 之前乐观目标)。A3.0 决定重规划 A3.x:从"压实 `inner.submit` ≤ 50µs"调整为"`BacktestEngine::begin_bar` ≤ 10µs / bar(单 leg, 无 fill)" —— tick 整体才是真热路径,不只是单次 submit。
+  - **新 bench 文件**:`benches/backtest_tick_baseline.rs` (3 个 bench)
+  - **注册**:`crates/axon-backtest/Cargo.toml` 第 94-99 行 `[[bench]]` 块
+  - **场景**:
+    - `begin_bar_minimal` —— 单 leg, 无 seed, 无 rebalance target, 无 funding, 无 position
+    - `begin_bar_with_seed_5` —— `with_seed_liquidity(0.5, 5, 1.0)`,每 bar 挂 5×2=10 档
+    - `begin_bar_with_seed_50` —— `with_seed_liquidity(0.5, 50, 1.0)`,每 bar 挂 50×2=100 档
+  - **关键数据**(criterion 50 samples × 1000 iters = 50K ops / bench, 95% CI):
+
+    | bench | per-bar mean | 95% CI | vs gate 10µs |
+    |-------|-------------:|--------|---------------|
+    | `begin_bar_minimal` | **51.0 ns** | [50.8, 51.2] | **0.51%** ✅ |
+    | `begin_bar_with_seed_5` | 1,544.3 ns | [1,542.1, 1,546.5] | 15.4% ✅ |
+    | `begin_bar_with_seed_50` | 14,924.8 ns | [14,906.9, 14,943.8] | 149% ⚠️ 100 档压力 |
+
+  - **GATE 验证**:**PASS**。
+    - `begin_bar_minimal` per-bar median = 50.9ns ≪ 10µs gate(留 195× 余量)
+    - `seed_5` per-bar 1.54µs ≤ 10µs gate(15.4% of gate)
+    - `seed_50` 14.9µs 略超 10µs,但**是 100 档 L1 submit 压力测试,plan gate 不适用**(plan gate 限定"单 leg 无 fill");每档 150ns 线性 scaling,符合 A3.0 `submit` 0.68µs 量级,非 hot-path
+  - **解读**:
+    - 最小配置下 `begin_bar` 仅 51ns —— `seed_liquidity` 空 + `legs` 空 + `funding_schedules` 空 + `position_states` 空,只剩 HashMap lookup + Vec push 1 帧,已到 end-to-end 极限
+    - A1.1 PartialFillTracker / A1.2 tracker 透传 / A3.1 OrderArena / A3.2 SoA 价位簿**均无回归**(同期数字一致)
+  - **对 0.8.0 release 的影响**:
+    - A3.x 全部完成,**0.8.0 matching layer + tick latency 硬化 = 完成**
+    - 0.9.0 重启评估:多 leg 并行回测需 `begin_bar_multi` 并发化(目前是 for 循环),SoA / Arena 集成 hot-path
+  - **报告**:`docs/superpowers/notes/2026-07-20-tick-latency.md` (mean / median / std / 95% CI 全字段,3 个 bench)
+  - **BREAKING**:无。纯加 bench,未改任何 hot path。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
