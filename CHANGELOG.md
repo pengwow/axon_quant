@@ -220,6 +220,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **BREAKING**:无。纯加 API + 测试,不影响现有 314 lib test。
   - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.3 A1.2 章节。
 
+- **A1.3 L3 perf gate 验证 (PASS)** (`bench(backtest): A1.3 L3 perf gate verification — L3/L2 = 1.07-1.15x, well below 2.0x budget (0.8.0 Phase 3 A1.3)`):
+  - **验收**:L3 latency ≤ 2x L2,完整 bench 跑完生成报告。
+  - **跑法**:`cargo bench --bench matching_l3_baseline` (criterion 默认 100 samples × ~32K iters/sample ≈ 3.2-3.9M ops/bench)。
+  - **关键数据 (median)**:
+    - L1 submit:1.37µs
+    - L2 submit:1.38µs
+    - L3 single asset submit:1.47µs (**L3/L2 = 1.072x** ✅)
+    - L3 multi asset (5 inst) submit:1.59µs (**L3/L2 = 1.153x** ✅)
+    - L3 depth scaling 10/50/100/500:1.43/1.50/1.65/1.62µs(O(log n) BTreeMap 验证)
+  - **结论**:**PERF GATE PASS**。L3 / L2 median 比 1.07-1.15x,远低于 2.0x budget,留 85%+ 余量。
+  - **对 0.8.0 release 的影响**:
+    - A3.1 Arena / A3.2 SoA **不是 0.8.0 必需**(perf gate 留 85%+ 余量)
+    - 重规划 A3.x → 0.9.0
+    - 0.8.0 matching layer 硬化 = 完成
+  - **报告**:`docs/superpowers/notes/2026-07-22-l3-perf-gate.md` (mean / median / std / p99 / p99.9 全 8 个 bench)。
+  - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.4 A1.3 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
