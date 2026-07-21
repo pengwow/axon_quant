@@ -237,6 +237,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **报告**:`docs/superpowers/notes/2026-07-22-l3-perf-gate.md` (mean / median / std / p99 / p99.9 全 8 个 bench)。
   - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.4 A1.3 章节。
 
+- **A3.1 OrderArena slab 分配器(基础设施)** (`feat(backtest): OrderArena slab allocator for Order storage (0.8.0 Phase 3 A3.1)`):
+  - **背景**:BacktestEngine 内部为每个挂单存一个 `Order` (堆上),高并发场景下 `Order` 反复 alloc / dealloc 是隐性瓶颈。A1.3 perf gate 已 PASS (L3/L2 = 1.07-1.15x),所以 0.8.0 范围内**只落 OrderArena 基础设施**(测试 + bench 验证无退化),把"集成到 BacktestEngine hot path"推到 0.9.0。
+  - **新模块**:`crates/axon-backtest/src/matching/arena.rs`
+  - **API**:
+    - `OrderArena::new()` / `with_capacity(cap)` — 构造
+    - `alloc_with(order) -> OrderHandle` — O(1) 分配(优先复用 free_list,否则 push)
+    - `get(h) -> Option<&Order>` / `get_mut(h) -> Option<&mut Order>` — O(1) 访问
+    - `free(h) -> bool` — O(1) 释放,推回 free_list
+    - `len()` / `capacity()` / `is_empty()` / `clear()` / `iter()` / `iter_mut()` — 容器接口
+    - `OrderHandle` — newtype(u32 index)+ `Copy + Hash + Eq`,防止与 `OrderId` (u64) 混用
+  - **关键设计点**:
+    - `slots: Vec<Slot>` + `Slot { order: Option<Order> }` — slot 可复用
+    - `free_list: Vec<u32>` — LIFO pop/push
+    - `#[deny(unsafe_code)]` 全 safe 实现
+    - 编译期 const 断言 `OrderArena: Send + Sync`
+  - **测试覆盖** (15 case):
+    - `new_arena_is_empty` / `with_capacity_preallocates_internal_vec` — 构造
+    - `alloc_returns_increasing_indices` / `alloc_grows_beyond_initial_capacity` — 扩容
+    - `get_returns_correct_order` / `get_mut_allows_modification` — 访问
+    - `free_marks_slot_unused` / `no_double_free` / `free_invalid_handle_returns_false` — 释放
+    - `free_then_alloc_reuses_slot` / `free_many_then_alloc_reuses_lifo` — 复用
+    - `clear_resets_all_slots` / `iter_yields_active_slots` / `iter_mut_allows_mutation` — 容器操作
+    - `order_arena_is_send_sync` — Send + Sync 运行时断言
+    - `alloc_free_1m_within_1s` (#[ignore]) — 性能 smoke test
+  - **A3.0 bench 验证** (`--quick`):
+    - Arena 模块**未连 hot path**,所以无性能影响(预期内)
+    - L1 / L2 / L3 single / L3 multi / L3 depth 10/50/100/500 全部与 A1.3 full mode 同量级
+    - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.5 A3.1 章节
+  - **0.9.0 集成计划**(在 plan doc Phase 3.5 记录):
+    - 优先 `OrderIndex` (L2 的 `HashMap<OrderId, ...>`)切到 Arena
+    - 其次 `L1Book` 的 `Order` 引用改为 `OrderHandle`
+    - 风险:`iter_mut` 返回的 `&mut Order` 持有独占借用,跨 `.free()` 调用方需保证
+  - **BREAKING**:无。纯加模块,未改任何 hot path。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
