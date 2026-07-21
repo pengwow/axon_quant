@@ -16,6 +16,7 @@ pub mod engine;
 pub mod error;
 pub mod l2;
 pub mod l3;
+pub mod router;
 pub mod types;
 
 pub use engine::{L1MatchingEngine, MatchingEngine, OrderBookSide, PriceLevel};
@@ -28,4 +29,5 @@ pub use l3::{
     MatchingEngineSnapshot, MatchingL3Error, MatchingL3Result, MultiAssetMatchingEngine,
     PriceLevel as L3PriceLevel, Venue, find_clearing_price,
 };
+pub use router::{EngineRouter, RoutedEngine, RoutingStrategy};
 pub use types::{MatchFill, OrderBookLevel, SubmitResult, TradeRole};

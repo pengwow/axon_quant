@@ -4444,4 +4444,84 @@ mod tests {
             engine.config.fee_config.taker_rate
         );
     }
+
+    /// 0.8.0 Phase 3.1 A2.1:`EngineRouter` 通过 `Box<dyn MatchingEngine>` 集成
+    ///
+    /// 验证 `BacktestEngineConfig.matching_engine` 字段直接装 `EngineRouter` 不报错,
+    /// 路由后的子引擎能正常处理 Submit 事件。这是 A2.x 多 engine 路由集成链路的
+    /// 端到端回归点。
+    #[test]
+    fn engine_router_integration_through_box_dyn() {
+        use crate::matching::L1MatchingEngine;
+        use crate::matching::router::{EngineRouter, RoutedEngine, RoutingStrategy};
+
+        let btc_inst = btc_spot_inst();
+        let eth_inst = Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        });
+
+        // 构造 router:BTC/ETH 各注册一个 L1
+        let mut router = EngineRouter::new();
+        router.register(btc_inst.clone(), RoutedEngine::L1(L1MatchingEngine::new()));
+        router.register(eth_inst.clone(), RoutedEngine::L1(L1MatchingEngine::new()));
+        let _ = RoutingStrategy::PerInstrumentWithFallback; // 标记使用,suppress unused
+
+        // 把 router 装进 config(Box::new 自动转 Box<dyn MatchingEngine>)
+        let config = BacktestEngineConfig {
+            clock: SimulatedClock::new(Timestamp::from_nanos(0)),
+            matching_engine: Box::new(router),
+            impact_model: None,
+            initial_cash: 100_000.0,
+            fee_config: FeeConfig::default(),
+            force_liquidate: false,
+        };
+
+        // 空队列:跑通即说明 routing 集成无 compile/runtime 问题
+        let mut engine = BacktestEngine::new(config, EventQueue::new());
+        let result = engine.run();
+        assert_eq!(result.events_processed, 0);
+        assert_eq!(result.orders_accepted, 0);
+        assert_eq!(result.orders_rejected, 0);
+    }
+
+    /// 0.8.0 Phase 3.1 A2.1:router 实际处理 Submit 事件(单 instrument 路径)
+    ///
+    /// 提交 BTC 卖单,router 路由到 BTC 的 L1 子引擎,挂簿;无对手方,fills=0
+    /// 但 orders_accepted=1。这是 router 通过 Box<dyn> 真的参与了撮合链路的
+    /// 最小 e2e 验证。
+    #[test]
+    fn engine_router_routes_submit_event() {
+        use crate::matching::router::{EngineRouter, RoutedEngine};
+
+        let btc_inst = btc_spot_inst();
+
+        let mut router = EngineRouter::new();
+        router.register(btc_inst.clone(), RoutedEngine::L1(L1MatchingEngine::new()));
+
+        let config = BacktestEngineConfig {
+            clock: SimulatedClock::new(Timestamp::from_nanos(0)),
+            matching_engine: Box::new(router),
+            impact_model: None,
+            initial_cash: 100_000.0,
+            fee_config: FeeConfig::default(),
+            force_liquidate: false,
+        };
+
+        // 入队 BTC 卖单
+        let mut q = EventQueue::new();
+        let mut b = EventBuilder::new(0);
+        let sell = make_limit_order(1, "BTC", "USDT", Side::Sell, 100.0, 1.0);
+        q.push(b.order(
+            Timestamp::from_nanos(1_000),
+            1,
+            OrderAction::Submitted(sell),
+        ));
+
+        let mut engine = BacktestEngine::new(config, q);
+        let result = engine.run();
+        assert_eq!(result.events_processed, 1);
+        assert_eq!(result.orders_accepted, 1, "router 应把单送进 L1 子引擎挂簿");
+        assert_eq!(result.fills, 0, "无对手方,无 fill");
+    }
 }

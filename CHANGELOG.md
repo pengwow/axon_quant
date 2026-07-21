@@ -111,6 +111,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `b4_bar_nav_curve_is_superset_of_equity_curve`:5 次 begin_bar + 0 fill → bar_nav_curve 5 帧 / equity_curve 0 帧(密集 vs 稀疏)。
   - 详见 `docs/superpowers/plans/2026-07-19-axon-quant-0.8.0.md` Phase 2.4 章节。
 
+### Added
+
+- **`EngineRouter` 多撮合引擎路由** (`feat(backtest): EngineRouter 多撮合引擎路由 (0.8.0 Phase 3 A2.1)`):
+  - 0.7.0 / 0.7.1 / 0.8.0 现状:`BacktestEngineConfig.matching_engine: Box<dyn MatchingEngine>` 一次只能装一个 engine(L1 / L2 / L3 / Impacted 之一)。多 leg 套利场景下(spot 走 L1 + perp 走 L3 + 另一 instrument 走 Impacted)需要在外层手写多 `BacktestEngine` 协同,语义割裂。
+  - 0.8.0 A2.1 新增 `EngineRouter`,把多 engine 装到 `HashMap<Instrument, RoutedEngine>` + primary fallback 的统一抽象,对外仍是 `MatchingEngine` trait,直接放进 `BacktestEngineConfig.matching_engine` 字段(零改造兼容)。
+  - **设计要点**:
+    - `RoutedEngine` enum(L1 / L2 / L3 / Impacted)而不是 `Box<dyn MatchingEngine>`:enum dispatch 编译为跳转表(LLVM 通常 inline),零虚表开销,且编译期穷尽检查。
+    - `RoutingStrategy`:`StrictByInstrument`(严格按 instrument 路由,未注册 → `empty`)/ `PerInstrumentWithFallback`(per-instrument 路由 + primary 兜底,默认)。
+    - `MatchingEngine` trait 全方法 dispatch:`submit` / `cancel` / `best_bid` / `best_ask` / `spread` / `depth` / `active_order_count` / `clear_book` / `clear_book_for` / `seed_liquidity`。
+    - 聚合语义:无 instrument 参数的 trait 方法(`best_bid` / `best_ask` / `depth` / `active_order_count` / `clear_book` / `cancel`)跨所有 engine 聚合;有 instrument 参数的(`clear_book_for` / `seed_liquidity`)按 `RoutingStrategy` 路由,严格模式不踩 primary。
+    - 线程安全:`EngineRouter` 是 `Send + Sync`(编译期 `const _` 断言 + 单元测试),可直接进 `BacktestEngine` / Python 绑定。
+  - **BREAKING**:无。新增模块,不影响现有 API。
+  - **限制**:
+    - `Box<dyn>` 用户自定义 engine 不可用(enum dispatch 只能路由到内置 4 种);Python 端 `PyMatchingEngine` 自定义仍走 `Box<dyn MatchingEngine>` 路径,0.9.0 评估加 `RoutedEngine::User(Box<dyn>)` arm。
+    - `depth` 聚合简化:把多 engine 的 bids/asks 合并排序取 top N,不维护跨 engine 价位冲突检测(回测场景下通常 single engine per instrument,价位不重叠)。
+  - 单测:`crates/axon-backtest/src/matching/router.rs::tests` 17 个 case:
+    - 路由:`per_instrument_routes_to_correct_engine` / `primary_fallback_for_unregistered` / `strict_mode_returns_empty_for_unregistered` / `strict_mode_with_primary_still_empty` / `register_overwrites_previous`。
+    - 聚合:`clear_book_clears_all_engines` / `clear_book_for_routes_to_specific` / `best_bid_ask_aggregates_across_engines` / `depth_aggregates_and_sorts` / `active_order_count_sums_all_engines` / `cancel_scans_all_engines`。
+    - dispatch 覆盖:`l3_dispatch_works` / `impacted_dispatch_works`。
+    - `seed_liquidity` 路由:`seed_liquidity_dispatches_to_route` / `seed_liquidity_falls_back_to_primary` / `seed_liquidity_no_op_in_strict_mode`(严格模式不踩 primary)。
+    - 编译期:`send_sync_compile_time`。
+  - 集成测试:`crates/axon-backtest/src/engine.rs::tests` 2 个 e2e case(`engine_router_integration_through_box_dyn` / `engine_router_routes_submit_event`),验证 router 通过 `Box<dyn MatchingEngine>` 真的参与 `BacktestEngine::run()` 撮合链路。
+  - 详见 `docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md` Phase 3.1 A2.1 章节。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
