@@ -127,23 +127,26 @@ impl PriceLevelSoA {
         self.qtys.iter().sum()
     }
 
-    /// 紧凑 JSON 数组格式:`[order_id, qty, side, timestamp_ns, ...]`
+    /// 紧凑 JSON 数组格式:`[{"order_id":..,"qty":..,"side":..,"timestamp_ns":..}, ...]`
     ///
     /// 注:**不**是稳定 wire format,仅供报告 / 调试。
     /// 正式 wire format 仍走 `L3Book` JSON (AoS 形式)。
+    ///
+    /// 实现说明:委托 `serde_json::json!` 构造,避免手动 `{:?}` 把 `Side`
+    /// 渲染成 `Side::Buy` (Rust Debug 格式) 而非 JSON 字符串 `"Buy"`。
     pub fn to_compact_json(&self) -> String {
-        let mut s = String::from("[");
-        for i in 0..self.qtys.len() {
-            if i > 0 {
-                s.push(',');
-            }
-            s.push_str(&format!(
-                "{{\"order_id\":{},\"qty\":{},\"side\":{:?},\"timestamp_ns\":{}}}",
-                self.order_ids[i], self.qtys[i], self.sides[i], self.timestamps_ns[i]
-            ));
-        }
-        s.push(']');
-        s
+        let orders: Vec<serde_json::Value> = (0..self.qtys.len())
+            .map(|i| {
+                serde_json::json!({
+                    "order_id": self.order_ids[i],
+                    "qty": self.qtys[i],
+                    "side": self.sides[i],
+                    "timestamp_ns": self.timestamps_ns[i],
+                })
+            })
+            .collect();
+        // 报告路径,不 panic(空 SoA 返回 `"[]"`)
+        serde_json::to_string(&orders).unwrap_or_default()
     }
 }
 
@@ -614,6 +617,58 @@ mod tests {
         assert!(json.contains("\"qty\":1.5"));
         assert!(json.contains("\"order_id\":2"));
         assert!(json.contains("\"qty\":2.5"));
+    }
+
+    /// Regression: `side` 必须以 JSON 字符串 `"Buy"` / `"Sell"` 输出,
+    /// 旧实现用 `{:?}` 会渲染成 Rust Debug 格式 `Side::Buy`,这是非法 JSON。
+    /// 验证:解析 `to_compact_json()` 输出,`side` 字段必须是字符串。
+    #[test]
+    fn price_level_soa_compact_json_side_is_json_string() {
+        let soa = PriceLevelSoA {
+            price: Price::from_f64(100.0),
+            qtys: vec![1.0, 2.0],
+            order_ids: vec![1, 2],
+            sides: vec![Side::Buy, Side::Sell],
+            timestamps_ns: vec![100, 200],
+        };
+        let json = soa.to_compact_json();
+
+        // 字符串里不能含 Rust 调试格式 `Side::` 前缀
+        assert!(
+            !json.contains("Side::"),
+            "compact JSON 不应含 Rust Debug 格式 'Side::',got: {json}"
+        );
+
+        // side 字段必须以 JSON 字符串出现
+        assert!(json.contains("\"side\":\"Buy\""), "got: {json}");
+        assert!(json.contains("\"side\":\"Sell\""), "got: {json}");
+
+        // round-trip 解析回 `Vec<serde_json::Value>`
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["side"], "Buy");
+        assert_eq!(parsed[1]["side"], "Sell");
+        assert_eq!(parsed[0]["order_id"], 1);
+        assert_eq!(parsed[0]["qty"], 1.0);
+        assert_eq!(parsed[0]["timestamp_ns"], 100);
+    }
+
+    /// 空 SoA 输出 `"[]"`(合法 JSON 数组)
+    #[test]
+    fn price_level_soa_compact_json_empty() {
+        let soa = PriceLevelSoA {
+            price: Price::from_f64(100.0),
+            qtys: vec![],
+            order_ids: vec![],
+            sides: vec![],
+            timestamps_ns: vec![],
+        };
+        let json = soa.to_compact_json();
+        assert_eq!(json, "[]");
+        // 也能正常 round-trip
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 0);
     }
 
     // ─── empty SoA JSON roundtrip ──────────────────
