@@ -271,6 +271,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 风险:`iter_mut` 返回的 `&mut Order` 持有独占借用,跨 `.free()` 调用方需保证
   - **BREAKING**:无。纯加模块,未改任何 hot path。
 
+- **A3.2 SoA 价位簿视图** (`feat(backtest): PriceLevelSoA + L3BookSoA cache-friendly aggregation views (0.8.0 Phase 3 A3.2)`):
+  - **背景**:L3Book 等 read-only snapshot 路径遍历 `BTreeMap<Price, VecDeque<Order>>`,而 `Order` 字段很多(13 个),聚合路径只关心 `qty` 字段,80% 字段都是浪费。A1.3 perf gate 已 PASS,SoA 收益小但**提供"轻量 SoA 视图"作为并行 API**,供高频报告 / 监控拉取。
+  - **新模块**:`crates/axon-backtest/src/matching/l3/soa.rs`
+  - **类型**:
+    - `PriceLevelSoA { price, qtys: Vec<f64>, order_ids: Vec<u64>, sides: Vec<Side>, timestamps_ns: Vec<i64> }` — AoS 拆 SoA,聚合路径 cache-friendly
+    - `L3BookSoA { bids: BTreeMap<Price, PriceLevelSoA>, asks: BTreeMap<Price, PriceLevelSoA> }`
+    - `SoaBookSummary` — 8 字段聚合快照(best_bid / best_ask / total qty × 2 / order counts × 2 / level counts × 2)
+  - **API**:
+    - `PriceLevelSoA::from_price_level(price, &PriceLevel)` — 从撮合 hot path 内部提取
+    - `PriceLevelSoA::from_l3_orders(price, &[L3Order])` — 从 L3Book 路径提取
+    - `L3BookSoA::from_l1_book(&L1Book)` — 直转,跳过 L3Book 中间表示
+    - `L3BookSoA::from_l3_book(&L3Book)` — 与 L3Book 行为等价
+    - 聚合方法:`total_bid_qty` / `total_ask_qty` / `total_*_orders` / `*_level_count` / `*_depth_qty(N)` / `best_bid` / `best_ask` / `summary`
+    - `PriceLevelSoA::to_compact_json` — 报告用,**不**是稳定 wire format
+  - **关键设计点**:
+    - `L3BookSoA` 是 `L3Book` 的**并行视图**,不替换 (现有 L3Book JSON 6 个 round-trip 测试无修改)
+    - 聚合路径走 `qtys: Vec<f64>` 紧凑 scan,而非 `Order.remaining_quantity()` 多次 deref
+    - `summary()` 一次性聚合 8 字段,适合监控 / 报告高频拉取
+    - `L3BookSoA::from_l1_book` 跳过 `L3Book` 中间表示(节省一次拷贝)
+  - **测试覆盖** (14 case, 100% pass):
+    - `soa_from_price_level_empty` / `soa_from_price_level_three_orders` — `PriceLevel` 提取
+    - `soa_from_l3_orders_basic` — `L3Order` 提取
+    - `l3_book_soa_empty` / `l3_book_soa_from_l1_engine` / `l3_book_soa_via_l2_engine` — 多入口构造
+    - `l3_book_soa_depth_aggregation` — Top-N 档聚合
+    - `l3_book_soa_equivalent_to_l3_book` — 与 L3Book 行为等价
+    - `soa_after_partial_fill` — partial fill 后 SoA 状态正确
+    - `soa_summary_basic` — `summary()` 全字段
+    - `price_level_soa_serde_json_roundtrip` / `l3_book_soa_serde_json_roundtrip` / `l3_book_soa_empty_roundtrip` — 序列化
+    - `price_level_soa_compact_json_format` — `to_compact_json` 报告
+    - `soa_aggregates_10k_orders_under_100ms` (#[ignore]) — 100× 10K 单聚合性能 smoke
+  - **A3.0 bench 验证** (`--quick`):
+    - 全 8 bench `No change in performance detected` (SoA 未连 hot path,符合预期)
+    - L1 / L2 / L3 single / L3 multi / L3 depth 10/50/100/500 全部与 A1.3 baseline 同量级
+  - **BREAKING**:无。L3Book JSON wire format 保持稳定(原 6 个 round-trip 测试无修改)。
+
 ## [0.7.1] - 2026-07-19
 
 ### Fixed
