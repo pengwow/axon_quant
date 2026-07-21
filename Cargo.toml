@@ -29,7 +29,7 @@ members = [
 
 # 统一的目标目录,加速增量编译
 [workspace.package]
-version = "0.6.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"

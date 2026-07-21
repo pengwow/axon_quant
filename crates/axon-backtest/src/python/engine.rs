@@ -128,10 +128,15 @@ impl PyBacktestEngine {
     /// 用户自定义的撮合引擎类)。通过 `PyMatchingEngine` 桥接成
     /// Rust `MatchingEngine` trait object,**真替换**引擎内部默认的
     /// `L1MatchingEngine`。
-    fn with_matching_engine(&mut self, py_engine: &Bound<'_, PyAny>) -> PyResult<()> {
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_matching_engine<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        py_engine: &Bound<'_, PyAny>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let py_matcher = PyMatchingEngine::new(py_engine)?;
-        self.inner.replace_matching_engine(Box::new(py_matcher));
-        Ok(())
+        slf.inner.replace_matching_engine(Box::new(py_matcher));
+        Ok(slf)
     }
 
     /// 注入手续费配置(Stage 3 阶段 B 任务 B4)
@@ -189,9 +194,54 @@ impl PyBacktestEngine {
     ///   是 no-op(默认 trait 实现,见 `matching::engine::MatchingEngine`)。
     /// - `L1MatchingEngine` / `ImpactedMatchingEngine` 都重写了该方法,
     ///   提供完整实现。
-    fn with_seed_liquidity(&mut self, half_spread: f64, depth_levels: usize, size_per_level: f64) {
-        self.inner
+    /// - **0.7.0 起**:`with_seed_liquidity(...)` 设为 **default** 配线,
+    ///   用 `with_seed_liquidity_for(instrument, ...)` 设 per-leg 覆写;
+    ///   `begin_bar(price, instrument)` 优先 per-leg,fallback default。
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_seed_liquidity<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner
             .with_seed_liquidity(half_spread, depth_levels, size_per_level);
+        Ok(slf)
+    }
+
+    /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
+    ///
+    /// 给定 instrument 设置独立的 `SeedLiquidityConfig`,优先于
+    /// `with_seed_liquidity(...)` 设的 default。允许 spot 和 perp 各用
+    /// 不同 half_spread / depth / size(spot 紧 / perp 松 的真实市场规律)。
+    ///
+    /// Args:
+    /// - `instrument`: 交易品种 dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
+    /// - `half_spread`: 每层价差
+    /// - `depth_levels`: 每侧挂单层数
+    /// - `size_per_level`: 每层挂单数量
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    ///
+    /// Example:
+    /// ```python
+    /// engine = BacktestEngine(100_000.0)
+    /// engine.with_seed_liquidity(0.1, 5, 0.1)                # default
+    /// engine.with_seed_liquidity_for(spot_inst, 0.01, 10, 0.5)  # spot 紧
+    /// engine.with_seed_liquidity_for(perp_inst, 0.5, 5, 0.1)    # perp 松
+    /// ```
+    fn with_seed_liquidity_for<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        instrument: &Bound<'_, PyAny>,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
+        slf.inner
+            .with_seed_liquidity_for(inst, half_spread, depth_levels, size_per_level);
+        Ok(slf)
     }
 
     /// 每根 bar 开始时由应用层调用:同步执行 `clear_book + seed_liquidity`
@@ -204,8 +254,10 @@ impl PyBacktestEngine {
     /// - `instrument`: 交易品种 dict(由 `spot_instrument()` / `swap_instrument()` 工厂构造)
     ///
     /// 行为:
-    /// - 若未调 `with_seed_liquidity`:no-op(纯订单簿撮合,buy 单 → fills=0)
-    /// - 若已调:`matcher.clear_book()` + `seed_liquidity(price, ...)` 自动执行
+    /// - 若未调 `with_seed_liquidity` / `with_seed_liquidity_for`:no-op(纯订单簿撮合,buy 单 → fills=0)
+    /// - 若已调(任一):`matcher.clear_book_for(instrument)` 只清该 instrument 的
+    ///   book(0.7.0 起,**不**再清其他 leg),再 `seed_liquidity(price, ...)` 挂
+    ///   限价单。配线优先 per-leg,fallback default。
     #[pyo3(signature = (price, instrument))]
     fn begin_bar(
         &mut self,
@@ -215,6 +267,58 @@ impl PyBacktestEngine {
     ) -> PyResult<()> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         self.inner.begin_bar(price, inst);
+        Ok(())
+    }
+
+    /// 0.7.0 新增,0.7.1 修正:多 leg 同 bar seed(spot + perp 套利场景)
+    ///
+    /// 在同一根 bar 内对多个 instrument 同时 seed liquidity,常用于 delta-neutral
+    /// 套利(spot 和 perp 各自挂对手盘,策略单两边都能成交)。
+    ///
+    /// Args:
+    /// - `legs`: `list[tuple[instrument_dict, price]]`,
+    ///   每项是 `(instrument_dict, price)`,instrument 由
+    ///   `spot_instrument()` / `swap_instrument()` 工厂构造,
+    ///   price 是该 leg 的 mid_price
+    ///
+    /// Example:
+    /// ```python
+    /// engine.begin_bar_multi([
+    ///     (spot_instrument("BTC", "USDT"), 100.0),
+    ///     (swap_instrument("BTC", "USDT", "UsdMargin", 1.0), 200.5),
+    /// ])
+    /// ```
+    ///
+    /// 与多次 `begin_bar(price, instrument)` 的区别:
+    /// - 多次 `begin_bar` 会 bar_id 自增多次 + funding 调度多次 + 末次 rebalance,
+    ///   **不**适合多 leg 同 bar
+    /// - `begin_bar_multi` 调一次,bar_id +1,funding 调度一次,末次 rebalance
+    ///
+    /// 0.7.1 BREAKING:0.7.0 文档承诺的 `dict[instrument, price]` 形式因 Python
+    /// `dict` key 必须可哈希,无法用 `instrument_dict` 作为 key,实际不可用。
+    /// 0.7.1 改为 `list[tuple]` 形式,语义等价。Workaround(连续 2 次 `begin_bar`)
+    /// 在 0.7.1 仍可用。
+    #[pyo3(signature = (legs))]
+    fn begin_bar_multi(&mut self, legs: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut parsed: Vec<(axon_core::types::Instrument, f64)> = Vec::with_capacity(legs.len());
+        for item in legs.iter() {
+            let tuple: &Bound<'_, PyTuple> = item.cast().map_err(|_| {
+                PyValueError::new_err(
+                    "begin_bar_multi legs must be a list of (instrument_dict, price) tuples",
+                )
+            })?;
+            if tuple.len() != 2 {
+                return Err(PyValueError::new_err(format!(
+                    "begin_bar_multi leg must be (instrument_dict, price) tuple, got len={}",
+                    tuple.len()
+                )));
+            }
+            let inst_dict = tuple.get_item(0)?;
+            let inst = super::types::parse_instrument(inst_dict.cast::<PyDict>()?)?;
+            let price: f64 = tuple.get_item(1)?.extract()?;
+            parsed.push((inst, price));
+        }
+        self.inner.begin_bar_multi(parsed);
         Ok(())
     }
 
@@ -451,13 +555,24 @@ impl PyBacktestEngine {
     /// Args:
     /// - `threshold`: 最小 delta(绝对值)。建议 `1e-6` 避免抖动;
     ///   `0.0` 等价"每 tick rebalance"。
-    fn with_auto_rebalance(&mut self, threshold: f64) {
-        self.inner.with_auto_rebalance(threshold);
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_auto_rebalance<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        threshold: f64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_auto_rebalance(threshold);
+        Ok(slf)
     }
 
     /// 关闭自动 rebalance(回到默认 `None` 状态)
-    fn with_auto_rebalance_disable(&mut self) {
-        self.inner.with_auto_rebalance_disable();
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_auto_rebalance_disable<'py>(
+        mut slf: PyRefMut<'py, Self>,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        slf.inner.with_auto_rebalance_disable();
+        Ok(slf)
     }
 
     /// 手动设置模拟时钟(0.6.0 新增 Phase 2)
@@ -501,15 +616,17 @@ impl PyBacktestEngine {
     /// - `interval_ns`: 结算间隔(ns)。典型 8h = 28_800_000_000_000
     /// - `fixed_rate`: 资金费率(正 = long 付)
     /// - `mark_aware`: 是否用 `mark_cache` 读 mark(默认 True)
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
     #[pyo3(signature = (instrument, interval_ns, fixed_rate, mark_aware = true))]
-    fn with_funding_schedule(
-        &mut self,
+    fn with_funding_schedule<'py>(
+        mut slf: PyRefMut<'py, Self>,
         _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
         interval_ns: i64,
         fixed_rate: f64,
         mark_aware: bool,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
         let schedule = FundingSchedule {
             instrument: inst,
@@ -517,22 +634,24 @@ impl PyBacktestEngine {
             fixed_rate,
             mark_aware,
         };
-        self.inner.with_funding_schedule(schedule);
-        Ok(())
+        slf.inner.with_funding_schedule(schedule);
+        Ok(slf)
     }
 
     /// 关闭指定 instrument 的 funding 自动调度(0.6.0 新增 Phase 2)
     ///
     /// Args:
     /// - `instrument`: 永续合约 dict
-    fn with_funding_schedule_disable(
-        &mut self,
+    ///
+    /// 0.7.1 改:返回 `&mut Self` 供链式调用。
+    fn with_funding_schedule_disable<'py>(
+        mut slf: PyRefMut<'py, Self>,
         _py: Python<'_>,
         instrument: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyRefMut<'py, Self>> {
         let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
-        self.inner.with_funding_schedule_disable(&inst);
-        Ok(())
+        slf.inner.with_funding_schedule_disable(&inst);
+        Ok(slf)
     }
 
     fn __repr__(&self) -> String {
@@ -650,6 +769,46 @@ impl PyRunResult {
         Ok(list)
     }
 
+    /// 每笔 fill 完整记录(0.7.0 新增)
+    ///
+    /// 与 `trades` 区别:
+    /// - `trades`:round-trip 配对 TradeRecord,只记已平仓(开+平配对)
+    /// - `fills_detail`:每笔 `MatchFill` 都记(开仓/同向加仓/平仓/部分 fill 全包含)
+    ///
+    /// 适用场景:审计每笔成交、partial fill 分析、按 taker/maker 拆分
+    /// 不适用场景:算胜率/夏普(那用 `trades` + `win_rate`/`sharpe_ratio`)
+    ///
+    /// 返回 list[dict],每 dict 7 字段:
+    /// - `timestamp_ns`:int(fill 时间)
+    /// - `instrument`:tuple(`("spot", base, quote)` 或 `("swap", base, quote, settle, contract_size)`)
+    /// - `taker_order_id`:int(吃单方)
+    /// - `maker_order_id`:int(挂单方)
+    /// - `taker_side`:str("Buy" / "Sell")
+    /// - `price`:float
+    /// - `quantity`:float
+    #[getter]
+    fn fills_detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for fr in &self.inner.fills_detail {
+            let d = PyDict::new(py);
+            d.set_item("timestamp_ns", fr.timestamp.nanos)?;
+            d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
+            d.set_item("taker_order_id", fr.taker_order_id)?;
+            d.set_item("maker_order_id", fr.maker_order_id)?;
+            d.set_item(
+                "taker_side",
+                match fr.taker_side {
+                    axon_core::market::Side::Buy => "Buy",
+                    axon_core::market::Side::Sell => "Sell",
+                },
+            )?;
+            d.set_item("price", fr.price.as_f64())?;
+            d.set_item("quantity", fr.quantity.as_f64())?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
     /// 累计手续费(f64,按 fill 累计扣除)
     #[getter]
     fn total_fees(&self) -> f64 {
@@ -661,6 +820,31 @@ impl PyRunResult {
     fn equity_curve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::empty(py);
         for (ts, nav) in &self.inner.equity_curve {
+            let tup = (ts.nanos, *nav);
+            list.append(tup)?;
+        }
+        Ok(list)
+    }
+
+    /// 0.7.1 新增:每 bar 末 NAV 曲线(`[(timestamp_ns, nav), ...]`)
+    ///
+    /// 与 `equity_curve` 区别:
+    /// - `equity_curve` 只在 fill / mark / funding 事件触发时采样,无事件 bar 不留帧
+    /// - `bar_nav_curve` 在 `begin_bar` / `begin_bar_multi` 收尾时**每 bar 一帧**采样,
+    ///   用于短回测 + 无 fill 时计算 Sharpe / max_drawdown 不会失真
+    ///   (此时 `equity_curve` 末帧 = `initial_cash`,无法反映波动)
+    ///
+    /// Python 端推荐用法:
+    /// ```python
+    /// import numpy as np
+    /// bnav = np.array(result.bar_nav_curve, dtype=[("ts", "i8"), ("nav", "f8")])
+    /// returns = np.diff(np.log(bnav["nav"]))  # log returns
+    /// sharpe = returns.mean() / returns.std() * np.sqrt(35040)  # 15m 年化
+    /// ```
+    #[getter]
+    fn bar_nav_curve<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for (ts, nav) in &self.inner.bar_nav_curve {
             let tup = (ts.nanos, *nav);
             list.append(tup)?;
         }
@@ -741,6 +925,47 @@ impl PyRunResult {
         Ok(d)
     }
 
+    /// 0.7.0 新增(Phase 4):组合级风险敞口报告
+    ///
+    /// 返回 dict,包含:
+    /// - `per_leg_delta`: `{instrument_tuple: delta}` 每条 leg 的 delta 暴露
+    /// - `portfolio_delta`: `Σ per_leg_delta` 组合总 delta
+    /// - `per_leg_gamma`: `{instrument_tuple: gamma}`(0.7.0 范围全 0)
+    /// - `total_gamma`: 组合总 gamma
+    /// - `vega`: 0.7.0 范围 0(无 IV 源)
+    /// - `sharpe_with_legs`: 多 leg Sharpe(沿用 `RunResult.sharpe_ratio`)
+    #[getter]
+    fn risk_metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let rm = &self.inner.risk_metrics;
+
+        // per_leg_delta
+        let per_leg_delta = PyDict::new(py);
+        for (inst, delta) in &rm.per_leg_delta {
+            let key = instrument_to_tuple(py, inst)?;
+            per_leg_delta.set_item(key, *delta)?;
+        }
+        d.set_item("per_leg_delta", per_leg_delta)?;
+
+        // portfolio_delta
+        d.set_item("portfolio_delta", rm.portfolio_delta)?;
+
+        // per_leg_gamma
+        let per_leg_gamma = PyDict::new(py);
+        for (inst, gamma) in &rm.per_leg_gamma {
+            let key = instrument_to_tuple(py, inst)?;
+            per_leg_gamma.set_item(key, *gamma)?;
+        }
+        d.set_item("per_leg_gamma", per_leg_gamma)?;
+
+        // total_gamma / vega / sharpe_with_legs
+        d.set_item("total_gamma", rm.total_gamma)?;
+        d.set_item("vega", rm.vega)?;
+        d.set_item("sharpe_with_legs", rm.sharpe_with_legs)?;
+
+        Ok(d)
+    }
+
     /// 累计 funding 结算 PnL(0.5.0 新增 Phase C)
     ///
     /// 正值=累计净收(perp short + 正 funding),负值=累计净付。
@@ -784,7 +1009,11 @@ impl PyRunResult {
         d.set_item("sharpe_ratio", self.inner.sharpe_ratio)?;
         d.set_item("trades_count", self.inner.trades.len())?;
         d.set_item("equity_curve_points", self.inner.equity_curve.len())?;
+        // 0.7.1 新增:bar 末 NAV 曲线(每 bar 一帧,用于重算 Sharpe)
+        d.set_item("bar_nav_curve_points", self.inner.bar_nav_curve.len())?;
         d.set_item("positions", self.positions(py)?)?;
+        // 0.7.0 新增(Phase 4):组合级风险敞口
+        d.set_item("risk_metrics", self.risk_metrics(py)?)?;
         Ok(d)
     }
 

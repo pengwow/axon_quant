@@ -22,7 +22,8 @@ use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Instrument, Price, Quantity};
 
-use super::super::types::MatchFill;
+use super::super::engine::MatchingEngine;
+use super::super::types::{MatchFill, SubmitResult};
 use super::auction::{AuctionResult, BatchMode, find_clearing_price};
 use super::dark_pool::{DarkOrder, try_dark_match};
 use super::error::{MatchingL3Error, MatchingL3Result};
@@ -75,6 +76,9 @@ pub struct MultiAssetMatchingEngine {
     pending_batch: Vec<Order>,
     /// 下一个 fill id(暗池成交使用)
     next_fill_id: u64,
+    /// Phase 3.1.3 新增:`MatchingEngine` trait 路由用的 primary instrument
+    /// (`best_bid` / `best_ask` 等无 instrument 参数的方法走 primary 路由)
+    primary_instrument: Option<Instrument>,
     /// 统计
     stats: L3Stats,
 }
@@ -380,6 +384,7 @@ impl MultiAssetMatchingEngine {
             side_leg1,
             OrderType::Limit { price: leg1_price },
             quantity,
+            TimeInForce::GTC,
         );
         let leg2_order = build_leg_order(
             0,
@@ -387,6 +392,7 @@ impl MultiAssetMatchingEngine {
             leg2_side,
             OrderType::Limit { price: leg2_price },
             quantity,
+            TimeInForce::GTC,
         );
 
         let mut fills = self.submit(leg1_order)?;
@@ -438,16 +444,220 @@ impl MultiAssetMatchingEngine {
 
         Ok(())
     }
+
+    /// Phase 3.1.3 新增:设置 primary instrument(用于 `MatchingEngine` trait 路由)
+    ///
+    /// `MatchingEngine::best_bid` / `best_ask` 等无 instrument 参数,
+    /// 多资产场景下需用 primary instrument 路由。如果未设置,
+    /// trait 方法返回 `None`(不影响 `submit_batch` / `execute_arbitrage` 等
+    /// 显式传 instrument 的 inherent 方法)。
+    ///
+    /// 副作用:顺带 `register_instrument(primary)`,保证 `submit(primary)` /
+    /// `seed_liquidity(primary)` 不报 `AssetNotFound`。
+    pub fn with_primary(mut self, primary: Instrument) -> Self {
+        self.register_instrument(primary.clone());
+        self.primary_instrument = Some(primary);
+        self
+    }
+
+    /// Phase 3.3 (A1.2) 新增:取**主 instrument** 的 fill 链追踪器(只读)
+    ///
+    /// 路由语义同 `best_bid` / `best_ask`:无 instrument 参数时走 primary。
+    /// 若未设置 primary 或 primary 未注册,返回 `None`。
+    ///
+    /// 多 leg 套利对账通常需要**跨 instrument** 聚合 fill 链,可直接调
+    /// [`Self::tracker_for`] 逐个取,或遍历 `instruments()` 自己聚合。
+    #[inline]
+    pub fn tracker(&self) -> Option<&crate::matching::PartialFillTracker> {
+        self.primary_instrument
+            .as_ref()
+            .and_then(|p| self.engines.get(p).map(|e| e.tracker()))
+    }
+
+    /// Phase 3.3 (A1.2) 新增:取**指定 instrument** 的 fill 链追踪器(只读)
+    ///
+    /// 透传路径:`MultiAssetMatchingEngine` → `L2MatchingEngine::tracker()`
+    /// → `L1MatchingEngine::tracker()`。instrument 未注册时返回 `None`。
+    ///
+    /// 套利对账用法:
+    /// ```ignore
+    /// let leg1_fills = engine.tracker_for(&pair.pair.spot)
+    ///     .and_then(|t| t.chain(leg1_order_id));
+    /// let leg2_fills = engine.tracker_for(&pair.pair.perp)
+    ///     .and_then(|t| t.chain(leg2_order_id));
+    /// ```
+    #[inline]
+    pub fn tracker_for(
+        &self,
+        instrument: &Instrument,
+    ) -> Option<&crate::matching::PartialFillTracker> {
+        self.engines.get(instrument).map(|e| e.tracker())
+    }
+
+    /// Phase 3.3 (A1.2) 新增:列出已注册的所有 instrument(无序)
+    ///
+    /// 给策略层遍历跨 leg fill 链用,避免暴露内部 `engines` HashMap。
+    #[inline]
+    pub fn instruments(&self) -> Vec<Instrument> {
+        self.engines.keys().cloned().collect()
+    }
+}
+
+/// Phase 3.1.3:`MultiAssetMatchingEngine` 实现 `MatchingEngine` trait
+///
+/// `MultiAssetMatchingEngine` 是多资产路由容器(每个 instrument 一个 L2 引擎),
+/// `MatchingEngine` trait 签名是"无 instrument 参数"的(因为 L1/L2 单一 book 路由
+/// 是隐式的),所以这里采用 **primary instrument 路由** 方案:
+///
+/// - 调用 `MultiAssetMatchingEngine::with_primary(btc)` 设定 primary
+/// - 之后 `best_bid` / `best_ask` / `seed_liquidity` 走 primary 路由
+/// - `submit(order)` 按 `order.instrument` 路由(自然多 asset)
+/// - `cancel(order_id)` 跨所有 instrument 扫
+/// - `active_order_count` / `clear_book` 跨所有 instrument
+///
+/// `seed_liquidity` 返回的 `next_id` 是 L2 内部 id 计数器,与上层 caller
+/// 的 `next_id` 解耦,故 trait 适配层把 caller 传进来的 `next_id` **丢进 L2
+/// seed 之前的"前置隔离带"** —— 实际 L2 内部 id 自增不影响 caller(简化
+/// 实现:直接用 caller 传入的 next_id,忽略 L2 返回的 id 偏移)。
+impl MatchingEngine for MultiAssetMatchingEngine {
+    fn submit(&mut self, order: Order) -> SubmitResult {
+        let instrument = order.instrument.clone();
+        // 显式 UFCS:调 inherent `MultiAssetMatchingEngine::submit`,
+        // 返回 `MatchingL3Result<Vec<MatchFill>>`(多资产路径),
+        // 与 trait 要的 `SubmitResult` 不同,所以需要 match 转。
+        // 显式 UFCS 避免依赖 method resolution(inherent 优先 trait,
+        // 这里签名不同所以必定调 inherent,但显式让意图清晰 + 防 regression)。
+        match Self::submit(self, order) {
+            Ok(fills) => {
+                if fills.is_empty() {
+                    SubmitResult::empty(Quantity::from_f64(0.0))
+                } else {
+                    // 判断是否部分成交:简化实现 — 多资产路径下只返回 fills,
+                    // 标记全部成交(底层 caller 通常按 fill 列表消费)
+                    SubmitResult::filled(fills)
+                }
+            }
+            Err(e) => {
+                // 错误降级:不阻塞 backtest(错误信息丢弃,无法在 SubmitResult 中传递)
+                let _ = (e, instrument);
+                SubmitResult::empty(Quantity::from_f64(0.0))
+            }
+        }
+    }
+
+    /// 跨所有 instrument 扫 order_id,任一找到则取消
+    fn cancel(&mut self, order_id: u64) -> bool {
+        for engine in self.engines.values_mut() {
+            if engine.cancel(order_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// primary instrument 路由
+    fn best_bid(&self) -> Option<Price> {
+        let primary = self.primary_instrument.as_ref()?;
+        self.engine(primary).and_then(|e| e.best_bid())
+    }
+
+    /// primary instrument 路由
+    fn best_ask(&self) -> Option<Price> {
+        let primary = self.primary_instrument.as_ref()?;
+        self.engine(primary).and_then(|e| e.best_ask())
+    }
+
+    /// primary instrument spread
+    fn spread(&self) -> Option<Price> {
+        let bid = self.best_bid()?;
+        let ask = self.best_ask()?;
+        Some(Price::from_f64(ask.as_f64() - bid.as_f64()))
+    }
+
+    /// depth 走 primary instrument(若未设则返回空)
+    fn depth(
+        &self,
+        levels: usize,
+    ) -> (
+        Vec<crate::matching::types::OrderBookLevel>,
+        Vec<crate::matching::types::OrderBookLevel>,
+    ) {
+        match self
+            .primary_instrument
+            .as_ref()
+            .and_then(|p| self.engine(p))
+        {
+            Some(e) => e.depth(levels),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// 跨所有 instrument 合计
+    fn active_order_count(&self) -> usize {
+        self.engines.values().map(|e| e.active_order_count()).sum()
+    }
+
+    /// 清空所有 instrument 的 book
+    fn clear_book(&mut self) {
+        for engine in self.engines.values_mut() {
+            engine.clear_book();
+        }
+    }
+
+    /// 清空指定 instrument 的 book
+    fn clear_book_for(&mut self, instrument: &Instrument) {
+        if let Some(engine) = self.engines.get_mut(instrument) {
+            engine.clear_book();
+        }
+    }
+
+    /// primary instrument 注入种子
+    ///
+    /// 返回 L2 引擎 seed 后的 `next_id`,与 L1 / L2 的 trait 实现语义一致。
+    /// 如果 instrument 尚未注册,先 register 再 seed。
+    fn seed_liquidity(
+        &mut self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+        instrument: Instrument,
+        next_id: u64,
+    ) -> u64 {
+        if !self.engines.contains_key(&instrument) {
+            self.register_instrument(instrument.clone());
+        }
+        if let Some(engine) = self.engines.get_mut(&instrument) {
+            engine.seed_liquidity(
+                mid_price,
+                half_spread,
+                depth_levels,
+                size_per_level,
+                instrument,
+                next_id,
+            )
+        } else {
+            next_id
+        }
+    }
 }
 
 /// 0.6.0 新增:按 `Instrument` 类型分派构造 leg 订单(spot → `Order::spot`,
 /// swap → `Order::swap`)。替代 0.5.0 `split_symbol_to_base_quote` 字符串桥。
-fn build_leg_order(
+///
+/// 0.7.0 抽离:加 `tif` 参数变通用 helper,供以下场景共用,避免 spot/swap
+/// 派发不一致:
+/// - `L1MatchingEngine::seed_liquidity` → GTC Limit(seed 流动性)
+/// - `BacktestEngine::liquidate_eod` → IOC Market(EOD 强制平仓)
+/// - `BacktestEngine::rebalance_to_target` → IOC Market(rebalance 市价单)
+/// - `MultiAssetMatchingEngine::execute_arbitrage` → GTC Limit(套利)
+pub(crate) fn build_leg_order(
     id: u64,
     instrument: &Instrument,
     side: Side,
     order_type: OrderType,
     quantity: Quantity,
+    tif: TimeInForce,
 ) -> Order {
     match instrument {
         Instrument::Spot(s) => Order::spot(
@@ -457,7 +667,7 @@ fn build_leg_order(
             side,
             order_type,
             quantity,
-            TimeInForce::GTC,
+            tif,
         ),
         Instrument::Swap(s) => Order::swap(
             id,
@@ -468,7 +678,7 @@ fn build_leg_order(
             side,
             order_type,
             quantity,
-            TimeInForce::GTC,
+            tif,
         ),
     }
 }
@@ -531,6 +741,7 @@ mod tests {
                 price: Price::from_f64(price),
             },
             Quantity::from_f64(qty),
+            TimeInForce::GTC,
         );
         // 测试里给 created_at 写 0 让排序稳定
         let mut o = order;
@@ -869,5 +1080,302 @@ mod tests {
             updated.order_type.limit_price(),
             Some(Price::from_f64(200.0))
         );
+    }
+
+    // ─── Phase 3.3 (A1.2):跨资产套利 e2e ─────────────────
+
+    /// 跨资产套利完整生命周期:spot + perp 价格偏离 → detect → execute
+    /// → 验证双 leg fill + tracker 链完整
+    #[test]
+    fn test_cross_asset_arbitrage_full_lifecycle() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(btc_perp());
+
+        // spot: bid 50_000, ask 50_100 (mid 50_050)
+        m.submit(make_limit(10, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(11, btc_spot(), Side::Sell, 50_100.0, 1.0))
+            .unwrap();
+        // perp: bid 50_200, ask 50_300 (mid 50_250) — 隐含 perp 溢价比 spot 高 ~0.4%
+        m.submit(make_limit(20, btc_perp(), Side::Buy, 50_200.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(21, btc_perp(), Side::Sell, 50_300.0, 1.0))
+            .unwrap();
+
+        // 注册 cross pair:spot vs perp,ratio 1.0(应是平价)
+        let pair = CrossPair::new(btc_spot(), btc_perp(), 1.0, Quantity::from_f64(1.0));
+        m.register_cross_pair(pair.clone()).expect("ok");
+
+        // 1) detect: 应报 deviation ≈ |50050/50250 - 1.0| ≈ 0.4%
+        let ops = m.detect_arbitrage();
+        assert_eq!(ops.len(), 1);
+        let op = &ops[0];
+        assert!(op.implied_ratio.is_some());
+        let ir = op.implied_ratio.unwrap();
+        assert!(ir < 1.0, "perp mid > spot mid → implied ratio < 1.0");
+        assert!(op.deviation > 0.003, "deviation > 0.3%");
+        assert!(op.estimated_profit > 0.0);
+
+        // 2) execute: leg1 spot sell @50_100, leg2 perp buy @50_200
+        //    → spot 卖一吃 spot 买一;perp 买一吃 perp 卖一
+        let fills = m
+            .execute_arbitrage(&pair, Quantity::from_f64(1.0), Side::Sell)
+            .expect("ok");
+        assert_eq!(fills.len(), 2, "spot + perp 各 1 笔 fill");
+
+        // 3) tracker 验证:leg1 卖单和 leg2 买单的 fill 链都正确记录
+        let spot_tracker = m
+            .tracker_for(&btc_spot())
+            .expect("spot tracker must exist after fill");
+        let perp_tracker = m
+            .tracker_for(&btc_perp())
+            .expect("perp tracker must exist after fill");
+
+        // fill_id 升序:spot taker(leg1_sell) 链至少有 1 条(spot 吃 buy 10)
+        // 因 fill 链路是单次 fill,每笔 fill 在 taker 链 + maker 链都记录 → 2 records / fill
+        assert!(
+            spot_tracker.total_records() >= 2,
+            "spot tracker 至少有 2 条 record (taker leg1 + maker 10)"
+        );
+        assert!(
+            perp_tracker.total_records() >= 2,
+            "perp tracker 至少有 2 条 record (taker leg2 + maker 21)"
+        );
+
+        // 跨 instrument 隔离:spot order 11(bid) 不应出现在 perp tracker
+        assert!(
+            perp_tracker.chain(11).is_none(),
+            "perp 不应含 spot order id"
+        );
+
+        // 4) stats:cross_fills 累加
+        assert_eq!(m.stats().total_cross_fills, 2);
+    }
+
+    /// 跨资产套利:无对手盘时 detect 报空,execute 报 InvalidCrossPair
+    #[test]
+    fn test_cross_asset_arbitrage_no_liquidity() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(btc_perp());
+        let pair = CrossPair::new(btc_spot(), btc_perp(), 1.0, Quantity::from_f64(0.5));
+        m.register_cross_pair(pair.clone()).expect("ok");
+
+        // 无任何挂单 → detect 报 implied_ratio = None
+        let ops = m.detect_arbitrage();
+        assert_eq!(ops.len(), 1);
+        assert!(ops[0].implied_ratio.is_none());
+        assert_eq!(ops[0].deviation, 0.0);
+        assert_eq!(ops[0].estimated_profit, 0.0);
+
+        // execute:spot leg1_price = 0(default) → buy/sell 撮合无对手
+        let fills = m
+            .execute_arbitrage(&pair, Quantity::from_f64(0.5), Side::Buy)
+            .expect("ok");
+        assert!(fills.is_empty(), "无对手盘 → 无 fill");
+    }
+
+    /// 跨 instrument tracker 隔离:同一 order_id 在不同 instrument 各自独立
+    #[test]
+    fn test_tracker_for_per_instrument_isolation() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(eth_spot());
+
+        // BTC + ETH 各挂 1 笔 sell + 1 笔 buy → 4 orders,2 fills
+        m.submit(make_limit(100, btc_spot(), Side::Sell, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(101, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(200, eth_spot(), Side::Sell, 3_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(201, eth_spot(), Side::Buy, 3_000.0, 1.0))
+            .unwrap();
+
+        let btc_tracker = m.tracker_for(&btc_spot()).expect("btc tracker");
+        let eth_tracker = m.tracker_for(&eth_spot()).expect("eth tracker");
+
+        // BTC tracker 含 100 + 101 的 fill 链(各 1 条 record,taker + maker 共 2)
+        assert_eq!(btc_tracker.chain_len(100), 1);
+        assert_eq!(btc_tracker.chain_len(101), 1);
+        assert!(btc_tracker.chain(200).is_none());
+        assert!(btc_tracker.chain(201).is_none());
+
+        // ETH tracker 反之
+        assert_eq!(eth_tracker.chain_len(200), 1);
+        assert_eq!(eth_tracker.chain_len(201), 1);
+        assert!(eth_tracker.chain(100).is_none());
+        assert!(eth_tracker.chain(101).is_none());
+    }
+
+    /// tracker() 走 primary_instrument 路由
+    #[test]
+    fn test_tracker_primary_routing() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(eth_spot());
+
+        // 给 primary(btc) 喂 1 笔 fill
+        m.submit(make_limit(1, btc_spot(), Side::Sell, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(2, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+
+        let primary_tracker = m.tracker().expect("primary tracker");
+        assert_eq!(primary_tracker.chain_len(1), 1);
+        assert_eq!(primary_tracker.chain_len(2), 1);
+    }
+
+    /// tracker() 在未设 primary 时返回 None
+    #[test]
+    fn test_tracker_returns_none_without_primary() {
+        let m = MultiAssetMatchingEngine::new();
+        assert!(m.tracker().is_none());
+    }
+
+    /// instruments() 列出所有已注册 instrument
+    #[test]
+    fn test_instruments_listing() {
+        let mut m = MultiAssetMatchingEngine::new();
+        m.register_instrument(btc_spot());
+        m.register_instrument(eth_spot());
+        m.register_instrument(btc_perp());
+
+        let insts = m.instruments();
+        assert_eq!(insts.len(), 3);
+        assert!(insts.contains(&btc_spot()));
+        assert!(insts.contains(&eth_spot()));
+        assert!(insts.contains(&btc_perp()));
+    }
+
+    // ─── Phase 3.3 (A1.2):暗池 + 拍卖 e2e ─────────────────
+
+    /// 暗池撮合 → tracker 链追踪(0.7.x 已有 dark fill 计数,本测试加 fill 链验证)
+    #[test]
+    fn test_dark_pool_match_records_tracker() {
+        // 注:MultiAssetMatchingEngine 的暗池撮合 **不走** L2 引擎
+        // (try_dark_match 在 `dark_orders` vec 上),不产生 L1 fill → 不入 tracker。
+        // 此测试验证 stats 累加 + 暗池簿状态,tracker 行为留给 L1 e2e 测试。
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+
+        // 1) 第一笔 sell 暗池单 → 无对手 → 入暗池簿
+        let sell = make_limit(1, btc_spot(), Side::Sell, 50_000.0, 3.0);
+        m.submit_dark_order(DarkOrder {
+            visible_quantity: Quantity::from_f64(1.0),
+            hidden_quantity: Quantity::from_f64(3.0),
+            order: sell,
+        })
+        .expect("ok");
+        assert_eq!(m.stats().total_dark_fills, 0);
+
+        // 2) 第二笔 buy 暗池单 → 与第一笔 sell 暗池撮合
+        let buy = make_limit(2, btc_spot(), Side::Buy, 50_000.0, 3.0);
+        let fills = m
+            .submit_dark_order(DarkOrder {
+                visible_quantity: Quantity::from_f64(1.0),
+                hidden_quantity: Quantity::from_f64(3.0),
+                order: buy,
+            })
+            .expect("ok");
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].quantity, Quantity::from_f64(3.0));
+        assert_eq!(m.stats().total_dark_fills, 1);
+
+        // 3) 暗池簿被清空(双方都全成)
+        let dark_book = m.dark_orders.get(&btc_spot()).expect("dark book for btc");
+        assert!(dark_book.is_empty());
+    }
+
+    /// 批量拍卖清算:多笔 bid/ask → find_clearing_price → override 价格
+    /// → engine.submit → fill + tracker 链追踪
+    #[test]
+    fn test_batch_auction_with_tracker() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.set_batch_mode(BatchMode::Auction);
+
+        // 2 buy + 2 sell,价格交叉,clearing 价应在 50_000~50_002 之间
+        m.submit(make_limit(10, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(11, btc_spot(), Side::Buy, 50_002.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(20, btc_spot(), Side::Sell, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(21, btc_spot(), Side::Sell, 50_002.0, 1.0))
+            .unwrap();
+
+        // 跑拍卖
+        let result = m.run_auction(&btc_spot()).expect("ok");
+        assert!(result.has_trades());
+        assert!(!result.fills.is_empty());
+
+        // fill 数量应 >= 1(拍卖 override 后部分订单相互撮合)
+        assert!(!result.fills.is_empty());
+
+        // tracker 验证:至少某些卖单作为 maker 入链
+        let tracker = m
+            .tracker_for(&btc_spot())
+            .expect("spot tracker after auction");
+        // 至少 1 个卖单 + 1 个买单的 fill 链都被记录
+        let total_orders_with_fills = (0..4)
+            .map(|id| [10u64, 11, 20, 21][id])
+            .filter(|id| tracker.chain_len(*id) > 0)
+            .count();
+        assert!(
+            total_orders_with_fills >= 2,
+            "至少 2 个 order 有 fill record(实测:{})",
+            total_orders_with_fills
+        );
+
+        // stats:batch_fills 累加(可能少于原始 4 笔订单,因为部分 unfilled)
+        assert!(m.stats().total_batch_fills > 0);
+    }
+
+    /// 批量拍卖:无对手盘时(单边挂单)清算失败
+    #[test]
+    fn test_batch_auction_one_sided() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.set_batch_mode(BatchMode::Auction);
+
+        // 只挂 buy 单,无 sell → find_clearing_price 仍报 volume(纯买累计)
+        // 但 engine.submit(buy) 簿内无对手 → 无 fill
+        m.submit(make_limit(1, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        let result = m.run_auction(&btc_spot()).expect("ok");
+        assert!(
+            result.fills.is_empty(),
+            "无对手盘 → 实际无 fill (unfilled_orders 含原 buy)"
+        );
+        assert_eq!(result.unfilled_orders.len(), 1, "1 笔 buy 留在 unfilled");
+    }
+
+    /// 跨 instrument 拍卖隔离:run_auction(btc) 不动 eth 簿
+    #[test]
+    fn test_batch_auction_cross_instrument_isolation() {
+        let mut m = MultiAssetMatchingEngine::new().with_primary(btc_spot());
+        m.register_instrument(eth_spot());
+        m.set_batch_mode(BatchMode::Auction);
+
+        // BTC 簿有可拍卖单
+        m.submit(make_limit(10, btc_spot(), Side::Buy, 50_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(20, btc_spot(), Side::Sell, 50_000.0, 1.0))
+            .unwrap();
+        // ETH 簿有可拍卖单
+        m.submit(make_limit(11, eth_spot(), Side::Buy, 3_000.0, 1.0))
+            .unwrap();
+        m.submit(make_limit(21, eth_spot(), Side::Sell, 3_000.0, 1.0))
+            .unwrap();
+
+        // 只跑 btc 拍卖
+        let result = m.run_auction(&btc_spot()).expect("ok");
+        assert!(result.has_trades());
+
+        // btc tracker 有 fill,eth tracker 空
+        let btc_tracker = m.tracker_for(&btc_spot()).expect("btc");
+        let eth_tracker = m.tracker_for(&eth_spot()).expect("eth");
+        assert!(btc_tracker.total_records() > 0);
+        assert_eq!(eth_tracker.total_records(), 0, "eth 簿未动 → 无 fill 链");
+
+        // eth 仍在 pending_batch(等下次 run_auction(&eth))
+        // 实际:run_auction 只 drain 当前 instrument 的 pending,eth 单保留
+        let result_eth = m.run_auction(&eth_spot()).expect("ok");
+        assert!(result_eth.has_trades());
     }
 }

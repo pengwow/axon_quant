@@ -6,18 +6,24 @@
 //!
 //! - [`types`]：Venue / CrossPair / BatchMode / DarkOrder / AuctionResult / L3Stats / L2Snapshot
 //! - [`engine_l3`]：MultiAssetMatchingEngine 多资产路由核心
+//! - [`book`]：L3Book 完整 L3 可见视图(Phase 3.2 新增)
+//! - [`soa`]：PriceLevelSoA / L3BookSoA 价位簿 SoA 视图(0.8.0 Phase 3.6 A3.2,cache-friendly 聚合)
 //! - [`dark_pool`]：暗池撮合
 //! - [`auction`]：批量拍卖清算价格
 //! - [`error`]：MatchingL3Error
 
 pub mod auction;
+pub mod book;
 pub mod dark_pool;
 pub mod engine_l3;
 pub mod error;
+pub mod soa;
 pub mod types;
 
 pub use auction::{AuctionResult, BatchMode, find_clearing_price};
+pub use book::{L3Book, L3Order};
 pub use dark_pool::{DarkOrder, try_dark_match};
 pub use engine_l3::{ArbitrageOpportunity, L3Stats, MultiAssetMatchingEngine};
 pub use error::{MatchingL3Error, MatchingL3Result};
+pub use soa::{L3BookSoA, PriceLevelSoA, SoaBookSummary};
 pub use types::{CrossPair, L2Snapshot, MatchingEngineSnapshot, PriceLevel, Venue};

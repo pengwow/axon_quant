@@ -83,3 +83,17 @@ crate-type = ["rlib", "cdylib"]
 name = "impact_bench"
 path = "../../benches/impact_bench.rs"
 harness = false
+
+# 0.8.0 Phase 3 A3.0:L1 / L2 / L3 submit 延迟基线
+# 详见 benches/matching_l3_baseline.rs 文档
+[[bench]]
+name = "matching_l3_baseline"
+path = "../../benches/matching_l3_baseline.rs"
+harness = false
+
+# 0.8.0 Phase 3 A3.3:BacktestEngine::begin_bar 端到端 tick 延迟基线
+# 详见 benches/backtest_tick_baseline.rs 文档
+[[bench]]
+name = "backtest_tick_baseline"
+path = "../../benches/backtest_tick_baseline.rs"
+harness = false

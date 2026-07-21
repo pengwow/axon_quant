@@ -315,6 +315,11 @@ docs-build-all: docs-install ## 构建所有语言文档
 docs-validate: docs-build ## 严格校验 mkdocs 配置 + 链接 + 引用
 	@echo "==> mkdocs 站点构建成功,链接 / 引用校验通过(由 --strict 触发)"
 
+.PHONY: docs-drift
+docs-drift: ## 检查 docs/zh/ 与 docs/en/ 的结构漂移(0.8.0 Phase 1.2)
+	@echo "==> 检查中英文档结构对齐(防 drift)"
+	@bash scripts/check-docs-drift.sh
+
 .PHONY: docs-clean
 docs-clean: ## 清理 mkdocs 临时产物
 	@rm -rf site/ .cache/

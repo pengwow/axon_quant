@@ -9,15 +9,21 @@
 //! - [`engine`]：L1MatchingEngine 实现 + MatchingEngine trait
 //! - [`l2`]：L2MatchingEngine（L1 增强：修改/统计/O(1) 取消/订单簿导入导出）
 //! - [`l3`]：MultiAssetMatchingEngine（多资产路由 / 暗池 / 批量拍卖 / 套利）
+//! - [`tracker`]：PartialFillTracker(0.8.0 Phase 3.2 A1.1,per-fill 元数据 + 状态机)
+//! - [`arena`]：OrderArena slab 分配器(0.8.0 Phase 3.5 A3.1,基础设施,0.9.0 集成)
 //! - [`types`]：撮合相关类型（MatchFill / TradeRole / OrderBookLevel / SubmitResult）
 //! - [`error`]：MatchingError
 
+pub mod arena;
 pub mod engine;
 pub mod error;
 pub mod l2;
 pub mod l3;
+pub mod router;
+pub mod tracker;
 pub mod types;
 
+pub use arena::{OrderArena, OrderHandle};
 pub use engine::{L1MatchingEngine, MatchingEngine, OrderBookSide, PriceLevel};
 pub use error::{MatchingError, MatchingResult};
 pub use l2::{
@@ -28,4 +34,6 @@ pub use l3::{
     MatchingEngineSnapshot, MatchingL3Error, MatchingL3Result, MultiAssetMatchingEngine,
     PriceLevel as L3PriceLevel, Venue, find_clearing_price,
 };
+pub use router::{EngineRouter, RoutedEngine, RoutingStrategy};
+pub use tracker::PartialFillTracker;
 pub use types::{MatchFill, OrderBookLevel, SubmitResult, TradeRole};

@@ -58,6 +58,81 @@
     })
     result = bt2.run()
     print(result.final_nav, result.fills)
+
+RunResult 字段语义对照(0.7.0 起)
+--------------------------------
+
+`RunResult` 同时提供三个层次的"成交记录",粒度从粗到细:
+
+- ``fills`` (``int``):成交笔数(累计),无 instrument 区分
+- ``trades`` (``list[dict]``):**round-trip** 交易记录,只记已平仓的开+平配对
+  包含 ``realized_pnl``(已实现盈亏),未平仓的同向加仓不计入
+- ``fills_detail`` (``list[dict]``,0.7.0 新增):**每笔 fill** 完整记录,7 字段
+  (``timestamp_ns`` / ``instrument`` / ``taker_order_id`` / ``maker_order_id`` /
+  ``taker_side`` / ``price`` / ``quantity``),开仓/同向加仓/部分 fill/反手 全记
+
+**用法选择**:
+
+- 算胜率/夏普 → 用 ``trades``(有 realized_pnl)
+- 审计每笔成交 / partial fill 分析 → 用 ``fills_detail``
+- 快速看成交笔数 → 用 ``fills``
+
+**NAV 曲线对照**(0.7.1 新增 ``bar_nav_curve``):
+
+- ``equity_curve`` (``list[tuple[timestamp_ns, nav]]``):**每笔 fill / mark / funding 后**采样,
+  无事件的 bar 不留帧。短回测 + 无 fill 时末帧 = ``initial_cash``,无法反映波动。
+- ``bar_nav_curve`` (``list[tuple[timestamp_ns, nav]]``,0.7.1 新增):**每根 bar 末**采样
+  (由 ``begin_bar`` / ``begin_bar_multi`` 收尾触发),无事件 bar 也留帧。**推荐用于**
+  计算 Sharpe / max_drawdown(避免短回测 + 无 fill 失真),代码片段::
+
+    import numpy as np
+    bnav = np.array(result.bar_nav_curve, dtype=[("ts", "i8"), ("nav", "f8")])
+    log_ret = np.diff(np.log(bnav["nav"]))
+    sharpe = log_ret.mean() / log_ret.std() * np.sqrt(annualization_factor)
+
+Examples::
+
+    # 同向加仓 2 笔 buy 0.5 + buy 0.3:
+    #   fills == 2, trades == [], fills_detail == [fill_1, fill_2]
+    # round-trip buy 0.5 + sell 0.5:
+    #   fills == 2, trades == [trade_1], fills_detail == [fill_1, fill_2]
+
+Per-leg seed liquidity(0.7.0 新增)
+----------------------------------
+
+`BacktestEngine` 提供三档流动性种子 API,可叠加使用:
+
+- ``with_seed_liquidity(half_spread, depth_levels, size_per_level)``:**default**
+  配线,所有未单独配线的 instrument 走此配置(向后兼容 0.6.0 行为)
+- ``with_seed_liquidity_for(instrument, ...)``:**per-leg 覆写**,给单个 instrument
+  独立配置(spot 紧 / perp 松 的真实市场规律)
+- ``begin_bar(price, instrument)``:**单 leg** 触发 seed,bar_id 自增
+- ``begin_bar_multi(legs: list[tuple[instrument, price]])``:**多 leg 同 bar** 触发
+  (spot + perp 套利场景),bar_id 仅 +1,funding 调度 1 次
+
+0.7.0 起 ``begin_bar`` 只清指定 instrument 的订单簿(``clear_book_for``),
+**不**再误清其他 leg 的种子流动性。`begin_bar` 配线查找顺序:per-leg
+override → default → no-op(无 seed)。
+
+0.7.1 修正:``begin_bar_multi`` 接受 ``list[tuple[instrument_dict, price]]``
+而非 0.7.0 文档承诺的 ``dict[instrument, price]`` —— 因为 Python ``dict``
+key 必须可哈希,``instrument_dict`` 不可哈希无法构造。0.7.1 改为 list[tuple]
+形式语义等价,workaround(连续 2 次 ``begin_bar``)仍可用。
+
+Examples::
+
+    spot = spot_instrument("BTC", "USDT")
+    perp = swap_instrument("BTC", "USDT", settle="usd_margin", contract_size=1.0)
+    engine = BacktestEngine(initial_cash=100_000.0)
+    # default 配线
+    engine.with_seed_liquidity(half_spread=0.1, depth_levels=5, size_per_level=0.1)
+    # spot 紧、perp 松(per-leg 覆写)
+    engine.with_seed_liquidity_for(spot, half_spread=0.01, depth_levels=10, size_per_level=0.5)
+    engine.with_seed_liquidity_for(perp, half_spread=0.5, depth_levels=5, size_per_level=0.1)
+    # 多 leg 同 bar seed(套利场景,bar_id 仅 +1,list[tuple] 形式)
+    engine.begin_bar_multi([(spot, 50_000.0), (perp, 50_010.0)])
+    # ... push_event(order_submitted) ...
+    result = engine.run()
 """
 
 from __future__ import annotations

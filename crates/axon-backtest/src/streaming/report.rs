@@ -58,11 +58,27 @@ impl From<std::io::Error> for ReportError {
 }
 
 /// 流式报告（组合 snapshot + equity_curve）
+///
+/// # 0.8.0 B4 决策
+///
+/// 本结构体只有 `equity_curve`(稀疏,事件触发),没有 `bar_nav_curve`
+/// (streaming 引擎是事件驱动,不像 batch 引擎有"每 bar 末"的概念)。
+///
+/// `equity_curve` 字段标 **DEPRECATED since 0.8.0**(doc-level 警告,
+/// 0.9.0 计划删除)。streaming 引擎的"按事件频率"指标(Sharpe / max_drawdown
+/// / win rate)目前仍基于本字段,推到 0.9.0 重新设计 streaming 报告结构
+/// (可能加 `event_nav_curve` 或 `snapshot_history`,届时统一迁移)。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StreamingReport {
     /// 引擎快照（含 metrics）
     pub snapshot: StreamingSnapshot,
-    /// 权益曲线
+    /// 权益曲线(事件触发采样)
+    ///
+    /// **⚠️ DEPRECATED since 0.8.0 — 0.9.0 重新设计**
+    ///
+    /// 0.8.0 期间保留兼容,新代码若需要 streaming 路径的 NAV 序列
+    /// 可直接走 `StreamingEngine::equity_curve()` 方法(同样本字段,
+    /// 但访问语义更显式)。详见 [`StreamingReport`] 文档。
     pub equity_curve: Vec<EquityPoint>,
 }
 

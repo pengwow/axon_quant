@@ -94,6 +94,38 @@ order = limit_order(1, btc_spot, "Buy", 50_001.0, 0.1)
 - `leg_targets: dict[instrument, float]` — 目标位快照
 - `marks: dict[instrument, float]` — 最新 mark 价
 
+### `with_*` 链式配置(0.7.1+)
+
+0.7.1 起,所有 `BacktestEngine.with_*` 方法统一返回 `&mut Self`(Python 端为 `PyRefMut<...>`),不再返 `()`,可以连续链式:
+
+```python
+bt = (BacktestEngine(initial_cash=100_000.0)
+      .with_seed_liquidity(half_spread=0.5, depth_levels=2, size_per_level=2.0)
+      .with_fee_config(0.0005)
+      .with_auto_rebalance(threshold=0.01)
+      .with_funding_schedule(period_secs=28_800))  # 8h funding
+```
+
+涉及方法:`with_matching_engine` / `with_fee_config` / `with_force_liquidate` / `with_seed_liquidity` / `with_seed_liquidity_for` / `with_auto_rebalance` / `with_auto_rebalance_disable` / `with_funding_schedule` / `with_funding_schedule_disable`。**BREAKING(轻)**:Python 端若用变量绑 `with_*` 返回值,旧版为 `None`、新版为 `engine`;调用后丢弃返回值的旧代码不受影响。
+
+### `bar_nav_curve` 每 bar 末 NAV 曲线(0.7.1+)
+
+`RunResult.equity_curve` 仅在 `fill / mark / funding` 事件触发时采样。短回测若全无 fill,末帧 = `initial_cash`,Sharpe / max_drawdown 计算失真。0.7.1 起,每次 `begin_bar` / `begin_bar_multi` 收尾时额外追一帧到 `bar_nav_curve: list[tuple[ts_ns, nav]]`,`nav = compute_nav(clock.now(), mark_fallback)`。
+
+```python
+result = bt.run()
+import numpy as np
+arr = np.asarray(result.bar_nav_curve, dtype=np.float64)  # shape (N, 2)
+ts_s  = arr[:, 0] * 1e-9
+nav   = arr[:, 1]
+# 按每 bar 收益重算年化 Sharpe(15-min bar → 35_040 bars/year)
+log_r = np.diff(np.log(nav))
+bar_per_year = 365 * 24 * 4  # 15-min
+sharpe = log_r.mean() / log_r.std(ddof=1) * np.sqrt(bar_per_year)
+```
+
+同 `ts` 去重:同 `clock.now()` 多次 `begin_bar`(如多 leg 末帧)时,新帧覆盖旧帧而非追加,避免重复点污染 Sharpe 序列。
+
 ## 端到端示例:Delta-Neutral 入场(Funding > 0)
 
 **策略逻辑**:`funding > 0` 时,perp 空头收 funding(资金费率由多头付给空头),
