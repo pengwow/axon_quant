@@ -174,10 +174,10 @@ impl OrderArena {
         self.slots.len() - self.free_list.len()
     }
 
-    /// 实际 slot 数(`slots.len() == slots.len() + free_list.len()`)
+    /// 已分配 + 空闲 slot 的总数(`len() + free_list.len() == slots.len()`)
     ///
-    /// 包含已分配 + free_list 中的 slot。`with_capacity` 不预填充,
-    /// 所以初始为 0;每次 `alloc_with` 触发 `slots.push` 时 +1。
+    /// 等于 `slots.len()` —— 即 `len()`(已分配) + `free_list.len()`(空闲)。
+    /// `with_capacity` 不预填充,初始为 0;每次 `alloc_with` 触发 `slots.push` 时 +1。
     #[inline]
     pub fn capacity(&self) -> usize {
         self.slots.len()
