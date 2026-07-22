@@ -6,9 +6,25 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - Unreleased
+## [0.8.0] - 2026-07-22
 
-0.8.0 主线:L3 matching 完整重写 + 风险与组合深化(gamma/vega 接真实 IV 源 + contract_size 修正 delta + 跨 instrument gamma 协方差)+ 基础设施(Scheduler 0 unsafe + 中英 docs 完整同步)。当前 0.8.0 进展:Phase 1 基础设施已完成(1.1 Scheduler 重构 / 1.2 docs 同步 / 1.3 publish.yml dry-run);Phase 2 风险深化 B1 `MarketDataSource` trait + B2 per-instrument delta 接入 `contract_size` + B3 跨 instrument gamma 协方差(Ledoit-Wolf 收缩)已完成;PR-B 后半(funding dispatch 时机修复)已完成;Phase 3 L3 matching / Phase 4 RL/HPO / Phase 5 发布 进行中。
+0.8.0 主线:L3 matching 完整重写 + 风险与组合深化(gamma/vega 接真实 IV 源 + contract_size 修正 delta + 跨 instrument gamma 协方差)+ 基础设施(Scheduler 0 unsafe + 中英 docs 完整同步)。
+
+**Release summary**:本版本聚焦撮合层硬化与风险敞口精度,**无 Python 端 BREAKING**。匹配层引入 L3 跨资产对账、EngineRouter 多态调度、SoA 价位簿、OrderArena slab 分配、PartialFillTracker 持久化;风险层接入 `MarketDataSource` trait + `contract_size` 修正 + 跨 instrument gamma 协方差(Ledoit-Wolf 收缩)。
+
+**Phase 概览**:
+- **Phase 1** 基础设施 ✅ (1.1 Scheduler 重构 / 1.2 docs 同步 / 1.3 publish.yml dry-run)
+- **Phase 2** 风险深化 ✅ (B1 `MarketDataSource` trait + B2 per-instrument delta 接入 `contract_size` + B3 跨 instrument gamma 协方差(Ledoit-Wolf 收缩))+ PR-B 后半(funding dispatch 时机修复)
+- **Phase 3** L3 matching 完整重写 ✅ (A1.1 PartialFillTracker / A1.2 L3 跨资产对账 / A1.3 perf gate / A2.1 EngineRouter / A3.0 bench baseline / A3.1 OrderArena / A3.2 SoA 价位簿 / A3.3 tick latency gate)
+- **Phase 4** RL/HPO ⏸ 推到 0.9.0
+- **Phase 5** 发布 ⏳ 进行中(本 commit = 0.8.0 release tag 准备)
+
+**性能 gates**:
+- A1.3 L3 perf gate:L3 / L2 = 1.07-1.15x ≪ 2x budget ✅
+- A3.3 tick latency:`begin_bar_minimal` per-bar median = 50.9 ns ≪ 10µs gate ✅
+- A3.0 / A3.1 / A3.2 均无回归 ✅
+
+**详细交付**:见 "Added" / "Changed" / "Fixed" 段下文。完整 plan 见 [`docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md`](docs/superpowers/plans/2026-07-20-axon-quant-0.8.0-phase3.md)。
 
 ### Added
 
