@@ -22,6 +22,7 @@
 
 mod data_source;
 mod engine;
+pub mod l3_diff;
 mod metrics;
 mod paper_trading;
 mod report;
@@ -32,6 +33,7 @@ pub use data_source::{
     StreamError, TimestampUnit,
 };
 pub use engine::{EngineSnapshot, StreamingEngine, StreamingSnapshot, TradingMode};
+pub use l3_diff::{L3BookDiff, L3BookSubscriber, SubscriberKind};
 pub use metrics::{EquityPoint, StreamingMetrics, StreamingMetricsSnapshot};
 pub use paper_trading::{PaperTradingEngine, SimulatedExchange};
 pub use report::{ReportError, ReportFormat, StreamingReport};
