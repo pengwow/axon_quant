@@ -1,9 +1,13 @@
-"""RL HPO 胶水(基于 axon-hpo OptunaHPO,0.9.0 D1.5a)。
+"""RL HPO 胶水(基于 axon-hpo OptunaHPO,0.9.0 D1.5a/b)。
 
-设计:8-CPU 并发 sweep,100 trial x 50K timesteps ~= 1-1.5h wall time。
+设计:
+- 单进程:走 axon-hpo OptunaHPO(in-memory,轻量)
+- 多进程:sqlite storage + optuna 直接并发(optuna 内置多 worker 模式)
+- TensorBoard:make_tb_log_dir(trial_id) 生成独立 TB 目录
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -30,6 +34,17 @@ def _ensure_axon_hpo():
             }
         )
     return _OptunaHPO, _SSD
+
+
+def make_tb_log_dir(trial_id: int, base: str = "./tb_logs") -> str:
+    """根据 trial id 生成独立 TensorBoard 日志目录。
+
+    Returns:
+        str: 目录路径(已 mkdir -p)
+    """
+    tb_dir = Path(base) / f"trial_{trial_id}"
+    tb_dir.mkdir(parents=True, exist_ok=True)
+    return str(tb_dir)
 
 
 class RLHPOSweeper:
@@ -68,12 +83,23 @@ class RLHPOSweeper:
     ) -> dict[str, Any]:
         """运行 sweep,返回 best_config(dict)。
 
+        - n_jobs == 1:走 OptunaHPO(in-memory,轻量)
+        - n_jobs > 1:走 optuna 原生 + sqlite storage(支持跨进程并发)
+
         Args:
             objective_fn: 接收 params dict,返回 [reward] 或 [reward, ...] 列表
 
         Returns:
             best trial 的 params dict
         """
+        if self.n_jobs > 1:
+            return self._sweep_parallel(objective_fn)
+        return self._sweep_serial(objective_fn)
+
+    def _sweep_serial(
+        self,
+        objective_fn: Callable[[dict[str, Any]], list[float]],
+    ) -> dict[str, Any]:
         OptunaHPO, _ = _ensure_axon_hpo()
         sweeper = OptunaHPO(
             search_space=self.search_space,
@@ -82,9 +108,63 @@ class RLHPOSweeper:
             directions="maximize",
             storage=self.storage,
         )
-        _ = sweeper.run(n_trials=self.n_trials, n_jobs=self.n_jobs)
+        _ = sweeper.run(n_trials=self.n_trials, n_jobs=1)
 
         best = sweeper.get_best_trial()
         if best is None:
             return {}
         return best.params
+
+    def _sweep_parallel(
+        self,
+        objective_fn: Callable[[dict[str, Any]], list[float]],
+    ) -> dict[str, Any]:
+        """并发 sweep:sqlite storage + optuna 内置多 worker 模式。
+
+        optuna 的 n_jobs > 1 模式自动 fork workers,sqlite 跨进程同步 trial 状态。
+        """
+        import optuna  # 延迟导入,避免硬依赖
+
+        storage = self.storage
+        if storage is None:
+            # 默认 sqlite 文件,放在 cwd 下
+            storage = f"sqlite:///{self.study_name}_optuna.db"
+
+        study = optuna.create_study(
+            study_name=self.study_name,
+            storage=storage,
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(n_startup_trials=20),
+            load_if_exists=True,
+        )
+
+        # optuna.optimize 在 n_jobs > 1 时 fork workers;objective_fn 必须是 picklable
+        study.optimize(
+            self._optuna_objective_factory(objective_fn),
+            n_trials=self.n_trials,
+            n_jobs=self.n_jobs,
+        )
+
+        if not study.trials:
+            return {}
+        return dict(study.best_params)
+
+    def _optuna_objective_factory(
+        self,
+        objective_fn: Callable[[dict[str, Any]], list[float]],
+    ):
+        """将 SearchSpaceDef 采样 + 用户 objective_fn 包装为 optuna 目标函数。
+
+        Returns:
+            Callable[[optuna.Trial], list[float]]
+        """
+        import optuna  # 延迟导入
+
+        def _objective(trial: optuna.Trial) -> list[float]:
+            params: dict[str, Any] = {}
+            for name, space_def in self.search_space.items():
+                params[name] = space_def.suggest(trial, name)
+            values = objective_fn(params)
+            return list(values)
+
+        return _objective
