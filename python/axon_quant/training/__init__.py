@@ -5,4 +5,4 @@
 """
 from __future__ import annotations
 
-__all__ = ["export_onnx"]
+__all__ = ["export_onnx", "RLHPOSweeper"]
