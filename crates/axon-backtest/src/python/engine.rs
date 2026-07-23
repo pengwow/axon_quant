@@ -210,6 +210,39 @@ impl PyBacktestEngine {
         Ok(slf)
     }
 
+    /// 0.9.0 D1.1c 新增:Python 端 `BacktestEngine(initial_cash=...).with_seed(seed)` 链式 builder
+    ///
+    /// 设置 RNG seed,使回测运行可复现(RL 训练场景需要)。
+    ///
+    /// 0.9.0 简化:仅记录 seed,实际 RNG 接入留待后续 task。
+    ///
+    /// 实现注:Rust 端 `BacktestEngine::with_seed(mut self, seed) -> Self` 消费 self,
+    /// 而 `BacktestEngine` 未实现 `Clone`(含 `Box<dyn MatchingEngine>`),
+    /// plan 的 `&self -> Self` 直传方案编译失败。这里用 `mem::replace` 取出
+    /// inner 所有权、应用 `with_seed`、再放回 `slf.inner`,与 plan 行为等价。
+    #[pyo3(name = "with_seed")]
+    fn with_seed<'py>(
+        mut slf: PyRefMut<'py, Self>,
+        seed: u64,
+    ) -> PyResult<PyRefMut<'py, Self>> {
+        // placeholder config:内容不重要(立即被覆盖),仅作 swap 时的占位
+        let placeholder = BacktestEngine::new(
+            BacktestEngineConfig {
+                clock: SimulatedClock::new(Timestamp::from_nanos(0)),
+                matching_engine: Box::new(L1MatchingEngine::new()),
+                impact_model: None,
+                initial_cash: 0.0,
+                fee_config: crate::engine::FeeConfig::default(),
+                force_liquidate: false,
+            },
+            EventQueue::new(),
+        );
+        // 取出 inner 所有权 → 应用 with_seed(消费) → 放回
+        let old = std::mem::replace(&mut slf.inner, placeholder);
+        slf.inner = old.with_seed(seed);
+        Ok(slf)
+    }
+
     /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
     ///
     /// 给定 instrument 设置独立的 `SeedLiquidityConfig`,优先于
