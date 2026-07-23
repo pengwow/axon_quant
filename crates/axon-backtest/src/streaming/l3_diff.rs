@@ -66,8 +66,14 @@ impl Default for SubscriberKind {
 
 /// L3Book 订阅者 trait(0.9.0 C2.1 新增)
 ///
-/// 实现方需 `Send`(可被 BacktestEngine 在多线程中持有)
-pub trait L3BookSubscriber: Send {
+/// 实现方需 `Send + Sync`(`BacktestEngine` 派生 `#[pyclass]`,
+/// PyO3 自动要求 `Send + Sync`,所以 trait 也需 `Sync`)。
+///
+/// 实际使用:Python 端 `PyL3BookSubscriber` 持有 `PyObject` 不自动 `Sync`,
+/// 通过 `unsafe impl Sync` 显式标注,理由是:
+/// - 所有 `PyObject` 访问都在 `Python::attach` GIL 内进行
+/// - 不会跨线程同时访问(BacktestEngine 单线程持有 subscribers HashMap)
+pub trait L3BookSubscriber: Send + Sync {
     /// 收到 diff 时调用
     fn on_diff(&mut self, diff: &L3BookDiff);
 }

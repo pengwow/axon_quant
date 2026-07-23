@@ -632,8 +632,10 @@ impl BacktestEngine {
     }
 
     /// 内部:推送 L3BookDiff 到匹配的订阅者
-    #[allow(dead_code)] // 0.9.0 C2.1 主体 work 接入 begin_bar / run 时再调用,T6 仅先注册 API
-    fn dispatch_diff(&mut self, diff: &L3BookDiff, kind: SubscriberKind) {
+    ///
+    /// 0.9.0 C2.1b:供 `begin_bar` / `run` 在合适时机调用,
+    /// 也可被 PyO3 绑定(`python::engine::_dispatch_test_diff`)手动触发。
+    pub fn dispatch_diff_pub(&mut self, diff: &L3BookDiff, kind: SubscriberKind) {
         for (subscriber, sub_kind) in self.subscribers.values_mut() {
             // SubscriberKind::Both 总是接收;PerBar / PerFill 只接匹配类型
             if *sub_kind == SubscriberKind::Both || *sub_kind == kind {
