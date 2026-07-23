@@ -574,6 +574,16 @@ pub struct BacktestEngine {
     /// `with_funding_schedule` 启用时初始化为 `Timestamp::from_nanos(0)`,
     /// 首次 `begin_bar`(bar_ts 任意 > 0)即触发 1 次 funding 结算。
     last_funding_ts: HashMap<Instrument, Timestamp>,
+    /// 0.9.0 D1.1c 新增:可选 seed,由 `with_seed` builder 设置
+    ///
+    /// 透传到内部 `SimulatedClock` 与随机事件源(seed-driven mock data),
+    /// 用于 `begin_bar` / `run()` 行为可复现(RL 训练场景需要)。
+    /// 0.9.0 简化:仅记录 seed,实际 RNG 接入留待后续 task。
+    ///
+    /// 注:plan 计划加 `#[serde(skip)]`,但 `BacktestEngine` 当前未 derive
+    /// `Serialize` / `Deserialize`,该 attribute 编译失败。本次先不加,
+    /// 等 BacktestEngine 真正接入 serde 派生时再补(skip 在派生前是 no-op)。
+    pub(crate) seed: Option<u64>,
 }
 
 impl std::fmt::Debug for BacktestEngine {
@@ -589,6 +599,16 @@ impl std::fmt::Debug for BacktestEngine {
 }
 
 impl BacktestEngine {
+    /// 0.9.0 D1.1c 新增 builder:设置 RNG seed,使 begin_bar / run() 行为可复现
+    ///
+    /// 透传到内部 `SimulatedClock` 与随机事件源(seed-driven mock data)。
+    /// 0.9.0 简化:仅记录 seed,BacktestEngine 内部 RNG 链在后续 task 接入。
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// 创建回测引擎
     ///
     /// - `config`：回测配置（clock / 撮合器 / 冲击模型 / 初始资金 / 手续费）
@@ -628,6 +648,8 @@ impl BacktestEngine {
             // 0.6.0 新增(Phase 2):funding schedule 字段默认空
             funding_schedules: HashMap::new(),
             last_funding_ts: HashMap::new(),
+            // 0.9.0 D1.1c 新增:seed 默认为 None(不启用 seed-driven 复现)
+            seed: None,
         }
     }
 
