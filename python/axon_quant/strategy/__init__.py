@@ -4,5 +4,6 @@
 提供 Python 端多 leg 策略接口。
 """
 from axon_quant.strategy.base import BaseStrategy
+from axon_quant.strategy.onnx_policy import OnnxPolicyStrategy
 
-__all__ = ["BaseStrategy"]
+__all__ = ["BaseStrategy", "OnnxPolicyStrategy"]
