@@ -56,6 +56,7 @@ pub mod engine;
 pub mod error;
 pub mod hot_reload;
 pub mod pipeline;
+pub mod types;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -67,3 +68,4 @@ pub use error::{
 };
 pub use hot_reload::ModelHotReloader;
 pub use pipeline::batch::BatchInferencePipeline;
+pub use types::MultiLegAction;

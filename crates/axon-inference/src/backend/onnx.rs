@@ -6,6 +6,7 @@ use parking_lot::RwLock;
 
 use crate::engine::InferenceEngine;
 use crate::error::{Action, ActionType, InferenceError, ModelConfig, Observation};
+use crate::types::MultiLegAction;
 
 pub struct OnnxBackend {
     session: Option<Arc<RwLock<ort::session::Session>>>,
@@ -54,6 +55,69 @@ impl OnnxBackend {
             model_id: String::new(),
             inference_time_us: 0,
         }
+    }
+
+    /// 0.9.0 D1.4b 新增:多 leg 推理,返回 `MultiLegAction`
+    ///
+    /// 与 `infer` 区别:`infer` 返回 5 类离散 `Action`,`infer_multi_leg` 返回连续多 leg 目标仓位。
+    /// 假设 ONNX 输出 shape = (batch, n_legs)。
+    pub fn infer_multi_leg(
+        &self,
+        observation: &Observation,
+        n_legs: usize,
+    ) -> Result<MultiLegAction, InferenceError> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or(InferenceError::ModelNotLoaded)?;
+
+        let [batch, seq, features] = self.config.input_shape;
+        if observation.features.len() != features {
+            return Err(InferenceError::DimensionMismatch {
+                expected: features,
+                actual: observation.features.len(),
+            });
+        }
+
+        let data = observation.features.clone();
+        let input_tensor =
+            ort::value::Tensor::from_array(([batch, seq, features], data.into_boxed_slice()))
+                .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+
+        let start = std::time::Instant::now();
+        let mut session_guard = session.write();
+        let outputs = session_guard
+            .run(ort::inputs![input_tensor])
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        let inference_time_us = start.elapsed().as_micros() as u64;
+
+        let output = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| InferenceError::Onnx(e.to_string()))?;
+        let (shape, data) = output;
+
+        // 期望 shape = (batch, n_legs)
+        if shape.len() < 2 || shape[1] as usize != n_legs {
+            return Err(InferenceError::DimensionMismatch {
+                expected: n_legs,
+                actual: shape.get(1).copied().unwrap_or(0) as usize,
+            });
+        }
+
+        // model_id 派生:优先用 path 的 file_stem,fallback 到空字符串
+        let model_id = self
+            .config
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(MultiLegAction {
+            target_positions: data.to_vec(),
+            model_id,
+            inference_time_us,
+        })
     }
 }
 
