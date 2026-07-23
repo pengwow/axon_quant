@@ -4,7 +4,8 @@ AXON 的完整更新日志见仓库根目录的 [`CHANGELOG.md`](https://github.
 
 ## 当前版本
 
-查看 [GitHub Releases](https://github.com/pengwow/axon_quant/releases) 获取最新版本号与下载链接。
+- **最新稳定版:** [`v0.8.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#080---2026-07-22) — L3 多资产对账 / EngineRouter / OrderArena / SoA 价位簿 / 性能 gate
+- **开发中:** [`v0.9.0`](https://github.com/pengwow/axon_quant/blob/0.9.0/CHANGELOG.md)(分支 `0.9.0`) — RL/HPO 训练生产化(`BacktestEnv` / `MultiLegBacktestEnv` / `OnnxPolicyStrategy` / `RLHPOSweeper` / `L3BookDiff`)
 
 ## 历史版本
 
