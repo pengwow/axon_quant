@@ -99,12 +99,10 @@ mod tests {
 
     #[test]
     fn diff_default_is_empty() {
-        let instrument = axon_core::types::Instrument::Spot(
-            axon_core::types::SpotInstrument {
-                base: axon_core::types::Symbol::from("BTC"),
-                quote: axon_core::types::Symbol::from("USDT"),
-            },
-        );
+        let instrument = axon_core::types::Instrument::Spot(axon_core::types::SpotInstrument {
+            base: axon_core::types::Symbol::from("BTC"),
+            quote: axon_core::types::Symbol::from("USDT"),
+        });
         let diff = empty_diff(&instrument, 1000);
         assert!(diff.is_empty());
         assert_eq!(diff.added.len(), 0);
@@ -114,16 +112,17 @@ mod tests {
 
     #[test]
     fn diff_total_count_sums_all_fields() {
-        let instrument = axon_core::types::Instrument::Spot(
-            axon_core::types::SpotInstrument {
-                base: axon_core::types::Symbol::from("BTC"),
-                quote: axon_core::types::Symbol::from("USDT"),
-            },
-        );
+        let instrument = axon_core::types::Instrument::Spot(axon_core::types::SpotInstrument {
+            base: axon_core::types::Symbol::from("BTC"),
+            quote: axon_core::types::Symbol::from("USDT"),
+        });
         let diff = L3BookDiff {
             instrument,
             added: vec![L3Order {
-                order_id: 1, side: Side::Buy, qty: 1.0, timestamp_ns: 0,
+                order_id: 1,
+                side: Side::Buy,
+                qty: 1.0,
+                timestamp_ns: 0,
             }],
             removed: vec![2, 3],
             modified: vec![],

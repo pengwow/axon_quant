@@ -227,10 +227,7 @@ impl PyBacktestEngine {
     /// plan 的 `&self -> Self` 直传方案编译失败。这里用 `mem::replace` 取出
     /// inner 所有权、应用 `with_seed`、再放回 `slf.inner`,与 plan 行为等价。
     #[pyo3(name = "with_seed")]
-    fn with_seed<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        seed: u64,
-    ) -> PyResult<PyRefMut<'py, Self>> {
+    fn with_seed<'py>(mut slf: PyRefMut<'py, Self>, seed: u64) -> PyResult<PyRefMut<'py, Self>> {
         // placeholder config:内容不重要(立即被覆盖),仅作 swap 时的占位
         let placeholder = BacktestEngine::new(
             BacktestEngineConfig {
@@ -267,12 +264,7 @@ impl PyBacktestEngine {
     /// 0.9.0 简化:Python 端 callback 异常被吞掉(打印 stderr),
     /// 不影响其他订阅者接收(避免一个坏 callback 拖垮整条管线)。
     #[pyo3(signature = (callback, kind = "per_bar"))]
-    fn subscribe(
-        &mut self,
-        py: Python<'_>,
-        callback: Py<PyAny>,
-        kind: &str,
-    ) -> PyResult<u64> {
+    fn subscribe(&mut self, py: Python<'_>, callback: Py<PyAny>, kind: &str) -> PyResult<u64> {
         let sub_kind = parse_subscriber_kind(kind)?;
         let py_subscriber = PyL3BookSubscriber { callback };
         let id = self.inner.subscribe(Box::new(py_subscriber), sub_kind);
@@ -1388,10 +1380,7 @@ fn l3_diff_to_dict<'py>(py: Python<'py>, diff: &L3BookDiff) -> PyResult<Bound<'p
 }
 
 /// `Vec<L3Order>` → Python `list[dict]`
-fn l3_order_list_to_list<'py>(
-    py: Python<'py>,
-    orders: &[L3Order],
-) -> PyResult<Bound<'py, PyList>> {
+fn l3_order_list_to_list<'py>(py: Python<'py>, orders: &[L3Order]) -> PyResult<Bound<'py, PyList>> {
     let list = PyList::empty(py);
     for o in orders {
         list.append(l3_order_to_dict(py, o)?)?;
