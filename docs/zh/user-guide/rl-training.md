@@ -1,6 +1,6 @@
-# RL 训练用户指南(0.8.0 + 0.9.0 dev)
+# RL 训练用户指南(0.9.0)
 
-本指南涵盖 AXON 0.8.0 的 RL 环境封装、策略抽象、ONNX 部署与 HPO 训练;0.9.0 在 `0.9.0` 分支新增 `L3BookDiff` 流式订阅与多 leg 协同 observation。
+本指南涵盖 AXON 0.9.0 发布的 RL 环境封装、策略抽象、ONNX 部署与 HPO 训练(`BacktestEnv` / `MultiLegBacktestEnv` / `L3BookDiff` 流式订阅 / `OnnxPolicyStrategy` / `RLHPOSweeper`)。
 
 ---
 

@@ -6,7 +6,7 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-07-23
 
 0.9.0 主线:RL/HPO 训练生产化(C2.1 L3Book 流式 diff + C3.1 BaseStrategy 抽象 + D1.* 端到端 pipeline)。本版本从 0.8.0 切分支,补齐 Phase 4 的全部 19 个子任务。
 

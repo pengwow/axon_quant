@@ -1,6 +1,6 @@
-# RL Training User Guide (0.8.0 + 0.9.0 dev)
+# RL Training User Guide (0.9.0)
 
-This guide covers RL environment wrappers, strategy abstractions, ONNX deployment, and HPO training introduced in AXON 0.8.0; the `0.9.0` branch adds `L3BookDiff` streaming subscriptions and multi-leg coordinated observation.
+This guide covers RL environment wrappers, strategy abstractions, ONNX deployment, and HPO training shipped in AXON 0.9.0 (`BacktestEnv` / `MultiLegBacktestEnv` / `L3BookDiff` streaming / `OnnxPolicyStrategy` / `RLHPOSweeper`).
 
 ---
 
