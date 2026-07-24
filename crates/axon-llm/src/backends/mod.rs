@@ -19,6 +19,7 @@
 
 pub mod cost;
 pub mod mock;
+pub mod ollama;
 pub mod openai_compat;
 pub mod recording;
 pub mod retry;
@@ -27,6 +28,7 @@ pub mod streaming;
 // 公共导出
 pub use cost::{CostTracker, ModelPricing, pricing_for, register_pricing};
 pub use mock::MockBackend;
+pub use ollama::{BackendInitError as OllamaInitError, OllamaBackend, OllamaConfig};
 pub use openai_compat::{BackendInitError, OpenAICompatBackend, OpenAICompatConfig};
 pub use recording::{
     Fixture, Mode, RecordedRequest, RecordedResponse, RecordingLayer, sanitize_request,
