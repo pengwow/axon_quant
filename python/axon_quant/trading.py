@@ -80,13 +80,14 @@ from __future__ import annotations
 # 再用属性访问取出类。
 from axon_quant._native import trading as _native_trading_module  # noqa: E402
 
-# 拉出 Rust 端 7 个核心类(在 Python 端用类型别名对外暴露)
+# 拉出 Rust 端 8 个核心类(在 Python 端用类型别名对外暴露)
 _RustRiskLimits = _native_trading_module.RiskLimits
 _RustMockTradingBackend = _native_trading_module.MockTradingBackend
 _RustPlaceOrderTool = _native_trading_module.PlaceOrderTool
 _RustQueryPortfolioTool = _native_trading_module.QueryPortfolioTool
 _RustCancelOrderTool = _native_trading_module.CancelOrderTool
 _RustReplaceOrderTool = _native_trading_module.ReplaceOrderTool
+_RustFinishBarTool = _native_trading_module.FinishBarTool
 _RustTradingMetrics = _native_trading_module.TradingMetrics
 
 # 类型别名:Python 用户直接用 ``RiskLimits`` / ``PlaceOrderTool`` 等,
@@ -97,6 +98,7 @@ PlaceOrderTool = _RustPlaceOrderTool
 QueryPortfolioTool = _RustQueryPortfolioTool
 CancelOrderTool = _RustCancelOrderTool
 ReplaceOrderTool = _RustReplaceOrderTool
+FinishBarTool = _RustFinishBarTool
 TradingMetrics = _RustTradingMetrics
 
 __all__ = [
@@ -106,5 +108,6 @@ __all__ = [
     "QueryPortfolioTool",
     "CancelOrderTool",
     "ReplaceOrderTool",
+    "FinishBarTool",
     "TradingMetrics",
 ]

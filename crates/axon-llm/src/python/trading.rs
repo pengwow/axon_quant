@@ -39,6 +39,7 @@ use crate::tools::Tool;
 use crate::trading::backend::TradingBackend;
 use crate::trading::book_snapshot_tool::GetBookSnapshotTool as RustGetBookSnapshotTool;
 use crate::trading::cancel_order_tool::CancelOrderTool as RustCancelOrderTool;
+use crate::trading::finish_bar_tool::FinishBarTool as RustFinishBarTool;
 use crate::trading::mock::MockTradingBackend;
 use crate::trading::place_order_tool::PlaceOrderTool as RustPlaceOrderTool;
 use crate::trading::pnl_tool::GetPnlTool as RustGetPnlTool;
@@ -215,6 +216,71 @@ impl PyGetBookSnapshotTool {
     }
 }
 
+// ── PyFinishBarTool(Task 7)───────────────────────────────
+
+/// Python 端可见的 `FinishBarTool` 包装
+#[pyclass(name = "FinishBarTool")]
+pub struct PyFinishBarTool {
+    pub(crate) tool: StdArc<RustFinishBarTool>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[pymethods]
+impl PyFinishBarTool {
+    #[new]
+    fn new(backend: &PyMockTradingBackend) -> PyResult<Self> {
+        let backend_arc: StdArc<dyn TradingBackend> = backend.backend.clone();
+        let tool = RustFinishBarTool::new(backend_arc);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            tool: StdArc::new(tool),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "finish_bar"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "结束当前交易 bar，返回 bar 期间交易汇总信息"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let tool = self.tool.clone();
+        let result = self
+            .runtime
+            .block_on(async move { tool.execute(&args_str).await });
+        match result {
+            Ok(json_str) => {
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(map_tool_error(e)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "FinishBarTool()".to_string()
+    }
+}
+
 /// 把 trading 子模块的 pyclass 注册到给定的 PyModule
 ///
 /// 由 `axon_llm::python::mod.rs` 的 `#[pymodule] axon_llm` 调用,
@@ -234,6 +300,7 @@ pub fn register_trading_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReplaceOrderTool>()?;
     m.add_class::<PyTradingMetrics>()?;
     m.add_class::<PyGetBookSnapshotTool>()?;
+    m.add_class::<PyFinishBarTool>()?;
     Ok(())
 }
 

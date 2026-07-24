@@ -11,6 +11,7 @@ pub mod backend;
 pub mod book_snapshot_tool;
 pub mod cancel_order_tool;
 pub mod circuit_breaker_gate;
+pub mod finish_bar_tool;
 pub mod metrics;
 pub mod mock;
 pub mod paper_backend;
@@ -18,6 +19,7 @@ pub mod place_order_strategy;
 pub mod place_order_tool;
 pub mod query_portfolio_tool;
 pub mod replace_order_tool;
+pub mod pnl_tool;
 pub mod safety;
 pub mod types;
 
@@ -44,6 +46,8 @@ pub use paper_backend::PaperTradingBackend;
 pub use place_order_tool::PlaceOrderTool;
 pub use query_portfolio_tool::QueryPortfolioTool;
 pub use replace_order_tool::ReplaceOrderTool;
+pub use finish_bar_tool::{FinishBarResult, FinishBarTool};
+pub use pnl_tool::{GetPnlTool, PnlSnapshot, PositionPnl};
 pub use safety::{AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode};
 pub use types::{
     BalanceSnapshot, CancelOrderArgs, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus,
