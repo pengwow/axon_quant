@@ -41,6 +41,7 @@ use crate::trading::book_snapshot_tool::GetBookSnapshotTool as RustGetBookSnapsh
 use crate::trading::cancel_order_tool::CancelOrderTool as RustCancelOrderTool;
 use crate::trading::mock::MockTradingBackend;
 use crate::trading::place_order_tool::PlaceOrderTool as RustPlaceOrderTool;
+use crate::trading::pnl_tool::GetPnlTool as RustGetPnlTool;
 use crate::trading::query_portfolio_tool::QueryPortfolioTool as RustQueryPortfolioTool;
 use crate::trading::replace_order_tool::ReplaceOrderTool as RustReplaceOrderTool;
 use crate::trading::safety::{DailyCounter, RiskLimits, SafetyMode};
@@ -228,6 +229,7 @@ pub fn register_trading_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMockTradingBackend>()?;
     m.add_class::<PyPlaceOrderTool>()?;
     m.add_class::<PyQueryPortfolioTool>()?;
+    m.add_class::<PyGetPnlTool>()?;
     m.add_class::<PyCancelOrderTool>()?;
     m.add_class::<PyReplaceOrderTool>()?;
     m.add_class::<PyTradingMetrics>()?;
@@ -577,6 +579,71 @@ impl PyQueryPortfolioTool {
 
     fn __repr__(&self) -> String {
         "QueryPortfolioTool()".to_string()
+    }
+}
+
+// ── PyGetPnlTool─────────────────────────────────────
+
+/// Python 端可见的 `GetPnlTool` 包装
+#[pyclass(name = "GetPnlTool")]
+pub struct PyGetPnlTool {
+    pub(crate) tool: StdArc<RustGetPnlTool>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[pymethods]
+impl PyGetPnlTool {
+    #[new]
+    fn new(backend: &PyMockTradingBackend) -> PyResult<Self> {
+        let backend_arc: StdArc<dyn TradingBackend> = backend.backend.clone();
+        let tool = RustGetPnlTool::new(backend_arc);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            tool: StdArc::new(tool),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "get_pnl"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "查询账户盈亏信息(浮动盈亏);可选按 symbol 过滤"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let tool = self.tool.clone();
+        let result = self
+            .runtime
+            .block_on(async move { tool.execute(&args_str).await });
+        match result {
+            Ok(json_str) => {
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(map_tool_error(e)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "GetPnlTool()".to_string()
     }
 }
 
