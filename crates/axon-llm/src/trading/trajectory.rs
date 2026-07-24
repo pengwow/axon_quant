@@ -113,9 +113,14 @@ impl TrajectoryRecorder {
         })
     }
 
-    /// 获取轨迹引用
+    /// 获取当前轨迹数据
     pub fn trajectory(&self) -> &Trajectory {
         &self.trajectory
+    }
+
+    /// 获取当前轨迹数据的可变引用
+    pub fn trajectory_mut(&mut self) -> &mut Trajectory {
+        &mut self.trajectory
     }
 
     /// 获取运行 ID

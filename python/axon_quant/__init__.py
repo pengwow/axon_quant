@@ -149,6 +149,7 @@ from ._native import (  # noqa: F401
     rl,
     risk,           # Stage 3:axon-risk 暴露
     tracker,
+    trajectory,     # Task 9:轨迹记录
     walk_forward,
 )
 
@@ -163,7 +164,7 @@ from ._native import (  # noqa: F401
 #      defi 同样有 .py 包装,见 `python/axon_quant/defi.py`。
 import sys as _sys
 for _sub_name in (
-    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward",
+    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward", "trajectory",
 ):
     _sub_mod = globals().get(_sub_name)
     if _sub_mod is not None:

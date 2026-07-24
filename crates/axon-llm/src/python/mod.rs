@@ -32,6 +32,8 @@ use ollama::{make_ollama_backend, PyOllamaBackend};
 
 pub mod trading;
 
+pub mod trajectory;
+
 pub mod swarm;
 
 mod helpers;
@@ -99,6 +101,9 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let trading_submodule = PyModule::new(m.py(), "trading")?;
     trading::register_trading_module(&trading_submodule)?;
     m.add_submodule(&trading_submodule)?;
+    let trajectory_submodule = PyModule::new(m.py(), "trajectory")?;
+    trajectory::register_trajectory_module(&trajectory_submodule)?;
+    m.add_submodule(&trajectory_submodule)?;
     let swarm_submodule = PyModule::new(m.py(), "swarm")?;
     swarm::register_swarm_module(&swarm_submodule)?;
     m.add_submodule(&swarm_submodule)?;
