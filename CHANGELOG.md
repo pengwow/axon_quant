@@ -6,6 +6,43 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-24
+
+0.10.0 主线:LLM 智能体交易(ReAct + provider 抽象 + tool calling + trajectory 落盘)。本版本从 0.9.0 切分支,补齐 Phase 5 的 LLM-trading 主线 25 task。Multi-agent / Web UI / Multi-LLM ensemble 留 0.11.0。
+
+**Release summary**:**Glue layer over LLM + BacktestEngine**。新模块 `LLMProvider` trait(支持 Mock + Ollama)、`ReActAgent`(Thought-Action-Observation loop)、5 个 trading tool(`submit_order` / `get_book_snapshot` / `get_pnl` / `cancel_order` / `finish_bar`)、5-turn sliding window memory、trajectory JSON 落盘(`artifacts/trajectory_<run_id>.json`)。
+
+**Phase 概览**:
+- **E1 LLM provider abstraction** ✅ — `LLMProvider` trait + `MockProvider` + `OllamaProvider`
+- **E2 ReAct agent loop** ✅ — Thought-Action-Observation cycle + 5-turn memory + tool dispatch
+- **E3 Trading tools** ✅ — 5 tool(下单/查盘/查 PnL/撤单/结束 bar)
+- **E4 Trajectory recording** ✅ — 全程 JSON 落盘,schema version 0.10.0
+- **E5 Replay/determinism** ✅ — 同 seed trajectory 完全可复现
+- **E6 CLI demo** ✅ — `examples/llm-trading/run_50bar.py` 50 bar trading
+- (E7-E9 Multi-agent / Web UI / Multi-LLM ensemble 推到 0.11.0)
+
+**性能 gates**(待真实跑 50 bar 验证):
+- ReAct loop wall-time / bar:Mock < 1ms,Ollama local < 500ms
+- 50 bar total cost:Mock $0,Ollama local $0
+- Trajectory JSON 体积:< 1MB / 50 bar
+
+### Added
+
+- **E1 LLM provider abstraction**:`LLMProvider` trait + `MockProvider`(rule-based)+ `OllamaProvider`(HTTP /api/chat)
+- **E2 ReAct agent loop**:`ReActAgent` + `Memory` (5-turn sliding) + `ToolDispatcher`
+- **E3 Trading tools**:`submit_order` / `get_book_snapshot` / `get_pnl` / `cancel_order` / `finish_bar` 5 个 tool,全部走 BacktestEngine API
+- **E4 Trajectory recording**:`TrajectoryRecorder` + JSON schema v0.10.0
+- **E5 Determinism**:同 seed 同 provider 100% trajectory 一致
+- **E6 CLI demo**:`examples/llm-trading/run_50bar.py` 50 bar trading
+
+### Performance
+
+- ReAct loop wall-time / bar:Mock < 1ms,Ollama local < 500ms
+- 50 bar total cost:Mock $0,Ollama local $0
+- Trajectory JSON 体积:< 1MB / 50 bar
+
+**详细 plan**:待 `writing-plans` skill 输出(基于本 spec)。**详细 spec**:见 [`docs/superpowers/specs/2026-07-24-axon-quant-0.10.0-llm-agent-design.md`](docs/superpowers/specs/2026-07-24-axon-quant-0.10.0-llm-agent-design.md)。
+
 ## [0.9.0] - 2026-07-23
 
 0.9.0 主线:RL/HPO 训练生产化(C2.1 L3Book 流式 diff + C3.1 BaseStrategy 抽象 + D1.* 端到端 pipeline)。本版本从 0.8.0 切分支,补齐 Phase 4 的全部 19 个子任务。
