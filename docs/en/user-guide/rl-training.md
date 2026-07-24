@@ -1,312 +1,259 @@
-# RL Training Guide
+# RL Training User Guide (0.9.0)
 
-This guide explains how to use axon_quant's reinforcement learning (RL) functionality to train trading strategies.
+This guide covers RL environment wrappers, strategy abstractions, ONNX deployment, and HPO training shipped in AXON 0.9.0 (`BacktestEnv` / `MultiLegBacktestEnv` / `L3BookDiff` streaming / `OnnxPolicyStrategy` / `RLHPOSweeper`).
+
+---
 
 ## Quick Start
 
-### 1. Install Dependencies
-
 ```bash
-# Basic install (runtime only, no training)
-pip install axon_quant
+# 1. Install RL dependencies
+uv pip install "axon-quant[rl,onnx]"
 
-# With RL training dependencies (gymnasium, stable-baselines3, torch)
-pip install axon_quant[rl]
-```
+# 2. Train spot single-leg PPO 50K (SB3 path)
+uv run python examples/rl/train_spot_single_leg.py
 
-### 2. Run Random Baseline (No sb3 Required)
+# 3. Train spot+perp arbitrage 100K (main acceptance demo)
+uv run python examples/rl/spot_perp_arb_demo.py
 
-```bash
-cd axon
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/random_agent.py
-```
-
-### 3. Run PPO Training (Requires sb3)
-
-```bash
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/train_ppo.py \
-    --timesteps 5000 --n-envs 1
+# 4. 8-CPU parallel HPO sweep (100 trials)
+uv run python examples/rl/hpo_spot_perp_demo.py --n-trials 100 --n-jobs 8
 ```
 
 ---
 
-## Environment Configuration
+## Core Concepts
 
-`TradingEnv` is configured via a dictionary:
+AXON's RL training stitches the **backtest engine**, **L3 order book streaming**, **PyO3 bindings**, **SB3/RLLib training**, **ONNX deployment**, and **Optuna HPO** into a single end-to-end pipeline.
+
+```
+   ┌─────────────────┐  env.step   ┌──────────────┐  export  ┌─────────┐
+   │  BacktestEngine │ ────────────│  SB3/RLLib   │ ────────│  ONNX   │
+   │  (Rust core)     │             │  (train loop) │         │ policy  │
+   └─────────────────┘             └──────────────┘         └─────────┘
+          │                              │                      │
+          │  L3BookDiff (per_bar)        │                      │
+          │  ──────────────────►         │                      ▼
+          │                              │            ┌───────────────────┐
+          │                              │            │ OnnxPolicyStrategy│
+          │                              │            │ (Python deploy)   │
+          │                              │            └───────────────────┘
+          ▼                              ▼                      │
+   ┌─────────────────┐  best_params  ┌──────────────┐           │
+   │  OptunaHPO      │ ─────────────│  RLHPOSweeper│           │
+   │  (8-CPU parallel)│             │  (Python glue)│           │
+   └─────────────────┘             └──────────────┘           │
+                                                            ▼
+                                                ┌───────────────────┐
+                                                │  BacktestEngine   │
+                                                │  (production sim) │
+                                                └───────────────────┘
+```
+
+---
+
+## API Overview
+
+### `BacktestEnv` (D1.1)
+
+Wraps `BacktestEngine` as a `gym.Env` protocol for single-leg training.
 
 ```python
-import axon_quant
+from axon_quant.backtest import spot_instrument
+from axon_quant.env import BacktestEnv
 
-config = {
-    "initial_capital": 100_000.0,   # Initial capital
-    "transaction_cost": 0.001,      # Transaction fee rate
-    "slippage": 0.0001,             # Slippage
-    "max_steps": 500,               # Max steps per episode
-    "seed": 42,                     # Random seed
-    "symbol": "BTCUSDT",           # Trading pair
-    "return_window": 50,            # Return window (for Sharpe/Sortino)
+spot = spot_instrument("BTC", "USDT")
+env = BacktestEnv(spot, seed=42)
+obs, info = env.reset(seed=42)
+obs, reward, term, trunc, info = env.step(env.action_space.sample())
+```
+
+**Field notes**:
+- `observation_space`: `Box(shape=(OBS_DIM_SINGLE_LEG,))` — contains last mid price, volume, cash, position
+- `action_space`: `Box(low=-1.0, high=1.0, shape=(1,))` — normalized target position
+- `reset()`: reset `BacktestEngine` + run first bar to construct obs
+- `step(action)`: translate action to order → engine.run() → next bar obs + PnL reward
+
+### `MultiLegBacktestEnv` (D1.2)
+
+Multi-leg synchronous observation (2-3 legs; main demo uses 2 legs: spot + perp arbitrage).
+
+```python
+from axon_quant.backtest import spot_instrument, swap_instrument
+from axon_quant.env import MultiLegBacktestEnv
+
+spot = spot_instrument("BTC", "USDT")
+perp = swap_instrument("BTC", "USDT")
+env = MultiLegBacktestEnv(
+    [(spot, 1.0), (perp, 1.0)],
+    seed=42,
+)
+```
+
+Per-leg observations are concatenated into `(OBS_DIM_SINGLE_LEG * n_legs,)` `Box`; same for actions.
+
+### `L3BookDiff` Streaming Subscription (C2.1, new in 0.9.0)
+
+Subscribe to L3 order book deltas for training visualization, CB monitoring, and shadow strategy validation.
+
+```python
+from axon_quant.backtest import BacktestEngine
+
+engine = BacktestEngine(initial_cash=100_000.0)
+
+def my_callback(diff):
+    print(f"L3 diff @ {diff['timestamp_ns']}: +{len(diff['added'])} -{len(diff['removed'])}")
+
+sub_id = engine.subscribe(callback=my_callback, kind="per_bar")
+# ... run sim ...
+engine.unsubscribe(sub_id)
+```
+
+**`kind` options**:
+- `"per_bar"`: push diff at end of each bar (training visualization)
+- `"per_fill"`: push diff on each fill (high-freq replay / microstructure analysis)
+- `"both"`: push at both timings (use with caution; may double-count)
+
+### `BaseStrategy` ABC (C3.1)
+
+Python-side strategy abstraction mirroring Rust `StreamingStrategy` trait.
+
+```python
+from axon_quant.strategy import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    def on_bar(self, bar, ctx):
+        # Required: receive bar + ctx (BarContext), return order list
+        return []
+
+    def on_fill(self, fill, ctx):
+        # Optional: fill-triggered, default empty
+        return []
+```
+
+### `OnnxPolicyStrategy` (D1.4c)
+
+Deployment: load ONNX policy → BacktestEngine decision.
+
+```python
+from pathlib import Path
+from axon_quant.strategy import OnnxPolicyStrategy
+
+strategy = OnnxPolicyStrategy(
+    onnx_path=Path("artifacts/spot_perp_arb.onnx"),
+    leg_specs=[(spot, 1.0), (perp, 1.0)],
+    providers=["CPUExecutionProvider"],  # or ["CUDAExecutionProvider"]
+)
+action = strategy.predict(obs_sample)  # shape = (n_legs,)
+```
+
+### `RLHPOSweeper` (D1.5a)
+
+Optuna HPO glue with 8-CPU parallel support for 100 trials.
+
+```python
+from axon_quant.training import RLHPOSweeper
+
+sweeper = RLHPOSweeper(
+    study_name="my_hpo",
+    n_trials=100,
+    n_jobs=8,                              # 8-CPU parallel
+    storage="sqlite:///optuna.db",         # cross-process sync
+)
+best = sweeper.sweep(objective_fn=my_objective)
+print(f"best params: {best}")
+```
+
+---
+
+## Custom HPO Search Space
+
+Default search space is PPO 4-dim (lr / gamma / clip_param / entropy_coeff). Customize:
+
+```python
+from axon_hpo.search_space import SearchSpaceDef
+from axon_quant.training import RLHPOSweeper
+
+custom_space = {
+    "lr": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
+    "n_steps": SearchSpaceDef(param_type="categorical", choices=[512, 1024, 2048, 4096]),
+    "batch_size": SearchSpaceDef(param_type="categorical", choices=[32, 64, 128, 256]),
+    "gae_lambda": SearchSpaceDef(param_type="uniform", low=0.9, high=0.99),
 }
 
-env = axon_quant.rl.TradingEnv(
-    config=config,
-    action_space={"type": "continuous", "min": -1.0, "max": 1.0},
-    market_data=market_data,
-    reward="pnl",
+sweeper = RLHPOSweeper(
+    study_name="custom_hpo",
+    n_trials=50,
+    search_space=custom_space,
+    n_jobs=4,
 )
 ```
 
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `initial_capital` | float | 100000 | Initial capital |
-| `transaction_cost` | float | 0.001 | Transaction fee rate (0.1%) |
-| `slippage` | float | 0.0001 | Slippage (0.01%) |
-| `max_steps` | int | 500 | Max steps per episode |
-| `seed` | int | 42 | Random seed (reproducible) |
-| `symbol` | str | "BTCUSDT" | Trading pair name |
-| `return_window` | int | 50 | Sharpe/Sortino calculation window |
+`SearchSpaceDef` supported `param_type`:
+- `log_uniform`: log-uniform (good for lr, entropy)
+- `uniform`: linear uniform
+- `categorical`: discrete choices
+- `int`: integer
 
 ---
 
-## Reward Functions
+## TensorBoard Integration
 
-axon_quant includes three built-in reward functions:
-
-### pnl — Absolute PnL
+Each trial writes to its own directory for multi-trial comparison:
 
 ```python
-env = axon_quant.rl.TradingEnv(config=config, reward="pnl", ...)
+from axon_quant.training.hpo_sweeper import make_tb_log_dir
+
+def objective(params):
+    tb_dir = make_tb_log_dir(trial_id=current_trial_id, base="./tb_logs")
+    model = PPO("MlpPolicy", env, verbose=0, tensorboard_log=tb_dir, **params)
+    model.learn(total_timesteps=50_000)
+    return [sharpe_ratio]
 ```
 
-- Calculation: Net asset value change per step
-- Use case: Simple and intuitive, good for beginners
-- Note: Does not consider risk, may produce high-volatility strategies
-
-### sharpe — Rolling Sharpe Ratio
-
-```python
-env = axon_quant.rl.TradingEnv(config=config, reward="sharpe", ...)
-```
-
-- Calculation: Sharpe ratio within rolling window
-- Use case: Risk-adjusted return optimization
-- Note: Default `clip=10.0` prevents extreme values from causing gradient explosion
-
-### sortino — Rolling Sortino Ratio
-
-```python
-env = axon_quant.rl.TradingEnv(config=config, reward="sortino", ...)
-```
-
-- Calculation: Return ratio considering only downside risk
-- Use case: Scenarios focused on loss risk
-- Note: Does not penalize upside volatility
-
-### Selection Guide
-
-| Scenario | Recommended Reward |
-|----------|-------------------|
-| Quick validation | `pnl` |
-| Robust strategy | `sharpe` |
-| Risk-averse | `sortino` |
-
----
-
-## Integration with stable-baselines3
-
-### PPO Training Example
-
-```python
-from stable_baselines3 import PPO
-from axon_examples.vec_env import AxonTradingEnv, make_vec_env
-from axon_examples.common import make_env, make_env_config, make_synthetic_market_data
-
-# 1. Prepare data
-market_data = make_synthetic_market_data(n=500, seed=42)
-config = make_env_config(max_steps=500, seed=42)
-
-# 2. Create environment factory
-def env_fn():
-    return AxonTradingEnv(make_env(config=config, market_data=market_data, reward="sharpe"))
-
-# 3. Create vectorized environment
-venv = make_vec_env(env_fn, n_envs=4, use_stable_baselines3=True)
-
-# 4. Create model
-model = PPO("MlpPolicy", venv, verbose=1, learning_rate=3e-4)
-
-# 5. Train
-model.learn(total_timesteps=50_000)
-
-# 6. Save model
-model.save("ppo_trading")
-```
-
-### SAC Training Example
-
-```python
-from stable_baselines3 import SAC
-
-model = SAC(
-    "MlpPolicy",
-    venv,
-    verbose=1,
-    learning_rate=3e-4,
-    buffer_size=10_000,
-    batch_size=256,
-)
-model.learn(total_timesteps=50_000)
-```
-
----
-
-## Multi-Environment Parallel Training
-
-Use `make_vec_env` to create multiple parallel environments:
-
-```python
-from axon_examples.vec_env import make_vec_env
-
-# Create 4 parallel environments
-venv = make_vec_env(env_fn, n_envs=4, use_stable_baselines3=True)
-
-# Or use async environment (multi-process)
-venv = make_vec_env(env_fn, n_envs=4, use_async=True)
-```
-
-### Performance Comparison
+Launch TensorBoard:
 
 ```bash
-# Run comparison experiment
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/vec_env_train.py \
-    --n-envs 4 --timesteps 5000 --compare-with-serial
+tensorboard --logdir ./tb_logs/
+# Visit http://localhost:6006
 ```
 
 ---
 
-## Custom Reward Functions
+## 0.8.0 → 0.9.0 API Changes
 
-Reward functions are currently implemented in Rust. To customize:
+| 0.8.0 | 0.9.0 (branch) | Change |
+|-------|----------------|--------|
+| No `BacktestEnv` | `python/axon_quant/env.py` | Added `gym.Env` wrapper |
+| No `L3BookDiff` | `BacktestEngine::subscribe()` | Added streaming subscription |
+| No `BaseStrategy` ABC | `python/axon_quant/strategy/base.py` | Added Python strategy abstraction |
+| No `OnnxPolicyStrategy` | `python/axon_quant/strategy/onnx_policy.py` | Added ONNX deployment adapter |
+| No `RLHPOSweeper` | `python/axon_quant/training/hpo_sweeper.py` | Added Optuna glue |
+| `Action` (5-class discrete) | `MultiLegAction` (`axon-inference::types`) | Added multi-leg continuous action |
 
-1. **Modify Rust code**: Add new implementation in `crates/axon-rl/src/reward/`
-2. **Use Python wrapper**: Post-process reward in Python
-
-```python
-class CustomRewardWrapper:
-    """Post-process raw reward. """
-    def __init__(self, env, alpha=0.5):
-        self._env = env
-        self._alpha = alpha
-        self._prev_value = None
-
-    def step(self, action):
-        result = self._env.step(action)
-        obs, reward, terminated, truncated, info = result
-        # Custom logic: combine PnL and position change
-        custom_reward = self._alpha * reward + (1 - self._alpha) * info.get("position_change", 0)
-        return obs, custom_reward, terminated, truncated, info
-```
+0.9.0 covers all 19 plan tasks (see `docs/superpowers/plans/2026-07-22-axon-quant-0.9.0-rl-training.md`).
 
 ---
 
-## Complete Training Pipeline
+## Main Acceptance Metrics
 
-```python
-"""Complete PPO training + evaluation pipeline. """
-import time
-from stable_baselines3 import PPO
-from axon_examples.vec_env import AxonTradingEnv, make_vec_env
-from axon_examples.common import (
-    make_env, make_env_config, make_synthetic_market_data,
-    run_random_episode, set_seed,
-)
+| Metric | Target | Failure Standard |
+|--------|--------|------------------|
+| Training convergence | Sharpe > 1.0 (100K timesteps) | 100K not converge -> tune reward / obs |
+| HPO gain | best vs baseline Sharpe +20% | < 10% -> expand search space |
+| ONNX e2e | sim PnL error < 5% | > 10% -> float / schema drift |
+| HPO performance | 100 trial 8-CPU <= 3h | > 3h -> shrink search space |
 
-set_seed(42)
-
-# Data preparation
-market_data = make_synthetic_market_data(n=500, seed=42)
-config = make_env_config(max_steps=500, seed=42)
-
-def env_fn():
-    return AxonTradingEnv(make_env(config=config, market_data=market_data, reward="pnl"))
-
-# Training
-venv = make_vec_env(env_fn, n_envs=1)
-model = PPO("MlpPolicy", venv, verbose=0, learning_rate=3e-4, n_steps=512)
-
-t0 = time.perf_counter()
-model.learn(total_timesteps=10_000)
-print(f"Training time: {time.perf_counter() - t0:.1f}s")
-
-# Evaluation
-obs = venv.reset()
-total_reward = 0
-for _ in range(500):
-    action, _ = model.predict(obs, deterministic=True)
-    obs, reward, done, info = venv.step(action)
-    total_reward += reward
-    if done:
-        break
-
-print(f"Strategy reward: {total_reward:.2f}")
-
-# Compare with random
-env = env_fn()
-random_result = run_random_episode(env, max_steps=500, seed=42)
-print(f"Random reward: {random_result['total_reward']:.2f}")
-```
+Actual run results pending (`docs/superpowers/notes/2026-07-22-rl-main-acceptance.md`).
 
 ---
 
-## FAQ
+## Troubleshooting
 
-### Q: "Missing RL training dependencies" message appears
-
-```bash
-pip install gymnasium stable-baselines3 torch
-```
-
-Or use optional dependencies:
-
-```bash
-pip install axon_quant[rl]
-```
-
-### Q: Training is slow
-
-1. Increase parallel environments: `n_envs=4` or more
-2. Use GPU: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
-3. Reduce `max_steps`: Quick iteration validation
-
-### Q: How to use real data
-
-```python
-import pandas as pd
-
-# Read from CSV
-df = pd.read_csv("btc_1h.csv")
-market_data = df[["timestamp", "open", "high", "low", "close", "volume"]].to_dict("records")
-
-env = axon_quant.rl.TradingEnv(config=config, market_data=market_data, reward="sharpe")
-```
-
-### Q: How to deploy the model
-
-```python
-# Load trained model
-model = PPO.load("ppo_trading")
-
-# Real-time prediction
-obs = env.reset()
-action, _ = model.predict(obs, deterministic=True)
-```
-
----
-
-## Related Documentation
-
-- [PPO Training Script](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_ppo.py)
-- [SAC Training Script](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_sac.py)
-- [Vectorized Training Example](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/vec_env_train.py)
-- [Reward Function Comparison](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/custom_reward.py)
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `ImportError: stable_baselines3` | RL extra not installed | `uv pip install axon-quant[rl]` |
+| `ONNX export shape mismatch` | obs/action dim mismatch | Check `observation_space.shape == model.policy.obs_dim` |
+| HPO trial slow | objective instantiates env too many times | Move env to module-level, only reset in `objective` |
+| L3BookDiff not triggered | subscribe called after `engine.run()` | subscribe before run |
+| `n_jobs > 1` pickle error | objective_fn closure holds unpicklable | Move state to module-level |

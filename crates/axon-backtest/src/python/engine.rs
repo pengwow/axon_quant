@@ -4,6 +4,10 @@
 //! 与运行结果 [`RunResult`](crate::engine::RunResult) 暴露到 Python,形成
 //! `axon_quant.backtest.BacktestEngine` / `RunResult` 两个核心类。
 //!
+//! 0.9.0 C2.1c:`PyL3BookSubscriber` 需 unsafe impl `Send` + `Sync`
+//! (GIL 串行化保证安全,见 `PyL3BookSubscriber` impl 的 SAFETY 注释)。
+#![allow(unsafe_code)]
+
 //! # 数据契约
 //!
 //! ## 事件 dict 协议
@@ -72,6 +76,8 @@ use axon_core::types::{Instrument, Price, Quantity, Symbol};
 use crate::engine::{BacktestEngine, BacktestEngineConfig, RunResult};
 use crate::matching::MatchingEngine;
 use crate::matching::engine::L1MatchingEngine;
+use crate::matching::l3::book::L3Order;
+use crate::streaming::l3_diff::{L3BookDiff, L3BookSubscriber, SubscriberKind};
 
 use super::types::dict_to_order;
 use crate::python::matching::PyMatchingEngine;
@@ -208,6 +214,119 @@ impl PyBacktestEngine {
         slf.inner
             .with_seed_liquidity(half_spread, depth_levels, size_per_level);
         Ok(slf)
+    }
+
+    /// 0.9.0 D1.1c 新增:Python 端 `BacktestEngine(initial_cash=...).with_seed(seed)` 链式 builder
+    ///
+    /// 设置 RNG seed,使回测运行可复现(RL 训练场景需要)。
+    ///
+    /// 0.9.0 简化:仅记录 seed,实际 RNG 接入留待后续 task。
+    ///
+    /// 实现注:Rust 端 `BacktestEngine::with_seed(mut self, seed) -> Self` 消费 self,
+    /// 而 `BacktestEngine` 未实现 `Clone`(含 `Box<dyn MatchingEngine>`),
+    /// plan 的 `&self -> Self` 直传方案编译失败。这里用 `mem::replace` 取出
+    /// inner 所有权、应用 `with_seed`、再放回 `slf.inner`,与 plan 行为等价。
+    #[pyo3(name = "with_seed")]
+    fn with_seed<'py>(mut slf: PyRefMut<'py, Self>, seed: u64) -> PyResult<PyRefMut<'py, Self>> {
+        // placeholder config:内容不重要(立即被覆盖),仅作 swap 时的占位
+        let placeholder = BacktestEngine::new(
+            BacktestEngineConfig {
+                clock: SimulatedClock::new(Timestamp::from_nanos(0)),
+                matching_engine: Box::new(L1MatchingEngine::new()),
+                impact_model: None,
+                initial_cash: 0.0,
+                fee_config: crate::engine::FeeConfig::default(),
+                force_liquidate: false,
+            },
+            EventQueue::new(),
+        );
+        // 取出 inner 所有权 → 应用 with_seed(消费) → 放回
+        let old = std::mem::replace(&mut slf.inner, placeholder);
+        slf.inner = old.with_seed(seed);
+        Ok(slf)
+    }
+
+    /// 0.9.0 C2.1c 新增:Python 端订阅 L3Book 增量 diff(callback 形式)
+    ///
+    /// Args:
+    /// - `callback`:Python callable,签名 `callback(diff: dict) -> None`,
+    ///   `diff` 是 L3BookDiff 字典表示,字段:
+    ///   - `instrument`:tuple(参见 `instrument_to_tuple`)
+    ///   - `added`:list[dict](每个 L3Order 转 4 字段 dict)
+    ///   - `removed`:list[int](取消 / 完全成交的 order_id)
+    ///   - `modified`:list[dict](部分成交后剩余的 L3Order)
+    ///   - `timestamp_ns`:int(diff 时间戳)
+    /// - `kind`:订阅粒度,可选 `"per_bar"`(默认)/ `"per_fill"` / `"both"`
+    ///
+    /// Returns:
+    /// - `int` 订阅 ID(自增,从 0 起),用于 `unsubscribe(id)` 取消
+    ///
+    /// 0.9.0 简化:Python 端 callback 异常被吞掉(打印 stderr),
+    /// 不影响其他订阅者接收(避免一个坏 callback 拖垮整条管线)。
+    #[pyo3(signature = (callback, kind = "per_bar"))]
+    fn subscribe(&mut self, py: Python<'_>, callback: Py<PyAny>, kind: &str) -> PyResult<u64> {
+        let sub_kind = parse_subscriber_kind(kind)?;
+        let py_subscriber = PyL3BookSubscriber { callback };
+        let id = self.inner.subscribe(Box::new(py_subscriber), sub_kind);
+        // 保活 callback:PyO3 默认会在方法返回后释放 PyObject 引用,
+        // 这里在 `self` 上挂一个(0.9.0 简化:不持久化,callback 持引用由 Box 内部转移)
+        let _ = py; // 避免未使用警告
+        Ok(id)
+    }
+
+    /// 0.9.0 C2.1c 新增:取消订阅
+    ///
+    /// Args:
+    /// - `id`:subscribe() 返回的订阅 ID
+    ///
+    /// Returns:
+    /// - `bool` True 表示成功取消(原 id 存在),False 表示 id 无效
+    fn unsubscribe(&mut self, id: u64) -> bool {
+        self.inner.unsubscribe(id)
+    }
+
+    /// 0.9.0 C2.1c 测试用:手动推一个空 diff(PerBar 粒度)
+    ///
+    /// 0.9.0 简化:dispatch_diff 尚未接入 begin_bar / run,
+    /// Python 集成测试通过此方法手动触发 diff,验证 callback 能正确接收。
+    /// 正常业务用法见 `subscribe()`。
+    #[pyo3(signature = (instrument, timestamp_ns))]
+    fn _dispatch_test_diff(
+        &mut self,
+        _py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        timestamp_ns: i64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
+        let diff = L3BookDiff {
+            instrument: inst,
+            added: Vec::new(),
+            removed: Vec::new(),
+            modified: Vec::new(),
+            timestamp_ns,
+        };
+        self.inner.dispatch_diff_pub(&diff, SubscriberKind::PerBar);
+        Ok(())
+    }
+
+    /// 0.9.0 C2.1c 测试用:手动推一个空 diff(PerFill 粒度)
+    #[pyo3(signature = (instrument, timestamp_ns))]
+    fn _dispatch_test_diff_per_fill(
+        &mut self,
+        _py: Python<'_>,
+        instrument: &Bound<'_, PyAny>,
+        timestamp_ns: i64,
+    ) -> PyResult<()> {
+        let inst = super::types::parse_instrument(instrument.cast::<PyDict>()?)?;
+        let diff = L3BookDiff {
+            instrument: inst,
+            added: Vec::new(),
+            removed: Vec::new(),
+            modified: Vec::new(),
+            timestamp_ns,
+        };
+        self.inner.dispatch_diff_pub(&diff, SubscriberKind::PerFill);
+        Ok(())
     }
 
     /// 0.7.0 新增:per-leg 虚拟流动性种子覆写
@@ -1153,6 +1272,120 @@ fn instrument_to_tuple<'py>(py: Python<'py>, inst: &Instrument) -> PyResult<Boun
             )
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 0.9.0 C2.1c: L3Book diff 订阅 Python 适配
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `SubscriberKind` 字符串 → 枚举(0.9.0 C2.1c 新增)
+///
+/// 支持:
+/// - `"per_bar"` → `SubscriberKind::PerBar`(默认)
+/// - `"per_fill"` → `SubscriberKind::PerFill`
+/// - `"both"` → `SubscriberKind::Both`
+///
+/// 非法字符串 → `PyValueError`
+fn parse_subscriber_kind(kind: &str) -> PyResult<SubscriberKind> {
+    match kind {
+        "per_bar" => Ok(SubscriberKind::PerBar),
+        "per_fill" => Ok(SubscriberKind::PerFill),
+        "both" => Ok(SubscriberKind::Both),
+        other => Err(PyValueError::new_err(format!(
+            "invalid subscriber kind: {other:?} (expected 'per_bar' / 'per_fill' / 'both')"
+        ))),
+    }
+}
+
+/// Python callback → `L3BookSubscriber` 适配器(0.9.0 C2.1c 新增)
+///
+/// 把 Python callable 包装成 Rust `L3BookSubscriber` trait object。
+/// 每次收到 diff 时,在 GIL 内把 `L3BookDiff` 转 Python dict 推给 callback。
+///
+/// 0.9.0 简化:callback 抛异常时**吞掉 + 打印 stderr**,不传播到引擎。
+/// 这样:
+/// - 避免一个坏 callback 拖垮整条管线(其他订阅者仍能收到)
+/// - 不污染 `BacktestEngine::run` 的返回值(RunResult 不含 callback 状态)
+///
+/// 设计权衡:`PyL3BookSubscriber` 持有 `PyObject`,需 `Send` 但不必 `Sync`
+/// (GIL 串行化访问)。`L3BookSubscriber: Send + Sync` 需 `Sync` 派生,
+/// `PyObject` 本身不 `Sync`,显式 unsafe impl(见下 SAFETY 注释)。
+struct PyL3BookSubscriber {
+    /// Python callable(用 `Py<PyAny>` 兼容各种 callable 类型)
+    callback: Py<PyAny>,
+}
+
+// SAFETY: `PyL3BookSubscriber` 持有 `PyObject` 不自动 `Sync`,
+// 但所有 `PyObject` 访问都在 `Python::attach` GIL 内进行,且
+// `BacktestEngine` 单线程持有 subscribers HashMap(同一时刻只一个
+// 线程调 `on_diff`)。GIL 串行化保证对 `callback` 的访问安全。
+unsafe impl Send for PyL3BookSubscriber {}
+unsafe impl Sync for PyL3BookSubscriber {}
+
+impl L3BookSubscriber for PyL3BookSubscriber {
+    fn on_diff(&mut self, diff: &L3BookDiff) {
+        Python::attach(|py| {
+            let diff_dict = match l3_diff_to_dict(py, diff) {
+                Ok(d) => d,
+                Err(e) => {
+                    e.print(py);
+                    return;
+                }
+            };
+            if let Err(e) = self.callback.call1(py, (diff_dict,)) {
+                e.print(py);
+            }
+        });
+    }
+}
+
+/// `L3Order` → Python dict(4 字段)
+///
+/// 字段:
+/// - `order_id`:int
+/// - `side`:str("Buy" / "Sell")
+/// - `qty`:float
+/// - `timestamp_ns`:int
+fn l3_order_to_dict<'py>(py: Python<'py>, order: &L3Order) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("order_id", order.order_id)?;
+    d.set_item(
+        "side",
+        match order.side {
+            CoreSide::Buy => "Buy",
+            CoreSide::Sell => "Sell",
+        },
+    )?;
+    d.set_item("qty", order.qty)?;
+    d.set_item("timestamp_ns", order.timestamp_ns)?;
+    Ok(d)
+}
+
+/// `L3BookDiff` → Python dict(5 字段)
+///
+/// 字段:
+/// - `instrument`:tuple(参见 `instrument_to_tuple`)
+/// - `added`:list[dict]
+/// - `removed`:list[int]
+/// - `modified`:list[dict]
+/// - `timestamp_ns`:int
+fn l3_diff_to_dict<'py>(py: Python<'py>, diff: &L3BookDiff) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("instrument", instrument_to_tuple(py, &diff.instrument)?)?;
+    d.set_item("added", l3_order_list_to_list(py, &diff.added)?)?;
+    d.set_item("removed", diff.removed.clone().into_pyobject(py)?)?;
+    d.set_item("modified", l3_order_list_to_list(py, &diff.modified)?)?;
+    d.set_item("timestamp_ns", diff.timestamp_ns)?;
+    Ok(d)
+}
+
+/// `Vec<L3Order>` → Python `list[dict]`
+fn l3_order_list_to_list<'py>(py: Python<'py>, orders: &[L3Order]) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty(py);
+    for o in orders {
+        list.append(l3_order_to_dict(py, o)?)?;
+    }
+    Ok(list)
 }
 
 /// 当前模块需要在 `parent`(即 `_native.backtest`)下注册以下类:

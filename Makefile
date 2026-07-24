@@ -120,8 +120,22 @@ python-develop: ## 安装 Python 包到当前环境（开发模式）
 	PYO3_PYTHON=$(VENV_PYTHON) $(VENV_MATURIN) develop
 
 .PHONY: python-install
-python-install: python-build ## 安装 Python wheel(默认 --no-deps,避免拉 numpy 等大依赖)
-	$(VENV_PIP) install --no-deps --force-reinstall target/wheels/axon_quant-*.whl
+python-install: python-build ## 安装 Python wheel(uv venv: uv pip install;传统 venv: .venv/bin/pip)
+	@if [ -x "$$(command -v uv)" ] && [ -d ".venv" ] && [ ! -x ".venv/bin/pip" ]; then \
+		echo "==> Detected uv-managed venv (.venv/bin/pip missing)"; \
+		echo "==> Using 'uv pip install --no-deps --force-reinstall'"; \
+		uv pip install --no-deps --force-reinstall target/wheels/axon_quant-*.whl; \
+	elif [ -x "$(VENV_PIP)" ]; then \
+		echo "==> Detected traditional venv, using $(VENV_PIP)"; \
+		$(VENV_PIP) install --no-deps --force-reinstall target/wheels/axon_quant-*.whl; \
+	else \
+		echo "❌ Cannot install: neither uv-managed venv nor $(VENV_PIP) found"; \
+		echo "   Please run 'uv sync' first, or activate a venv with pip installed"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "==> 验证安装:"
+	@$(VENV_PYTHON) -c "import axon_quant; print('  axon_quant version:', axon_quant.__version__)"
 
 .PHONY: python-clean
 python-clean: ## 清理 Python 构建产物

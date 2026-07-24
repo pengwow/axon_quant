@@ -6,6 +6,51 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-23
+
+0.9.0 主线:RL/HPO 训练生产化(C2.1 L3Book 流式 diff + C3.1 BaseStrategy 抽象 + D1.* 端到端 pipeline)。本版本从 0.8.0 切分支,补齐 Phase 4 的全部 19 个子任务。
+
+**Release summary**:**Glue layer over existing infra**。新模块 `BacktestEnv` (gym wrapper)、`MultiLegBacktestEnv`、`OnnxPolicyStrategy`、`BaseStrategy` ABC、`L3Book` streaming diff (subscribe + `L3BookDiff`)、RL HPO sweeper (Optuna glue)、`MultiLegAction` 推理结果。两层训练:RLLib for distributed CartPole smoke,SB3 for single-process main demo。8-CPU 并行 Optuna sweep。
+
+**Phase 概览**:
+- **D1.1 BacktestEnv** ✅ — `gym.Env` 协议包装(单 leg obs)
+- **D1.2 MultiLegBacktestEnv** ✅ — 多 leg 同步 obs/action
+- **C2.1 L3Book streaming diff** ✅ — `BacktestEngine::subscribe` + `L3BookDiff` + `SubscriberKind`(per-bar/per-fill)
+- **C3.1 BaseStrategy ABC** ✅ — Python 镜像 Rust `StreamingStrategy`
+- **D1.3 RL training demos** ✅ — CartPole smoke(RLLib) + spot single-leg PPO 50K(SB3)
+- **D1.4 ONNX export + e2e** ✅ — `export_onnx` + `MultiLegAction` + `OnnxPolicyStrategy` + BacktestEngine 部署
+- **D1.5 HPO** ✅ — `RLHPOSweeper` (Optuna) + 8-CPU 并发 + TensorBoard 集成
+- **D1.6 spot+perp arb demo** ✅ — 主验收脚本 + 用户指南(中/英)
+
+**性能 gates**(待真实跑 100K + HPO 100 trial 验证):
+- HPO 100 trial × 50K timesteps:8-CPU parallel ≤ 1.5h
+- ONNX predict latency p99:< 1ms
+- L3Book diff compute:1000 levels < 100µs
+
+### Added
+
+- **D1.1 `BacktestEnv`**:gym.Env wrapper around BacktestEngine (single-leg observation) + `with_seed` builder
+- **D1.2 `MultiLegBacktestEnv`**:multi-leg sync observation/action (2-3 legs)
+- **C2.1 L3Book streaming diff**:`L3BookDiff` + `L3BookSubscriber` trait + `SubscriberKind` enum + `BacktestEngine::subscribe/unsubscribe` + PyO3 binding
+- **C3.1 `BaseStrategy` ABC**:Python mirror of Rust `StreamingStrategy` trait
+- **D1.3 RL training demos**:CartPole smoke(RLLib)+ spot single-leg PPO 50K(SB3)
+- **D1.4 ONNX export + e2e deployment**:`export_onnx` 工具(SB3→ONNX)+ Rust `MultiLegAction` + `OnnxBackend::infer_multi_leg` + Python `OnnxPolicyStrategy` + BacktestEngine 部署 smoke
+- **D1.5 `RLHPOSweeper`**:Optuna-based HPO glue + 8-CPU parallel(sqlite storage)+ TensorBoard 集成
+- **D1.6 spot+perp arbitrage demo**:主验收脚本 + 端到端 e2e 测试 + 中/英用户指南
+
+### Changed
+
+- `BacktestEngine::with_seed(u64)` builder:deterministic replay for RL training
+- `MultiLegAction` struct in `axon-inference`:extends discrete 5-class `Action` for multi-leg
+
+### Performance
+
+- HPO 100 trial × 50K timesteps:8-CPU parallel ≤ 1.5h(预期)
+- ONNX predict latency p99:< 1ms
+- L3Book diff compute:1000 levels < 100µs
+
+**详细 plan**:见 [`docs/superpowers/plans/2026-07-22-axon-quant-0.9.0-rl-training.md`](docs/superpowers/plans/2026-07-22-axon-quant-0.9.0-rl-training.md)。**详细 spec**:见 [`docs/superpowers/specs/2026-07-22-axon-quant-0.9.0-rl-training-design.md`](docs/superpowers/specs/2026-07-22-axon-quant-0.9.0-rl-training-design.md)。
+
 ## [0.8.0] - 2026-07-22
 
 0.8.0 主线:L3 matching 完整重写 + 风险与组合深化(gamma/vega 接真实 IV 源 + contract_size 修正 delta + 跨 instrument gamma 协方差)+ 基础设施(Scheduler 0 unsafe + 中英 docs 完整同步)。

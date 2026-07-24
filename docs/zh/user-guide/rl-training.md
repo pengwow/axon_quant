@@ -1,312 +1,259 @@
-# RL 训练指南
+# RL 训练用户指南(0.9.0)
 
-本指南介绍如何使用 axon_quant 的强化学习（RL）功能训练交易策略。
+本指南涵盖 AXON 0.9.0 发布的 RL 环境封装、策略抽象、ONNX 部署与 HPO 训练(`BacktestEnv` / `MultiLegBacktestEnv` / `L3BookDiff` 流式订阅 / `OnnxPolicyStrategy` / `RLHPOSweeper`)。
+
+---
 
 ## 快速开始
 
-### 1. 安装依赖
-
 ```bash
-# 基础安装（仅需运行环境，无需训练）
-pip install axon_quant
+# 1. 安装 RL 依赖
+uv pip install "axon-quant[rl,onnx]"
 
-# 包含 RL 训练依赖（gymnasium, stable-baselines3, torch）
-pip install axon_quant[rl]
-```
+# 2. 训练 spot 单 leg PPO 50K(SB3 路径)
+uv run python examples/rl/train_spot_single_leg.py
 
-### 2. 运行随机策略基线（无需 sb3）
+# 3. 训练 spot+perp 套利 100K(主验收 demo)
+uv run python examples/rl/spot_perp_arb_demo.py
 
-```bash
-cd axon
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/random_agent.py
-```
-
-### 3. 运行 PPO 训练（需要 sb3）
-
-```bash
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/train_ppo.py \
-    --timesteps 5000 --n-envs 1
+# 4. 8-CPU 并发 HPO sweep(100 trial)
+uv run python examples/rl/hpo_spot_perp_demo.py --n-trials 100 --n-jobs 8
 ```
 
 ---
 
-## 环境配置
+## 核心概念
 
-`TradingEnv` 通过 config 字典配置：
+AXON 的 RL 训练把 **回测引擎**、**L3 订单簿流**、**PyO3 绑定**、**SB3/RLLib 训练**、**ONNX 部署**、**Optuna HPO** 串成一条端到端 pipeline。
+
+```
+   ┌─────────────────┐  env.step   ┌──────────────┐  export  ┌─────────┐
+   │  BacktestEngine │ ────────────│  SB3/RLLib   │ ────────│  ONNX   │
+   │  (Rust 内核)     │             │  (训练 loop)  │         │ policy  │
+   └─────────────────┘             └──────────────┘         └─────────┘
+          │                              │                      │
+          │  L3BookDiff (per_bar)        │                      │
+          │  ──────────────────►         │                      ▼
+          │                              │            ┌───────────────────┐
+          │                              │            │ OnnxPolicyStrategy│
+          │                              │            │ (Python 部署)     │
+          │                              │            └───────────────────┘
+          ▼                              ▼                      │
+   ┌─────────────────┐  best_params  ┌──────────────┐           │
+   │  OptunaHPO      │ ─────────────│  RLHPOSweeper│           │
+   │  (8-CPU 并发)    │             │  (Python 胶水) │           │
+   └─────────────────┘             └──────────────┘           │
+                                                            ▼
+                                                ┌───────────────────┐
+                                                │  BacktestEngine   │
+                                                │  (生产部署 sim)    │
+                                                └───────────────────┘
+```
+
+---
+
+## API 概览
+
+### `BacktestEnv`(D1.1)
+
+包装 `BacktestEngine` 为 `gym.Env` 协议,单 leg 训练场景。
 
 ```python
-import axon_quant
+from axon_quant.backtest import spot_instrument
+from axon_quant.env import BacktestEnv
 
-config = {
-    "initial_capital": 100_000.0,   # 初始资金
-    "transaction_cost": 0.001,      # 手续费率
-    "slippage": 0.0001,             # 滑点
-    "max_steps": 500,               # 最大步数
-    "seed": 42,                     # 随机种子
-    "symbol": "BTCUSDT",           # 交易对
-    "return_window": 50,            # 收益窗口（用于 Sharpe/Sortino）
+spot = spot_instrument("BTC", "USDT")
+env = BacktestEnv(spot, seed=42)
+obs, info = env.reset(seed=42)
+obs, reward, term, trunc, info = env.step(env.action_space.sample())
+```
+
+**字段说明**:
+- `observation_space`: `Box(shape=(OBS_DIM_SINGLE_LEG,))` —— 包含 last mid price、成交量、cash、position 等
+- `action_space`: `Box(low=-1.0, high=1.0, shape=(1,))` —— 归一化目标仓位
+- `reset()`: 重置 `BacktestEngine` + 跑第一根 bar 构造 obs
+- `step(action)`:把 action 翻译为 order → engine.run() → 下一 bar obs + PnL reward
+
+### `MultiLegBacktestEnv`(D1.2)
+
+多 leg 同步(2-3 leg,主 demo 用 2 leg:spot + perp 套利)。
+
+```python
+from axon_quant.backtest import spot_instrument, swap_instrument
+from axon_quant.env import MultiLegBacktestEnv
+
+spot = spot_instrument("BTC", "USDT")
+perp = swap_instrument("BTC", "USDT")
+env = MultiLegBacktestEnv(
+    [(spot, 1.0), (perp, 1.0)],
+    seed=42,
+)
+```
+
+各 leg observation 拼接为 `(OBS_DIM_SINGLE_LEG * n_legs,)` 的 `Box`,action 也是各 leg 拼接。
+
+### `L3BookDiff` 流式订阅(C2.1,0.9.0 新增)
+
+订阅 L3 订单簿增量,用于训练可视化、CB 监控、shadow strategy 验证。
+
+```python
+from axon_quant.backtest import BacktestEngine
+
+engine = BacktestEngine(initial_cash=100_000.0)
+
+def my_callback(diff):
+    print(f"L3 diff @ {diff['timestamp_ns']}: +{len(diff['added'])} -{len(diff['removed'])}")
+
+sub_id = engine.subscribe(callback=my_callback, kind="per_bar")
+# ... 跑 sim ...
+engine.unsubscribe(sub_id)
+```
+
+**`kind` 选项**:
+- `"per_bar"`:每根 bar 结束时推 diff(训练可视化常用)
+- `"per_fill"`:每笔成交时推 diff(高频回放 / 微观结构分析)
+- `"both"`:两个时机都推(谨慎使用,可能重复)
+
+### `BaseStrategy` ABC(C3.1)
+
+Python 端策略抽象,镜像 Rust 侧 `StreamingStrategy` trait。
+
+```python
+from axon_quant.strategy import BaseStrategy
+
+class MyStrategy(BaseStrategy):
+    def on_bar(self, bar, ctx):
+        # 必须实现:接收 bar + ctx(BarContext),返回 order list
+        return []
+
+    def on_fill(self, fill, ctx):
+        # 可选:fill 触发,默认空实现
+        return []
+```
+
+### `OnnxPolicyStrategy`(D1.4c)
+
+部署时:加载 ONNX policy → BacktestEngine 决策。
+
+```python
+from pathlib import Path
+from axon_quant.strategy import OnnxPolicyStrategy
+
+strategy = OnnxPolicyStrategy(
+    onnx_path=Path("artifacts/spot_perp_arb.onnx"),
+    leg_specs=[(spot, 1.0), (perp, 1.0)],
+    providers=["CPUExecutionProvider"],  # or ["CUDAExecutionProvider"]
+)
+action = strategy.predict(obs_sample)  # shape = (n_legs,)
+```
+
+### `RLHPOSweeper`(D1.5a)
+
+Optuna HPO 胶水,8-CPU 并发 100 trial。
+
+```python
+from axon_quant.training import RLHPOSweeper
+
+sweeper = RLHPOSweeper(
+    study_name="my_hpo",
+    n_trials=100,
+    n_jobs=8,                              # 8-CPU 并发
+    storage="sqlite:///optuna.db",         # 跨进程同步
+)
+best = sweeper.sweep(objective_fn=my_objective)
+print(f"best params: {best}")
+```
+
+---
+
+## 自定义 HPO 搜索空间
+
+默认搜索空间为 PPO 4 维(lr/gamma/clip_param/entropy_coeff)。自定义:
+
+```python
+from axon_hpo.search_space import SearchSpaceDef
+from axon_quant.training import RLHPOSweeper
+
+custom_space = {
+    "lr": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
+    "n_steps": SearchSpaceDef(param_type="categorical", choices=[512, 1024, 2048, 4096]),
+    "batch_size": SearchSpaceDef(param_type="categorical", choices=[32, 64, 128, 256]),
+    "gae_lambda": SearchSpaceDef(param_type="uniform", low=0.9, high=0.99),
 }
 
-env = axon_quant.rl.TradingEnv(
-    config=config,
-    action_space={"type": "continuous", "min": -1.0, "max": 1.0},
-    market_data=market_data,
-    reward="pnl",
+sweeper = RLHPOSweeper(
+    study_name="custom_hpo",
+    n_trials=50,
+    search_space=custom_space,
+    n_jobs=4,
 )
 ```
 
-### 参数说明
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `initial_capital` | float | 100000 | 初始资金 |
-| `transaction_cost` | float | 0.001 | 手续费率（0.1%） |
-| `slippage` | float | 0.0001 | 滑点（0.01%） |
-| `max_steps` | int | 500 | 每个 episode 最大步数 |
-| `seed` | int | 42 | 随机种子（可复现） |
-| `symbol` | str | "BTCUSDT" | 交易对名称 |
-| `return_window` | int | 50 | Sharpe/Sortino 计算窗口 |
+`SearchSpaceDef` 支持 `param_type`:
+- `log_uniform`:对数均匀(适合 lr、entropy)
+- `uniform`:线性均匀
+- `categorical`:离散选项
+- `int`:整数
 
 ---
 
-## 奖励函数
+## TensorBoard 集成
 
-axon_quant 内置三种奖励函数：
-
-### pnl — 绝对 PnL
+每次 trial 写到独立目录,便于多 trial 对比:
 
 ```python
-env = axon_quant.rl.TradingEnv(config=config, reward="pnl", ...)
+from axon_quant.training.hpo_sweeper import make_tb_log_dir
+
+def objective(params):
+    tb_dir = make_tb_log_dir(trial_id=current_trial_id, base="./tb_logs")
+    model = PPO("MlpPolicy", env, verbose=0, tensorboard_log=tb_dir, **params)
+    model.learn(total_timesteps=50_000)
+    return [sharpe_ratio]
 ```
 
-- 计算：每步资金净值变化
-- 适用：简单直观，适合初学者
-- 特点：不考虑风险，可能产生高波动策略
-
-### sharpe — 滚动夏普比率
-
-```python
-env = axon_quant.rl.TradingEnv(config=config, reward="sharpe", ...)
-```
-
-- 计算：滚动窗口内的夏普比率
-- 适用：风险调整后收益优化
-- 特点：默认 `clip=10.0`，防止极端值导致梯度爆炸
-
-### sortino — 滚动索提诺比率
-
-```python
-env = axon_quant.rl.TradingEnv(config=config, reward="sortino", ...)
-```
-
-- 计算：仅考虑下行风险的收益比率
-- 适用：更关注亏损风险的场景
-- 特点：对上行波动不惩罚
-
-### 选择建议
-
-| 场景 | 推荐奖励 |
-|------|----------|
-| 快速验证 | `pnl` |
-| 稳健策略 | `sharpe` |
-| 风险厌恶 | `sortino` |
-
----
-
-## 与 stable-baselines3 集成
-
-### PPO 训练示例
-
-```python
-from stable_baselines3 import PPO
-from axon_examples.vec_env import AxonTradingEnv, make_vec_env
-from axon_examples.common import make_env, make_env_config, make_synthetic_market_data
-
-# 1. 准备数据
-market_data = make_synthetic_market_data(n=500, seed=42)
-config = make_env_config(max_steps=500, seed=42)
-
-# 2. 创建环境工厂
-def env_fn():
-    return AxonTradingEnv(make_env(config=config, market_data=market_data, reward="sharpe"))
-
-# 3. 创建向量化环境
-venv = make_vec_env(env_fn, n_envs=4, use_stable_baselines3=True)
-
-# 4. 创建模型
-model = PPO("MlpPolicy", venv, verbose=1, learning_rate=3e-4)
-
-# 5. 训练
-model.learn(total_timesteps=50_000)
-
-# 6. 保存模型
-model.save("ppo_trading")
-```
-
-### SAC 训练示例
-
-```python
-from stable_baselines3 import SAC
-
-model = SAC(
-    "MlpPolicy",
-    venv,
-    verbose=1,
-    learning_rate=3e-4,
-    buffer_size=10_000,
-    batch_size=256,
-)
-model.learn(total_timesteps=50_000)
-```
-
----
-
-## 多环境并行训练
-
-使用 `make_vec_env` 创建多个并行环境：
-
-```python
-from axon_examples.vec_env import make_vec_env
-
-# 创建 4 个并行环境
-venv = make_vec_env(env_fn, n_envs=4, use_stable_baselines3=True)
-
-# 或使用异步环境（多进程）
-venv = make_vec_env(env_fn, n_envs=4, use_async=True)
-```
-
-### 性能对比
+启动 TensorBoard:
 
 ```bash
-# 运行对比实验
-PYTHONPATH=examples .venv/bin/python examples/02_rl_training/vec_env_train.py \
-    --n-envs 4 --timesteps 5000 --compare-with-serial
+tensorboard --logdir ./tb_logs/
+# 访问 http://localhost:6006
 ```
 
 ---
 
-## 自定义奖励函数
+## 0.8.0 → 0.9.0 API 变化
 
-当前奖励函数在 Rust 端实现，如需自定义可通过以下方式：
+| 0.8.0 | 0.9.0 (分支) | 变化 |
+|-------|--------------|------|
+| 无 `BacktestEnv` | `python/axon_quant/env.py` | 新增 `gym.Env` 包装 |
+| 无 `L3BookDiff` | `BacktestEngine::subscribe()` | 新增流式订阅 |
+| 无 `BaseStrategy` ABC | `python/axon_quant/strategy/base.py` | 新增 Python 策略抽象 |
+| 无 `OnnxPolicyStrategy` | `python/axon_quant/strategy/onnx_policy.py` | 新增 ONNX 部署适配 |
+| 无 `RLHPOSweeper` | `python/axon_quant/training/hpo_sweeper.py` | 新增 Optuna 胶水 |
+| `Action`(5 类离散) | `MultiLegAction`(`axon-inference::types`) | 新增多 leg 连续动作 |
 
-1. **修改 Rust 竺码**：在 `crates/axon-rl/src/reward/` 中添加新实现
-2. **使用 Python 包装**：在 Python 端对 reward 做后处理
-
-```python
-class CustomRewardWrapper:
-    """对原始 reward 做后处理。"""
-    def __init__(self, env, alpha=0.5):
-        self._env = env
-        self._alpha = alpha
-        self._prev_value = None
-
-    def step(self, action):
-        result = self._env.step(action)
-        obs, reward, terminated, truncated, info = result
-        # 自定义逻辑：结合 PnL 和持仓变化
-        custom_reward = self._alpha * reward + (1 - self._alpha) * info.get("position_change", 0)
-        return obs, custom_reward, terminated, truncated, info
-```
+0.9.0 全部 19 个 plan 任务(详见 `docs/superpowers/plans/2026-07-22-axon-quant-0.9.0-rl-training.md`)。
 
 ---
 
-## 完整训练流程
+## 主验收指标
 
-```python
-"""完整的 PPO 训练 + 评估流程。"""
-import time
-from stable_baselines3 import PPO
-from axon_examples.vec_env import AxonTradingEnv, make_vec_env
-from axon_examples.common import (
-    make_env, make_env_config, make_synthetic_market_data,
-    run_random_episode, set_seed,
-)
+| 指标 | 目标 | 失败标准 |
+|------|------|----------|
+| 训练收敛 | Sharpe > 1.0 (100K timesteps) | 100K 不收敛 → 调 reward / obs |
+| HPO 增益 | best vs baseline Sharpe +20% | < 10% → 扩 search space |
+| ONNX e2e | sim PnL 误差 < 5% | > 10% → 浮点 / schema 偏移 |
+| HPO 性能 | 100 trial 8-CPU <= 3h | 超 3h → 缩 search space |
 
-set_seed(42)
-
-# 数据准备
-market_data = make_synthetic_market_data(n=500, seed=42)
-config = make_env_config(max_steps=500, seed=42)
-
-def env_fn():
-    return AxonTradingEnv(make_env(config=config, market_data=market_data, reward="pnl"))
-
-# 训练
-venv = make_vec_env(env_fn, n_envs=1)
-model = PPO("MlpPolicy", venv, verbose=0, learning_rate=3e-4, n_steps=512)
-
-t0 = time.perf_counter()
-model.learn(total_timesteps=10_000)
-print(f"训练耗时: {time.perf_counter() - t0:.1f}s")
-
-# 评估
-obs = venv.reset()
-total_reward = 0
-for _ in range(500):
-    action, _ = model.predict(obs, deterministic=True)
-    obs, reward, done, info = venv.step(action)
-    total_reward += reward
-    if done:
-        break
-
-print(f"策略累计奖励: {total_reward:.2f}")
-
-# 对比随机策略
-env = env_fn()
-random_result = run_random_episode(env, max_steps=500, seed=42)
-print(f"随机策略奖励: {random_result['total_reward']:.2f}")
-```
+实际跑测结果待填(`docs/superpowers/notes/2026-07-22-rl-main-acceptance.md`)。
 
 ---
 
-## 常见问题
+## 故障排查
 
-### Q: 出现 "缺少 RL 训练依赖" 提示
-
-```bash
-pip install gymnasium stable-baselines3 torch
-```
-
-或使用可选依赖：
-
-```bash
-pip install axon_quant[rl]
-```
-
-### Q: 训练速度慢
-
-1. 增加并行环境数：`n_envs=4` 或更多
-2. 使用 GPU：`pip install torch --index-url https://download.pytorch.org/whl/cu121`
-3. 减少 `max_steps`：快速迭代验证
-
-### Q: 如何使用真实数据
-
-```python
-import pandas as pd
-
-# 从 CSV 读取
-df = pd.read_csv("btc_1h.csv")
-market_data = df[["timestamp", "open", "high", "low", "close", "volume"]].to_dict("records")
-
-env = axon_quant.rl.TradingEnv(config=config, market_data=market_data, reward="sharpe")
-```
-
-### Q: 模型如何部署
-
-```python
-# 加载已训练模型
-model = PPO.load("ppo_trading")
-
-# 实时预测
-obs = env.reset()
-action, _ = model.predict(obs, deterministic=True)
-```
-
----
-
-## 相关文档
-
-- [PPO 训练脚本](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_ppo.py)
-- [SAC 训练脚本](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/train_sac.py)
-- [向量化训练示例](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/vec_env_train.py)
-- [奖励函数对比](https://github.com/pengwow/axon_quant/blob/main/examples/02_rl_training/custom_reward.py)
+| 症状 | 原因 | 修复 |
+|------|------|------|
+| `ImportError: stable_baselines3` | 没装 RL extra | `uv pip install axon-quant[rl]` |
+| `ONNX export shape mismatch` | obs/action 维度不匹配 | 检查 `observation_space.shape == model.policy.obs_dim` |
+| HPO trial 慢 | objective 内部实例化 env 太多 | env 改为 module-level,只在 `objective` 内 reset |
+| L3BookDiff 不触发 | subscribe 在 `engine.run()` 之后 | 先 `subscribe` 再 `run` |
+| `n_jobs > 1` 报 pickle 错误 | objective_fn 闭包含 unpicklable 对象 | 把状态挪到 module-level |
