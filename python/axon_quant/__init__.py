@@ -305,8 +305,10 @@ from .llm import (  # noqa: F401
     LLMBackend,
     LLMConfig,
     LLMMessage,
+    OllamaBackend,
     load_config_from_toml,
     make_backend,
+    make_ollama_backend,
 )
 
 # swarm 子模块（如果可用）
@@ -426,8 +428,10 @@ __all__ = [  # noqa: F405
     "okx_testnet_config",
     "LLMConfig",
     "LLMBackend",
+    "OllamaBackend",
     "LLMMessage",
     "make_backend",
+    "make_ollama_backend",
     "load_config_from_toml",
     # Swarm 子模块
     "SwarmOrchestrator",
