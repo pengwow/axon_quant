@@ -21,6 +21,9 @@ use tokio::sync::Mutex;
 use crate::backends::{OpenAICompatBackend, OpenAICompatConfig};
 use crate::config::LLMConfig;
 
+mod agent;
+use agent::{PyReActAgent, PyTool};
+
 mod backend;
 use backend::{PyLLMBackend, PyMessage};
 
@@ -91,6 +94,8 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLLMBackend>()?;
     m.add_class::<PyOllamaBackend>()?;
     m.add_class::<PyMessage>()?;
+    m.add_class::<PyReActAgent>()?;
+    m.add_class::<PyTool>()?;
     let trading_submodule = PyModule::new(m.py(), "trading")?;
     trading::register_trading_module(&trading_submodule)?;
     m.add_submodule(&trading_submodule)?;
