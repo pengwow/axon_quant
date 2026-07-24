@@ -8,6 +8,7 @@
 //! - `trading-backtest`:`BacktestTradingBackend`(2026-06-17)
 
 pub mod backend;
+pub mod book_snapshot_tool;
 pub mod cancel_order_tool;
 pub mod circuit_breaker_gate;
 pub mod metrics;
@@ -30,6 +31,8 @@ pub mod oms;
 pub mod backtest;
 
 pub use backend::{TradingBackend, TradingError};
+#[cfg(feature = "trading-backtest")]
+pub use book_snapshot_tool::{GetBookSnapshotTool, OrderBookLevel, OrderBookProvider, OrderBookSnapshot};
 pub use cancel_order_tool::CancelOrderTool;
 pub use circuit_breaker_gate::RejectionCircuitBreaker;
 pub use metrics::{

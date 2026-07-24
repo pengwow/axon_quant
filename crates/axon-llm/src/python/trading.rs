@@ -33,10 +33,11 @@
 use std::sync::Arc as StdArc;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 
 use crate::tools::Tool;
 use crate::trading::backend::TradingBackend;
+use crate::trading::book_snapshot_tool::GetBookSnapshotTool as RustGetBookSnapshotTool;
 use crate::trading::cancel_order_tool::CancelOrderTool as RustCancelOrderTool;
 use crate::trading::mock::MockTradingBackend;
 use crate::trading::place_order_tool::PlaceOrderTool as RustPlaceOrderTool;
@@ -110,6 +111,109 @@ impl PyRiskLimits {
     }
 }
 
+/// Python 端可见的 `GetBookSnapshotTool` 包装
+#[pyclass(name = "GetBookSnapshotTool")]
+pub struct PyGetBookSnapshotTool {
+    pub(crate) engine: Py<PyAny>,
+    pub(crate) symbol: String,
+}
+
+#[pymethods]
+impl PyGetBookSnapshotTool {
+    #[new]
+    fn new(engine: &Bound<'_, PyAny>, symbol: &str) -> PyResult<Self> {
+        Ok(Self {
+            engine: engine.clone().unbind().into(),
+            symbol: symbol.to_string(),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "get_book_snapshot"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "查询订单簿快照(买卖盘深度);支持按 symbol 和 levels 过滤"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let levels = if let Some(args) = args {
+            match args.get_item("levels") {
+                Ok(Some(v)) => v.extract::<usize>().unwrap_or(10),
+                _ => 10,
+            }
+        } else {
+            10
+        };
+
+        let args_tuple = PyTuple::new(py, &[levels]).unwrap();
+        let depth_result = self.engine.call_method(py, "depth", args_tuple, None)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("调用 depth 方法失败: {}", e)))?;
+
+        let depth_dict = depth_result.cast_bound::<PyDict>(py)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("depth 返回值不是 dict: {}", e)))?;
+
+        let bids = depth_dict.get_item("bids").unwrap().unwrap();
+        let asks = depth_dict.get_item("asks").unwrap().unwrap();
+
+        let bids_list = bids.downcast::<PyList>()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e)))?;
+        let asks_list = asks.downcast::<PyList>()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e)))?;
+
+        let bids_result: Vec<serde_json::Value> = (0..bids_list.len())
+            .map(|i| {
+                let item = bids_list.get_item(i).unwrap();
+                let d = item.downcast::<PyDict>()
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("bid item 不是 dict: {}", e)))?;
+                let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
+                let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
+                Ok(serde_json::json!({"price": price, "quantity": quantity}))
+            })
+            .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("解析 bids 失败: {}", e)))?;
+
+        let asks_result: Vec<serde_json::Value> = (0..asks_list.len())
+            .map(|i| {
+                let item = asks_list.get_item(i).unwrap();
+                let d = item.downcast::<PyDict>()
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("ask item 不是 dict: {}", e)))?;
+                let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
+                let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
+                Ok(serde_json::json!({"price": price, "quantity": quantity}))
+            })
+            .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("解析 asks 失败: {}", e)))?;
+
+        let snapshot = serde_json::json!({
+            "symbol": self.symbol,
+            "bids": bids_result,
+            "asks": asks_result,
+            "as_of_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        });
+
+        let snapshot_json = serde_json::to_string(&snapshot)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("序列化失败: {}", e)))?;
+
+        let owned = tool_result_to_py(py, &snapshot_json)?;
+        Ok(owned.into_bound(py))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("GetBookSnapshotTool(symbol={})", self.symbol)
+    }
+}
+
 /// 把 trading 子模块的 pyclass 注册到给定的 PyModule
 ///
 /// 由 `axon_llm::python::mod.rs` 的 `#[pymodule] axon_llm` 调用,
@@ -127,6 +231,7 @@ pub fn register_trading_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCancelOrderTool>()?;
     m.add_class::<PyReplaceOrderTool>()?;
     m.add_class::<PyTradingMetrics>()?;
+    m.add_class::<PyGetBookSnapshotTool>()?;
     Ok(())
 }
 
