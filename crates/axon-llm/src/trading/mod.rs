@@ -21,6 +21,7 @@ pub mod query_portfolio_tool;
 pub mod replace_order_tool;
 pub mod pnl_tool;
 pub mod safety;
+pub mod trajectory;
 pub mod types;
 
 #[cfg(feature = "trading-exchange")]
@@ -49,6 +50,7 @@ pub use replace_order_tool::ReplaceOrderTool;
 pub use finish_bar_tool::{FinishBarResult, FinishBarTool};
 pub use pnl_tool::{GetPnlTool, PnlSnapshot, PositionPnl};
 pub use safety::{AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode};
+pub use trajectory::{TrajectoryBar, TrajectoryRecorder, TrajectorySummary, ToolCall};
 pub use types::{
     BalanceSnapshot, CancelOrderArgs, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus,
     PlaceOrderArgs, PortfolioSnapshot, PositionSnapshot, QueryPortfolioArgs, ReplaceOrderArgs,
