@@ -40,7 +40,7 @@ impl ToolResult {
 }
 
 /// 工具执行错误
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ToolError {
     /// 参数解析失败（JSON 不合法或缺字段）
     #[error("参数解析失败: {0}")]

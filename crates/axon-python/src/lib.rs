@@ -67,6 +67,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     axon_llm::python::trading::register_trading_module(&trading_module)?;
     m.add_submodule(&trading_module)?;
 
+    // axon-llm trajectory 子模块（Task 9:轨迹记录的 PyO3 绑定）
+    let trajectory_module = PyModule::new(m.py(), "trajectory")?;
+    axon_llm::python::trajectory::register_trajectory_module(&trajectory_module)?;
+    m.add_submodule(&trajectory_module)?;
+
     // Stage 1:`axon-data` 子模块
     // 注:axon-data 内部已注册 error/types/sources/dataset/service 五个子模块,
     // 这里只调 `register_module` 把 `data` 挂到 `_native` 下。

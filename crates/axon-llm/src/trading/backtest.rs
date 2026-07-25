@@ -31,6 +31,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Price, Quantity, Symbol};
 
 use crate::trading::backend::{TradingBackend, TradingError};
+use crate::trading::book_snapshot_tool::{OrderBookLevel, OrderBookSnapshot};
 use crate::trading::types::{
     BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
     PositionSnapshot,
@@ -106,7 +107,18 @@ impl PortfolioState {
     }
 }
 
-// ==================== 类型转换:PlaceOrderArgs -> Order ====================
+// ==================== 类型转换:辅助函数 ====================
+
+/// 把 "BASE-QUOTE" 拆为 (base, quote) Symbol 对
+///
+/// 无分隔符时返回 (原symbol, "USDT")。
+pub(crate) fn split_symbol(symbol: &Symbol) -> (Symbol, Symbol) {
+    let s = symbol.as_str();
+    match s.split_once('-') {
+        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+        None => (symbol.clone(), Symbol::from("USDT")),
+    }
+}
 
 /// `PlaceOrderArgs` 转 `axon_core::Order`(避开 orphan rule)
 ///
@@ -137,12 +149,7 @@ pub(crate) fn args_to_backtest_order(
         }
         (OrderKind::Market, _) => OrderType::Market,
     };
-    // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
-    let s = symbol.as_str();
-    let (base, quote) = match s.split_once('-') {
-        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
-        None => (symbol, Symbol::from("USDT")),
-    };
+    let (base, quote) = split_symbol(&symbol);
     Ok(Order::spot(
         order_id,
         base,
@@ -212,26 +219,23 @@ pub(crate) fn map_backtest_error(e: axon_backtest::matching::MatchingError) -> T
 ///
 /// - `engine` 同步撮合,`submit` 需 `&mut self`
 /// - `portfolio` 自维护 cash + positions(简单 f64)
-/// - `symbol` 绑定的交易品种(L1MatchingEngine 单 symbol)
 /// - `order_id_seq` 原子递增分配 OrderId
+/// - symbol 存储在外层 `BacktestTradingBackend` 中,避免每次访问都加锁
 pub(crate) struct BacktestInner {
     /// L1 撮合引擎(单 symbol)
     pub(crate) engine: L1MatchingEngine,
     /// 自维护 portfolio(cash + positions)
     pub(crate) portfolio: PortfolioState,
-    /// 引擎绑定的 symbol
-    pub(crate) symbol: Symbol,
     /// OrderId 分配序列
     pub(crate) order_id_seq: AtomicU64,
 }
 
 impl BacktestInner {
     /// 构造 Backtest 内部状态
-    pub(crate) fn new(symbol: Symbol, initial_cash: f64) -> Self {
+    pub(crate) fn new(engine: L1MatchingEngine, initial_cash: f64) -> Self {
         Self {
-            engine: L1MatchingEngine::with_symbol(symbol.clone()),
+            engine,
             portfolio: PortfolioState::new(initial_cash),
-            symbol,
             order_id_seq: AtomicU64::new(1),
         }
     }
@@ -250,14 +254,137 @@ impl BacktestInner {
 /// - `OrderId` 内部从 `AtomicU64` 序列分配,字符串化为 `"bt-{n}"`(与 OMS Uuid / Exchange 区分)。
 pub struct BacktestTradingBackend {
     inner: Arc<RwLock<BacktestInner>>,
+    /// 绑定的交易对(构造后不变,直接存储避免锁依赖)
+    symbol: Symbol,
 }
 
 impl BacktestTradingBackend {
     /// 创建 `BacktestTradingBackend`,绑 symbol + 初始 cash
     pub fn new(symbol: impl Into<Symbol>, initial_cash: f64) -> Self {
-        let inner = BacktestInner::new(symbol.into(), initial_cash);
+        let sym = symbol.into();
+        let engine = L1MatchingEngine::with_symbol(sym.clone());
+        let inner = BacktestInner::new(engine, initial_cash);
         Self {
             inner: Arc::new(RwLock::new(inner)),
+            symbol: sym,
+        }
+    }
+
+    /// 获取绑定的交易对
+    ///
+    /// symbol 在构造后不会改变,直接返回引用,无需加锁。
+    pub fn symbol(&self) -> &str {
+        self.symbol.as_str()
+    }
+
+    /// 获取订单簿快照
+    ///
+    /// `levels=0` 时自动改为默认值 10
+    pub async fn book_snapshot(&self, levels: usize) -> OrderBookSnapshot {
+        // levels=0 时使用默认深度 10
+        let levels = if levels == 0 { 10 } else { levels };
+
+        let inner = self.inner.read().await;
+        let (bids_raw, asks_raw) = inner.engine.depth(levels);
+
+        let bids: Vec<OrderBookLevel> = bids_raw
+            .iter()
+            .map(|level| OrderBookLevel {
+                price: level.price.as_f64(),
+                quantity: level.quantity.as_f64(),
+            })
+            .collect();
+
+        let asks: Vec<OrderBookLevel> = asks_raw
+            .iter()
+            .map(|level| OrderBookLevel {
+                price: level.price.as_f64(),
+                quantity: level.quantity.as_f64(),
+            })
+            .collect();
+
+        OrderBookSnapshot {
+            symbol: self.symbol.to_string(),
+            bids,
+            asks,
+            as_of_ms: now_ms_i64(),
+        }
+    }
+
+    /// 推进到下一 bar(向订单簿注入流动性)
+    ///
+    /// 清空原有订单簿,按 mid_price ± half_spread * (i+1) 注入 depth_levels 档买卖盘。
+    /// 订单 ID 从 order_id_seq 分配,避免与 place_order 冲突。
+    ///
+    /// # Panics
+    /// `half_spread <= 0.0` 时 panic,因为零或负价差会导致买卖盘交叉立即成交。
+    pub async fn advance_bar(
+        &self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) {
+        // 参数校验(在获取锁之前)
+        assert!(
+            mid_price > 0.0,
+            "mid_price must be positive, got {}",
+            mid_price
+        );
+        assert!(
+            half_spread > 0.0,
+            "half_spread must be positive, got {}",
+            half_spread
+        );
+        assert!(
+            size_per_level > 0.0,
+            "size_per_level must be positive, got {}",
+            size_per_level
+        );
+        // depth_levels 为 0 时使用默认值 10
+        let depth_levels = if depth_levels == 0 { 10 } else { depth_levels };
+
+        let mut inner = self.inner.write().await;
+        // 清空原有订单簿,注入新的流动性
+        inner.engine = L1MatchingEngine::with_symbol(self.symbol.clone());
+
+        // 复用 split_symbol 解析 base/quote
+        let (base, quote) = split_symbol(&self.symbol);
+
+        for i in 0..depth_levels {
+            // 从全局序列分配 ID,避免与 place_order 的 ID 冲突
+            let ask_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
+            let bid_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
+
+            // 卖盘: mid_price + half_spread * (i+1)
+            let ask_price = mid_price + half_spread * (i + 1) as f64;
+            let ask_order = Order::spot(
+                ask_id,
+                base.clone(),
+                quote.clone(),
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(ask_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            inner.engine.submit(ask_order);
+
+            // 买盘: mid_price - half_spread * (i+1)
+            let bid_price = mid_price - half_spread * (i + 1) as f64;
+            let bid_order = Order::spot(
+                bid_id,
+                base.clone(),
+                quote.clone(),
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(bid_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            inner.engine.submit(bid_order);
         }
     }
 }
@@ -271,16 +398,31 @@ impl TradingBackend for BacktestTradingBackend {
         // 1. 校验 symbol 匹配(L1MatchingEngine::validate 会拒,但这里提前 fail-fast)
         let symbol = Symbol::from(req.symbol.clone());
 
-        // 2. 写锁内完整提交流程(分配 ID + 转换 + submit + 应用 fills)
-        let mut inner = self.inner.write().await;
-
-        // 校验 symbol 匹配(若不匹配,提前释放锁)
-        if inner.symbol != symbol {
+        // 2. 提前校验(在获取锁之前)
+        // symbol 匹配校验
+        if self.symbol != symbol {
             return Err(TradingError::InvalidArguments(format!(
                 "symbol mismatch: backend bound to {}, request {}",
-                inner.symbol, symbol
+                self.symbol, symbol
             )));
         }
+        // quantity 必须大于 0
+        if req.quantity <= 0.0 {
+            return Err(TradingError::InvalidArguments(format!(
+                "quantity must be positive, got {}",
+                req.quantity
+            )));
+        }
+        // price 对于限价单必须大于 0
+        if req.order_type == OrderKind::Limit && req.price.map(|p| p <= 0.0).unwrap_or(true) {
+            return Err(TradingError::InvalidArguments(format!(
+                "limit order price must be positive, got {:?}",
+                req.price
+            )));
+        }
+
+        // 3. 写锁内完整提交流程(分配 ID + 转换 + submit + 应用 fills)
+        let mut inner = self.inner.write().await;
 
         // 分配 OrderId
         let order_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
@@ -332,16 +474,40 @@ impl TradingBackend for BacktestTradingBackend {
     async fn get_positions(&self) -> Result<Vec<PositionSnapshot>, TradingError> {
         let inner = self.inner.read().await;
         let ts = now_ms_i64();
+
+        // 获取当前订单簿参考价格(用于计算浮动盈亏)
+        // 买盘用卖一价,卖盘用买一价,无数据时用 0
+        let (bids, asks) = inner.engine.depth(1);
+        let best_bid = bids.first().map(|b| b.price.as_f64()).unwrap_or(0.0);
+        let best_ask = asks.first().map(|a| a.price.as_f64()).unwrap_or(0.0);
+        let mid_price = if best_bid > 0.0 && best_ask > 0.0 {
+            (best_bid + best_ask) / 2.0
+        } else if best_bid > 0.0 {
+            best_bid
+        } else if best_ask > 0.0 {
+            best_ask
+        } else {
+            0.0
+        };
+
         let positions: Vec<PositionSnapshot> = inner
             .portfolio
             .positions
             .iter()
-            .map(|(sym, &(qty, avg))| PositionSnapshot {
-                symbol: sym.to_string(),
-                quantity: qty,
-                entry_price: avg,
-                unrealized_pnl: 0.0,
-                as_of_ms: ts,
+            .map(|(sym, &(qty, avg))| {
+                // 计算浮动盈亏: (当前价 - 开仓均价) * 持仓数量
+                let unrealized_pnl = if mid_price > 0.0 && avg > 0.0 {
+                    (mid_price - avg) * qty
+                } else {
+                    0.0
+                };
+                PositionSnapshot {
+                    symbol: sym.to_string(),
+                    quantity: qty,
+                    entry_price: avg,
+                    unrealized_pnl,
+                    as_of_ms: ts,
+                }
             })
             .collect();
         Ok(positions)
@@ -386,7 +552,8 @@ mod tests {
         let args = mk_args(OrderSide::Buy, 0.1, Some(50_000.0));
         let order = args_to_backtest_order(&args, Symbol::from("BTC-USDT"), 1).unwrap();
         assert_eq!(order.id, 1);
-        assert_eq!(order.symbol, Symbol::from("BTC-USDT"));
+        assert_eq!(order.instrument.base().as_str(), "BTC");
+        assert_eq!(order.instrument.quote().as_str(), "USDT");
         assert_eq!(order.side, Side::Buy);
         assert!(matches!(
             order.order_type,
@@ -422,7 +589,8 @@ mod tests {
         let args = mk_args(OrderSide::Buy, 1.0, Some(100.0));
         let order = args_to_backtest_order(&args, Symbol::from("ETH-USDT"), 42).unwrap();
         assert_eq!(order.id, 42);
-        assert_eq!(order.symbol, Symbol::from("ETH-USDT"));
+        assert_eq!(order.instrument.base().as_str(), "ETH");
+        assert_eq!(order.instrument.quote().as_str(), "USDT");
     }
 
     // ── PortfolioState::apply_fill ────────────────────

@@ -33,17 +33,23 @@
 use std::sync::Arc as StdArc;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList};
+use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 
 use crate::tools::Tool;
 use crate::trading::backend::TradingBackend;
+use crate::trading::book_snapshot_tool::GetBookSnapshotTool as RustGetBookSnapshotTool;
 use crate::trading::cancel_order_tool::CancelOrderTool as RustCancelOrderTool;
+use crate::trading::finish_bar_tool::FinishBarTool as RustFinishBarTool;
 use crate::trading::mock::MockTradingBackend;
 use crate::trading::place_order_tool::PlaceOrderTool as RustPlaceOrderTool;
+use crate::trading::pnl_tool::GetPnlTool as RustGetPnlTool;
 use crate::trading::query_portfolio_tool::QueryPortfolioTool as RustQueryPortfolioTool;
 use crate::trading::replace_order_tool::ReplaceOrderTool as RustReplaceOrderTool;
 use crate::trading::safety::{DailyCounter, RiskLimits, SafetyMode};
 use crate::trading::types::PlaceOrderArgs;
+
+#[cfg(feature = "trading-backtest")]
+use crate::trading::backtest::BacktestTradingBackend;
 
 use super::helpers::pythonize;
 
@@ -110,6 +116,247 @@ impl PyRiskLimits {
     }
 }
 
+/// Python 端可见的 `GetBookSnapshotTool` 包装
+#[pyclass(name = "GetBookSnapshotTool")]
+pub struct PyGetBookSnapshotTool {
+    pub(crate) engine: Py<PyAny>,
+    pub(crate) symbol: String,
+}
+
+#[pymethods]
+impl PyGetBookSnapshotTool {
+    #[new]
+    fn new(engine: &Bound<'_, PyAny>, symbol: &str) -> PyResult<Self> {
+        Ok(Self {
+            engine: engine.clone().unbind().into(),
+            symbol: symbol.to_string(),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "get_book_snapshot"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "查询订单簿快照(买卖盘深度);支持按 symbol 和 levels 过滤"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let levels = if let Some(args) = args {
+            match args.get_item("levels") {
+                Ok(Some(v)) => v.extract::<usize>().unwrap_or(10),
+                _ => 10,
+            }
+        } else {
+            10
+        };
+
+        let args_tuple = PyTuple::new(py, &[levels])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let depth_result = self
+            .engine
+            .call_method(py, "depth", args_tuple, None)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("调用 depth 方法失败: {}", e))
+            })?;
+
+        let depth_dict = depth_result.cast_bound::<PyDict>(py).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("depth 返回值不是 dict: {}", e))
+        })?;
+
+        // 安全地获取 bids/asks,避免 unwrap panic
+        let bids = depth_dict
+            .get_item("bids")
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("获取 bids 失败: {}", e))
+            })?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("depth 返回值缺少 'bids' 字段")
+            })?;
+        let asks = depth_dict
+            .get_item("asks")
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("获取 asks 失败: {}", e))
+            })?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("depth 返回值缺少 'asks' 字段")
+            })?;
+
+        let bids_list = bids.downcast::<PyList>().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e))
+        })?;
+        let asks_list = asks.downcast::<PyList>().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e))
+        })?;
+
+        // 解析订单簿档位数据,每一步都有错误处理
+        let parse_level = |item: &Bound<'_, PyAny>, side: &str| -> PyResult<serde_json::Value> {
+            let d = item.downcast::<PyDict>().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("{} item 不是 dict: {}", side, e))
+            })?;
+            let price: f64 = d
+                .get_item("price")
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 获取 price 失败: {}",
+                        side, e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 缺少 'price' 字段",
+                        side
+                    ))
+                })?
+                .extract()
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item price 不是数字: {}",
+                        side, e
+                    ))
+                })?;
+            let quantity: f64 = d
+                .get_item("quantity")
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 获取 quantity 失败: {}",
+                        side, e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 缺少 'quantity' 字段",
+                        side
+                    ))
+                })?
+                .extract()
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item quantity 不是数字: {}",
+                        side, e
+                    ))
+                })?;
+            Ok(serde_json::json!({"price": price, "quantity": quantity}))
+        };
+
+        let bids_result: Vec<serde_json::Value> = (0..bids_list.len())
+            .map(|i| {
+                let item = bids_list.get_item(i).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "获取 bid[{}] 失败: {}",
+                        i, e
+                    ))
+                })?;
+                parse_level(&item, "bid")
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let asks_result: Vec<serde_json::Value> = (0..asks_list.len())
+            .map(|i| {
+                let item = asks_list.get_item(i).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "获取 ask[{}] 失败: {}",
+                        i, e
+                    ))
+                })?;
+                parse_level(&item, "ask")
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let snapshot = serde_json::json!({
+            "symbol": self.symbol,
+            "bids": bids_result,
+            "asks": asks_result,
+            "as_of_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        });
+
+        let snapshot_json = serde_json::to_string(&snapshot)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("序列化失败: {}", e)))?;
+
+        let owned = tool_result_to_py(py, &snapshot_json)?;
+        Ok(owned.into_bound(py))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("GetBookSnapshotTool(symbol={})", self.symbol)
+    }
+}
+
+// ── PyFinishBarTool(Task 7)───────────────────────────────
+
+/// Python 端可见的 `FinishBarTool` 包装
+#[pyclass(name = "FinishBarTool")]
+pub struct PyFinishBarTool {
+    pub(crate) tool: StdArc<RustFinishBarTool>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[pymethods]
+impl PyFinishBarTool {
+    #[new]
+    fn new(backend: &PyMockTradingBackend) -> PyResult<Self> {
+        let backend_arc: StdArc<dyn TradingBackend> = backend.backend.clone();
+        let tool = RustFinishBarTool::new(backend_arc);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            tool: StdArc::new(tool),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "finish_bar"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "结束当前交易 bar，返回 bar 期间交易汇总信息"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let tool = self.tool.clone();
+        let result = self
+            .runtime
+            .block_on(async move { tool.execute(&args_str).await });
+        match result {
+            Ok(json_str) => {
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(map_tool_error(e)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "FinishBarTool()".to_string()
+    }
+}
+
 /// 把 trading 子模块的 pyclass 注册到给定的 PyModule
 ///
 /// 由 `axon_llm::python::mod.rs` 的 `#[pymodule] axon_llm` 调用,
@@ -122,11 +369,16 @@ impl PyRiskLimits {
 pub fn register_trading_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRiskLimits>()?;
     m.add_class::<PyMockTradingBackend>()?;
+    #[cfg(feature = "trading-backtest")]
+    m.add_class::<PyBacktestTradingBackend>()?;
     m.add_class::<PyPlaceOrderTool>()?;
     m.add_class::<PyQueryPortfolioTool>()?;
+    m.add_class::<PyGetPnlTool>()?;
     m.add_class::<PyCancelOrderTool>()?;
     m.add_class::<PyReplaceOrderTool>()?;
     m.add_class::<PyTradingMetrics>()?;
+    m.add_class::<PyGetBookSnapshotTool>()?;
+    m.add_class::<PyFinishBarTool>()?;
     Ok(())
 }
 
@@ -161,6 +413,135 @@ impl PyMockTradingBackend {
     /// 字符串表示
     fn __repr__(&self) -> String {
         format!("MockTradingBackend(orders={})", self.order_count())
+    }
+}
+
+// ── PyBacktestTradingBackend(Task 10)─────────────────────
+
+#[cfg(feature = "trading-backtest")]
+#[pyclass(name = "BacktestTradingBackend")]
+pub struct PyBacktestTradingBackend {
+    pub(crate) backend: StdArc<BacktestTradingBackend>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[cfg(feature = "trading-backtest")]
+#[pymethods]
+impl PyBacktestTradingBackend {
+    #[new]
+    #[pyo3(signature = (symbol="BTC-USDT", initial_cash=100000.0))]
+    fn new(symbol: &str, initial_cash: f64) -> PyResult<Self> {
+        let backend = BacktestTradingBackend::new(symbol, initial_cash);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            backend: StdArc::new(backend),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn place_order<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let parsed: PlaceOrderArgs = serde_json::from_str(&args_str)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid args: {}", e)))?;
+        let backend = self.backend.clone();
+        let result = self
+            .runtime
+            .block_on(async move { backend.place_order(&parsed).await });
+        match result {
+            Ok(ack) => {
+                let json_str = serde_json::to_string(&ack)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
+    }
+
+    fn query_portfolio<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let backend = self.backend.clone();
+        let result = self
+            .runtime
+            .block_on(async move { backend.get_portfolio().await });
+        match result {
+            Ok(snap) => {
+                let json_str = serde_json::to_string(&snap)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
+    }
+
+    #[pyo3(signature = (levels=10))]
+    fn book_snapshot<'py>(&self, py: Python<'py>, levels: usize) -> PyResult<Bound<'py, PyDict>> {
+        let backend = self.backend.clone();
+        let snapshot = self
+            .runtime
+            .block_on(async move { backend.book_snapshot(levels).await });
+
+        let d = PyDict::new(py);
+        d.set_item("symbol", snapshot.symbol)?;
+        d.set_item("as_of_ms", snapshot.as_of_ms)?;
+
+        let bids_list = PyList::empty(py);
+        for level in &snapshot.bids {
+            let level_dict = PyDict::new(py);
+            level_dict.set_item("price", level.price)?;
+            level_dict.set_item("quantity", level.quantity)?;
+            bids_list.append(level_dict)?;
+        }
+        d.set_item("bids", bids_list)?;
+
+        let asks_list = PyList::empty(py);
+        for level in &snapshot.asks {
+            let level_dict = PyDict::new(py);
+            level_dict.set_item("price", level.price)?;
+            level_dict.set_item("quantity", level.quantity)?;
+            asks_list.append(level_dict)?;
+        }
+        d.set_item("asks", asks_list)?;
+
+        Ok(d)
+    }
+
+    fn advance_bar<'py>(
+        &self,
+        py: Python<'py>,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let backend = self.backend.clone();
+        self.runtime.block_on(async move {
+            backend
+                .advance_bar(mid_price, half_spread, depth_levels, size_per_level)
+                .await
+        });
+
+        let d = PyDict::new(py);
+        d.set_item("status", "ok")?;
+        d.set_item("mid_price", mid_price)?;
+        Ok(d)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BacktestTradingBackend(symbol={})", self.backend.symbol())
     }
 }
 
@@ -472,6 +853,71 @@ impl PyQueryPortfolioTool {
 
     fn __repr__(&self) -> String {
         "QueryPortfolioTool()".to_string()
+    }
+}
+
+// ── PyGetPnlTool─────────────────────────────────────
+
+/// Python 端可见的 `GetPnlTool` 包装
+#[pyclass(name = "GetPnlTool")]
+pub struct PyGetPnlTool {
+    pub(crate) tool: StdArc<RustGetPnlTool>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[pymethods]
+impl PyGetPnlTool {
+    #[new]
+    fn new(backend: &PyMockTradingBackend) -> PyResult<Self> {
+        let backend_arc: StdArc<dyn TradingBackend> = backend.backend.clone();
+        let tool = RustGetPnlTool::new(backend_arc);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            tool: StdArc::new(tool),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        "get_pnl"
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        "查询账户盈亏信息(浮动盈亏);可选按 symbol 过滤"
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn execute<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let tool = self.tool.clone();
+        let result = self
+            .runtime
+            .block_on(async move { tool.execute(&args_str).await });
+        match result {
+            Ok(json_str) => {
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(map_tool_error(e)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "GetPnlTool()".to_string()
     }
 }
 

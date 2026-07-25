@@ -21,10 +21,18 @@ use tokio::sync::Mutex;
 use crate::backends::{OpenAICompatBackend, OpenAICompatConfig};
 use crate::config::LLMConfig;
 
+mod agent;
+use agent::{PyReActAgent, PyTool};
+
 mod backend;
 use backend::{PyLLMBackend, PyMessage};
 
+mod ollama;
+use ollama::{PyOllamaBackend, make_ollama_backend};
+
 pub mod trading;
+
+pub mod trajectory;
 
 pub mod swarm;
 
@@ -84,17 +92,18 @@ fn make_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyLLMBac
 #[pymodule]
 pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_backend, m)?)?;
+    m.add_function(wrap_pyfunction!(make_ollama_backend, m)?)?;
     m.add_class::<PyLLMBackend>()?;
+    m.add_class::<PyOllamaBackend>()?;
     m.add_class::<PyMessage>()?;
-    // trading 子模块挂载(Stage K):
-    //   - `trading` 子模块包含 7 个核心 pyclass
-    //   - Python 端可用 `axon_llm.trading.PlaceOrderTool` 等
+    m.add_class::<PyReActAgent>()?;
+    m.add_class::<PyTool>()?;
     let trading_submodule = PyModule::new(m.py(), "trading")?;
     trading::register_trading_module(&trading_submodule)?;
     m.add_submodule(&trading_submodule)?;
-    // swarm 子模块挂载:
-    //   - `swarm` 子模块包含 Agent Swarm 编排、投票共识
-    //   - Python 端可用 `axon_llm.swarm.SwarmOrchestrator` 等
+    let trajectory_submodule = PyModule::new(m.py(), "trajectory")?;
+    trajectory::register_trajectory_module(&trajectory_submodule)?;
+    m.add_submodule(&trajectory_submodule)?;
     let swarm_submodule = PyModule::new(m.py(), "swarm")?;
     swarm::register_swarm_module(&swarm_submodule)?;
     m.add_submodule(&swarm_submodule)?;

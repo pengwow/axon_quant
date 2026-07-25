@@ -254,3 +254,43 @@ async fn test_agent_returns_error_when_tool_not_found() {
     assert!(matches!(err, AgentError::ToolError(_)));
     assert!(err.is_recoverable());
 }
+
+// ─── 测试：with_max_memory ───────────────────────────────────
+
+#[tokio::test]
+async fn test_agent_with_max_memory() {
+    let config = AgentConfig::new().with_max_iterations(1);
+    let mut agent = ReActAgent::new(Box::new(TextOnlyBackend), config).with_max_memory(5);
+
+    assert_eq!(agent.memory().len(), 0);
+
+    for i in 0..10 {
+        let _ = agent.reason(&format!("问题 {}", i)).await;
+    }
+
+    assert_eq!(agent.memory().len(), 5);
+}
+
+#[tokio::test]
+async fn test_agent_with_max_memory_zero() {
+    let config = AgentConfig::new().with_max_iterations(1);
+    let mut agent = ReActAgent::new(Box::new(TextOnlyBackend), config).with_max_memory(0);
+
+    let _ = agent.reason("问题").await;
+
+    assert_eq!(agent.memory().len(), 0);
+}
+
+#[tokio::test]
+async fn test_agent_with_max_memory_chain() {
+    let config = AgentConfig::new().with_max_iterations(1);
+    let mut agent = ReActAgent::new(Box::new(TextOnlyBackend), config).with_max_memory(3);
+
+    agent.add_tool(Box::new(EchoTool));
+
+    for i in 0..5 {
+        let _ = agent.reason(&format!("问题 {}", i)).await;
+    }
+
+    assert_eq!(agent.memory().len(), 3);
+}

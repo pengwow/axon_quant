@@ -4,8 +4,8 @@ AXON 的完整更新日志见仓库根目录的 [`CHANGELOG.md`](https://github.
 
 ## 当前版本
 
-- **最新稳定版:** [`v0.9.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#090---2026-07-23) — RL/HPO 训练生产化(`BacktestEnv` / `MultiLegBacktestEnv` / `OnnxPolicyStrategy` / `RLHPOSweeper` / `L3BookDiff` / `MultiLegAction`)
-- **上一版:** [`v0.8.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#080---2026-07-22) — L3 多资产对账 / EngineRouter / OrderArena / SoA 价位簿 / 性能 gate
+- **最新稳定版:** [`v0.10.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0100---2026-07-24) — LLM 智能体交易(ReAct + Mock/Ollama provider + 5 trading tools + trajectory 落盘)
+- **上一版:** [`v0.9.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#090---2026-07-23) — RL/HPO 训练生产化
 
 ## 历史版本
 

@@ -8,16 +8,20 @@
 //! - `trading-backtest`:`BacktestTradingBackend`(2026-06-17)
 
 pub mod backend;
+pub mod book_snapshot_tool;
 pub mod cancel_order_tool;
 pub mod circuit_breaker_gate;
+pub mod finish_bar_tool;
 pub mod metrics;
 pub mod mock;
 pub mod paper_backend;
 pub mod place_order_strategy;
 pub mod place_order_tool;
+pub mod pnl_tool;
 pub mod query_portfolio_tool;
 pub mod replace_order_tool;
 pub mod safety;
+pub mod trajectory;
 pub mod types;
 
 #[cfg(feature = "trading-exchange")]
@@ -30,8 +34,13 @@ pub mod oms;
 pub mod backtest;
 
 pub use backend::{TradingBackend, TradingError};
+#[cfg(feature = "trading-backtest")]
+pub use book_snapshot_tool::{
+    GetBookSnapshotTool, OrderBookLevel, OrderBookProvider, OrderBookSnapshot,
+};
 pub use cancel_order_tool::CancelOrderTool;
 pub use circuit_breaker_gate::RejectionCircuitBreaker;
+pub use finish_bar_tool::{FinishBarResult, FinishBarTool};
 pub use metrics::{
     LabelSet, LabeledCounter, LatencyHistogram, LatencySample, MetricKind, MetricSample, RiskRule,
     TradingMetrics,
@@ -39,9 +48,11 @@ pub use metrics::{
 pub use mock::{FailureInjector, MockTradingBackend};
 pub use paper_backend::PaperTradingBackend;
 pub use place_order_tool::PlaceOrderTool;
+pub use pnl_tool::{GetPnlTool, PnlSnapshot, PositionPnl};
 pub use query_portfolio_tool::QueryPortfolioTool;
 pub use replace_order_tool::ReplaceOrderTool;
 pub use safety::{AlwaysOpenGate, DailyCounter, PendingOrder, RiskGate, RiskLimits, SafetyMode};
+pub use trajectory::{ToolCall, TrajectoryBar, TrajectoryRecorder, TrajectorySummary};
 pub use types::{
     BalanceSnapshot, CancelOrderArgs, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus,
     PlaceOrderArgs, PortfolioSnapshot, PositionSnapshot, QueryPortfolioArgs, ReplaceOrderArgs,

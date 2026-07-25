@@ -66,9 +66,14 @@ from typing import Any
 # 再用属性访问取出类 / 函数。
 from axon_quant._native import llm as _native_llm_module  # noqa: E402
 
+# Re-export agent module classes
+from axon_quant.agent import ReActAgent, TrajectoryRecorder
+
 _RustLLMBackend = _native_llm_module.LLMBackend
+_RustOllamaBackend = _native_llm_module.OllamaBackend
 _RustLLMMessage = _native_llm_module.LLMMessage
 _rust_make_backend = _native_llm_module.make_backend
+_rust_make_ollama_backend = _native_llm_module.make_ollama_backend
 
 # swarm 子模块（如果可用）
 # `_native` 是 cdylib 单文件扩展(不是 Python package),所以 `axon_quant._native.llm.swarm`
@@ -95,8 +100,10 @@ except (ImportError, AttributeError):
 __all__ = [
     "LLMConfig",
     "LLMBackend",
+    "OllamaBackend",
     "LLMMessage",
     "make_backend",
+    "make_ollama_backend",
     "load_config_from_toml",
     # swarm（如果可用）
     "SwarmOrchestrator",
@@ -109,6 +116,9 @@ __all__ = [
     "VoteResult",
     "MarketSignal",
     "TradingTools",
+    # agent module re-exports
+    "ReActAgent",
+    "TrajectoryRecorder",
 ]
 
 
@@ -158,8 +168,9 @@ class LLMConfig:
 # 顶层 API:类型别名 + 工厂函数
 # ──────────────────────────────────────────────────────────────
 
-# 类型别名:Python 用户直接用 ``LLMBackend`` / ``LLMMessage``,不必关心 Rust 内部命名
+# 类型别名:Python 用户直接用 ``LLMBackend`` / ``OllamaBackend`` / ``LLMMessage``,不必关心 Rust 内部命名
 LLMBackend = _RustLLMBackend
+OllamaBackend = _RustOllamaBackend
 LLMMessage = _RustLLMMessage
 
 
@@ -193,6 +204,38 @@ def make_backend(config: LLMConfig | dict[str, Any]) -> LLMBackend:
         raise TypeError(f"config must be LLMConfig or dict, got {type(config).__name__}")
     # Rust 端负责详细校验(api_key 非空、URL 格式合法等)
     return _rust_make_backend(cfg_dict)
+
+
+def make_ollama_backend(config: LLMConfig | dict[str, Any]) -> OllamaBackend:
+    """构造 Ollama LLM backend 实例
+
+    Parameters
+    ----------
+    config : LLMConfig | dict
+        配置参数,支持 dataclass 或原生 dict。
+        必填字段 ``backends`` 至少包含 1 个元素,每个元素必须有
+        ``base_url`` / ``api_key`` / ``model``。
+        Ollama 本地运行时通常不需要 api_key(可传空字符串)。
+
+    Returns
+    -------
+    OllamaBackend
+        可用于 ``.chat([LLMMessage, ...])`` 的同步 Ollama backend 实例。
+
+    Raises
+    ------
+    ValueError
+        配置不合法(例如 backends 列表为空、缺少关键字段)。
+    RuntimeError
+        tokio runtime 创建失败。
+    """
+    if isinstance(config, LLMConfig):
+        cfg_dict = config.to_dict()
+    elif isinstance(config, dict):
+        cfg_dict = config
+    else:
+        raise TypeError(f"config must be LLMConfig or dict, got {type(config).__name__}")
+    return _rust_make_ollama_backend(cfg_dict)
 
 
 def load_config_from_toml(path: str) -> LLMConfig:

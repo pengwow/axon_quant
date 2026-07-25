@@ -80,31 +80,37 @@ from __future__ import annotations
 # 再用属性访问取出类。
 from axon_quant._native import trading as _native_trading_module  # noqa: E402
 
-# 拉出 Rust 端 7 个核心类(在 Python 端用类型别名对外暴露)
+# 拉出 Rust 端核心类(在 Python 端用类型别名对外暴露)
 _RustRiskLimits = _native_trading_module.RiskLimits
 _RustMockTradingBackend = _native_trading_module.MockTradingBackend
+_RustBacktestTradingBackend = getattr(_native_trading_module, "BacktestTradingBackend", None)
 _RustPlaceOrderTool = _native_trading_module.PlaceOrderTool
 _RustQueryPortfolioTool = _native_trading_module.QueryPortfolioTool
 _RustCancelOrderTool = _native_trading_module.CancelOrderTool
 _RustReplaceOrderTool = _native_trading_module.ReplaceOrderTool
+_RustFinishBarTool = _native_trading_module.FinishBarTool
 _RustTradingMetrics = _native_trading_module.TradingMetrics
 
 # 类型别名:Python 用户直接用 ``RiskLimits`` / ``PlaceOrderTool`` 等,
 # 不必关心 Rust 内部命名(Rust 内部用 ``Py`` 前缀做隔离)
 RiskLimits = _RustRiskLimits
 MockTradingBackend = _RustMockTradingBackend
+BacktestTradingBackend = _RustBacktestTradingBackend
 PlaceOrderTool = _RustPlaceOrderTool
 QueryPortfolioTool = _RustQueryPortfolioTool
 CancelOrderTool = _RustCancelOrderTool
 ReplaceOrderTool = _RustReplaceOrderTool
+FinishBarTool = _RustFinishBarTool
 TradingMetrics = _RustTradingMetrics
 
 __all__ = [
     "RiskLimits",
     "MockTradingBackend",
+    "BacktestTradingBackend",
     "PlaceOrderTool",
     "QueryPortfolioTool",
     "CancelOrderTool",
     "ReplaceOrderTool",
+    "FinishBarTool",
     "TradingMetrics",
 ]

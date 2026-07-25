@@ -169,6 +169,15 @@ for _sub_name in (
     if _sub_mod is not None:
         _sys.modules.setdefault(f"axon_quant.{_sub_name}", _sub_mod)
 
+# trajectory 子模块在 llm 模块中注册,需要手动重导出
+try:
+    from ._native import llm as _native_llm_module
+    if hasattr(_native_llm_module, "trajectory"):
+        _trajectory_mod = getattr(_native_llm_module, "trajectory")
+        _sys.modules.setdefault("axon_quant.trajectory", _trajectory_mod)
+except ImportError:
+    pass
+
 # 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
 from .backtest import (  # noqa: F401
     ArbitrageOpportunity,
@@ -305,8 +314,10 @@ from .llm import (  # noqa: F401
     LLMBackend,
     LLMConfig,
     LLMMessage,
+    OllamaBackend,
     load_config_from_toml,
     make_backend,
+    make_ollama_backend,
 )
 
 # swarm 子模块（如果可用）
@@ -328,6 +339,7 @@ except ImportError:
 
 # 重新导出 trading 顶层 Python API(包装 _native.trading,Stage K)
 from .trading import (  # noqa: F401
+    BacktestTradingBackend,
     CancelOrderTool,
     MockTradingBackend,
     PlaceOrderTool,
@@ -335,6 +347,13 @@ from .trading import (  # noqa: F401
     ReplaceOrderTool,
     RiskLimits,
     TradingMetrics,
+)
+
+# 重新导出 agent 顶层 Python API
+from .agent import (  # noqa: F401
+    ReActAgent,
+    TradingTools,
+    TrajectoryRecorder,
 )
 
 # 让 `axon_quant.llm` / `axon_quant.trading` 这些子模块也对外可见(给文档 / 静态分析使用)
@@ -426,8 +445,10 @@ __all__ = [  # noqa: F405
     "okx_testnet_config",
     "LLMConfig",
     "LLMBackend",
+    "OllamaBackend",
     "LLMMessage",
     "make_backend",
+    "make_ollama_backend",
     "load_config_from_toml",
     # Swarm 子模块
     "SwarmOrchestrator",
@@ -441,11 +462,16 @@ __all__ = [  # noqa: F405
     "MarketSignal",
     "RiskLimits",
     "MockTradingBackend",
+    "BacktestTradingBackend",
     "PlaceOrderTool",
     "QueryPortfolioTool",
     "CancelOrderTool",
     "ReplaceOrderTool",
     "TradingMetrics",
+    # Agent 模块
+    "ReActAgent",
+    "TradingTools",
+    "TrajectoryRecorder",
     # Stage 6:inference 顶层 API
     "InferenceBackend",
     "Device",

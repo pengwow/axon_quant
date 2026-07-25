@@ -76,6 +76,12 @@ impl ReActAgent {
         }
     }
 
+    /// 设置对话记忆的最大历史长度
+    pub fn with_max_memory(mut self, max_history: usize) -> Self {
+        self.memory = crate::context::ConversationMemory::with_max_history(max_history);
+        self
+    }
+
     /// 带解释器构造（注册两个 explain Tool + 内部 Recorder）
     ///
     /// **仅在 `explain` feature 启用时可用**。

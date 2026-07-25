@@ -144,7 +144,6 @@ async fn computed_decision_id_round_trips_via_query_tool() {
     let store: Arc<_> = agent.explanation_store().expect("explain feature enabled");
 
     // 直接往 store 塞一条 Explanation,验证 query tool 能查到
-    use axon_explain::types::Explanation;
     use chrono::Utc;
     let exp = Explanation {
         id: "round-trip-id".into(),
