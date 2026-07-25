@@ -31,6 +31,7 @@ use axon_core::order::{Order, OrderType, TimeInForce};
 use axon_core::types::{Price, Quantity, Symbol};
 
 use crate::trading::backend::{TradingBackend, TradingError};
+use crate::trading::book_snapshot_tool::{OrderBookLevel, OrderBookSnapshot};
 use crate::trading::types::{
     BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
     PositionSnapshot,
@@ -250,14 +251,102 @@ impl BacktestInner {
 /// - `OrderId` 内部从 `AtomicU64` 序列分配,字符串化为 `"bt-{n}"`(与 OMS Uuid / Exchange 区分)。
 pub struct BacktestTradingBackend {
     inner: Arc<RwLock<BacktestInner>>,
+    symbol: Symbol,
 }
 
 impl BacktestTradingBackend {
     /// 创建 `BacktestTradingBackend`,绑 symbol + 初始 cash
     pub fn new(symbol: impl Into<Symbol>, initial_cash: f64) -> Self {
-        let inner = BacktestInner::new(symbol.into(), initial_cash);
+        let sym = symbol.into();
+        let inner = BacktestInner::new(sym.clone(), initial_cash);
         Self {
             inner: Arc::new(RwLock::new(inner)),
+            symbol: sym,
+        }
+    }
+
+    /// 获取绑定的交易对
+    pub fn symbol(&self) -> &str {
+        self.symbol.as_str()
+    }
+
+    /// 获取订单簿快照
+    pub async fn book_snapshot(&self, levels: usize) -> OrderBookSnapshot {
+        let inner = self.inner.read().await;
+        let (bids_raw, asks_raw) = inner.engine.depth(levels);
+
+        let bids: Vec<OrderBookLevel> = bids_raw
+            .iter()
+            .map(|level| OrderBookLevel {
+                price: level.price.as_f64(),
+                quantity: level.quantity.as_f64(),
+            })
+            .collect();
+
+        let asks: Vec<OrderBookLevel> = asks_raw
+            .iter()
+            .map(|level| OrderBookLevel {
+                price: level.price.as_f64(),
+                quantity: level.quantity.as_f64(),
+            })
+            .collect();
+
+        OrderBookSnapshot {
+            symbol: inner.symbol.to_string(),
+            bids,
+            asks,
+            as_of_ms: now_ms_i64(),
+        }
+    }
+
+    /// 推进到下一 bar(向订单簿注入流动性)
+    pub async fn advance_bar(
+        &self,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) {
+        let mut inner = self.inner.write().await;
+        // 清空原有订单簿,注入新的流动性
+        inner.engine = L1MatchingEngine::with_symbol(inner.symbol.clone());
+
+        // 解析 symbol 获取 base/quote (如 "BTC-USDT" -> base="BTC", quote="USDT")
+        let sym_str = inner.symbol.as_str().to_string();
+        let (base, quote) = sym_str
+            .split_once('-')
+            .unwrap_or((sym_str.as_str(), "USDT"));
+
+        for i in 0..depth_levels {
+            // 卖盘: mid_price + half_spread * (i+1)
+            let ask_price = mid_price + half_spread * (i + 1) as f64;
+            let ask_order = Order::spot(
+                (i * 2 + 1) as u64,
+                base,
+                quote,
+                Side::Sell,
+                OrderType::Limit {
+                    price: Price::from_f64(ask_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            inner.engine.submit(ask_order);
+
+            // 买盘: mid_price - half_spread * (i+1)
+            let bid_price = mid_price - half_spread * (i + 1) as f64;
+            let bid_order = Order::spot(
+                (i * 2 + 2) as u64,
+                base,
+                quote,
+                Side::Buy,
+                OrderType::Limit {
+                    price: Price::from_f64(bid_price),
+                },
+                Quantity::from_f64(size_per_level),
+                TimeInForce::GTC,
+            );
+            inner.engine.submit(bid_order);
         }
     }
 }

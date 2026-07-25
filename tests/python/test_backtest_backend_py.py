@@ -91,6 +91,43 @@ class TestBacktestTradingBackend:
         assert "bids" in snapshot
         assert "asks" in snapshot
 
+    def test_book_snapshot_uses_backend_symbol(self):
+        """验证 book_snapshot 使用后端实际的 symbol，而非硬编码"""
+        from axon_quant.trading import BacktestTradingBackend
+
+        backend = BacktestTradingBackend(symbol="ETH-USDT")
+        snapshot = backend.book_snapshot()
+        assert snapshot["symbol"] == "ETH-USDT", (
+            f"symbol 应该是 'ETH-USDT'，实际是 '{snapshot['symbol']}'"
+        )
+
+    def test_advance_bar_injects_liquidity(self):
+        """验证 advance_bar 后订单簿有实际数据"""
+        from axon_quant.trading import BacktestTradingBackend
+
+        backend = BacktestTradingBackend(symbol="BTC-USDT")
+        # advance_bar 前订单簿为空
+        before = backend.book_snapshot()
+        assert len(before["bids"]) == 0
+        assert len(before["asks"]) == 0
+
+        # 推进 bar，注入流动性
+        backend.advance_bar(
+            mid_price=50000.0,
+            half_spread=50.0,
+            depth_levels=5,
+            size_per_level=1.0,
+        )
+
+        # advance_bar 后订单簿有数据
+        after = backend.book_snapshot()
+        assert len(after["bids"]) == 5
+        assert len(after["asks"]) == 5
+        # 卖一盘应该等于 mid_price + half_spread
+        assert after["asks"][0]["price"] == 50050.0
+        # 买一盘应该等于 mid_price - half_spread
+        assert after["bids"][0]["price"] == 49950.0
+
     def test_advance_bar_returns_status(self):
         from axon_quant.trading import BacktestTradingBackend
 

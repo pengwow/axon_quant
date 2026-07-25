@@ -429,11 +429,33 @@ impl PyBacktestTradingBackend {
 
     #[pyo3(signature = (levels=10))]
     fn book_snapshot<'py>(&self, py: Python<'py>, levels: usize) -> PyResult<Bound<'py, PyDict>> {
+        let backend = self.backend.clone();
+        let snapshot = self
+            .runtime
+            .block_on(async move { backend.book_snapshot(levels).await });
+
         let d = PyDict::new(py);
-        d.set_item("symbol", "BTC-USDT")?;
-        d.set_item("bids", PyList::empty(py))?;
-        d.set_item("asks", PyList::empty(py))?;
-        d.set_item("as_of_ms", 0)?;
+        d.set_item("symbol", snapshot.symbol)?;
+        d.set_item("as_of_ms", snapshot.as_of_ms)?;
+
+        let bids_list = PyList::empty(py);
+        for level in &snapshot.bids {
+            let level_dict = PyDict::new(py);
+            level_dict.set_item("price", level.price)?;
+            level_dict.set_item("quantity", level.quantity)?;
+            bids_list.append(level_dict)?;
+        }
+        d.set_item("bids", bids_list)?;
+
+        let asks_list = PyList::empty(py);
+        for level in &snapshot.asks {
+            let level_dict = PyDict::new(py);
+            level_dict.set_item("price", level.price)?;
+            level_dict.set_item("quantity", level.quantity)?;
+            asks_list.append(level_dict)?;
+        }
+        d.set_item("asks", asks_list)?;
+
         Ok(d)
     }
 
@@ -445,6 +467,13 @@ impl PyBacktestTradingBackend {
         depth_levels: usize,
         size_per_level: f64,
     ) -> PyResult<Bound<'py, PyDict>> {
+        let backend = self.backend.clone();
+        self.runtime.block_on(async move {
+            backend
+                .advance_bar(mid_price, half_spread, depth_levels, size_per_level)
+                .await
+        });
+
         let d = PyDict::new(py);
         d.set_item("status", "ok")?;
         d.set_item("mid_price", mid_price)?;
