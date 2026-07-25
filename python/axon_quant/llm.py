@@ -66,6 +66,9 @@ from typing import Any
 # 再用属性访问取出类 / 函数。
 from axon_quant._native import llm as _native_llm_module  # noqa: E402
 
+# Re-export agent module classes
+from axon_quant.agent import ReActAgent, TrajectoryRecorder
+
 _RustLLMBackend = _native_llm_module.LLMBackend
 _RustOllamaBackend = _native_llm_module.OllamaBackend
 _RustLLMMessage = _native_llm_module.LLMMessage
@@ -113,6 +116,9 @@ __all__ = [
     "VoteResult",
     "MarketSignal",
     "TradingTools",
+    # agent module re-exports
+    "ReActAgent",
+    "TrajectoryRecorder",
 ]
 
 

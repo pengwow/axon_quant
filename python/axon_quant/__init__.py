@@ -149,7 +149,6 @@ from ._native import (  # noqa: F401
     rl,
     risk,           # Stage 3:axon-risk 暴露
     tracker,
-    trajectory,     # Task 9:轨迹记录
     walk_forward,
 )
 
@@ -164,11 +163,20 @@ from ._native import (  # noqa: F401
 #      defi 同样有 .py 包装,见 `python/axon_quant/defi.py`。
 import sys as _sys
 for _sub_name in (
-    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward", "trajectory",
+    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward",
 ):
     _sub_mod = globals().get(_sub_name)
     if _sub_mod is not None:
         _sys.modules.setdefault(f"axon_quant.{_sub_name}", _sub_mod)
+
+# trajectory 子模块在 llm 模块中注册,需要手动重导出
+try:
+    from ._native import llm as _native_llm_module
+    if hasattr(_native_llm_module, "trajectory"):
+        _trajectory_mod = getattr(_native_llm_module, "trajectory")
+        _sys.modules.setdefault("axon_quant.trajectory", _trajectory_mod)
+except ImportError:
+    pass
 
 # 重新导出 backtest 顶层 Python API(包装 _native.backtest,Stage 2)
 from .backtest import (  # noqa: F401
