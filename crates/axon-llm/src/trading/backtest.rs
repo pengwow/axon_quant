@@ -219,26 +219,23 @@ pub(crate) fn map_backtest_error(e: axon_backtest::matching::MatchingError) -> T
 ///
 /// - `engine` 同步撮合,`submit` 需 `&mut self`
 /// - `portfolio` 自维护 cash + positions(简单 f64)
-/// - `symbol` 绑定的交易品种(L1MatchingEngine 单 symbol)
 /// - `order_id_seq` 原子递增分配 OrderId
+/// - symbol 存储在外层 `BacktestTradingBackend` 中,避免每次访问都加锁
 pub(crate) struct BacktestInner {
     /// L1 撮合引擎(单 symbol)
     pub(crate) engine: L1MatchingEngine,
     /// 自维护 portfolio(cash + positions)
     pub(crate) portfolio: PortfolioState,
-    /// 引擎绑定的 symbol
-    pub(crate) symbol: Symbol,
     /// OrderId 分配序列
     pub(crate) order_id_seq: AtomicU64,
 }
 
 impl BacktestInner {
     /// 构造 Backtest 内部状态
-    pub(crate) fn new(symbol: Symbol, initial_cash: f64) -> Self {
+    pub(crate) fn new(engine: L1MatchingEngine, initial_cash: f64) -> Self {
         Self {
-            engine: L1MatchingEngine::with_symbol(symbol.clone()),
+            engine,
             portfolio: PortfolioState::new(initial_cash),
-            symbol,
             order_id_seq: AtomicU64::new(1),
         }
     }
@@ -257,27 +254,27 @@ impl BacktestInner {
 /// - `OrderId` 内部从 `AtomicU64` 序列分配,字符串化为 `"bt-{n}"`(与 OMS Uuid / Exchange 区分)。
 pub struct BacktestTradingBackend {
     inner: Arc<RwLock<BacktestInner>>,
+    /// 绑定的交易对(构造后不变,直接存储避免锁依赖)
+    symbol: Symbol,
 }
 
 impl BacktestTradingBackend {
     /// 创建 `BacktestTradingBackend`,绑 symbol + 初始 cash
     pub fn new(symbol: impl Into<Symbol>, initial_cash: f64) -> Self {
-        let inner = BacktestInner::new(symbol.into(), initial_cash);
+        let sym = symbol.into();
+        let engine = L1MatchingEngine::with_symbol(sym.clone());
+        let inner = BacktestInner::new(engine, initial_cash);
         Self {
             inner: Arc::new(RwLock::new(inner)),
+            symbol: sym,
         }
     }
 
     /// 获取绑定的交易对
     ///
-    /// 由于 symbol 在构造后不会改变,使用 try_read 进行非阻塞读取。
-    pub fn symbol(&self) -> String {
-        self.inner
-            .try_read()
-            .expect("Failed to read lock for symbol")
-            .symbol
-            .as_str()
-            .to_string()
+    /// symbol 在构造后不会改变,直接返回引用,无需加锁。
+    pub fn symbol(&self) -> &str {
+        self.symbol.as_str()
     }
 
     /// 获取订单簿快照
@@ -307,7 +304,7 @@ impl BacktestTradingBackend {
             .collect();
 
         OrderBookSnapshot {
-            symbol: inner.symbol.to_string(),
+            symbol: self.symbol.to_string(),
             bids,
             asks,
             as_of_ms: now_ms_i64(),
@@ -336,10 +333,10 @@ impl BacktestTradingBackend {
 
         let mut inner = self.inner.write().await;
         // 清空原有订单簿,注入新的流动性
-        inner.engine = L1MatchingEngine::with_symbol(inner.symbol.clone());
+        inner.engine = L1MatchingEngine::with_symbol(self.symbol.clone());
 
         // 复用 split_symbol 解析 base/quote
-        let (base, quote) = split_symbol(&inner.symbol);
+        let (base, quote) = split_symbol(&self.symbol);
 
         for i in 0..depth_levels {
             // 从全局序列分配 ID,避免与 place_order 的 ID 冲突
@@ -392,10 +389,10 @@ impl TradingBackend for BacktestTradingBackend {
         let mut inner = self.inner.write().await;
 
         // 校验 symbol 匹配(若不匹配,提前释放锁)
-        if inner.symbol != symbol {
+        if self.symbol != symbol {
             return Err(TradingError::InvalidArguments(format!(
                 "symbol mismatch: backend bound to {}, request {}",
-                inner.symbol, symbol
+                self.symbol, symbol
             )));
         }
 
