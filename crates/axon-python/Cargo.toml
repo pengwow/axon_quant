@@ -70,7 +70,7 @@ axon-registry = { workspace = true, optional = true, features = ["python"] }
 axon-hpo = { workspace = true, optional = true, features = ["python"] }
 axon-walk-forward = { workspace = true, optional = true, features = ["python"] }
 axon-distributed = { workspace = true, optional = true, features = ["python"] }
-axon-llm = { workspace = true, optional = true, features = ["python", "backends"] }
+axon-llm = { workspace = true, optional = true, features = ["python", "backends", "trading-backtest"] }
 # Stage 1:`axon-data` 暴露为 `_native.data` 子模块
 # 显式启用 csv-source 和 parquet-source，支持 CSV/Parquet 数据加载。
 axon-data = { workspace = true, optional = true, features = ["python", "csv-source", "parquet-source"] }

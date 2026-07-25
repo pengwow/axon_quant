@@ -33,7 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E3 Trading tools**:`submit_order` / `get_book_snapshot` / `get_pnl` / `cancel_order` / `finish_bar` 5 个 tool,全部走 BacktestEngine API
 - **E4 Trajectory recording**:`TrajectoryRecorder` + JSON schema v0.10.0
 - **E5 Determinism**:同 seed 同 provider 100% trajectory 一致
-- **E6 CLI demo**:`examples/llm-trading/run_50bar.py` 50 bar trading
+- **E6 CLI demo**:`examples/llm_trading/run_50bar.py` 50 bar trading
+- **PyBacktestTradingBackend**:Python 端 `BacktestTradingBackend` PyO3 绑定,支持 `place_order` / `query_portfolio` / `book_snapshot` / `advance_bar`
+- **Python Agent Module**:新增 `python/axon_quant/agent/` 模块,包含 `ReActAgent` / `TradingTools` / `TrajectoryRecorder`
+- **RuleBasedMockProvider**:基于 SMA/RSI 规则的 Mock LLM Provider
+- **trajectory.schema.json**:Trajectory JSON Schema 文件,支持运行时验证
+- **examples/llm_trading/README.md**:LLM Trading 示例文档
 
 ### Performance
 

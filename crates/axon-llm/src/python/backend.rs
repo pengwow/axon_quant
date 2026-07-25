@@ -38,6 +38,7 @@ use crate::types::Message;
 /// 内部持有一个 `OpenAICompatBackend` + 一个 `tokio::runtime::Runtime`,
 /// 通过 `block_on` 桥接 async → sync,使 Python 端能直接同步调用 `chat()`。
 #[pyclass(name = "LLMBackend")]
+#[derive(Clone)]
 pub struct PyLLMBackend {
     /// 内部 backend(用 Mutex 包装以便未来支持可重入)
     pub(crate) inner: Arc<Mutex<OpenAICompatBackend>>,

@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Trading Trajectory",
+  "description": "LLM 交易轨迹数据结构",
+  "type": "object",
+  "required": ["version", "run_id", "instrument", "provider", "model", "seed", "bars"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema 版本号",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "运行标识"
+    },
+    "instrument": {
+      "type": "string",
+      "description": "交易品种"
+    },
+    "provider": {
+      "type": "string",
+      "description": "LLM Provider 名称"
+    },
+    "model": {
+      "type": "string",
+      "description": "模型名称"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "随机种子"
+    },
+    "bars": {
+      "type": "array",
+      "description": "每个 bar 的交易记录",
+      "items": {
+        "type": "object",
+        "required": ["bar_id", "ts", "thought", "action", "reward", "cum_pnl"],
+        "properties": {
+          "bar_id": {
+            "type": "integer",
+            "description": "Bar 索引"
+          },
+          "ts": {
+            "type": "integer",
+            "description": "时间戳(毫秒)"
+          },
+          "thought": {
+            "type": "string",
+            "description": "LLM 思考过程"
+          },
+          "action": {
+            "type": ["object", "null"],
+            "description": "执行的动作",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "工具名称"
+              },
+              "args": {
+                "type": "object",
+                "description": "工具参数",
+                "properties": {
+                  "symbol": {
+                    "type": "string",
+                    "description": "交易品种"
+                  },
+                  "side": {
+                    "type": "string",
+                    "enum": ["Buy", "Sell"],
+                    "description": "买卖方向"
+                  },
+                  "quantity": {
+                    "type": "number",
+                    "description": "数量"
+                  },
+                  "price": {
+                    "type": "number",
+                    "description": "价格"
+                  }
+                },
+                "required": ["symbol", "side", "quantity", "price"]
+              }
+            },
+            "required": ["tool", "args"]
+          },
+          "observation": {
+            "type": ["string", "null"],
+            "description": "动作执行结果观察"
+          },
+          "reward": {
+            "type": "number",
+            "description": "本 bar 奖励"
+          },
+          "cum_pnl": {
+            "type": "number",
+            "description": "累计 PnL"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "description": "交易总结",
+      "properties": {
+        "total_pnl": {
+          "type": "number",
+          "description": "总盈亏"
+        },
+        "trades": {
+          "type": "integer",
+          "description": "交易次数"
+        },
+        "final_position": {
+          "type": "number",
+          "description": "最终持仓"
+        },
+        "wall_time_s": {
+          "type": "number",
+          "description": "运行时间(秒)"
+        },
+        "cost_usd": {
+          "type": "number",
+          "description": "API 调用成本(USD)"
+        }
+      },
+      "required": ["total_pnl", "trades", "final_position"]
+    }
+  }
+}

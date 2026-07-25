@@ -147,14 +147,12 @@ mod tests {
 
     #[test]
     fn parse_py_message_dict_basic() {
-        pyo3::prepare_freethreaded_python();
-
-        Python::with_gil(|py| {
+        Python::try_attach(|py| {
             let dict = PyDict::new(py);
             dict.set_item("role", "user").unwrap();
             dict.set_item("content", "hello").unwrap();
 
-            let msg = parse_py_message(&dict.as_bound()).unwrap();
+            let msg = parse_py_message(&dict).unwrap();
             assert_eq!(msg.role, crate::types::Role::User);
             assert_eq!(msg.content, "hello");
         });
@@ -162,12 +160,10 @@ mod tests {
 
     #[test]
     fn make_ollama_backend_from_dict() {
-        pyo3::prepare_freethreaded_python();
-
-        Python::with_gil(|py| {
+        Python::try_attach(|py| {
             let config = PyDict::new(py);
 
-            let backends = PyList::new(py, &[()]);
+            let backends = PyList::empty(py);
             let backend_dict = PyDict::new(py);
             backend_dict.set_item("name", "ollama").unwrap();
             backend_dict.set_item("base_url", "http://localhost:11434/v1").unwrap();
@@ -176,7 +172,7 @@ mod tests {
             backend_dict.set_item("max_tokens", 1024).unwrap();
             backend_dict.set_item("temperature", 0.7).unwrap();
             backend_dict.set_item("timeout_secs", 60).unwrap();
-            backends.set_item(0, backend_dict).unwrap();
+            backends.append(backend_dict).unwrap();
             config.set_item("backends", backends).unwrap();
 
             let retry = PyDict::new(py);
@@ -188,7 +184,7 @@ mod tests {
             let explain = PyDict::new(py);
             config.set_item("explain", explain).unwrap();
 
-            let backend = make_ollama_backend(py, &config.as_bound());
+            let backend = make_ollama_backend(py, &config);
             assert!(backend.is_ok());
         });
     }

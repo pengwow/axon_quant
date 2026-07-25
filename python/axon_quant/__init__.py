@@ -331,6 +331,7 @@ except ImportError:
 
 # 重新导出 trading 顶层 Python API(包装 _native.trading,Stage K)
 from .trading import (  # noqa: F401
+    BacktestTradingBackend,
     CancelOrderTool,
     MockTradingBackend,
     PlaceOrderTool,
@@ -338,6 +339,13 @@ from .trading import (  # noqa: F401
     ReplaceOrderTool,
     RiskLimits,
     TradingMetrics,
+)
+
+# 重新导出 agent 顶层 Python API
+from .agent import (  # noqa: F401
+    ReActAgent,
+    TradingTools,
+    TrajectoryRecorder,
 )
 
 # 让 `axon_quant.llm` / `axon_quant.trading` 这些子模块也对外可见(给文档 / 静态分析使用)
@@ -446,11 +454,16 @@ __all__ = [  # noqa: F405
     "MarketSignal",
     "RiskLimits",
     "MockTradingBackend",
+    "BacktestTradingBackend",
     "PlaceOrderTool",
     "QueryPortfolioTool",
     "CancelOrderTool",
     "ReplaceOrderTool",
     "TradingMetrics",
+    # Agent 模块
+    "ReActAgent",
+    "TradingTools",
+    "TrajectoryRecorder",
     # Stage 6:inference 顶层 API
     "InferenceBackend",
     "Device",

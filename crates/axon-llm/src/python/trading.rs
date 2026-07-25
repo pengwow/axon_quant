@@ -48,6 +48,9 @@ use crate::trading::replace_order_tool::ReplaceOrderTool as RustReplaceOrderTool
 use crate::trading::safety::{DailyCounter, RiskLimits, SafetyMode};
 use crate::trading::types::PlaceOrderArgs;
 
+#[cfg(feature = "trading-backtest")]
+use crate::trading::backtest::BacktestTradingBackend;
+
 use super::helpers::pythonize;
 
 /// Python 端可见的 `RiskLimits` 包装
@@ -293,6 +296,8 @@ impl PyFinishBarTool {
 pub fn register_trading_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRiskLimits>()?;
     m.add_class::<PyMockTradingBackend>()?;
+    #[cfg(feature = "trading-backtest")]
+    m.add_class::<PyBacktestTradingBackend>()?;
     m.add_class::<PyPlaceOrderTool>()?;
     m.add_class::<PyQueryPortfolioTool>()?;
     m.add_class::<PyGetPnlTool>()?;
@@ -335,6 +340,106 @@ impl PyMockTradingBackend {
     /// 字符串表示
     fn __repr__(&self) -> String {
         format!("MockTradingBackend(orders={})", self.order_count())
+    }
+}
+
+// ── PyBacktestTradingBackend(Task 10)─────────────────────
+
+#[cfg(feature = "trading-backtest")]
+#[pyclass(name = "BacktestTradingBackend")]
+pub struct PyBacktestTradingBackend {
+    pub(crate) backend: StdArc<BacktestTradingBackend>,
+    pub(crate) runtime: StdArc<tokio::runtime::Runtime>,
+}
+
+#[cfg(feature = "trading-backtest")]
+#[pymethods]
+impl PyBacktestTradingBackend {
+    #[new]
+    #[pyo3(signature = (symbol="BTC-USDT", initial_cash=100000.0))]
+    fn new(symbol: &str, initial_cash: f64) -> PyResult<Self> {
+        let backend = BacktestTradingBackend::new(symbol, initial_cash);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            backend: StdArc::new(backend),
+            runtime: StdArc::new(runtime),
+        })
+    }
+
+    #[pyo3(signature = (args=None))]
+    fn place_order<'py>(
+        &self,
+        py: Python<'py>,
+        args: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let args_str = match args {
+            Some(d) => {
+                let v = pythonize(py, d.as_any())?;
+                serde_json::to_string(&v)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            }
+            None => "{}".to_string(),
+        };
+        let parsed: PlaceOrderArgs = serde_json::from_str(&args_str)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid args: {}", e)))?;
+        let backend = self.backend.clone();
+        let result = self
+            .runtime
+            .block_on(async move { backend.place_order(&parsed).await });
+        match result {
+            Ok(ack) => {
+                let json_str = serde_json::to_string(&ack)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
+    }
+
+    fn query_portfolio<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let backend = self.backend.clone();
+        let result = self
+            .runtime
+            .block_on(async move { backend.get_portfolio().await });
+        match result {
+            Ok(snap) => {
+                let json_str = serde_json::to_string(&snap)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+                let owned = tool_result_to_py(py, &json_str)?;
+                Ok(owned.into_bound(py))
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
+    }
+
+    #[pyo3(signature = (levels=10))]
+    fn book_snapshot<'py>(&self, py: Python<'py>, levels: usize) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("symbol", "BTC-USDT")?;
+        d.set_item("bids", PyList::empty(py))?;
+        d.set_item("asks", PyList::empty(py))?;
+        d.set_item("as_of_ms", 0)?;
+        Ok(d)
+    }
+
+    fn advance_bar<'py>(
+        &self,
+        py: Python<'py>,
+        mid_price: f64,
+        half_spread: f64,
+        depth_levels: usize,
+        size_per_level: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("status", "ok")?;
+        d.set_item("mid_price", mid_price)?;
+        Ok(d)
+    }
+
+    fn __repr__(&self) -> String {
+        "BacktestTradingBackend()".to_string()
     }
 }
 

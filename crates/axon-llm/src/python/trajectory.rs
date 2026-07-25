@@ -180,10 +180,10 @@ mod tests {
     fn trajectory_recorder_record_with_action() {
         run(|py| {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
-            let action = PyDict::new(py);
+            let action = PyDict::new(py).into_bound();
             action.set_item("tool", "place_order").unwrap();
-            action.set_item("args", PyDict::new(py)).unwrap();
-            recorder.record(0, 1234567890, "bar 0", Some(&action.into_bound(py)), None, 1.0, 0.5).unwrap();
+            action.set_item("args", PyDict::new(py).into_bound()).unwrap();
+            recorder.record(0, 1234567890, "bar 0", Some(&action), None, 1.0, 0.5).unwrap();
             assert_eq!(recorder.bar_count(), 1);
         });
     }
@@ -204,12 +204,12 @@ mod tests {
 
     #[test]
     fn trajectory_recorder_flush_writes_file() {
-        run(|py| {
+        run(|_py| {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
             recorder.record(0, 1234567890, "bar 0", None, None, 0.0, 0.0).unwrap();
             let path = "/tmp/test_py_trajectory.json";
             recorder.flush(path).unwrap();
-            assert!(std::fs::exists(path));
+            assert!(std::fs::exists(path).unwrap_or(false));
             std::fs::remove_file(path).ok();
         });
     }

@@ -386,7 +386,8 @@ mod tests {
         let args = mk_args(OrderSide::Buy, 0.1, Some(50_000.0));
         let order = args_to_backtest_order(&args, Symbol::from("BTC-USDT"), 1).unwrap();
         assert_eq!(order.id, 1);
-        assert_eq!(order.symbol, Symbol::from("BTC-USDT"));
+        assert_eq!(order.instrument.base().as_str(), "BTC");
+        assert_eq!(order.instrument.quote().as_str(), "USDT");
         assert_eq!(order.side, Side::Buy);
         assert!(matches!(
             order.order_type,
@@ -422,7 +423,8 @@ mod tests {
         let args = mk_args(OrderSide::Buy, 1.0, Some(100.0));
         let order = args_to_backtest_order(&args, Symbol::from("ETH-USDT"), 42).unwrap();
         assert_eq!(order.id, 42);
-        assert_eq!(order.symbol, Symbol::from("ETH-USDT"));
+        assert_eq!(order.instrument.base().as_str(), "ETH");
+        assert_eq!(order.instrument.quote().as_str(), "USDT");
     }
 
     // ── PortfolioState::apply_fill ────────────────────
