@@ -142,3 +142,54 @@ class TestBacktestTradingBackend:
         assert result["status"] == "ok"
         assert "mid_price" in result
         assert result["mid_price"] == 50000.0
+
+    def test_book_snapshot_levels_zero_uses_default(self):
+        """验证 levels=0 时自动使用默认值 10"""
+        from axon_quant.trading import BacktestTradingBackend
+
+        backend = BacktestTradingBackend(symbol="BTC-USDT")
+        backend.advance_bar(
+            mid_price=50000.0,
+            half_spread=50.0,
+            depth_levels=10,
+            size_per_level=1.0,
+        )
+        # levels=0 应该自动改为 10
+        snapshot = backend.book_snapshot(levels=0)
+        assert len(snapshot["bids"]) == 10
+        assert len(snapshot["asks"]) == 10
+
+    def test_advance_bar_order_ids_no_conflict(self):
+        """验证 advance_bar 后 place_order 的订单 ID 不会冲突"""
+        from axon_quant.trading import BacktestTradingBackend
+
+        backend = BacktestTradingBackend(symbol="BTC-USDT")
+        # advance_bar 会消耗 2*5=10 个 ID (1-10)
+        backend.advance_bar(
+            mid_price=50000.0,
+            half_spread=50.0,
+            depth_levels=5,
+            size_per_level=1.0,
+        )
+        # place_order 应该从 ID=11 开始,不会与 advance_bar 的 ID 冲突
+        result = backend.place_order({
+            "symbol": "BTC-USDT",
+            "side": "Buy",
+            "quantity": 0.5,
+            "price": 49900.0,
+        })
+        assert "order_id" in result
+        # order_id 应该大于 advance_bar 使用的最大 ID (10)
+        order_id = result["order_id"]
+        if isinstance(order_id, str):
+            # bt-{n} 格式
+            n = int(order_id.split("-")[1])
+            assert n > 10, f"order_id {n} should be > 10 to avoid conflict"
+
+    def test_repr_shows_symbol(self):
+        """验证 __repr__ 显示实际的 symbol 信息"""
+        from axon_quant.trading import BacktestTradingBackend
+
+        backend = BacktestTradingBackend(symbol="ETH-USDT")
+        repr_str = repr(backend)
+        assert "ETH-USDT" in repr_str, f"repr 应包含 'ETH-USDT',实际是: {repr_str}"

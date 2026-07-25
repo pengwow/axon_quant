@@ -23,38 +23,48 @@ impl LLMBackend for PyLLMBackendAdapter {
         let py_backend = self.py_backend.clone();
 
         Python::try_attach(|py| {
-            let py_backend_obj = py_backend.lock().unwrap();
-
-            let py_msgs = PyList::empty(py);
-            for m in messages {
-                let msg_dict = PyDict::new(py);
-                let role_str = match m.role {
-                    crate::types::Role::System => "system",
-                    crate::types::Role::User => "user",
-                    crate::types::Role::Assistant => "assistant",
-                    crate::types::Role::Tool => "tool",
-                };
-                msg_dict
-                    .set_item("role", role_str)
-                    .map_err(|e| LLMError::Backend(e.to_string()))?;
-                msg_dict
-                    .set_item("content", &m.content)
-                    .map_err(|e| LLMError::Backend(e.to_string()))?;
-                if let Some(id) = &m.tool_call_id {
+            // 先在锁内构建 Python 消息列表,然后释放锁
+            let py_msgs = {
+                let _guard = py_backend.lock().unwrap();
+                let py_msgs = PyList::empty(py);
+                for m in messages {
+                    let msg_dict = PyDict::new(py);
+                    let role_str = match m.role {
+                        crate::types::Role::System => "system",
+                        crate::types::Role::User => "user",
+                        crate::types::Role::Assistant => "assistant",
+                        crate::types::Role::Tool => "tool",
+                    };
                     msg_dict
-                        .set_item("tool_call_id", id)
+                        .set_item("role", role_str)
+                        .map_err(|e| LLMError::Backend(e.to_string()))?;
+                    msg_dict
+                        .set_item("content", &m.content)
+                        .map_err(|e| LLMError::Backend(e.to_string()))?;
+                    if let Some(id) = &m.tool_call_id {
+                        msg_dict
+                            .set_item("tool_call_id", id)
+                            .map_err(|e| LLMError::Backend(e.to_string()))?;
+                    }
+                    py_msgs
+                        .append(msg_dict)
                         .map_err(|e| LLMError::Backend(e.to_string()))?;
                 }
-                py_msgs
-                    .append(msg_dict)
-                    .map_err(|e| LLMError::Backend(e.to_string()))?;
-            }
+                py_msgs.unbind()
+            };
 
+            // 不持锁地调用 Python chat 方法,避免回调死锁
             let args =
                 PyTuple::new(py, &[py_msgs]).map_err(|e| LLMError::Backend(e.to_string()))?;
-            let resp = py_backend_obj
-                .call_method(py, "chat", args, None)
-                .map_err(|e| LLMError::Backend(e.to_string()))?;
+
+            // 获取 backend 引用后立即释放锁
+            let resp = {
+                let py_backend_obj = py_backend.lock().unwrap();
+                py_backend_obj
+                    .call_method(py, "chat", args, None)
+                    .map_err(|e| LLMError::Backend(e.to_string()))?
+            };
+            // 锁已释放,安全地提取结果
 
             let content: String = resp
                 .getattr(py, "content")

@@ -83,7 +83,7 @@ impl Tool for GetPnlTool {
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let mut filtered_positions = if let Some(sym) = args.symbol.as_deref() {
+        let filtered_positions = if let Some(sym) = args.symbol.as_deref() {
             positions.into_iter().filter(|p| p.symbol == sym).collect()
         } else {
             positions

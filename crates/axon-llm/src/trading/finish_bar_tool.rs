@@ -1,6 +1,7 @@
 //! FinishBarTool:LLM 结束当前 bar 工具
 //!
 //! 用于通知系统当前交易 bar 结束，返回 bar 期间的交易汇总信息。
+//! 会查询后端获取实际持仓和余额,生成有意义的摘要。
 
 use std::sync::Arc;
 
@@ -31,17 +32,21 @@ pub struct FinishBarResult {
     pub note: Option<String>,
     /// 摘要信息
     pub summary: String,
+    /// 当前持仓数量
+    pub position_count: usize,
+    /// 当前现金余额
+    pub cash_balance: Option<f64>,
 }
 
 /// FinishBar 工具
 pub struct FinishBarTool {
-    _backend: Arc<dyn TradingBackend>,
+    backend: Arc<dyn TradingBackend>,
 }
 
 impl FinishBarTool {
     /// 构造
     pub fn new(backend: Arc<dyn TradingBackend>) -> Self {
-        Self { _backend: backend }
+        Self { backend }
     }
 }
 
@@ -52,7 +57,7 @@ impl Tool for FinishBarTool {
     }
 
     fn description(&self) -> &str {
-        "结束当前交易 bar，返回 bar 期间交易汇总信息"
+        "结束当前交易 bar，返回 bar 期间交易汇总信息(持仓数、余额等)"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -67,6 +72,30 @@ impl Tool for FinishBarTool {
     async fn execute(&self, arguments: &str) -> Result<String, ToolError> {
         let args: FinishBarArgs = serde_json::from_str(arguments).unwrap_or_default();
 
+        // 查询后端获取实际状态
+        let positions = self
+            .backend
+            .get_positions()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("查询持仓失败: {}", e)))?;
+
+        let balance = self
+            .backend
+            .get_balance()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("查询余额失败: {}", e)))?;
+
+        // 提取现金余额(取第一个货币,通常是 USDT)
+        let cash_balance = balance.currencies.first().map(|c| c.free);
+
+        let summary = format!(
+            "bar finished: {} position(s), cash={}",
+            positions.len(),
+            cash_balance
+                .map(|c| format!("{:.2}", c))
+                .unwrap_or_else(|| "N/A".into())
+        );
+
         let result = FinishBarResult {
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -74,7 +103,9 @@ impl Tool for FinishBarTool {
                 .unwrap_or(0),
             finished: true,
             note: args.note,
-            summary: "bar finished".to_string(),
+            summary,
+            position_count: positions.len(),
+            cash_balance,
         };
 
         serde_json::to_string(&result)

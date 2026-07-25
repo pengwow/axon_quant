@@ -107,7 +107,18 @@ impl PortfolioState {
     }
 }
 
-// ==================== 类型转换:PlaceOrderArgs -> Order ====================
+// ==================== 类型转换:辅助函数 ====================
+
+/// 把 "BASE-QUOTE" 拆为 (base, quote) Symbol 对
+///
+/// 无分隔符时返回 (原symbol, "USDT")。
+pub(crate) fn split_symbol(symbol: &Symbol) -> (Symbol, Symbol) {
+    let s = symbol.as_str();
+    match s.split_once('-') {
+        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
+        None => (symbol.clone(), Symbol::from("USDT")),
+    }
+}
 
 /// `PlaceOrderArgs` 转 `axon_core::Order`(避开 orphan rule)
 ///
@@ -138,12 +149,7 @@ pub(crate) fn args_to_backtest_order(
         }
         (OrderKind::Market, _) => OrderType::Market,
     };
-    // T2.2: 运行时把 "BASE-QUOTE" 拆 base/quote,然后用 Order::spot
-    let s = symbol.as_str();
-    let (base, quote) = match s.split_once('-') {
-        Some((b, q)) => (Symbol::from(b), Symbol::from(q)),
-        None => (symbol, Symbol::from("USDT")),
-    };
+    let (base, quote) = split_symbol(&symbol);
     Ok(Order::spot(
         order_id,
         base,
@@ -251,27 +257,36 @@ impl BacktestInner {
 /// - `OrderId` 内部从 `AtomicU64` 序列分配,字符串化为 `"bt-{n}"`(与 OMS Uuid / Exchange 区分)。
 pub struct BacktestTradingBackend {
     inner: Arc<RwLock<BacktestInner>>,
-    symbol: Symbol,
 }
 
 impl BacktestTradingBackend {
     /// 创建 `BacktestTradingBackend`,绑 symbol + 初始 cash
     pub fn new(symbol: impl Into<Symbol>, initial_cash: f64) -> Self {
-        let sym = symbol.into();
-        let inner = BacktestInner::new(sym.clone(), initial_cash);
+        let inner = BacktestInner::new(symbol.into(), initial_cash);
         Self {
             inner: Arc::new(RwLock::new(inner)),
-            symbol: sym,
         }
     }
 
     /// 获取绑定的交易对
-    pub fn symbol(&self) -> &str {
-        self.symbol.as_str()
+    ///
+    /// 由于 symbol 在构造后不会改变,使用 try_read 进行非阻塞读取。
+    pub fn symbol(&self) -> String {
+        self.inner
+            .try_read()
+            .expect("Failed to read lock for symbol")
+            .symbol
+            .as_str()
+            .to_string()
     }
 
     /// 获取订单簿快照
+    ///
+    /// `levels=0` 时自动改为默认值 10
     pub async fn book_snapshot(&self, levels: usize) -> OrderBookSnapshot {
+        // levels=0 时使用默认深度 10
+        let levels = if levels == 0 { 10 } else { levels };
+
         let inner = self.inner.read().await;
         let (bids_raw, asks_raw) = inner.engine.depth(levels);
 
@@ -300,6 +315,12 @@ impl BacktestTradingBackend {
     }
 
     /// 推进到下一 bar(向订单簿注入流动性)
+    ///
+    /// 清空原有订单簿,按 mid_price ± half_spread * (i+1) 注入 depth_levels 档买卖盘。
+    /// 订单 ID 从 order_id_seq 分配,避免与 place_order 冲突。
+    ///
+    /// # Panics
+    /// `half_spread <= 0.0` 时 panic,因为零或负价差会导致买卖盘交叉立即成交。
     pub async fn advance_bar(
         &self,
         mid_price: f64,
@@ -307,23 +328,30 @@ impl BacktestTradingBackend {
         depth_levels: usize,
         size_per_level: f64,
     ) {
+        assert!(
+            half_spread > 0.0,
+            "half_spread must be positive, got {}",
+            half_spread
+        );
+
         let mut inner = self.inner.write().await;
         // 清空原有订单簿,注入新的流动性
         inner.engine = L1MatchingEngine::with_symbol(inner.symbol.clone());
 
-        // 解析 symbol 获取 base/quote (如 "BTC-USDT" -> base="BTC", quote="USDT")
-        let sym_str = inner.symbol.as_str().to_string();
-        let (base, quote) = sym_str
-            .split_once('-')
-            .unwrap_or((sym_str.as_str(), "USDT"));
+        // 复用 split_symbol 解析 base/quote
+        let (base, quote) = split_symbol(&inner.symbol);
 
         for i in 0..depth_levels {
+            // 从全局序列分配 ID,避免与 place_order 的 ID 冲突
+            let ask_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
+            let bid_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
+
             // 卖盘: mid_price + half_spread * (i+1)
             let ask_price = mid_price + half_spread * (i + 1) as f64;
             let ask_order = Order::spot(
-                (i * 2 + 1) as u64,
-                base,
-                quote,
+                ask_id,
+                base.clone(),
+                quote.clone(),
                 Side::Sell,
                 OrderType::Limit {
                     price: Price::from_f64(ask_price),
@@ -336,9 +364,9 @@ impl BacktestTradingBackend {
             // 买盘: mid_price - half_spread * (i+1)
             let bid_price = mid_price - half_spread * (i + 1) as f64;
             let bid_order = Order::spot(
-                (i * 2 + 2) as u64,
-                base,
-                quote,
+                bid_id,
+                base.clone(),
+                quote.clone(),
                 Side::Buy,
                 OrderType::Limit {
                     price: Price::from_f64(bid_price),

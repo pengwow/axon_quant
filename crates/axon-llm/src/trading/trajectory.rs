@@ -4,7 +4,6 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// 单个 bar 的轨迹记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,8 +55,11 @@ pub struct TrajectoryRecorder {
 
 impl TrajectoryRecorder {
     /// 创建新的记录器
+    ///
+    /// run_id 由 seed 确定性派生(格式 "run-{seed}"),保证同 seed 两次 flush 结果 byte-equal。
+    /// 如需自定义 run_id,使用 `with_run_id` 覆盖。
     pub fn new(seed: u64, instrument: String, provider: String, model: String) -> Self {
-        let run_id = Uuid::new_v4().to_string();
+        let run_id = format!("run-{}", seed);
         let start_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)

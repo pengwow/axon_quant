@@ -158,7 +158,8 @@ impl PyGetBookSnapshotTool {
             10
         };
 
-        let args_tuple = PyTuple::new(py, &[levels]).unwrap();
+        let args_tuple = PyTuple::new(py, &[levels])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let depth_result = self
             .engine
             .call_method(py, "depth", args_tuple, None)
@@ -170,8 +171,23 @@ impl PyGetBookSnapshotTool {
             pyo3::exceptions::PyRuntimeError::new_err(format!("depth 返回值不是 dict: {}", e))
         })?;
 
-        let bids = depth_dict.get_item("bids").unwrap().unwrap();
-        let asks = depth_dict.get_item("asks").unwrap().unwrap();
+        // 安全地获取 bids/asks,避免 unwrap panic
+        let bids = depth_dict
+            .get_item("bids")
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("获取 bids 失败: {}", e))
+            })?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("depth 返回值缺少 'bids' 字段")
+            })?;
+        let asks = depth_dict
+            .get_item("asks")
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("获取 asks 失败: {}", e))
+            })?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("depth 返回值缺少 'asks' 字段")
+            })?;
 
         let bids_list = bids.downcast::<PyList>().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e))
@@ -180,35 +196,79 @@ impl PyGetBookSnapshotTool {
             pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e))
         })?;
 
+        // 解析订单簿档位数据,每一步都有错误处理
+        let parse_level = |item: &Bound<'_, PyAny>, side: &str| -> PyResult<serde_json::Value> {
+            let d = item.downcast::<PyDict>().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("{} item 不是 dict: {}", side, e))
+            })?;
+            let price: f64 = d
+                .get_item("price")
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 获取 price 失败: {}",
+                        side, e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 缺少 'price' 字段",
+                        side
+                    ))
+                })?
+                .extract()
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item price 不是数字: {}",
+                        side, e
+                    ))
+                })?;
+            let quantity: f64 = d
+                .get_item("quantity")
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 获取 quantity 失败: {}",
+                        side, e
+                    ))
+                })?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item 缺少 'quantity' 字段",
+                        side
+                    ))
+                })?
+                .extract()
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "{} item quantity 不是数字: {}",
+                        side, e
+                    ))
+                })?;
+            Ok(serde_json::json!({"price": price, "quantity": quantity}))
+        };
+
         let bids_result: Vec<serde_json::Value> = (0..bids_list.len())
             .map(|i| {
-                let item = bids_list.get_item(i).unwrap();
-                let d = item.downcast::<PyDict>().map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("bid item 不是 dict: {}", e))
+                let item = bids_list.get_item(i).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "获取 bid[{}] 失败: {}",
+                        i, e
+                    ))
                 })?;
-                let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
-                let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
-                Ok(serde_json::json!({"price": price, "quantity": quantity}))
+                parse_level(&item, "bid")
             })
-            .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("解析 bids 失败: {}", e))
-            })?;
+            .collect::<PyResult<Vec<_>>>()?;
 
         let asks_result: Vec<serde_json::Value> = (0..asks_list.len())
             .map(|i| {
-                let item = asks_list.get_item(i).unwrap();
-                let d = item.downcast::<PyDict>().map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!("ask item 不是 dict: {}", e))
+                let item = asks_list.get_item(i).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "获取 ask[{}] 失败: {}",
+                        i, e
+                    ))
                 })?;
-                let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
-                let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
-                Ok(serde_json::json!({"price": price, "quantity": quantity}))
+                parse_level(&item, "ask")
             })
-            .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("解析 asks 失败: {}", e))
-            })?;
+            .collect::<PyResult<Vec<_>>>()?;
 
         let snapshot = serde_json::json!({
             "symbol": self.symbol,
@@ -481,7 +541,7 @@ impl PyBacktestTradingBackend {
     }
 
     fn __repr__(&self) -> String {
-        "BacktestTradingBackend()".to_string()
+        format!("BacktestTradingBackend(symbol={})", self.backend.symbol())
     }
 }
 
