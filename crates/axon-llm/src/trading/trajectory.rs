@@ -1,56 +1,75 @@
 //! Trajectory 记录器：记录 ReAct 决策轨迹，落盘为 JSON
 
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// 单个 bar 的轨迹记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryBar {
+    /// Bar 索引
     pub bar_id: u64,
+    /// 时间戳（毫秒）
     pub ts: i64,
+    /// 智能体思考过程
     pub thought: String,
+    /// 工具调用（可选）
     pub action: Option<ToolCall>,
+    /// 观察结果（可选）
     pub observation: Option<String>,
+    /// 当前 bar 奖励
     pub reward: f64,
+    /// 累计盈亏
     pub cum_pnl: f64,
 }
 
 /// 工具调用记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// 工具名称
     pub tool: String,
+    /// 工具参数
     pub args: serde_json::Value,
 }
 
 /// 轨迹摘要
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectorySummary {
+    /// 总盈亏
     pub total_pnl: f64,
+    /// 交易次数
     pub trades: u64,
+    /// 最终持仓
     pub final_position: f64,
+    /// 墙钟时间（秒）
     pub wall_time_s: f64,
+    /// 成本（USD）
     pub cost_usd: f64,
 }
 
 /// 完整轨迹记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trajectory {
+    /// 版本号
     pub version: String,
+    /// 运行 ID
     pub run_id: String,
+    /// 交易标的
     pub instrument: String,
+    /// LLM 提供商
     pub provider: String,
+    /// 模型名称
     pub model: String,
+    /// 随机种子
     pub seed: u64,
+    /// 所有 bar 的轨迹
     pub bars: Vec<TrajectoryBar>,
+    /// 轨迹摘要（可选）
     pub summary: Option<TrajectorySummary>,
 }
 
 /// Trajectory 记录器
 pub struct TrajectoryRecorder {
     trajectory: Trajectory,
-    start_ts: i64,
 }
 
 impl TrajectoryRecorder {
@@ -60,10 +79,6 @@ impl TrajectoryRecorder {
     /// 如需自定义 run_id,使用 `with_run_id` 覆盖。
     pub fn new(seed: u64, instrument: String, provider: String, model: String) -> Self {
         let run_id = format!("run-{}", seed);
-        let start_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
 
         Self {
             trajectory: Trajectory {
@@ -76,7 +91,6 @@ impl TrajectoryRecorder {
                 bars: Vec::new(),
                 summary: None,
             },
-            start_ts,
         }
     }
 
@@ -98,21 +112,16 @@ impl TrajectoryRecorder {
 
     /// 落盘到 JSON 文件
     pub fn flush(&self, path: &Path) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(&self.trajectory)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(&self.trajectory).map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 
     /// 从 JSON 文件加载轨迹（重放用）
     pub fn replay(path: &Path) -> Result<Self, std::io::Error> {
         let json = std::fs::read_to_string(path)?;
-        let trajectory: Trajectory = serde_json::from_str(&json)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let trajectory: Trajectory = serde_json::from_str(&json).map_err(std::io::Error::other)?;
 
-        Ok(Self {
-            trajectory,
-            start_ts: 0,
-        })
+        Ok(Self { trajectory })
     }
 
     /// 获取当前轨迹数据
