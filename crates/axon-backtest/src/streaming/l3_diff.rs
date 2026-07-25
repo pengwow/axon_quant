@@ -3,7 +3,7 @@
 //! 设计动机:撮合引擎每 bar / 每 fill 推进时,Book 状态变化需要可观察的增量
 //! 推送,用于训练可视化、TensorBoard 记录、自定义监控等。
 //!
-//! 0.9.0 demo:BacktestEngine::subscribe(Box<dyn L3BookSubscriber>, SubscriberKind)
+//! 0.9.0 demo:BacktestEngine::subscribe(Box&lt;dyn L3BookSubscriber&gt;, SubscriberKind)
 //! 接受订阅者,触发时机见 SubscriberKind。
 
 #![deny(unsafe_code)]
