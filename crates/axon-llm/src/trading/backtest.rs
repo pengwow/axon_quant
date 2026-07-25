@@ -325,11 +325,24 @@ impl BacktestTradingBackend {
         depth_levels: usize,
         size_per_level: f64,
     ) {
+        // 参数校验(在获取锁之前)
+        assert!(
+            mid_price > 0.0,
+            "mid_price must be positive, got {}",
+            mid_price
+        );
         assert!(
             half_spread > 0.0,
             "half_spread must be positive, got {}",
             half_spread
         );
+        assert!(
+            size_per_level > 0.0,
+            "size_per_level must be positive, got {}",
+            size_per_level
+        );
+        // depth_levels 为 0 时使用默认值 10
+        let depth_levels = if depth_levels == 0 { 10 } else { depth_levels };
 
         let mut inner = self.inner.write().await;
         // 清空原有订单簿,注入新的流动性
@@ -385,16 +398,31 @@ impl TradingBackend for BacktestTradingBackend {
         // 1. 校验 symbol 匹配(L1MatchingEngine::validate 会拒,但这里提前 fail-fast)
         let symbol = Symbol::from(req.symbol.clone());
 
-        // 2. 写锁内完整提交流程(分配 ID + 转换 + submit + 应用 fills)
-        let mut inner = self.inner.write().await;
-
-        // 校验 symbol 匹配(若不匹配,提前释放锁)
+        // 2. 提前校验(在获取锁之前)
+        // symbol 匹配校验
         if self.symbol != symbol {
             return Err(TradingError::InvalidArguments(format!(
                 "symbol mismatch: backend bound to {}, request {}",
                 self.symbol, symbol
             )));
         }
+        // quantity 必须大于 0
+        if req.quantity <= 0.0 {
+            return Err(TradingError::InvalidArguments(format!(
+                "quantity must be positive, got {}",
+                req.quantity
+            )));
+        }
+        // price 对于限价单必须大于 0
+        if req.order_type == OrderKind::Limit && req.price.map(|p| p <= 0.0).unwrap_or(true) {
+            return Err(TradingError::InvalidArguments(format!(
+                "limit order price must be positive, got {:?}",
+                req.price
+            )));
+        }
+
+        // 3. 写锁内完整提交流程(分配 ID + 转换 + submit + 应用 fills)
+        let mut inner = self.inner.write().await;
 
         // 分配 OrderId
         let order_id = inner.order_id_seq.fetch_add(1, Ordering::Relaxed);
@@ -446,16 +474,40 @@ impl TradingBackend for BacktestTradingBackend {
     async fn get_positions(&self) -> Result<Vec<PositionSnapshot>, TradingError> {
         let inner = self.inner.read().await;
         let ts = now_ms_i64();
+
+        // 获取当前订单簿参考价格(用于计算浮动盈亏)
+        // 买盘用卖一价,卖盘用买一价,无数据时用 0
+        let (bids, asks) = inner.engine.depth(1);
+        let best_bid = bids.first().map(|b| b.price.as_f64()).unwrap_or(0.0);
+        let best_ask = asks.first().map(|a| a.price.as_f64()).unwrap_or(0.0);
+        let mid_price = if best_bid > 0.0 && best_ask > 0.0 {
+            (best_bid + best_ask) / 2.0
+        } else if best_bid > 0.0 {
+            best_bid
+        } else if best_ask > 0.0 {
+            best_ask
+        } else {
+            0.0
+        };
+
         let positions: Vec<PositionSnapshot> = inner
             .portfolio
             .positions
             .iter()
-            .map(|(sym, &(qty, avg))| PositionSnapshot {
-                symbol: sym.to_string(),
-                quantity: qty,
-                entry_price: avg,
-                unrealized_pnl: 0.0,
-                as_of_ms: ts,
+            .map(|(sym, &(qty, avg))| {
+                // 计算浮动盈亏: (当前价 - 开仓均价) * 持仓数量
+                let unrealized_pnl = if mid_price > 0.0 && avg > 0.0 {
+                    (mid_price - avg) * qty
+                } else {
+                    0.0
+                };
+                PositionSnapshot {
+                    symbol: sym.to_string(),
+                    quantity: qty,
+                    entry_price: avg,
+                    unrealized_pnl,
+                    as_of_ms: ts,
+                }
             })
             .collect();
         Ok(positions)

@@ -125,7 +125,9 @@ mod tests {
         let s = tool.execute("{}").await.unwrap();
         let result: FinishBarResult = serde_json::from_str(&s).unwrap();
         assert!(result.finished);
-        assert_eq!(result.summary, "bar finished");
+        assert!(result.summary.contains("bar finished"));
+        assert!(result.summary.contains("position(s)"));
+        assert!(result.cash_balance.is_some());
     }
 
     #[tokio::test]
