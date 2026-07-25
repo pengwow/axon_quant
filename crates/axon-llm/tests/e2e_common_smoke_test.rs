@@ -73,27 +73,39 @@ fn env_set_key_makes_has_key_or_fixture_true() {
     // Rust 2024 起,`std::env::set_var` / `remove_var` 已标记为 safe
     // (底层 setenv/unsetenv 在所有主要平台上都是线程安全的;详见
     // Rust 1.83 stabilization notes)。
-    unsafe { std::env::set_var("DEEPSEEK_API_KEY", "sk-test-smoke"); }
+    unsafe {
+        std::env::set_var("DEEPSEEK_API_KEY", "sk-test-smoke");
+    }
     assert!(common::has_key_or_fixture("__t__", "__m__"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY"); }
+    unsafe {
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
 }
 
 #[test]
 fn env_unset_key_makes_has_key_or_fixture_false() {
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY"); }
+    unsafe {
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
     assert!(!common::has_key_or_fixture("__t__", "__m__"));
 }
 
 #[test]
 fn env_unset_key_makes_deepseek_backend_none() {
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY"); }
+    unsafe {
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
     assert!(common::deepseek_backend().is_none());
 }
 
 #[test]
 fn env_set_key_makes_deepseek_backend_some() {
-    unsafe { std::env::set_var("DEEPSEEK_API_KEY", "sk-test-smoke"); }
+    unsafe {
+        std::env::set_var("DEEPSEEK_API_KEY", "sk-test-smoke");
+    }
     let backend = common::deepseek_backend();
     assert!(backend.is_some());
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY"); }
+    unsafe {
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
 }

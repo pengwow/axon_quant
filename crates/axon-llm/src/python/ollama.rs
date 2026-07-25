@@ -111,7 +111,10 @@ fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
 }
 
 #[pyfunction]
-pub fn make_ollama_backend(py: Python<'_>, config: &Bound<'_, PyDict>) -> PyResult<PyOllamaBackend> {
+pub fn make_ollama_backend(
+    py: Python<'_>,
+    config: &Bound<'_, PyDict>,
+) -> PyResult<PyOllamaBackend> {
     let json_value = super::helpers::pythonize(py, config.as_any())?;
 
     let map: std::collections::HashMap<String, serde_json::Value> = match json_value {
@@ -166,7 +169,9 @@ mod tests {
             let backends = PyList::empty(py);
             let backend_dict = PyDict::new(py);
             backend_dict.set_item("name", "ollama").unwrap();
-            backend_dict.set_item("base_url", "http://localhost:11434/v1").unwrap();
+            backend_dict
+                .set_item("base_url", "http://localhost:11434/v1")
+                .unwrap();
             backend_dict.set_item("api_key", "").unwrap();
             backend_dict.set_item("model", "llama3").unwrap();
             backend_dict.set_item("max_tokens", 1024).unwrap();

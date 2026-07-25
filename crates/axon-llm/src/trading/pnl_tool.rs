@@ -107,10 +107,7 @@ impl Tool for GetPnlTool {
             })
             .collect();
 
-        let total_unrealized_pnl = position_pnls
-            .iter()
-            .map(|p| p.unrealized_pnl)
-            .sum::<f64>();
+        let total_unrealized_pnl = position_pnls.iter().map(|p| p.unrealized_pnl).sum::<f64>();
 
         let snapshot = PnlSnapshot {
             positions: position_pnls,
@@ -204,7 +201,8 @@ mod tests {
         let snap: PnlSnapshot = serde_json::from_str(&s).unwrap();
         for pos in &snap.positions {
             if pos.entry_price != 0.0 {
-                let expected_pct = (pos.unrealized_pnl / (pos.entry_price * pos.quantity.abs())) * 100.0;
+                let expected_pct =
+                    (pos.unrealized_pnl / (pos.entry_price * pos.quantity.abs())) * 100.0;
                 assert!((pos.unrealized_pnl_pct - expected_pct).abs() < 0.01);
             }
         }

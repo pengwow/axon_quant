@@ -284,8 +284,7 @@ async fn test_agent_with_max_memory_zero() {
 #[tokio::test]
 async fn test_agent_with_max_memory_chain() {
     let config = AgentConfig::new().with_max_iterations(1);
-    let mut agent = ReActAgent::new(Box::new(TextOnlyBackend), config)
-        .with_max_memory(3);
+    let mut agent = ReActAgent::new(Box::new(TextOnlyBackend), config).with_max_memory(3);
 
     agent.add_tool(Box::new(EchoTool));
 

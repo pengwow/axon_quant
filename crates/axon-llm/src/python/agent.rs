@@ -21,10 +21,10 @@ struct PyLLMBackendAdapter {
 impl LLMBackend for PyLLMBackendAdapter {
     async fn complete(&self, messages: &[Message]) -> Result<LLMResponse, LLMError> {
         let py_backend = self.py_backend.clone();
-        
+
         Python::try_attach(|py| {
             let py_backend_obj = py_backend.lock().unwrap();
-            
+
             let py_msgs = PyList::empty(py);
             for m in messages {
                 let msg_dict = PyDict::new(py);
@@ -34,26 +34,49 @@ impl LLMBackend for PyLLMBackendAdapter {
                     crate::types::Role::Assistant => "assistant",
                     crate::types::Role::Tool => "tool",
                 };
-                msg_dict.set_item("role", role_str).map_err(|e| LLMError::Backend(e.to_string()))?;
-                msg_dict.set_item("content", &m.content).map_err(|e| LLMError::Backend(e.to_string()))?;
+                msg_dict
+                    .set_item("role", role_str)
+                    .map_err(|e| LLMError::Backend(e.to_string()))?;
+                msg_dict
+                    .set_item("content", &m.content)
+                    .map_err(|e| LLMError::Backend(e.to_string()))?;
                 if let Some(id) = &m.tool_call_id {
-                    msg_dict.set_item("tool_call_id", id).map_err(|e| LLMError::Backend(e.to_string()))?;
+                    msg_dict
+                        .set_item("tool_call_id", id)
+                        .map_err(|e| LLMError::Backend(e.to_string()))?;
                 }
-                py_msgs.append(msg_dict).map_err(|e| LLMError::Backend(e.to_string()))?;
+                py_msgs
+                    .append(msg_dict)
+                    .map_err(|e| LLMError::Backend(e.to_string()))?;
             }
-            
-            let args = PyTuple::new(py, &[py_msgs]).map_err(|e| LLMError::Backend(e.to_string()))?;
-            let resp = py_backend_obj.call_method(py, "chat", args, None).map_err(|e| LLMError::Backend(e.to_string()))?;
-            
-            let content: String = resp.getattr(py, "content").map_err(|e| LLMError::Backend(e.to_string()))?
-                .extract::<String>(py).map_err(|e| LLMError::Backend(e.to_string()))?;
-            let prompt_tokens: usize = resp.getattr(py, "prompt_tokens").map_err(|e| LLMError::Backend(e.to_string()))?
-                .extract::<usize>(py).map_err(|e| LLMError::Backend(e.to_string()))?;
-            let completion_tokens: usize = resp.getattr(py, "completion_tokens").map_err(|e| LLMError::Backend(e.to_string()))?
-                .extract::<usize>(py).map_err(|e| LLMError::Backend(e.to_string()))?;
-            let total_tokens: usize = resp.getattr(py, "total_tokens").map_err(|e| LLMError::Backend(e.to_string()))?
-                .extract::<usize>(py).map_err(|e| LLMError::Backend(e.to_string()))?;
-            
+
+            let args =
+                PyTuple::new(py, &[py_msgs]).map_err(|e| LLMError::Backend(e.to_string()))?;
+            let resp = py_backend_obj
+                .call_method(py, "chat", args, None)
+                .map_err(|e| LLMError::Backend(e.to_string()))?;
+
+            let content: String = resp
+                .getattr(py, "content")
+                .map_err(|e| LLMError::Backend(e.to_string()))?
+                .extract::<String>(py)
+                .map_err(|e| LLMError::Backend(e.to_string()))?;
+            let prompt_tokens: usize = resp
+                .getattr(py, "prompt_tokens")
+                .map_err(|e| LLMError::Backend(e.to_string()))?
+                .extract::<usize>(py)
+                .map_err(|e| LLMError::Backend(e.to_string()))?;
+            let completion_tokens: usize = resp
+                .getattr(py, "completion_tokens")
+                .map_err(|e| LLMError::Backend(e.to_string()))?
+                .extract::<usize>(py)
+                .map_err(|e| LLMError::Backend(e.to_string()))?;
+            let total_tokens: usize = resp
+                .getattr(py, "total_tokens")
+                .map_err(|e| LLMError::Backend(e.to_string()))?
+                .extract::<usize>(py)
+                .map_err(|e| LLMError::Backend(e.to_string()))?;
+
             Ok(LLMResponse {
                 content: Some(content),
                 tool_calls: None,
@@ -64,9 +87,8 @@ impl LLMBackend for PyLLMBackendAdapter {
                 },
                 finish_reason: crate::types::FinishReason::Stop,
             })
-        }).ok_or_else(|| {
-            LLMError::Backend("Failed to attach to Python interpreter".to_string())
-        })?
+        })
+        .ok_or_else(|| LLMError::Backend("Failed to attach to Python interpreter".to_string()))?
     }
 
     async fn complete_with_tools(
@@ -91,9 +113,13 @@ pub struct PyReActAgent {
 impl PyReActAgent {
     #[new]
     #[pyo3(signature = (backend, config=None))]
-    fn new(py: Python<'_>, backend: &Bound<'_, PyAny>, config: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn new(
+        py: Python<'_>,
+        backend: &Bound<'_, PyAny>,
+        config: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let py_backend = backend.clone().unbind().into();
-        
+
         let adapter = Box::new(PyLLMBackendAdapter {
             py_backend: Arc::new(Mutex::new(py_backend)),
         });
@@ -133,7 +159,11 @@ impl PyReActAgent {
                 let allowed_tools: Vec<String> = map
                     .get("allowed_tools")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 AgentConfig {
@@ -156,7 +186,8 @@ impl PyReActAgent {
         let name: String = tool.getattr("name")?.extract()?;
         let description: String = tool.getattr("description")?.extract()?;
         let parameters_schema_str: String = tool.getattr("parameters_schema")?.extract()?;
-        let parameters_schema: serde_json::Value = serde_json::from_str(&parameters_schema_str).unwrap_or_default();
+        let parameters_schema: serde_json::Value =
+            serde_json::from_str(&parameters_schema_str).unwrap_or_default();
 
         let py_tool = PyToolWrapper {
             name,
@@ -173,7 +204,8 @@ impl PyReActAgent {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        let response = runtime.block_on(self.inner.reason(query))
+        let response = runtime
+            .block_on(self.inner.reason(query))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
         let dict = PyDict::new(py);
@@ -236,22 +268,36 @@ impl Tool for PyToolWrapper {
 
     async fn execute(&self, arguments: &str) -> Result<String, crate::tools::ToolError> {
         let py_tool = self.py_tool.clone();
-        
+
         let py_result = Python::try_attach(|py| {
             let py_tool_obj = py_tool.lock().unwrap();
             let args = PyTuple::new(py, &[arguments]).map_err(|e| {
-                crate::tools::ToolError::ExecutionFailed(format!("Python tool execution failed: {}", e))
+                crate::tools::ToolError::ExecutionFailed(format!(
+                    "Python tool execution failed: {}",
+                    e
+                ))
             })?;
-            let result = py_tool_obj.call_method(py, "execute", args, None).map_err(|e| {
-                crate::tools::ToolError::ExecutionFailed(format!("Python tool execution failed: {}", e))
-            })?;
+            let result = py_tool_obj
+                .call_method(py, "execute", args, None)
+                .map_err(|e| {
+                    crate::tools::ToolError::ExecutionFailed(format!(
+                        "Python tool execution failed: {}",
+                        e
+                    ))
+                })?;
             Ok(result.extract::<String>(py).map_err(|e| {
-                crate::tools::ToolError::ExecutionFailed(format!("Python tool result extraction failed: {}", e))
+                crate::tools::ToolError::ExecutionFailed(format!(
+                    "Python tool result extraction failed: {}",
+                    e
+                ))
             })?)
-        }).ok_or_else(|| {
-            crate::tools::ToolError::ExecutionFailed("Failed to attach to Python interpreter".to_string())
+        })
+        .ok_or_else(|| {
+            crate::tools::ToolError::ExecutionFailed(
+                "Failed to attach to Python interpreter".to_string(),
+            )
         })?;
-        
+
         py_result
     }
 }
@@ -279,7 +325,9 @@ impl PyTool {
     }
 
     fn execute(&self, _arguments: &str) -> PyResult<String> {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err("Base Tool class cannot be executed"))
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "Base Tool class cannot be executed",
+        ))
     }
 
     fn __repr__(&self) -> String {

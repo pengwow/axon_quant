@@ -159,43 +159,56 @@ impl PyGetBookSnapshotTool {
         };
 
         let args_tuple = PyTuple::new(py, &[levels]).unwrap();
-        let depth_result = self.engine.call_method(py, "depth", args_tuple, None)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("调用 depth 方法失败: {}", e)))?;
+        let depth_result = self
+            .engine
+            .call_method(py, "depth", args_tuple, None)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("调用 depth 方法失败: {}", e))
+            })?;
 
-        let depth_dict = depth_result.cast_bound::<PyDict>(py)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("depth 返回值不是 dict: {}", e)))?;
+        let depth_dict = depth_result.cast_bound::<PyDict>(py).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("depth 返回值不是 dict: {}", e))
+        })?;
 
         let bids = depth_dict.get_item("bids").unwrap().unwrap();
         let asks = depth_dict.get_item("asks").unwrap().unwrap();
 
-        let bids_list = bids.downcast::<PyList>()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e)))?;
-        let asks_list = asks.downcast::<PyList>()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e)))?;
+        let bids_list = bids.downcast::<PyList>().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e))
+        })?;
+        let asks_list = asks.downcast::<PyList>().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e))
+        })?;
 
         let bids_result: Vec<serde_json::Value> = (0..bids_list.len())
             .map(|i| {
                 let item = bids_list.get_item(i).unwrap();
-                let d = item.downcast::<PyDict>()
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("bid item 不是 dict: {}", e)))?;
+                let d = item.downcast::<PyDict>().map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("bid item 不是 dict: {}", e))
+                })?;
                 let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
                 let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
                 Ok(serde_json::json!({"price": price, "quantity": quantity}))
             })
             .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("解析 bids 失败: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("解析 bids 失败: {}", e))
+            })?;
 
         let asks_result: Vec<serde_json::Value> = (0..asks_list.len())
             .map(|i| {
                 let item = asks_list.get_item(i).unwrap();
-                let d = item.downcast::<PyDict>()
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("ask item 不是 dict: {}", e)))?;
+                let d = item.downcast::<PyDict>().map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("ask item 不是 dict: {}", e))
+                })?;
                 let price: f64 = d.get_item("price").unwrap().unwrap().extract().unwrap();
                 let quantity: f64 = d.get_item("quantity").unwrap().unwrap().extract().unwrap();
                 Ok(serde_json::json!({"price": price, "quantity": quantity}))
             })
             .collect::<Result<Vec<serde_json::Value>, pyo3::PyErr>>()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("解析 asks 失败: {}", e)))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("解析 asks 失败: {}", e))
+            })?;
 
         let snapshot = serde_json::json!({
             "symbol": self.symbol,

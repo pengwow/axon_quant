@@ -3,8 +3,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::useless_conversion)]
 
-use pyo3::prelude::*;
 use pyo3::BoundObject;
+use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::sync::Arc as StdArc;
 
@@ -19,7 +19,12 @@ pub struct PyTrajectoryRecorder {
 impl PyTrajectoryRecorder {
     #[new]
     fn new(seed: u64, instrument: &str, provider: &str, model: &str) -> Self {
-        let recorder = TrajectoryRecorder::new(seed, instrument.to_string(), provider.to_string(), model.to_string());
+        let recorder = TrajectoryRecorder::new(
+            seed,
+            instrument.to_string(),
+            provider.to_string(),
+            model.to_string(),
+        );
         Self {
             recorder: StdArc::new(std::sync::Mutex::new(recorder)),
         }
@@ -51,7 +56,10 @@ impl PyTrajectoryRecorder {
                 _ => "unknown".to_string(),
             };
             let args_value = super::helpers::pythonize(action_dict.py(), action_dict.as_any())?;
-            Some(ToolCall { tool, args: args_value })
+            Some(ToolCall {
+                tool,
+                args: args_value,
+            })
         } else {
             None
         };
@@ -72,9 +80,11 @@ impl PyTrajectoryRecorder {
 
     fn flush(&self, path: &str) -> PyResult<()> {
         let path_buf = std::path::PathBuf::from(path);
-        self.recorder.lock().unwrap().flush(&path_buf).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("flush failed: {}", e))
-        })
+        self.recorder
+            .lock()
+            .unwrap()
+            .flush(&path_buf)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("flush failed: {}", e)))
     }
 
     fn trajectory<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -140,7 +150,11 @@ impl PyTrajectoryRecorder {
     fn __repr__(&self) -> String {
         let recorder = self.recorder.lock().unwrap();
         let traj = recorder.trajectory();
-        format!("TrajectoryRecorder(run_id={}, bars={})", traj.run_id, traj.bars.len())
+        format!(
+            "TrajectoryRecorder(run_id={}, bars={})",
+            traj.run_id,
+            traj.bars.len()
+        )
     }
 }
 
@@ -171,7 +185,9 @@ mod tests {
     fn trajectory_recorder_record_adds_bar() {
         run(|py| {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
-            recorder.record(0, 1234567890, "bar 0", None, None, 0.0, 0.0).unwrap();
+            recorder
+                .record(0, 1234567890, "bar 0", None, None, 0.0, 0.0)
+                .unwrap();
             assert_eq!(recorder.bar_count(), 1);
         });
     }
@@ -182,8 +198,12 @@ mod tests {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
             let action = PyDict::new(py).into_bound();
             action.set_item("tool", "place_order").unwrap();
-            action.set_item("args", PyDict::new(py).into_bound()).unwrap();
-            recorder.record(0, 1234567890, "bar 0", Some(&action), None, 1.0, 0.5).unwrap();
+            action
+                .set_item("args", PyDict::new(py).into_bound())
+                .unwrap();
+            recorder
+                .record(0, 1234567890, "bar 0", Some(&action), None, 1.0, 0.5)
+                .unwrap();
             assert_eq!(recorder.bar_count(), 1);
         });
     }
@@ -206,7 +226,9 @@ mod tests {
     fn trajectory_recorder_flush_writes_file() {
         run(|_py| {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
-            recorder.record(0, 1234567890, "bar 0", None, None, 0.0, 0.0).unwrap();
+            recorder
+                .record(0, 1234567890, "bar 0", None, None, 0.0, 0.0)
+                .unwrap();
             let path = "/tmp/test_py_trajectory.json";
             recorder.flush(path).unwrap();
             assert!(std::fs::exists(path).unwrap_or(false));
@@ -218,9 +240,16 @@ mod tests {
     fn trajectory_recorder_trajectory_returns_dict() {
         run(|py| {
             let recorder = PyTrajectoryRecorder::new(42, "BTC-USDT", "mock", "test");
-            recorder.record(0, 1234567890, "bar 0", None, None, 0.0, 0.0).unwrap();
+            recorder
+                .record(0, 1234567890, "bar 0", None, None, 0.0, 0.0)
+                .unwrap();
             let traj = recorder.trajectory(py).unwrap();
-            let version: String = traj.get_item("version").unwrap().unwrap().extract().unwrap();
+            let version: String = traj
+                .get_item("version")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
             assert_eq!(version, "0.10.0");
             let bars = traj.get_item("bars").unwrap().unwrap();
             let l = bars.cast::<PyList>().unwrap();

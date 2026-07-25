@@ -28,7 +28,7 @@ mod backend;
 use backend::{PyLLMBackend, PyMessage};
 
 mod ollama;
-use ollama::{make_ollama_backend, PyOllamaBackend};
+use ollama::{PyOllamaBackend, make_ollama_backend};
 
 pub mod trading;
 

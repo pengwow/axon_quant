@@ -62,8 +62,14 @@ pub trait OrderBookProvider: Send + Sync {
 impl OrderBookProvider for L1MatchingEngine {
     async fn depth(&self, levels: usize) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>), ToolError> {
         let (bids, asks) = MatchingEngine::depth(self, levels);
-        let bids: Vec<(f64, f64)> = bids.iter().map(|l| (l.price.as_f64(), l.quantity.as_f64())).collect();
-        let asks: Vec<(f64, f64)> = asks.iter().map(|l| (l.price.as_f64(), l.quantity.as_f64())).collect();
+        let bids: Vec<(f64, f64)> = bids
+            .iter()
+            .map(|l| (l.price.as_f64(), l.quantity.as_f64()))
+            .collect();
+        let asks: Vec<(f64, f64)> = asks
+            .iter()
+            .map(|l| (l.price.as_f64(), l.quantity.as_f64()))
+            .collect();
         Ok((bids, asks))
     }
 }
@@ -117,12 +123,18 @@ impl Tool for GetBookSnapshotTool {
 
         let snapshot_bids: Vec<OrderBookLevel> = bids
             .iter()
-            .map(|(price, quantity)| OrderBookLevel { price: *price, quantity: *quantity })
+            .map(|(price, quantity)| OrderBookLevel {
+                price: *price,
+                quantity: *quantity,
+            })
             .collect();
 
         let snapshot_asks: Vec<OrderBookLevel> = asks
             .iter()
-            .map(|(price, quantity)| OrderBookLevel { price: *price, quantity: *quantity })
+            .map(|(price, quantity)| OrderBookLevel {
+                price: *price,
+                quantity: *quantity,
+            })
             .collect();
 
         let snapshot = OrderBookSnapshot {
@@ -154,7 +166,9 @@ mod tests {
             "BTC",
             "USDT",
             side,
-            OrderType::Limit { price: Price::from_f64(price) },
+            OrderType::Limit {
+                price: Price::from_f64(price),
+            },
             Quantity::from_f64(qty),
             TimeInForce::GTC,
         )

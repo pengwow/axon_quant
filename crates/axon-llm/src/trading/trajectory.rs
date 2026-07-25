@@ -144,7 +144,8 @@ mod tests {
 
     #[test]
     fn trajectory_recorder_record_adds_bar() {
-        let mut recorder = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
+        let mut recorder =
+            TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
 
         let bar = TrajectoryBar {
             bar_id: 0,
@@ -162,7 +163,8 @@ mod tests {
 
     #[test]
     fn trajectory_recorder_flush_and_replay_consistent() {
-        let mut recorder = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
+        let mut recorder =
+            TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
 
         recorder.record(TrajectoryBar {
             bar_id: 0,
@@ -186,7 +188,8 @@ mod tests {
 
     #[test]
     fn trajectory_record_has_tool_call() {
-        let mut recorder = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
+        let mut recorder =
+            TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
 
         let bar = TrajectoryBar {
             bar_id: 0,
@@ -210,10 +213,12 @@ mod tests {
     #[test]
     fn trajectory_deterministic_same_seed_byte_equal() {
         let run_id = "deterministic-test-run";
-        let mut recorder1 = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into())
-            .with_run_id(run_id);
-        let mut recorder2 = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into())
-            .with_run_id(run_id);
+        let mut recorder1 =
+            TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into())
+                .with_run_id(run_id);
+        let mut recorder2 =
+            TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into())
+                .with_run_id(run_id);
 
         for i in 0..5 {
             recorder1.record(TrajectoryBar {
@@ -244,7 +249,10 @@ mod tests {
         let content1 = std::fs::read(&temp_path1).unwrap();
         let content2 = std::fs::read(&temp_path2).unwrap();
 
-        assert_eq!(content1, content2, "same seed should produce identical trajectory files");
+        assert_eq!(
+            content1, content2,
+            "same seed should produce identical trajectory files"
+        );
 
         std::fs::remove_file(&temp_path1).ok();
         std::fs::remove_file(&temp_path2).ok();
