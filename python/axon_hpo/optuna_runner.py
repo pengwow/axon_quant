@@ -215,7 +215,8 @@ class OptunaHPO:
     ) -> list[ParetoPoint]:
         """获取多目标场景下的 Pareto 前沿。"""
         if directions is None:
-            directions = [StudyDirection(d) for d in self.study.directions]
+            # Optuna 返回的是 StudyDirection 对象，需要通过 name 属性获取字符串名称
+            directions = [StudyDirection(d.name.lower()) for d in self.study.directions]
         trials = self.run(n_trials=0) if not self.study.trials else [
             TrialResult(
                 trial_id=t.number,
@@ -236,5 +237,5 @@ class OptunaHPO:
         """计算多目标 Pareto 前沿的超体积。"""
         front = self.get_pareto_front(directions)
         if directions is None:
-            directions = [StudyDirection(d) for d in self.study.directions]
+            directions = [StudyDirection(d.name.lower()) for d in self.study.directions]
         return compute_hypervolume(front, directions, reference_point)

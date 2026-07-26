@@ -28,9 +28,12 @@ def _ensure_axon_hpo():
         DEFAULT_SEARCH_SPACE.update(
             {
                 "lr": _SSD(param_type="log_uniform", low=1e-5, high=1e-3),
+                "learning_rate": _SSD(param_type="log_uniform", low=1e-5, high=1e-3),
                 "gamma": _SSD(param_type="uniform", low=0.9, high=0.9999),
                 "clip_param": _SSD(param_type="uniform", low=0.1, high=0.4),
+                "clip_range": _SSD(param_type="uniform", low=0.1, high=0.4),
                 "entropy_coeff": _SSD(param_type="log_uniform", low=1e-4, high=1e-1),
+                "entropy_coef": _SSD(param_type="log_uniform", low=1e-4, high=1e-1),
             }
         )
     return _OptunaHPO, _SSD
