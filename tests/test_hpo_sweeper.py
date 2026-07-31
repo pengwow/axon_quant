@@ -60,7 +60,23 @@ def test_rl_hpo_sweeper_smoke_2_trials() -> None:
     def objective(params: dict) -> list[float]:
         spot = spot_instrument("BTC", "USDT")
         env = BacktestEnv(spot, seed=42)
-        model = sb3.PPO("MlpPolicy", env, verbose=0, **params)
+        # 映射参数名到 sb3.PPO 期望的参数名
+        ppo_params = {}
+        if "learning_rate" in params:
+            ppo_params["learning_rate"] = params["learning_rate"]
+        elif "lr" in params:
+            ppo_params["learning_rate"] = params["lr"]
+        if "gamma" in params:
+            ppo_params["gamma"] = params["gamma"]
+        if "clip_range" in params:
+            ppo_params["clip_range"] = params["clip_range"]
+        elif "clip_param" in params:
+            ppo_params["clip_range"] = params["clip_param"]
+        if "entropy_coef" in params:
+            ppo_params["ent_coef"] = params["entropy_coef"]
+        elif "entropy_coeff" in params:
+            ppo_params["ent_coef"] = params["entropy_coeff"]
+        model = sb3.PPO("MlpPolicy", env, verbose=0, **ppo_params)
         model.learn(total_timesteps=50)
         return [50.0]  # 占位 reward
 

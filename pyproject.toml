@@ -1,6 +1,6 @@
 [project]
 name = "axon-quant"
-version = "0.10.0"
+version = "0.10.1"
 description = "AI-native quantitative trading framework — high-performance Rust core with Python RL training interface, covering backtesting, training, optimization, validation and production in a single codebase."
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"
@@ -57,9 +57,7 @@ build-backend = "maturin"
 # 的 `find_bridge` 才能识别为 pyo3 绑定。否则 `find_pyo3_bindings` 返回
 # `None`,触发 "unknown binding type" / "Couldn't detect the binding type"。
 features = ["python"]
-manifest-path = "crates/axon-python/Cargo.toml"
 python-source = "python"
-module-name = "axon_quant._native"
 
 [tool.ruff]
 target-version = "py314"

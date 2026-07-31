@@ -6,6 +6,14 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-07-26
+
+0.10.1 主线:代码修复和优化。
+
+### Changed
+
+- 修复 axon_hpo 模块相关代码问题
+
 ## [0.10.0] - 2026-07-24
 
 0.10.0 主线:LLM 智能体交易(ReAct + provider 抽象 + tool calling + trajectory 落盘)。本版本从 0.9.0 切分支,补齐 Phase 5 的 LLM-trading 主线 25 task。Multi-agent / Web UI / Multi-LLM ensemble 留 0.11.0。

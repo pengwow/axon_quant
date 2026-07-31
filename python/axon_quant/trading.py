@@ -88,7 +88,7 @@ _RustPlaceOrderTool = _native_trading_module.PlaceOrderTool
 _RustQueryPortfolioTool = _native_trading_module.QueryPortfolioTool
 _RustCancelOrderTool = _native_trading_module.CancelOrderTool
 _RustReplaceOrderTool = _native_trading_module.ReplaceOrderTool
-_RustFinishBarTool = _native_trading_module.FinishBarTool
+_RustFinishBarTool = getattr(_native_trading_module, "FinishBarTool", None)
 _RustTradingMetrics = _native_trading_module.TradingMetrics
 
 # 类型别名:Python 用户直接用 ``RiskLimits`` / ``PlaceOrderTool`` 等,
