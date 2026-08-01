@@ -1,0 +1,2152 @@
+[
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.5689655172413793,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.75,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.64,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.35,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.5689655172413793,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67000.0,
+      "high": 67058.27,
+      "low": 66972.5,
+      "close": 67055.77,
+      "volume": 150.44,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 0
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.713375796178344,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.32,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.45,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.8,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.713375796178344,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67055.77,
+      "high": 67218.03,
+      "low": 66966.55,
+      "close": 67150.36,
+      "volume": 89.12,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 1
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7916666666666667,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.76,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7916666666666667,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67150.36,
+      "high": 67153.34,
+      "low": 67097.26,
+      "close": 67119.13,
+      "volume": 277.41,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 2
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9248120300751879,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.54,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.69,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9248120300751879,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67119.13,
+      "high": 67139.01,
+      "low": 66864.75,
+      "close": 66929.74,
+      "volume": 295.22,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 3
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7869822485207101,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.88,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.36,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.45,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7869822485207101,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66929.74,
+      "high": 66988.67,
+      "low": 66736.98,
+      "close": 66817.92,
+      "volume": 52.92,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 4
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6976744186046512,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.65,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.84,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.66,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6976744186046512,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66817.92,
+      "high": 67010.06,
+      "low": 66783.89,
+      "close": 66940.25,
+      "volume": 119.97,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 5
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 0.4761904761904761,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.6,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.56,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 0.4761904761904761,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66940.25,
+      "high": 67156.79,
+      "low": 66930.97,
+      "close": 67123.13,
+      "volume": 93.52,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 6
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.5999999999999999,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.38,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.72,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.5999999999999999,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67123.13,
+      "high": 67322.5,
+      "low": 67042.42,
+      "close": 67262.13,
+      "volume": 378.38,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 7
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.682608695652174,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.67,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.73,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.9,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.682608695652174,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67262.13,
+      "high": 67373.93,
+      "low": 67224.28,
+      "close": 67276.62,
+      "volume": 298.42,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 8
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.5426829268292682,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.89,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.65,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.5426829268292682,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67276.62,
+      "high": 67470.23,
+      "low": 67190.45,
+      "close": 67408.38,
+      "volume": 309.81,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 9
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 0.48837209302325574,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.84,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.78,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 0.48837209302325574,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67408.38,
+      "high": 67494.79,
+      "low": 67385.59,
+      "close": 67490.21,
+      "volume": 180.22,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 10
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6078431372549019,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.31,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6078431372549019,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67490.21,
+      "high": 67513.49,
+      "low": 67312.03,
+      "close": 67322.13,
+      "volume": 175.09,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 11
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7590361445783131,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.63,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7590361445783131,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67322.13,
+      "high": 67412.88,
+      "low": 67285.11,
+      "close": 67376.4,
+      "volume": 144.28,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 12
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.5042016806722689,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.49,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.6,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.5042016806722689,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67376.4,
+      "high": 67470.07,
+      "low": 67218.39,
+      "close": 67283.19,
+      "volume": 324.11,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 13
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.9438202247191011,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.86,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.82,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.9438202247191011,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67283.19,
+      "high": 67356.11,
+      "low": 67135.31,
+      "close": 67151.65,
+      "volume": 220.75,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 14
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.6056338028169015,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.84,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.71,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.58,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.6056338028169015,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67151.65,
+      "high": 67411.46,
+      "low": 67095.95,
+      "close": 67347.46,
+      "volume": 358.08,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 15
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9404761904761905,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.74,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.84,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9404761904761905,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67347.46,
+      "high": 67562.2,
+      "low": 67324.55,
+      "close": 67484.6,
+      "volume": 64.45,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 16
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9342105263157894,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.58,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.84,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9342105263157894,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67484.6,
+      "high": 67511.37,
+      "low": 67389.68,
+      "close": 67410.78,
+      "volume": 474.31,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 17
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.927007299270073,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.51,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.76,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.927007299270073,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67410.78,
+      "high": 67592.79,
+      "low": 67345.24,
+      "close": 67561.33,
+      "volume": 228.03,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 18
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.6701030927835052,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.67,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.63,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.64,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.6701030927835052,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67561.33,
+      "high": 67773.03,
+      "low": 67534.84,
+      "close": 67727.15,
+      "volume": 160.98,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 19
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.75,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.88,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.44,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.44,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.75,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67727.15,
+      "high": 67777.97,
+      "low": 67668.69,
+      "close": 67751.69,
+      "volume": 454.02,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 20
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6885245901639344,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.57,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.76,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.5,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6885245901639344,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67751.69,
+      "high": 67773.62,
+      "low": 67611.7,
+      "close": 67711.45,
+      "volume": 279.29,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 21
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.5477707006369427,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.86,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.61,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.5477707006369427,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67711.45,
+      "high": 67716.16,
+      "low": 67536.85,
+      "close": 67547.82,
+      "volume": 332.35,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 22
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.34,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.8,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.9,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67547.82,
+      "high": 67706.86,
+      "low": 67541.46,
+      "close": 67664.65,
+      "volume": 221.73,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 23
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67664.65,
+      "high": 67916.01,
+      "low": 67567.54,
+      "close": 67863.1,
+      "volume": 437.35,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 24
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6428571428571428,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.36,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6428571428571428,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67863.1,
+      "high": 67935.17,
+      "low": 67599.52,
+      "close": 67667.69,
+      "volume": 291.64,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 25
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6421568627450981,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.73,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.41,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.9,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6421568627450981,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67667.69,
+      "high": 67731.79,
+      "low": 67563.26,
+      "close": 67574.42,
+      "volume": 245.64,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 26
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7959183673469388,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.78,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7959183673469388,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67574.42,
+      "high": 67669.8,
+      "low": 67468.32,
+      "close": 67555.91,
+      "volume": 168.53,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 27
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.6491228070175438,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.37,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.6491228070175438,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67555.91,
+      "high": 67574.01,
+      "low": 67464.65,
+      "close": 67556.14,
+      "volume": 441.73,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 28
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.5217391304347826,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.67,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.84,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.5217391304347826,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67556.14,
+      "high": 67620.04,
+      "low": 67414.62,
+      "close": 67475.52,
+      "volume": 118.78,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 29
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9242424242424242,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.45,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.77,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9242424242424242,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67475.52,
+      "high": 67634.46,
+      "low": 67397.66,
+      "close": 67580.53,
+      "volume": 288.66,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 30
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9253731343283581,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.72,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.52,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9253731343283581,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67580.53,
+      "high": 67612.94,
+      "low": 67378.81,
+      "close": 67380.75,
+      "volume": 468.09,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 31
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7092198581560284,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.41,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.6,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.4,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7092198581560284,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67380.75,
+      "high": 67615.41,
+      "low": 67350.0,
+      "close": 67532.24,
+      "volume": 76.07,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 32
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7849462365591399,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.73,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7849462365591399,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67532.24,
+      "high": 67778.14,
+      "low": 67523.68,
+      "close": 67683.45,
+      "volume": 268.7,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 33
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.5714285714285714,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.44,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.48,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.69,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.5714285714285714,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67683.45,
+      "high": 67759.51,
+      "low": 67434.55,
+      "close": 67511.13,
+      "volume": 107.78,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 34
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.9319727891156462,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.78,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.59,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.9319727891156462,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67511.13,
+      "high": 67566.11,
+      "low": 67474.74,
+      "close": 67501.25,
+      "volume": 442.59,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 35
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.35,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.81,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.6,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67501.25,
+      "high": 67522.42,
+      "low": 67416.57,
+      "close": 67470.5,
+      "volume": 378.47,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 36
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.9386503067484662,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.83,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.7,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.9386503067484662,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67470.5,
+      "high": 67501.67,
+      "low": 67251.45,
+      "close": 67350.96,
+      "volume": 342.45,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 37
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.37,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.65,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.84,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67350.96,
+      "high": 67402.72,
+      "low": 67314.1,
+      "close": 67326.2,
+      "volume": 151.11,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 38
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 0.4916666666666666,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.59,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.51,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 0.4916666666666666,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67326.2,
+      "high": 67385.03,
+      "low": 67238.42,
+      "close": 67261.43,
+      "volume": 149.1,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 39
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.782608695652174,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.72,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.782608695652174,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67261.43,
+      "high": 67324.55,
+      "low": 67066.94,
+      "close": 67089.83,
+      "volume": 457.44,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 40
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7333333333333334,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.55,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7333333333333334,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67089.83,
+      "high": 67240.77,
+      "low": 67066.03,
+      "close": 67233.69,
+      "volume": 351.04,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 41
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.5602836879432623,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.79,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.52,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.5602836879432623,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67233.69,
+      "high": 67246.92,
+      "low": 67025.83,
+      "close": 67119.38,
+      "volume": 306.97,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 42
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.7468354430379746,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.59,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.7468354430379746,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67119.38,
+      "high": 67197.84,
+      "low": 67027.7,
+      "close": 67108.45,
+      "volume": 135.68,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 43
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.9456521739130435,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Buy",
+        "confidence": 0.88,
+        "reasoning": "random t0: buy"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.86,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.9456521739130435,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67108.45,
+      "high": 67151.55,
+      "low": 66904.86,
+      "close": 66947.22,
+      "volume": 260.16,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 44
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66947.22,
+      "high": 67106.19,
+      "low": 66848.81,
+      "close": 67038.85,
+      "volume": 94.29,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 45
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.6484375,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Sell",
+        "confidence": 0.35,
+        "reasoning": "random t1: sell"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Buy",
+        "confidence": 0.83,
+        "reasoning": "random t2: buy"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.6484375,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 67038.85,
+      "high": 67072.78,
+      "low": 66913.73,
+      "close": 66999.9,
+      "volume": 161.9,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 46
+  },
+  {
+    "final_action": "Hold",
+    "final_confidence": 1.0,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t2: hold"
+      }
+    ],
+    "aggregated": {
+      "action": "Hold",
+      "score": 1.0,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66999.9,
+      "high": 67044.76,
+      "low": 66833.8,
+      "close": 66875.98,
+      "volume": 175.35,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 47
+  },
+  {
+    "final_action": "Sell",
+    "final_confidence": 0.93006993006993,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Sell",
+        "confidence": 0.57,
+        "reasoning": "random t0: sell"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t1: hold"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.76,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Sell",
+      "score": 0.93006993006993,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66875.98,
+      "high": 66968.31,
+      "low": 66731.59,
+      "close": 66775.91,
+      "volume": 437.61,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 48
+  },
+  {
+    "final_action": "Buy",
+    "final_confidence": 0.5661764705882353,
+    "votes": [
+      {
+        "agent_id": "t0",
+        "action": "Hold",
+        "confidence": 0.0,
+        "reasoning": "random t0: hold"
+      },
+      {
+        "agent_id": "t1",
+        "action": "Buy",
+        "confidence": 0.77,
+        "reasoning": "random t1: buy"
+      },
+      {
+        "agent_id": "t2",
+        "action": "Sell",
+        "confidence": 0.49,
+        "reasoning": "random t2: sell"
+      }
+    ],
+    "aggregated": {
+      "action": "Buy",
+      "score": 0.5661764705882353,
+      "strategy": "weighted_majority"
+    },
+    "risk_verdict": {
+      "approved": true,
+      "reason": null
+    },
+    "token_usage": null,
+    "bar_data": {
+      "open": 66775.91,
+      "high": 66801.1,
+      "low": 66675.98,
+      "close": 66796.04,
+      "volume": 426.21,
+      "symbol": "BTCUSDT"
+    },
+    "bar_index": 49
+  }
+]

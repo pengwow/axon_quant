@@ -866,8 +866,8 @@ impl PySwarmOrchestrator {
 // ═══════════════════════════════════════════════════════════════════════════
 
 use crate::swarm::consensus::{
-    AgentVote, ConsensusDecision, ConsensusRiskAgent, RiskContext, TraderAction,
-    UnanimousVote, VotingStrategy, WeightedMajorityVote,
+    AgentVote, ConsensusDecision, ConsensusRiskAgent, RiskContext, TraderAction, UnanimousVote,
+    VotingStrategy, WeightedMajorityVote,
 };
 
 /// ConsensusDecision → Python dict

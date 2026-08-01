@@ -405,9 +405,24 @@ mod tests {
     #[test]
     fn weighted_majority_all_buy() {
         let votes = vec![
-            AgentVote { agent_id: "a".into(), action: TraderAction::Buy, confidence: 0.8, reasoning: "".into() },
-            AgentVote { agent_id: "b".into(), action: TraderAction::Buy, confidence: 0.6, reasoning: "".into() },
-            AgentVote { agent_id: "c".into(), action: TraderAction::Buy, confidence: 0.7, reasoning: "".into() },
+            AgentVote {
+                agent_id: "a".into(),
+                action: TraderAction::Buy,
+                confidence: 0.8,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "b".into(),
+                action: TraderAction::Buy,
+                confidence: 0.6,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "c".into(),
+                action: TraderAction::Buy,
+                confidence: 0.7,
+                reasoning: "".into(),
+            },
         ];
         let strategy = WeightedMajorityVote::default();
         let result = strategy.aggregate(&votes);
@@ -418,9 +433,24 @@ mod tests {
     #[test]
     fn weighted_majority_split_vote() {
         let votes = vec![
-            AgentVote { agent_id: "a".into(), action: TraderAction::Buy, confidence: 0.9, reasoning: "".into() },
-            AgentVote { agent_id: "b".into(), action: TraderAction::Sell, confidence: 0.4, reasoning: "".into() },
-            AgentVote { agent_id: "c".into(), action: TraderAction::Hold, confidence: 0.0, reasoning: "".into() },
+            AgentVote {
+                agent_id: "a".into(),
+                action: TraderAction::Buy,
+                confidence: 0.9,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "b".into(),
+                action: TraderAction::Sell,
+                confidence: 0.4,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "c".into(),
+                action: TraderAction::Hold,
+                confidence: 0.0,
+                reasoning: "".into(),
+            },
         ];
         let strategy = WeightedMajorityVote { threshold: 0.5 };
         let result = strategy.aggregate(&votes);
@@ -431,9 +461,24 @@ mod tests {
     #[test]
     fn weighted_majority_below_threshold_becomes_hold() {
         let votes = vec![
-            AgentVote { agent_id: "a".into(), action: TraderAction::Buy, confidence: 0.3, reasoning: "".into() },
-            AgentVote { agent_id: "b".into(), action: TraderAction::Sell, confidence: 0.3, reasoning: "".into() },
-            AgentVote { agent_id: "c".into(), action: TraderAction::Hold, confidence: 0.0, reasoning: "".into() },
+            AgentVote {
+                agent_id: "a".into(),
+                action: TraderAction::Buy,
+                confidence: 0.3,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "b".into(),
+                action: TraderAction::Sell,
+                confidence: 0.3,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "c".into(),
+                action: TraderAction::Hold,
+                confidence: 0.0,
+                reasoning: "".into(),
+            },
         ];
         let strategy = WeightedMajorityVote { threshold: 0.5 };
         let result = strategy.aggregate(&votes);
@@ -444,8 +489,18 @@ mod tests {
     #[test]
     fn unanimous_all_same() {
         let votes = vec![
-            AgentVote { agent_id: "a".into(), action: TraderAction::Sell, confidence: 0.7, reasoning: "".into() },
-            AgentVote { agent_id: "b".into(), action: TraderAction::Sell, confidence: 0.8, reasoning: "".into() },
+            AgentVote {
+                agent_id: "a".into(),
+                action: TraderAction::Sell,
+                confidence: 0.7,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "b".into(),
+                action: TraderAction::Sell,
+                confidence: 0.8,
+                reasoning: "".into(),
+            },
         ];
         let strategy = UnanimousVote;
         let result = strategy.aggregate(&votes);
@@ -456,8 +511,18 @@ mod tests {
     #[test]
     fn unanimous_disagreement_becomes_hold() {
         let votes = vec![
-            AgentVote { agent_id: "a".into(), action: TraderAction::Buy, confidence: 0.9, reasoning: "".into() },
-            AgentVote { agent_id: "b".into(), action: TraderAction::Sell, confidence: 0.8, reasoning: "".into() },
+            AgentVote {
+                agent_id: "a".into(),
+                action: TraderAction::Buy,
+                confidence: 0.9,
+                reasoning: "".into(),
+            },
+            AgentVote {
+                agent_id: "b".into(),
+                action: TraderAction::Sell,
+                confidence: 0.8,
+                reasoning: "".into(),
+            },
         ];
         let strategy = UnanimousVote;
         let result = strategy.aggregate(&votes);
@@ -476,7 +541,11 @@ mod tests {
     #[test]
     fn risk_approves_normal() {
         let agent = ConsensusRiskAgent::default();
-        let agg = AggregatedVote { action: TraderAction::Buy, score: 0.7, strategy: "test".into() };
+        let agg = AggregatedVote {
+            action: TraderAction::Buy,
+            score: 0.7,
+            strategy: "test".into(),
+        };
         let ctx = RiskContext::default();
         let verdict = agent.review(&agg, &ctx);
         assert!(verdict.approved);
@@ -484,9 +553,19 @@ mod tests {
 
     #[test]
     fn risk_veto_drawdown() {
-        let agent = ConsensusRiskAgent { max_drawdown: 0.2, ..Default::default() };
-        let agg = AggregatedVote { action: TraderAction::Buy, score: 0.7, strategy: "test".into() };
-        let ctx = RiskContext { drawdown: 0.25, ..Default::default() };
+        let agent = ConsensusRiskAgent {
+            max_drawdown: 0.2,
+            ..Default::default()
+        };
+        let agg = AggregatedVote {
+            action: TraderAction::Buy,
+            score: 0.7,
+            strategy: "test".into(),
+        };
+        let ctx = RiskContext {
+            drawdown: 0.25,
+            ..Default::default()
+        };
         let verdict = agent.review(&agg, &ctx);
         assert!(!verdict.approved);
         assert!(verdict.reason.unwrap().contains("drawdown"));
@@ -494,9 +573,19 @@ mod tests {
 
     #[test]
     fn risk_veto_consecutive_loss() {
-        let agent = ConsensusRiskAgent { max_consecutive_loss: 3, ..Default::default() };
-        let agg = AggregatedVote { action: TraderAction::Buy, score: 0.7, strategy: "test".into() };
-        let ctx = RiskContext { consecutive_losses: 3, ..Default::default() };
+        let agent = ConsensusRiskAgent {
+            max_consecutive_loss: 3,
+            ..Default::default()
+        };
+        let agg = AggregatedVote {
+            action: TraderAction::Buy,
+            score: 0.7,
+            strategy: "test".into(),
+        };
+        let ctx = RiskContext {
+            consecutive_losses: 3,
+            ..Default::default()
+        };
         let verdict = agent.review(&agg, &ctx);
         assert!(!verdict.approved);
         assert!(verdict.reason.unwrap().contains("consecutive"));
@@ -504,9 +593,19 @@ mod tests {
 
     #[test]
     fn risk_veto_position_limit() {
-        let agent = ConsensusRiskAgent { max_position: 0.5, ..Default::default() };
-        let agg = AggregatedVote { action: TraderAction::Buy, score: 0.7, strategy: "test".into() };
-        let ctx = RiskContext { current_position: 0.0, ..Default::default() };
+        let agent = ConsensusRiskAgent {
+            max_position: 0.5,
+            ..Default::default()
+        };
+        let agg = AggregatedVote {
+            action: TraderAction::Buy,
+            score: 0.7,
+            strategy: "test".into(),
+        };
+        let ctx = RiskContext {
+            current_position: 0.0,
+            ..Default::default()
+        };
         // new_pos = 0.0 + 0.7 = 0.7 > 0.5
         let verdict = agent.review(&agg, &ctx);
         assert!(!verdict.approved);
@@ -515,9 +614,19 @@ mod tests {
 
     #[test]
     fn risk_hold_always_approved() {
-        let agent = ConsensusRiskAgent { max_drawdown: 0.01, ..Default::default() };
-        let agg = AggregatedVote { action: TraderAction::Hold, score: 0.0, strategy: "test".into() };
-        let ctx = RiskContext { drawdown: 0.5, ..Default::default() };
+        let agent = ConsensusRiskAgent {
+            max_drawdown: 0.01,
+            ..Default::default()
+        };
+        let agg = AggregatedVote {
+            action: TraderAction::Hold,
+            score: 0.0,
+            strategy: "test".into(),
+        };
+        let ctx = RiskContext {
+            drawdown: 0.5,
+            ..Default::default()
+        };
         let verdict = agent.review(&agg, &ctx);
         assert!(verdict.approved);
     }
@@ -547,9 +656,21 @@ mod tests {
     #[test]
     fn orchestrator_full_flow_approved() {
         let traders: Vec<Box<dyn TraderFn>> = vec![
-            Box::new(MockTrader { id: "t1".into(), action: TraderAction::Buy, confidence: 0.8 }),
-            Box::new(MockTrader { id: "t2".into(), action: TraderAction::Buy, confidence: 0.7 }),
-            Box::new(MockTrader { id: "t3".into(), action: TraderAction::Hold, confidence: 0.0 }),
+            Box::new(MockTrader {
+                id: "t1".into(),
+                action: TraderAction::Buy,
+                confidence: 0.8,
+            }),
+            Box::new(MockTrader {
+                id: "t2".into(),
+                action: TraderAction::Buy,
+                confidence: 0.7,
+            }),
+            Box::new(MockTrader {
+                id: "t3".into(),
+                action: TraderAction::Hold,
+                confidence: 0.0,
+            }),
         ];
         let orch = VotingOrchestrator::new(
             traders,
@@ -568,15 +689,23 @@ mod tests {
     #[test]
     fn orchestrator_veto_becomes_hold() {
         let traders: Vec<Box<dyn TraderFn>> = vec![
-            Box::new(MockTrader { id: "t1".into(), action: TraderAction::Buy, confidence: 0.9 }),
-            Box::new(MockTrader { id: "t2".into(), action: TraderAction::Buy, confidence: 0.9 }),
+            Box::new(MockTrader {
+                id: "t1".into(),
+                action: TraderAction::Buy,
+                confidence: 0.9,
+            }),
+            Box::new(MockTrader {
+                id: "t2".into(),
+                action: TraderAction::Buy,
+                confidence: 0.9,
+            }),
         ];
-        let risk = ConsensusRiskAgent { max_position: 0.5, ..Default::default() };
-        let orch = VotingOrchestrator::new(
-            traders,
-            risk,
-            Box::new(WeightedMajorityVote::default()),
-        );
+        let risk = ConsensusRiskAgent {
+            max_position: 0.5,
+            ..Default::default()
+        };
+        let orch =
+            VotingOrchestrator::new(traders, risk, Box::new(WeightedMajorityVote::default()));
         let bar = serde_json::json!({"close": 67000.0});
         let decision = orch.on_bar(&bar);
 
@@ -587,9 +716,11 @@ mod tests {
 
     #[test]
     fn orchestrator_trader_count() {
-        let traders: Vec<Box<dyn TraderFn>> = vec![
-            Box::new(MockTrader { id: "t1".into(), action: TraderAction::Buy, confidence: 0.5 }),
-        ];
+        let traders: Vec<Box<dyn TraderFn>> = vec![Box::new(MockTrader {
+            id: "t1".into(),
+            action: TraderAction::Buy,
+            confidence: 0.5,
+        })];
         let orch = VotingOrchestrator::new(
             traders,
             ConsensusRiskAgent::default(),
@@ -602,9 +733,21 @@ mod tests {
     #[test]
     fn e2e_50bar_performance() {
         let traders: Vec<Box<dyn TraderFn>> = vec![
-            Box::new(MockTrader { id: "t1".into(), action: TraderAction::Buy, confidence: 0.8 }),
-            Box::new(MockTrader { id: "t2".into(), action: TraderAction::Buy, confidence: 0.6 }),
-            Box::new(MockTrader { id: "t3".into(), action: TraderAction::Hold, confidence: 0.0 }),
+            Box::new(MockTrader {
+                id: "t1".into(),
+                action: TraderAction::Buy,
+                confidence: 0.8,
+            }),
+            Box::new(MockTrader {
+                id: "t2".into(),
+                action: TraderAction::Buy,
+                confidence: 0.6,
+            }),
+            Box::new(MockTrader {
+                id: "t3".into(),
+                action: TraderAction::Hold,
+                confidence: 0.0,
+            }),
         ];
         let orch = VotingOrchestrator::new(
             traders,
