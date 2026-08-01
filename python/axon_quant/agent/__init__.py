@@ -6,7 +6,17 @@
 from __future__ import annotations
 
 from .react import ReActAgent
+from .swarm import MockTrader, RandomTrader, RuleTrader, SwarmRunner, SwarmResult
 from .tools import TradingTools
 from .trajectory import TrajectoryRecorder
 
-__all__ = ["ReActAgent", "TradingTools", "TrajectoryRecorder"]
+__all__ = [
+    "ReActAgent",
+    "TradingTools",
+    "TrajectoryRecorder",
+    "MockTrader",
+    "RandomTrader",
+    "RuleTrader",
+    "SwarmRunner",
+    "SwarmResult",
+]

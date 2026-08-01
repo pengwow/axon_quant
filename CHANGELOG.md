@@ -6,6 +6,39 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-01
+
+0.11.0 主线：Multi-Agent 投票共识 + LLM 基础设施收尾。完成 0.10.0 spec 中推迟的 E7-E12 全部 6 项。
+
+### Added
+
+- **E7 Multi-agent 投票共识**：N 个独立 trader → ensemble 加权投票 → risk 一票否决
+  - `VotingOrchestrator`：bar-by-bar 决策循环（`swarm/consensus.rs`）
+  - `WeightedMajorityVote` / `UnanimousVote` 投票策略
+  - `ConsensusRiskAgent`：纯规则风控（仓位/连亏/回撤）
+  - PyO3 `PyVotingOrchestrator` 绑定（Python trader 回调）
+- **E8 CLI 增强**：rich 实时决策面板 + trajectory 离线回放
+  - `SwarmPanel`：每 bar 渲染投票/聚合/risk/token
+  - `replay.py`：逐 bar 回放 + 汇总统计 + CSV 导出
+- **E9 Multi-LLM ensemble**：集成到 E7 投票流程（复用 axon-ensemble voting）
+- **E10 OpenAI-compatible provider**：通用 HTTP provider（覆盖 OpenAI/Azure/国内端点）
+- **E11 Trajectory → SFT**：质量过滤 + chat 格式 JSONL + TRL 训练脚本骨架
+  - `sft/filter.py`：FilterConfig + BarEpisode
+  - `sft/format.py`：per-agent 独立样本 + system/user/assistant chat
+  - `sft/train.py`：SFTTrainer 骨架（--dry_run 验证）
+- **E12 Token/cost 控制**：`TokenMeter` 装饰器 + `TokenBudget` 预警 + cost 估算表
+  - `meter.rs`：AtomicU64 计数 + tracing::warn 超阈
+  - `cost.rs`：内置 MODEL_PRICING 表
+  - PyO3 `PyTokenMeter` 绑定
+- `SwarmRunner`：Python 高层封装（native + 纯 Python fallback）
+- `MockTrader` / `RandomTrader` / `RuleTrader`：测试/演示用 trader
+- `examples/llm_trading/run_swarm_50bar.py`：主验收脚本
+
+### Changed
+
+- Trajectory schema 升级到 0.11.0（新增 votes/aggregation/risk_verdict/token_usage 字段，向后兼容）
+- `swarm/mod.rs` 新增 `consensus` 子模块
+
 ## [0.10.1] - 2026-07-26
 
 0.10.1 主线:代码修复和优化。

@@ -862,6 +862,247 @@ impl PySwarmOrchestrator {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PyVotingOrchestrator（0.11.0 投票共识）
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::swarm::consensus::{
+    AgentVote, ConsensusDecision, ConsensusRiskAgent, RiskContext, TraderAction,
+    UnanimousVote, VotingStrategy, WeightedMajorityVote,
+};
+
+/// ConsensusDecision → Python dict
+fn decision_to_py<'py>(py: Python<'py>, d: &ConsensusDecision) -> Bound<'py, PyDict> {
+    use pyo3::types::PyDict as PyDictType;
+    let root = PyDictType::new(py);
+    let _ = root.set_item("final_action", d.final_action.to_string());
+    let _ = root.set_item("final_confidence", d.final_confidence);
+
+    // votes
+    let votes_list: Vec<Bound<'py, PyDict>> = d
+        .votes
+        .iter()
+        .map(|v| {
+            let vd = PyDictType::new(py);
+            let _ = vd.set_item("agent_id", &v.agent_id);
+            let _ = vd.set_item("action", v.action.to_string());
+            let _ = vd.set_item("confidence", v.confidence);
+            let _ = vd.set_item("reasoning", &v.reasoning);
+            vd
+        })
+        .collect();
+    let _ = root.set_item("votes", votes_list);
+
+    // aggregated
+    let agg = PyDictType::new(py);
+    let _ = agg.set_item("action", d.aggregated.action.to_string());
+    let _ = agg.set_item("score", d.aggregated.score);
+    let _ = agg.set_item("strategy", &d.aggregated.strategy);
+    let _ = root.set_item("aggregated", agg);
+
+    // risk_verdict
+    let risk = PyDictType::new(py);
+    let _ = risk.set_item("approved", d.risk_verdict.approved);
+    let _ = risk.set_item("reason", &d.risk_verdict.reason);
+    let _ = root.set_item("risk_verdict", risk);
+
+    // token_usage
+    if let Some(tu) = &d.token_usage {
+        let tok = PyDictType::new(py);
+        let _ = tok.set_item("input_tokens", tu.input_tokens);
+        let _ = tok.set_item("output_tokens", tu.output_tokens);
+        let _ = tok.set_item("estimated_cost_usd", tu.estimated_cost_usd);
+        let _ = root.set_item("token_usage", tok);
+    }
+
+    root
+}
+
+/// 投票共识编排器（0.11.0）
+///
+/// Python 端用法:
+/// ```python
+/// from axon_quant._native.llm.swarm import VotingOrchestrator
+///
+/// orch = VotingOrchestrator(
+///     traders=[trader_a, trader_b, trader_c],  # 每个有 decide(bar_dict) 方法
+///     risk_config={"max_position": 1.0, "max_consecutive_loss": 5, "max_drawdown": 0.3},
+///     voting="weighted_majority",  # or "unanimous"
+/// )
+/// decision = orch.on_bar({"close": 67000.0, "volume": 123.0})
+/// ```
+#[pyclass(name = "VotingOrchestrator")]
+pub struct PyVotingOrchestrator {
+    /// Python trader 对象（每个需有 decide(bar_dict) -> dict 和 id 属性）
+    traders: Vec<Py<PyAny>>,
+    /// Trader ID 缓存
+    trader_ids: Vec<String>,
+    risk_agent: ConsensusRiskAgent,
+    voting: Box<dyn VotingStrategy>,
+    risk_ctx: RiskContext,
+}
+
+#[pymethods]
+impl PyVotingOrchestrator {
+    /// 构造投票共识编排器
+    ///
+    /// Args:
+    ///     traders: Python 对象列表，每个需有 `decide(bar_dict) -> dict` 方法和 `id` 属性
+    ///     risk_config: 风控配置 dict（max_position / max_consecutive_loss / max_drawdown）
+    ///     voting: 投票策略名（"weighted_majority" 或 "unanimous"）
+    #[new]
+    #[pyo3(signature = (traders, risk_config=None, voting=None))]
+    fn new(
+        py: Python<'_>,
+        traders: Vec<Py<PyAny>>,
+        risk_config: Option<&Bound<'_, PyDict>>,
+        voting: Option<String>,
+    ) -> PyResult<Self> {
+        // 提取 trader IDs
+        let mut trader_ids = Vec::with_capacity(traders.len());
+        for (i, t) in traders.iter().enumerate() {
+            let id: String = t
+                .bind(py)
+                .getattr("id")
+                .and_then(|v| v.extract())
+                .unwrap_or_else(|_| format!("trader_{}", i));
+            trader_ids.push(id);
+        }
+
+        // 解析 risk config
+        let risk_agent = if let Some(rc) = risk_config {
+            let max_position: f64 = rc
+                .get_item("max_position")?
+                .and_then(|v| v.extract().ok())
+                .unwrap_or(1.0);
+            let max_consecutive_loss: u32 = rc
+                .get_item("max_consecutive_loss")?
+                .and_then(|v| v.extract().ok())
+                .unwrap_or(5);
+            let max_drawdown: f64 = rc
+                .get_item("max_drawdown")?
+                .and_then(|v| v.extract().ok())
+                .unwrap_or(0.3);
+            ConsensusRiskAgent {
+                max_position,
+                max_consecutive_loss,
+                max_drawdown,
+            }
+        } else {
+            ConsensusRiskAgent::default()
+        };
+
+        // 解析投票策略
+        let strategy: Box<dyn VotingStrategy> = match voting.as_deref() {
+            Some("unanimous") => Box::new(UnanimousVote),
+            _ => Box::new(WeightedMajorityVote::default()),
+        };
+
+        Ok(Self {
+            traders,
+            trader_ids,
+            risk_agent,
+            voting: strategy,
+            risk_ctx: RiskContext::default(),
+        })
+    }
+
+    /// 处理一根 bar，返回完整决策 dict
+    fn on_bar<'py>(
+        &mut self,
+        py: Python<'py>,
+        bar: &Bound<'py, PyDict>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        // 1. 调用每个 Python trader 的 decide 方法
+        let mut votes: Vec<AgentVote> = Vec::with_capacity(self.traders.len());
+        for (i, trader) in self.traders.iter().enumerate() {
+            let result = trader.bind(py).call_method1("decide", (bar,));
+            let vote = match result {
+                Ok(ret) => {
+                    let action_str: String = ret
+                        .get_item("action")
+                        .and_then(|v| v.extract())
+                        .unwrap_or_else(|_| "hold".to_string());
+                    let confidence: f64 = ret
+                        .get_item("confidence")
+                        .and_then(|v| v.extract())
+                        .unwrap_or(0.0);
+                    let reasoning: String = ret
+                        .get_item("reasoning")
+                        .and_then(|v| v.extract())
+                        .unwrap_or_default();
+                    let action = match action_str.to_lowercase().as_str() {
+                        "buy" => TraderAction::Buy,
+                        "sell" => TraderAction::Sell,
+                        _ => TraderAction::Hold,
+                    };
+                    AgentVote {
+                        agent_id: self.trader_ids[i].clone(),
+                        action,
+                        confidence,
+                        reasoning,
+                    }
+                }
+                Err(_) => AgentVote {
+                    agent_id: self.trader_ids[i].clone(),
+                    action: TraderAction::Hold,
+                    confidence: 0.0,
+                    reasoning: "python callback error".to_string(),
+                },
+            };
+            votes.push(vote);
+        }
+
+        // 2. 聚合
+        let aggregated = self.voting.aggregate(&votes);
+
+        // 3. Risk 审核
+        let risk_verdict = self.risk_agent.review(&aggregated, &self.risk_ctx);
+
+        // 4. 最终决策
+        let (final_action, final_confidence) = if risk_verdict.approved {
+            (aggregated.action, aggregated.score)
+        } else {
+            (TraderAction::Hold, 0.0)
+        };
+
+        let decision = ConsensusDecision {
+            final_action,
+            final_confidence,
+            votes,
+            aggregated,
+            risk_verdict,
+            token_usage: None,
+        };
+
+        Ok(decision_to_py(py, &decision))
+    }
+
+    /// 更新风控上下文
+    #[pyo3(signature = (current_position=0.0, consecutive_losses=0, drawdown=0.0))]
+    fn update_risk_context(
+        &mut self,
+        current_position: f64,
+        consecutive_losses: u32,
+        drawdown: f64,
+    ) {
+        self.risk_ctx = RiskContext {
+            current_position,
+            consecutive_losses,
+            drawdown,
+        };
+    }
+
+    /// Trader 数量
+    fn trader_count(&self) -> usize {
+        self.traders.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("VotingOrchestrator(traders={})", self.traders.len())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 模块注册
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -877,6 +1118,7 @@ pub fn register_swarm_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMarketSignal>()?;
     m.add_class::<PyTradingTools>()?;
     m.add_class::<PySwarmOrchestrator>()?;
+    m.add_class::<PyVotingOrchestrator>()?;
     Ok(())
 }
 

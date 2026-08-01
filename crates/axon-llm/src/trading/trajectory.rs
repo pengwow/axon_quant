@@ -20,6 +20,25 @@ pub struct TrajectoryBar {
     pub reward: f64,
     /// 累计盈亏
     pub cum_pnl: f64,
+    /// 0.11.0: 投票共识记录（多 trader 场景）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consensus: Option<ConsensusRecord>,
+}
+
+/// 0.11.0 投票共识记录（嵌入 TrajectoryBar）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsensusRecord {
+    /// 各 trader 投票
+    pub votes: Vec<crate::swarm::consensus::AgentVote>,
+    /// 聚合结果
+    pub aggregated: crate::swarm::consensus::AggregatedVote,
+    /// Risk 审核
+    pub risk_verdict: crate::swarm::consensus::RiskVerdict,
+    /// 最终动作
+    pub final_action: crate::swarm::consensus::TraderAction,
+    /// Token 消耗
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<crate::swarm::consensus::TokenUsageSnapshot>,
 }
 
 /// 工具调用记录
@@ -82,7 +101,7 @@ impl TrajectoryRecorder {
 
         Self {
             trajectory: Trajectory {
-                version: "0.10.0".to_string(),
+                version: "0.11.0".to_string(),
                 run_id,
                 instrument,
                 provider,
@@ -102,6 +121,34 @@ impl TrajectoryRecorder {
 
     /// 记录一个 bar 的轨迹
     pub fn record(&mut self, bar: TrajectoryBar) {
+        self.trajectory.bars.push(bar);
+    }
+
+    /// 记录一个 consensus 决策 bar（0.11.0 便捷方法）
+    pub fn record_consensus(
+        &mut self,
+        bar_id: u64,
+        ts: i64,
+        decision: &crate::swarm::consensus::ConsensusDecision,
+        reward: f64,
+        cum_pnl: f64,
+    ) {
+        let bar = TrajectoryBar {
+            bar_id,
+            ts,
+            thought: format!("consensus: {}", decision.final_action),
+            action: None,
+            observation: None,
+            reward,
+            cum_pnl,
+            consensus: Some(ConsensusRecord {
+                votes: decision.votes.clone(),
+                aggregated: decision.aggregated.clone(),
+                risk_verdict: decision.risk_verdict.clone(),
+                final_action: decision.final_action,
+                token_usage: decision.token_usage.clone(),
+            }),
+        };
         self.trajectory.bars.push(bar);
     }
 
@@ -148,7 +195,7 @@ mod tests {
     #[test]
     fn trajectory_recorder_new_has_correct_version() {
         let recorder = TrajectoryRecorder::new(42, "BTC-USDT".into(), "mock".into(), "test".into());
-        assert_eq!(recorder.trajectory().version, "0.10.0");
+        assert_eq!(recorder.trajectory().version, "0.11.0");
         assert!(!recorder.run_id().is_empty());
         assert_eq!(recorder.trajectory().seed, 42);
     }
@@ -166,6 +213,7 @@ mod tests {
             observation: None,
             reward: 0.0,
             cum_pnl: 0.0,
+            consensus: None,
         };
 
         recorder.record(bar);
@@ -185,6 +233,7 @@ mod tests {
             observation: None,
             reward: 0.0,
             cum_pnl: 0.0,
+            consensus: None,
         });
 
         let temp_path = PathBuf::from("/tmp/test_trajectory.json");
@@ -213,6 +262,7 @@ mod tests {
             observation: Some("ack".into()),
             reward: 1.0,
             cum_pnl: 1.0,
+            consensus: None,
         };
 
         recorder.record(bar);
@@ -240,6 +290,7 @@ mod tests {
                 observation: None,
                 reward: 0.0,
                 cum_pnl: 0.0,
+                consensus: None,
             });
             recorder2.record(TrajectoryBar {
                 bar_id: i as u64,
@@ -249,6 +300,7 @@ mod tests {
                 observation: None,
                 reward: 0.0,
                 cum_pnl: 0.0,
+                consensus: None,
             });
         }
 
