@@ -1,8 +1,8 @@
-# `axon-llm::swarm` 多 Agent 编排(0.6.0 P0 工作流 B 收口)
+# `axon-llm::swarm` 多 Agent 编排
 
 > 适用版本:`axon-llm` v0.6.0+
-> 状态:**已实现**(工作流 B Batch 1-4 全收口)
-> 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
+> 状态:**已实现**(0.6.0 工作流 B + 0.11.0 投票共识)
+> 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3, `docs/superpowers/specs/2026-08-01-axon-quant-0.11.0-multi-agent-design.md`
 
 `SwarmOrchestrator` 把 4 类 agent (Market / Risk / Execution / Audit) 串成可运行 pipeline,
 配合 `HarnessBridge` 做最终裁决,`TradingBackend` 真下单到 `MockTradingBackend` / 交易所。
@@ -216,3 +216,110 @@ orch.stop()
 - **`RiskAgent` 高级风控**: `RiskAgentConfig` 已定义 `max_position` / `max_drawdown` 字段但**未做检查**;`risk_score` 目前只是二元(0.1 / 0.9);波动率 / VaR / 历史回撤窗口 / 仓位集中度等指标**未实现**。**0.6.0 收口部分能力**:`axon-risk` 0.6.0 新增跨 leg 风险约束(`check_leg_pair(portfolio, &LegPair) -> RiskResult` + `RiskReason::LegPairNetExposureExceeded` + `per_leg_var` + `stress_pair` / `stress_portfolio`),`RiskConfig.max_leg_pair_net_exposure` 默认 0.0(严格 delta 中性)。`RiskAgent` 接入这些 API 替换 happy path 是后续工作。
 - **4-Agent pipeline 跨进程协调(分布式 swarm)**: 当前 `SwarmOrchestrator` 是单进程内 mpsc 通道;跨进程协调、共识状态机 `ConsensusManager` 持久化、`axon-distributed` 的 Ray Actor 化包装**未实现**。计划在 0.7.0+ 路线图。
 - **单 Agent 跨进程复用**: `MarketAgent` / `RiskAgent` / `AuditAgent` 目前以独立 `tokio::task::spawn` 运行,跨进程调度 / 共享 LLM client / 全局 prompt cache 仍待设计。
+
+---
+
+## 7. 0.11.0 Multi-Agent 投票共识层
+
+> 新增于 v0.11.0
+> 位置:`crates/axon-llm/src/swarm/consensus.rs`
+
+0.11.0 在已有 4-Agent pipeline 之上新增了 **投票共识决策层**，实现多 trader 独立决策 → 加权投票聚合 → risk 一票否决的完整流程。
+
+### 7.1 决策流程
+
+```text
+Bar 到达
+    │
+    ├──→ Trader A (ReAct/规则) ──→ AgentVote{Buy, 0.8}
+    ├──→ Trader B (ReAct/规则) ──→ AgentVote{Buy, 0.6}
+    └──→ Trader C (ReAct/规则) ──→ AgentVote{Hold, 0.0}
+                │
+                ▼
+    ┌─────────────────────────┐
+    │  VotingStrategy          │
+    │  weighted majority:      │
+    │  Buy = 0.8+0.6 = 1.4    │
+    │  Hold = 0.0             │
+    │  → 聚合结果: Buy(0.7)   │
+    └────────────┬────────────┘
+                 ▼
+    ┌─────────────────────────┐
+    │  ConsensusRiskAgent     │
+    │  检查:                   │
+    │  - 当前持仓/敞口         │
+    │  - 连续亏损次数          │
+    │  - 单 bar 最大仓位       │
+    │  → approve / veto       │
+    └────────────┬────────────┘
+                 ▼
+         Final Action (Buy 0.7) 或 Hold (被否决)
+```
+
+### 7.2 核心类型
+
+```rust
+// 投票
+pub struct AgentVote {
+    pub agent_id: String,
+    pub action: TraderAction,    // Buy / Sell / Hold
+    pub confidence: f64,
+    pub reasoning: String,
+}
+
+// 投票策略 trait
+pub trait VotingStrategy: Send + Sync {
+    fn aggregate(&self, votes: &[AgentVote]) -> ConsensusDecision;
+}
+
+// 内置策略
+// 1. WeightedMajorityVote — confidence 加权，超阈值(0.5)胜出
+// 2. UnanimousVote — 全票一致才通过(保守模式)
+
+// 风控审核(纯规则，不走 LLM)
+pub struct ConsensusRiskAgent {
+    pub max_position: f64,
+    pub max_consecutive_loss: u32,
+    pub max_drawdown: f64,
+}
+
+// 编排器
+pub struct VotingOrchestrator {
+    traders: Vec<Box<dyn TraderCallback>>,
+    risk_agent: ConsensusRiskAgent,
+    voting: Box<dyn VotingStrategy>,
+}
+```
+
+### 7.3 Python 接入
+
+```python
+from axon_quant._native import PyVotingOrchestrator
+
+orch = PyVotingOrchestrator(
+    traders=[trader_a, trader_b, trader_c],
+    risk_config={"max_position": 0.5, "max_consecutive_loss": 3},
+    voting="weighted_majority",
+)
+decision = orch.on_bar(bar_dict)
+# decision: {"action": ..., "votes": [...], "risk_verdict": ..., "confidence": ...}
+```
+
+### 7.4 与 0.6.0 SwarmOrchestrator 的关系
+
+| 维度 | 0.6.0 SwarmOrchestrator | 0.11.0 VotingOrchestrator |
+|------|--------------------------|----------------------------|
+| 定位 | 4-Agent 异步消息 pipeline | bar-by-bar 同步投票决策 |
+| 通信 | tokio mpsc 异步 | 同步回调 (TraderCallback) |
+| 风控 | RiskAgent (LLM 可介入) | ConsensusRiskAgent (纯规则) |
+| 适用 | 生产级异步交易 | 回测/评估/多策略对比 |
+
+两者共存于 `swarm/` 模块，不互相依赖。
+
+### 7.5 Trajectory Schema v0.11.0
+
+在 0.10.0 schema 基础上扩展：
+- 新增 `votes` 数组：每个 trader 的 action + confidence + reasoning
+- 新增 `aggregation` 字段：投票策略名 + 聚合结果
+- 新增 `risk_verdict` 字段：approve/veto + reason
+- 新增 `token_usage` 字段：per-bar 累计 input/output tokens

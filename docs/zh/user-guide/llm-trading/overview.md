@@ -1,7 +1,7 @@
 # LLM 交易架构
 
 > 适用版本:axon-llm v0.6.0+
-> 状态:🟢 与代码同步(Stage A~K 全部交付)
+> 状态:🟢 与代码同步(Stage A~K + 0.11.0 Multi-Agent 全部交付)
 
 本文档描述 `axon-llm` 的交易链路架构。目标读者:正在把 LLM agent 接入生产交易系统的工程师。
 
@@ -108,6 +108,16 @@ axon-llm(trading 子模块)
 │   ├── RejectionCircuitBreaker(core lib,零依赖)
 │   └── RiskPnLCircuitBreaker(feature = trading-risk-extra,包装 axon_risk::CircuitBreaker)
 └── trading::python ───── PyO3 绑定(RiskLimits / MockTradingBackend / 4 tool / TradingMetrics)
+
+axon-llm(swarm 子模块 — 0.11.0 新增)
+├── swarm::consensus ─── VotingOrchestrator / VotingStrategy / ConsensusRiskAgent
+├── swarm::orchestrator ─ SwarmOrchestrator (0.6.0 4-Agent pipeline)
+└── python::swarm ─────── PyVotingOrchestrator / PySwarmOrchestrator 绑定
+
+axon-llm(基础设施 — 0.11.0 新增)
+├── backends::openai_compat ─ OpenAICompatProvider (E10)
+├── meter ─────────────── TokenMeter / TokenBudget / TokenReport (E12)
+└── cost ──────────────── MODEL_PRICING 估算表
 ```
 
 ## 下一步
@@ -115,3 +125,4 @@ axon-llm(trading 子模块)
 - [风控与安全](risk-safety.md) —— 三道防线详解
 - [指标与告警](metrics-alerting.md) —— 监控数据出口
 - [运维手册](operations-runbook.md) —— 部署、升级、故障排查
+- [多 Agent 编排](../../reference/swarm-orchestration.md) —— 0.11.0 投票共识 + 0.6.0 4-Agent pipeline
