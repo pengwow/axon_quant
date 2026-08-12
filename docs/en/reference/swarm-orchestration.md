@@ -1,8 +1,8 @@
-# `axon-llm::swarm` Multi-Agent Orchestration (0.6.0 P0 Workflow B Wrap-up)
+# `axon-llm::swarm` Multi-Agent Orchestration
 
 > Applies to: `axon-llm` v0.6.0+
-> Status: **Implemented** (Workflow B Batch 1-4 fully wrapped up)
-> Plan: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3
+> Status: **Implemented** (0.6.0 Workflow B + 0.11.0 Voting Consensus)
+> Plan: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3, `docs/superpowers/specs/2026-08-01-axon-quant-0.11.0-multi-agent-design.md`
 
 `SwarmOrchestrator` chains 4 agents (Market / Risk / Execution / Audit) into a runnable pipeline,
 integrated with `HarnessBridge` for final adjudication, and `TradingBackend` for real order
@@ -218,3 +218,110 @@ See [`examples/18_harness/swarm_demo.py`](https://github.com/pengwow/axon_quant/
 - **`RiskAgent` advanced risk logic**: `RiskAgentConfig` defines `max_position` / `max_drawdown` fields but **does not check them**; `risk_score` is currently binary (0.1 / 0.9); volatility / VaR / historical drawdown window / position concentration **not implemented**. Planned for 0.5.0: integrate `axon-risk::DefaultRiskEngine` (12ns check chain, circuit breaker, VaR 95/99, real-time metrics) to replace the happy-path logic.
 - **4-Agent cross-process coordination (distributed swarm)**: Current `SwarmOrchestrator` uses single-process mpsc channels; cross-process coordination, `ConsensusManager` state-machine persistence, and Ray Actor wrapping via `axon-distributed` **not implemented**. Planned for 0.6.0+ roadmap.
 - **Single-agent cross-process reuse**: `MarketAgent` / `RiskAgent` / `AuditAgent` currently run as independent `tokio::task::spawn` instances; cross-process scheduling / shared LLM client / global prompt cache design still TBD.
+
+---
+
+## 7. 0.11.0 Multi-Agent Voting Consensus Layer
+
+> Added in v0.11.0
+> Location: `crates/axon-llm/src/swarm/consensus.rs`
+
+0.11.0 adds a **voting consensus decision layer** on top of the existing 4-Agent pipeline, implementing the full flow of independent trader decisions → weighted vote aggregation → risk veto.
+
+### 7.1 Decision Flow
+
+```text
+Bar arrives
+    │
+    ├──→ Trader A (ReAct/rule) ──→ AgentVote{Buy, 0.8}
+    ├──→ Trader B (ReAct/rule) ──→ AgentVote{Buy, 0.6}
+    └──→ Trader C (ReAct/rule) ──→ AgentVote{Hold, 0.0}
+                │
+                ▼
+    ┌─────────────────────────┐
+    │  VotingStrategy          │
+    │  weighted majority:      │
+    │  Buy = 0.8+0.6 = 1.4    │
+    │  Hold = 0.0             │
+    │  → aggregated: Buy(0.7) │
+    └────────────┬────────────┘
+                 ▼
+    ┌─────────────────────────┐
+    │  ConsensusRiskAgent     │
+    │  checks:                 │
+    │  - current position      │
+    │  - consecutive losses    │
+    │  - max position per bar  │
+    │  → approve / veto       │
+    └────────────┬────────────┘
+                 ▼
+         Final Action (Buy 0.7) or Hold (vetoed)
+```
+
+### 7.2 Core Types
+
+```rust
+// Vote
+pub struct AgentVote {
+    pub agent_id: String,
+    pub action: TraderAction,    // Buy / Sell / Hold
+    pub confidence: f64,
+    pub reasoning: String,
+}
+
+// Voting strategy trait
+pub trait VotingStrategy: Send + Sync {
+    fn aggregate(&self, votes: &[AgentVote]) -> ConsensusDecision;
+}
+
+// Built-in strategies
+// 1. WeightedMajorityVote — confidence-weighted, wins above threshold (0.5)
+// 2. UnanimousVote — all votes must agree (conservative mode)
+
+// Risk review (pure rules, no LLM)
+pub struct ConsensusRiskAgent {
+    pub max_position: f64,
+    pub max_consecutive_loss: u32,
+    pub max_drawdown: f64,
+}
+
+// Orchestrator
+pub struct VotingOrchestrator {
+    traders: Vec<Box<dyn TraderCallback>>,
+    risk_agent: ConsensusRiskAgent,
+    voting: Box<dyn VotingStrategy>,
+}
+```
+
+### 7.3 Python Integration
+
+```python
+from axon_quant._native import PyVotingOrchestrator
+
+orch = PyVotingOrchestrator(
+    traders=[trader_a, trader_b, trader_c],
+    risk_config={"max_position": 0.5, "max_consecutive_loss": 3},
+    voting="weighted_majority",
+)
+decision = orch.on_bar(bar_dict)
+# decision: {"action": ..., "votes": [...], "risk_verdict": ..., "confidence": ...}
+```
+
+### 7.4 Relationship with 0.6.0 SwarmOrchestrator
+
+| Dimension | 0.6.0 SwarmOrchestrator | 0.11.0 VotingOrchestrator |
+|-----------|--------------------------|----------------------------|
+| Purpose | 4-Agent async message pipeline | Bar-by-bar synchronous voting |
+| Communication | tokio mpsc async | Synchronous callback (TraderCallback) |
+| Risk | RiskAgent (LLM may intervene) | ConsensusRiskAgent (pure rules) |
+| Use case | Production async trading | Backtest / evaluation / multi-strategy comparison |
+
+Both coexist in the `swarm/` module without mutual dependency.
+
+### 7.5 Trajectory Schema v0.11.0
+
+Extended from 0.10.0 schema:
+- Added `votes` array: each trader's action + confidence + reasoning
+- Added `aggregation` field: voting strategy name + aggregated result
+- Added `risk_verdict` field: approve/veto + reason
+- Added `token_usage` field: per-bar cumulative input/output tokens

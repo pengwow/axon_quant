@@ -39,6 +39,79 @@ pub mod swarm;
 mod helpers;
 use helpers::{pythonize, type_name};
 
+// ═══════════════════════════════════════════════════════════
+// TokenMeter Python 绑定
+// ═══════════════════════════════════════════════════════════
+
+/// Python 端 Token 计量器
+///
+/// 可独立使用（手动 record）或由 VotingOrchestrator 内部持有。
+#[pyclass(name = "TokenMeter")]
+#[derive(Clone)]
+pub struct PyTokenMeter {
+    inner: Arc<crate::meter::TokenMeter>,
+}
+
+#[pymethods]
+impl PyTokenMeter {
+    /// 构造 TokenMeter
+    ///
+    /// Args:
+    ///     model: 模型名（用于 cost 估算）
+    ///     max_input_tokens: 最大 input token（可选）
+    ///     max_output_tokens: 最大 output token（可选）
+    ///     warn_threshold: 预警阈值 0.0-1.0（默认 0.8）
+    #[new]
+    #[pyo3(signature = (model, max_input_tokens=None, max_output_tokens=None, warn_threshold=None))]
+    fn new(
+        model: String,
+        max_input_tokens: Option<u64>,
+        max_output_tokens: Option<u64>,
+        warn_threshold: Option<f32>,
+    ) -> Self {
+        use crate::backends::MockBackend;
+        let budget = match (max_input_tokens, max_output_tokens) {
+            (Some(mi), Some(mo)) => Some(crate::meter::TokenBudget {
+                max_input_tokens: mi,
+                max_output_tokens: mo,
+                warn_threshold: warn_threshold.unwrap_or(0.8),
+            }),
+            _ => None,
+        };
+        // 内部用空 MockBackend 占位；实际使用时由 orchestrator 注入真实 backend
+        let meter = crate::meter::TokenMeter::new(Box::new(MockBackend::new()), budget, model);
+        Self {
+            inner: Arc::new(meter),
+        }
+    }
+
+    /// 获取当前汇总报告
+    fn report<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let r = self.inner.report();
+        let d = PyDict::new(py);
+        d.set_item("input_tokens", r.input_tokens)?;
+        d.set_item("output_tokens", r.output_tokens)?;
+        d.set_item("total_tokens", r.total_tokens)?;
+        d.set_item("call_count", r.call_count)?;
+        d.set_item("estimated_cost_usd", r.estimated_cost_usd)?;
+        d.set_item("over_budget", r.over_budget)?;
+        Ok(d)
+    }
+
+    /// 重置计数器
+    fn reset(&self) {
+        self.inner.reset();
+    }
+
+    fn __repr__(&self) -> String {
+        let r = self.inner.report();
+        format!(
+            "TokenMeter(calls={}, tokens={}, cost=${:.4})",
+            r.call_count, r.total_tokens, r.estimated_cost_usd
+        )
+    }
+}
+
 /// Python 端 `LLMBackend` 的构造函数
 ///
 /// `config` 是 dict,字段:
@@ -96,6 +169,7 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLLMBackend>()?;
     m.add_class::<PyOllamaBackend>()?;
     m.add_class::<PyMessage>()?;
+    m.add_class::<PyTokenMeter>()?;
     m.add_class::<PyReActAgent>()?;
     m.add_class::<PyTool>()?;
     let trading_submodule = PyModule::new(m.py(), "trading")?;

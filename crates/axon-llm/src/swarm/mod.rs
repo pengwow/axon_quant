@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod agent_runner;
 pub mod agents;
+pub mod consensus;
 pub mod error;
 pub mod market_data;
 pub mod message;

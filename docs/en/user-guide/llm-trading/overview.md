@@ -1,7 +1,7 @@
 # LLM Trading Architecture
 
 > Applicable version: axon-llm v0.6.0+
-> Status: 🟢 In sync with code (Stage A~K fully delivered)
+> Status: 🟢 In sync with code (Stage A~K + 0.11.0 Multi-Agent fully delivered)
 
 This document describes the trading pipeline architecture of `axon-llm`. Target audience: engineers integrating LLM agents into production trading systems.
 
@@ -108,6 +108,16 @@ axon-llm (trading submodule)
 │   ├── RejectionCircuitBreaker (core lib, zero dependencies)
 │   └── RiskPnLCircuitBreaker (feature = trading-risk-extra, wraps axon_risk::CircuitBreaker)
 └── trading::python ───── PyO3 bindings (RiskLimits / MockTradingBackend / 4 tools / TradingMetrics)
+
+axon-llm (swarm submodule — added in 0.11.0)
+├── swarm::consensus ─── VotingOrchestrator / VotingStrategy / ConsensusRiskAgent
+├── swarm::orchestrator ─ SwarmOrchestrator (0.6.0 4-Agent pipeline)
+└── python::swarm ─────── PyVotingOrchestrator / PySwarmOrchestrator bindings
+
+axon-llm (infrastructure — added in 0.11.0)
+├── backends::openai_compat ─ OpenAICompatProvider (E10)
+├── meter ─────────────── TokenMeter / TokenBudget / TokenReport (E12)
+└── cost ──────────────── MODEL_PRICING estimation table
 ```
 
 ## Next Steps
@@ -115,3 +125,4 @@ axon-llm (trading submodule)
 - [Risk & Safety](risk-safety.md) — Three defense lines detailed
 - [Metrics & Alerting](metrics-alerting.md) — Monitoring data outlets
 - [Operations Runbook](operations-runbook.md) — Deployment, upgrade, troubleshooting
+- [Multi-Agent Orchestration](../../reference/swarm-orchestration.md) — 0.11.0 voting consensus + 0.6.0 4-Agent pipeline

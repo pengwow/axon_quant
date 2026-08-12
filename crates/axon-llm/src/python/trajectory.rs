@@ -72,6 +72,7 @@ impl PyTrajectoryRecorder {
             observation: observation.map(|s| s.to_string()),
             reward,
             cum_pnl,
+            consensus: None,
         };
 
         self.recorder.lock().unwrap().record(bar);
