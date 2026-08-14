@@ -80,7 +80,7 @@ class TestTrajectoryRecorder:
 
             with open(temp_path, "r") as f:
                 data = json.load(f)
-            assert data["version"] == "0.10.0"
+            assert data["version"] == "0.11.0"
             assert data["run_id"] == "test-run"
             assert data["instrument"] == "BTC-USDT"
             assert data["seed"] == 42
@@ -98,7 +98,7 @@ class TestTrajectoryRecorder:
         recorder.record(0, 1234567890, "bar 0")
 
         traj = recorder.trajectory()
-        assert traj["version"] == "0.10.0"
+        assert traj["version"] == "0.11.0"
         assert traj["instrument"] == "BTC-USDT"
         assert traj["seed"] == 42
         assert len(traj["bars"]) == 1

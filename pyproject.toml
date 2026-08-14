@@ -1,6 +1,6 @@
 [project]
 name = "axon-quant"
-version = "0.11.0"
+version = "0.11.1"
 description = "AI-native quantitative trading framework — high-performance Rust core with Python RL training interface, covering backtesting, training, optimization, validation and production in a single codebase."
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"
@@ -55,10 +55,14 @@ build-backend = "maturin"
 # 根 Cargo.toml 是纯 workspace 配置(无 [package] 段),需显式指向
 # axon-python crate,其 [lib] 名为 `_native`,包含全部 PyO3 绑定。
 manifest-path = "crates/axon-python/Cargo.toml"
+# Rust 扩展模块命名为 axon_quant._native,与 python/axon_quant/__init__.py
+# 中 `from ._native import *` 的导入路径对齐。
+module-name = "axon_quant._native"
+# Python 源文件在仓库根目录 python/ 下。
+python-source = "python"
 # 启用 axon-python 的 `python` feature,让 pyo3(optional 依赖)出现在
 # cargo metadata 依赖图中,maturin 才能识别为 pyo3 绑定。
 features = ["python"]
-python-source = "python"
 
 [tool.ruff]
 target-version = "py314"
