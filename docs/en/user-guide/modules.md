@@ -787,23 +787,36 @@ LLM agents: ReAct reasoning loop + Tool Calling + context window + three built-i
 - `crates/axon-llm/src/context.rs` — `ContextManager` (sliding window + summary compression)
 - `crates/axon-llm/src/prompt.rs` — `PromptTemplate`
 - `crates/axon-llm/src/tools.rs` — `Tool` trait + error types
-- `crates/axon-llm/src/trading/` — trading tool set (`PlaceOrderTool` / `QueryPortfolioTool` / `CancelOrderTool` / `ReplaceOrderTool`) + `MockTradingBackend` / `PaperBackend` / `SafetyMode`
-- `crates/axon-llm/src/swarm/` — multi-agent collaboration: `Orchestrator` / `MarketAgent` / `RiskAgent` / `AuditAgent` / `Vote` / `PaperTrading`
+- `crates/axon-llm/src/meter.rs` — `TokenMeter` / `TokenBudget` (token usage tracking + cost estimation)
+- `crates/axon-llm/src/trading/` — trading tool set (`PlaceOrderTool` / `QueryPortfolioTool` / `CancelOrderTool` / `ReplaceOrderTool` / `FinishBarTool`) + `MockTradingBackend` / `PaperBackend` / `SafetyMode` + `BacktestTradingBackend` (Python binding)
+- `crates/axon-llm/src/trading/trajectory.rs` — `TrajectoryRecorder` (JSON trajectory recording, schema v0.11.0)
+- `crates/axon-llm/src/swarm/` — multi-agent collaboration
+  - `orchestrator.rs` — `SwarmOrchestrator` (bar-by-bar decision loop)
+  - `consensus.rs` — `WeightedMajorityVote` / `UnanimousVote` / `ConsensusRiskAgent`
+  - `agent_runner.rs` — `AgentRunner` (async agent execution with token metering)
+  - `agents/` — `MarketAgent` / `RiskAgent` / `AuditAgent` / `ExecutionAgent`
+  - `vote.rs` — voting strategies (`HardVote` / `SoftVote` / `WeightedVote`)
+  - `paper_trading.rs` — paper trading backend
 - `crates/axon-llm/src/backends/` — LLM backends: `OpenAICompat` / `Mock` / `Recording` / `Retry` / `Cost` / `Streaming`
 - `crates/axon-llm/src/explain/` — decision explanation bridge (integrates with `axon-explain`)
+- `crates/axon-llm/src/python/` — PyO3 bindings: `PyReActAgent` / `PyTrajectoryRecorder` / `PySwarmOrchestrator` / `PyBacktestTradingBackend`
 
 ### Core Mechanism
 - **ReAct loop**: `ReActAgent::run(input)` loops: LLM returns Thought → Action → Observation → Thought again → … until `FinishReason`
 - **Tool calling**: `Tool::call(args) -> Result<Value>`, argument validation inside the tool
-- **Swarm voting**: `Vote { HardVote / SoftVote / WeightedVote }`, orchestrator collects decisions from multiple agents and merges
+- **Swarm consensus**: `SwarmOrchestrator` runs N agents per bar, collects votes via `WeightedMajorityVote` or `UnanimousVote`, passes through `ConsensusRiskAgent` for final veto
 - **Backend retry**: `backends/retry.rs` implements exponential backoff + circuit breaker; `backends/cost.rs` accumulates token cost
 - **Recording & replay**: `backends/recording.rs` records request/response for e2e tests
+- **Trajectory recording**: `TrajectoryRecorder` captures every LLM step (thought/action/observation/reward) and writes JSON files with schema v0.11.0
+- **Token metering**: `TokenMeter` tracks token usage per agent, `TokenBudget` warns when exceeding thresholds; cost estimated via built-in `MODEL_PRICING` table
 
 ### Applicable Scenarios
 - Use an LLM to interpret market state and place orders (`ReActAgent` + `PlaceOrderTool`)
-- Multi-agent risk control (`MarketAgent` emits signals, `RiskAgent` validates, `AuditAgent` records)
+- Multi-agent consensus trading (`N agents → WeightedMajorityVote → ConsensusRiskAgent veto`)
 - A/B testing LLM prompts (record with `backends::recording` and compare offline)
 - Run an end-to-end demo without connecting to an exchange via `MockTradingBackend`
+- Backtest LLM strategies with `BacktestTradingBackend` (Python) and save trajectories for SFT training
+- Token budget control for cost-sensitive production deployments
 
 ### Non-applicable Scenarios
 - Nanosecond-latency automated trading (LLM inference takes 100ms+)

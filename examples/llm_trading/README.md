@@ -67,7 +67,7 @@ print(response["action"])
 
 ```json
 {
-  "version": "0.10.0",
+  "version": "0.11.0",
   "run_id": "run-42",
   "instrument": "BTC-USDT",
   "provider": "mock",

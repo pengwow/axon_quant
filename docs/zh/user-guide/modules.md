@@ -790,23 +790,36 @@ LLM 智能体：ReAct 推理循环 + Tool Calling + 上下文窗口 + 三个内�
 - `crates/axon-llm/src/context.rs` — `ContextManager`（滑动窗口 + 摘要压缩）
 - `crates/axon-llm/src/prompt.rs` — `PromptTemplate`
 - `crates/axon-llm/src/tools.rs` — `Tool` trait + 错误类型
-- `crates/axon-llm/src/trading/` — 交易工具集（`PlaceOrderTool` / `QueryPortfolioTool` / `CancelOrderTool` / `ReplaceOrderTool`）+ `MockTradingBackend` / `PaperBackend` / `SafetyMode`
-- `crates/axon-llm/src/swarm/` — 多 Agent 协作：`Orchestrator` / `MarketAgent` / `RiskAgent` / `AuditAgent` / `Vote` / `PaperTrading`
+- `crates/axon-llm/src/meter.rs` — `TokenMeter` / `TokenBudget`（token 用量追踪 + 成本估算）
+- `crates/axon-llm/src/trading/` — 交易工具集（`PlaceOrderTool` / `QueryPortfolioTool` / `CancelOrderTool` / `ReplaceOrderTool` / `FinishBarTool`）+ `MockTradingBackend` / `PaperBackend` / `SafetyMode` + `BacktestTradingBackend`（Python 绑定）
+- `crates/axon-llm/src/trading/trajectory.rs` — `TrajectoryRecorder`（JSON 轨迹记录，schema v0.11.0）
+- `crates/axon-llm/src/swarm/` — 多 Agent 协作
+  - `orchestrator.rs` — `SwarmOrchestrator`（逐 bar 决策循环）
+  - `consensus.rs` — `WeightedMajorityVote` / `UnanimousVote` / `ConsensusRiskAgent`
+  - `agent_runner.rs` — `AgentRunner`（异步 agent 执行 + token metering）
+  - `agents/` — `MarketAgent` / `RiskAgent` / `AuditAgent` / `ExecutionAgent`
+  - `vote.rs` — 投票策略（`HardVote` / `SoftVote` / `WeightedVote`）
+  - `paper_trading.rs` — 模拟交易后端
 - `crates/axon-llm/src/backends/` — LLM 后端：`OpenAICompat` / `Mock` / `Recording` / `Retry` / `Cost` / `Streaming`
 - `crates/axon-llm/src/explain/` — 决策解释桥接（与 `axon-explain` 集成）
+- `crates/axon-llm/src/python/` — PyO3 绑定：`PyReActAgent` / `PyTrajectoryRecorder` / `PySwarmOrchestrator` / `PyBacktestTradingBackend`
 
 ### 核心机制
 - **ReAct 循环**：`ReActAgent::run(input)` 循环：LLM 返回 Thought → Action → Observation → 再次 Thought → …，直到 `FinishReason`
 - **工具调用**：`Tool::call(args) -> Result<Value>`，参数校验在工具内部
-- **Swarm 投票**：`Vote { HardVote / SoftVote / WeightedVote }`，orchestrator 收集多 agent 决策后合并
+- **Swarm 共识**：`SwarmOrchestrator` 每 bar 运行 N 个 agent，通过 `WeightedMajorityVote` 或 `UnanimousVote` 收集投票，经 `ConsensusRiskAgent` 最终风控否决
 - **后端重试**：`backends/retry.rs` 实现指数退避 + 熔断；`backends/cost.rs` 累计 token cost
 - **录制回放**：`backends/recording.rs` 录制请求/响应用于 e2e 测试
+- **轨迹记录**：`TrajectoryRecorder` 记录每步 LLM 交互（thought/action/observation/reward），输出 JSON 文件（schema v0.11.0）
+- **Token 计量**：`TokenMeter` 追踪每 agent token 用量，`TokenBudget` 超阈值预警；内置 `MODEL_PRICING` 表估算成本
 
 ### 适用场景
 - 用 LLM 解读行情并下单（`ReActAgent` + `PlaceOrderTool`）
-- 多 Agent 风控（`MarketAgent` 出信号，`RiskAgent` 校验，`AuditAgent` 留痕）
+- 多 Agent 共识交易（N agent → `WeightedMajorityVote` → `ConsensusRiskAgent` 风控否决）
 - LLM 提示词 A/B 测试（用 `backends::recording` 录制后离线对比）
 - 通过 `MockTradingBackend` 在不接交易所的情况下跑端到端 demo
+- 用 `BacktestTradingBackend`（Python）回测 LLM 策略并保存轨迹用于 SFT 训练
+- 成本敏感型生产部署中的 token 预算控制
 
 ### 不适用场景
 - 纳秒级延迟的自动交易（LLM 推理要 100ms+）
