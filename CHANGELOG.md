@@ -6,6 +6,23 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-08-14
+
+0.11.1 hotfix:修复 PyPI wheel 结构异常（缺少 `axon_quant/` 顶层包）。
+
+### Fixed
+
+- 修复 maturin `manifest-path` 与 `python-source` 不匹配导致 wheel 中 Python 源文件缺失
+  - 设置 `module-name = "axon_quant._native"` 将 Rust 扩展嵌套到 `axon_quant` 包内
+  - 设置 `python-source = "../../python"` 正确指向仓库根目录的 Python 源文件
+- 修复 `l3_diff.rs` 中文档注释中 HTML 标签未闭合导致的 `cargo doc` 警告
+- 修复 `__init__.py` 中 `trajectory` 子模块未注册到 `sys.modules` 的问题
+
+### Changed
+
+- `pyproject.toml` maturin 配置新增 `manifest-path` 和 `module-name`
+- `Makefile` python-install 兼容 uv 包管理器
+
 ## [0.11.0] - 2026-08-14
 
 0.11.0 主线：Multi-Agent 投票共识 + LLM 基础设施收尾。完成 0.10.0 spec 中推迟的 E7-E12 全部 6 项。
