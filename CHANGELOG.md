@@ -6,6 +6,15 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-01
+
+### Added
+
+- Python 端 `LLMBackend` 新增 `chat_with_tools(messages, tools)` 方法，暴露 Function Calling（工具调用）能力
+  - 复用 Rust 侧已有的 `LLMBackend::complete_with_tools`，补齐此前 Python 绑定仅暴露同步 `chat()` 的缺口
+  - `tools` 参数为 dict 列表（每个含 `name` / `description` / `parameters` JSON Schema）
+  - 返回含 `tool_calls`（JSON 列表）+ `finish_reason` + token 统计的 dict
+
 ## [0.11.1] - 2026-08-14
 
 0.11.1 hotfix:修复 PyPI wheel 结构异常（缺少 `axon_quant/` 顶层包）。

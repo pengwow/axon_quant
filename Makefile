@@ -235,6 +235,14 @@ verify: toolchain-check fmt-check clippy test build ## 完整本地验证（等�
 ci-check: verify ## ci-check 是 verify 的别名,提交前必跑,等价于 GitHub Actions
 	@echo "✅ ci-check 通过,可以 push"
 
+# ==================== Git 钩子 ====================
+.PHONY: install-hooks
+install-hooks: ## 安装 pre-commit 钩子(core.hooksPath 指向 .githooks;仅 fmt 快速检查)
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit
+	@echo "✅ 已安装 git pre-commit 钩子: core.hooksPath=.githooks"
+	@echo "   提交时将自动 cargo fmt --all + 校验(仅 fmt;clippy/test 见 make verify)"
+
 # ==================== 版本管理(单一来源) ====================
 # 策略:
 #   - Cargo.toml   [workspace.package].version  = Rust 全部 23 个 crate 权威源

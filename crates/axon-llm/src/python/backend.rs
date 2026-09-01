@@ -29,9 +29,11 @@ use pyo3::types::PyDict;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::backend::{LLMBackend, LLMError};
+use crate::backend::{LLMBackend, LLMError, ToolDefinition};
 use crate::backends::OpenAICompatBackend;
 use crate::types::Message;
+
+use super::helpers::pythonize;
 
 /// Python 端可见的 LLM backend 包装
 ///
@@ -70,6 +72,62 @@ impl PyLLMBackend {
 
         let dict = PyDict::new(py);
         dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
+        dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
+        dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
+        dict.set_item("total_tokens", resp.token_usage.total_tokens)?;
+        Ok(dict)
+    }
+
+    /// 同步 chat_with_tools:带工具定义(OpenAI Function Calling)
+    ///
+    /// `messages`: 同 `chat()`,每条是 `LLMMessage` 或含 role/content 的 dict。
+    /// `tools`: list[dict],每个 dict 必含 `name`/`parameters`(JSON Schema),
+    ///         可选 `description`。
+    ///
+    /// 返回 dict:
+    ///   - `content`: 文本内容(仅工具调用时可能为空)
+    ///   - `tool_calls`: JSON 字符串(`[{"id","function_name","arguments"}]`),无则为 "null"
+    ///   - `finish_reason`: Stop / ToolCalls / Length / ContentFilter
+    ///   - `prompt_tokens` / `completion_tokens` / `total_tokens`
+    fn chat_with_tools<'py>(
+        &self,
+        py: Python<'py>,
+        messages: Vec<Bound<'py, PyAny>>,
+        tools: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut msgs: Vec<Message> = Vec::with_capacity(messages.len());
+        for m in &messages {
+            msgs.push(parse_py_message(m)?);
+        }
+
+        let mut tool_defs: Vec<ToolDefinition> = Vec::with_capacity(tools.len());
+        for t in &tools {
+            tool_defs.push(parse_py_tool_definition(py, t)?);
+        }
+
+        let backend = self.inner.clone();
+        let resp = self
+            .runtime
+            .block_on(async move {
+                backend
+                    .lock()
+                    .await
+                    .complete_with_tools(&msgs, &tool_defs)
+                    .await
+            })
+            .map_err(map_err)?;
+
+        // tool_calls 序列化为 JSON 字符串(避免暴露 Rust ToolCall 结构给 Python)
+        let tool_calls_json = match &resp.tool_calls {
+            Some(calls) => serde_json::to_string(calls)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
+            None => "null".to_string(),
+        };
+
+        let dict = PyDict::new(py);
+        dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item("tool_calls", tool_calls_json)?;
         dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
         dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
         dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
@@ -124,6 +182,39 @@ fn parse_py_message(obj: &Bound<'_, PyAny>) -> PyResult<Message> {
     Err(pyo3::exceptions::PyTypeError::new_err(
         "each message must be LLMMessage or dict",
     ))
+}
+
+/// 解析单个 Python 工具定义为 `ToolDefinition`
+///
+/// Python 端传入 dict:`{"name": str, "description"?: str, "parameters": {...}}`。
+/// `parameters` 是 JSON Schema(dict),用 `pythonize` 转成 `serde_json::Value`。
+fn parse_py_tool_definition(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<ToolDefinition> {
+    let d = obj.cast::<PyDict>().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(
+            "tool must be a dict with name/description/parameters",
+        )
+    })?;
+
+    let name: String = d
+        .get_item("name")?
+        .and_then(|v| v.extract::<String>().ok())
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("tool dict missing 'name'"))?;
+
+    let description: String = d
+        .get_item("description")?
+        .and_then(|v| v.extract::<String>().ok())
+        .unwrap_or_default();
+
+    let parameters: serde_json::Value = match d.get_item("parameters")? {
+        Some(p) => pythonize(py, &p)?,
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+
+    Ok(ToolDefinition {
+        name,
+        description,
+        parameters,
+    })
 }
 
 /// Python 端消息 DTO
