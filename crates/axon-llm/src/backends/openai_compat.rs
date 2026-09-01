@@ -322,6 +322,8 @@ struct ChatMessage {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
@@ -352,7 +354,7 @@ struct ChatUsage {
 
 fn raw_to_llm_response(raw: ChatCompletionResp) -> LLMResponse {
     let choice = raw.choices.into_iter().next();
-    let (content, tool_calls, finish_reason) = match choice {
+    let (content, reasoning_content, tool_calls, finish_reason) = match choice {
         Some(c) => {
             let tcs: Option<Vec<ToolCall>> = c.message.tool_calls.map(|tcs| {
                 tcs.into_iter()
@@ -370,9 +372,9 @@ fn raw_to_llm_response(raw: ChatCompletionResp) -> LLMResponse {
                 Some("content_filter") => FinishReason::ContentFilter,
                 _ => FinishReason::Stop,
             };
-            (c.message.content, tcs, fr)
+            (c.message.content, c.message.reasoning_content, tcs, fr)
         }
-        None => (None, None, FinishReason::Stop),
+        None => (None, None, None, FinishReason::Stop),
     };
     // 优先使用 server 返回的 total_tokens(可能更准确,因 server 端可能有
     // 内部 tokenization 误差);若 server 没返回(0)则用 prompt+completion 推算
@@ -393,6 +395,7 @@ fn raw_to_llm_response(raw: ChatCompletionResp) -> LLMResponse {
         .unwrap_or_default();
     LLMResponse {
         content,
+        reasoning_content,
         tool_calls,
         token_usage: usage,
         finish_reason,

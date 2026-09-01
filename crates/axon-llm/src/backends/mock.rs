@@ -134,6 +134,7 @@ mod tests {
             ),
             LLMResponse {
                 content: Some("c".into()),
+                reasoning_content: None,
                 tool_calls: None,
                 token_usage: TokenUsage::default(),
                 finish_reason: FinishReason::Stop,

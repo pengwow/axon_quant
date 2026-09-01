@@ -89,6 +89,7 @@ impl LLMBackend for PyLLMBackendAdapter {
 
             Ok(LLMResponse {
                 content: Some(content),
+                reasoning_content: None,
                 tool_calls: None,
                 token_usage: TokenUsage {
                     prompt_tokens,

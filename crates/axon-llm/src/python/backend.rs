@@ -28,9 +28,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_stream::StreamExt;
 
 use crate::backend::{LLMBackend, LLMError, ToolDefinition};
-use crate::backends::OpenAICompatBackend;
+use crate::backends::{OpenAICompatBackend, TokenDelta};
 use crate::types::Message;
 
 use super::helpers::pythonize;
@@ -72,6 +73,10 @@ impl PyLLMBackend {
 
         let dict = PyDict::new(py);
         dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item(
+            "reasoning_content",
+            resp.reasoning_content.unwrap_or_default(),
+        )?;
         dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
         dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
         dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
@@ -127,12 +132,59 @@ impl PyLLMBackend {
 
         let dict = PyDict::new(py);
         dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item(
+            "reasoning_content",
+            resp.reasoning_content.unwrap_or_default(),
+        )?;
         dict.set_item("tool_calls", tool_calls_json)?;
         dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
         dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
         dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
         dict.set_item("total_tokens", resp.token_usage.total_tokens)?;
         Ok(dict)
+    }
+
+    /// 同步 stream_chat:流式 chat completion,收集全部 `TokenDelta` 并转成 Python dict 列表
+    ///
+    /// `messages`: 同 `chat()`。
+    ///
+    /// 注意:为简化 PyO3 桥接,本方法**一次性收集整个流**再返回(非低延迟逐 chunk 推送);
+    /// 真正的"边生成边推"留待后续用 channel/generator 桥实现。
+    ///
+    /// 返回 `list[dict]`,每个 dict 含 `type` 字段表示增量类型:
+    ///   - `{"type": "content", "content": str}`
+    ///   - `{"type": "reasoning", "content": str}`
+    ///   - `{"type": "tool_call_start", "id": str, "name": str}`
+    ///   - `{"type": "tool_call_delta", "id": str, "arguments": str}`
+    ///   - `{"type": "done", "finish_reason": str}`
+    fn stream_chat<'py>(
+        &self,
+        py: Python<'py>,
+        messages: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let mut msgs: Vec<Message> = Vec::with_capacity(messages.len());
+        for m in &messages {
+            msgs.push(parse_py_message(m)?);
+        }
+
+        let backend = self.inner.clone();
+        // block_on 一次性消费整个 SSE 流;item 为 Result<TokenDelta, LLMError>
+        let deltas: Result<Vec<TokenDelta>, LLMError> = self.runtime.block_on(async move {
+            // stream_complete 返回的 async_stream 类型不实现 Unpin,需 pin! 后才能 next()
+            let mut stream = std::pin::pin!(backend.lock().await.stream_complete(&msgs));
+            let mut out: Vec<TokenDelta> = Vec::new();
+            while let Some(item) = stream.next().await {
+                out.push(item?);
+            }
+            Ok(out)
+        });
+
+        let deltas = deltas.map_err(map_err)?;
+        let mut result = Vec::with_capacity(deltas.len());
+        for d in deltas {
+            result.push(delta_to_pydict(py, d)?);
+        }
+        Ok(result)
     }
 
     /// 字符串表示
@@ -215,6 +267,39 @@ fn parse_py_tool_definition(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<
         description,
         parameters,
     })
+}
+
+/// 把单个 `TokenDelta` 转成 Python dict(供 `stream_chat` 使用)
+fn delta_to_pydict(py: Python<'_>, d: TokenDelta) -> PyResult<Bound<'_, PyDict>> {
+    let dict = PyDict::new(py);
+    match d {
+        TokenDelta::Content(s) => {
+            dict.set_item("type", "content")?;
+            dict.set_item("content", s)?;
+        }
+        TokenDelta::Reasoning(s) => {
+            dict.set_item("type", "reasoning")?;
+            dict.set_item("content", s)?;
+        }
+        TokenDelta::ToolCallStart { id, name } => {
+            dict.set_item("type", "tool_call_start")?;
+            dict.set_item("id", id)?;
+            dict.set_item("name", name)?;
+        }
+        TokenDelta::ToolCallDelta {
+            id,
+            arguments_delta,
+        } => {
+            dict.set_item("type", "tool_call_delta")?;
+            dict.set_item("id", id)?;
+            dict.set_item("arguments", arguments_delta)?;
+        }
+        TokenDelta::Done { finish_reason } => {
+            dict.set_item("type", "done")?;
+            dict.set_item("finish_reason", finish_reason)?;
+        }
+    }
+    Ok(dict)
 }
 
 /// Python 端消息 DTO

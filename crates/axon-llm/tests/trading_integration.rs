@@ -66,6 +66,7 @@ fn mk_tool_call(id: &str, name: &str, args: &str) -> ToolCall {
 fn mk_response_with_tool_call(tc: &ToolCall) -> LLMResponse {
     LLMResponse {
         content: Some(format!("call {}", tc.function_name)),
+        reasoning_content: None,
         tool_calls: Some(vec![tc.clone()]),
         token_usage: TokenUsage::new(0, 0),
         finish_reason: axon_llm::types::FinishReason::ToolCalls,

@@ -6,6 +6,18 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-09-01
+
+### Added
+
+- Python 端 `LLMBackend` 新增 `stream_chat(messages)` 方法，暴露流式（SSE）chat completion
+  - 一次性收集完整 TokenDelta 流并转成 `list[dict]`，每个 dict 含 `type` 字段（`content` / `reasoning` / `tool_call_start` / `tool_call_delta` / `done`）
+  - 复用 Rust 侧 `LLMBackend::stream_complete`
+- `LLMResponse` 新增 `reasoning_content` 字段，支持 DeepSeek-R1 / o 系列等推理模型的思考链
+  - `openai_compat` backend 在非流式响应中解析 `reasoning_content`
+  - 流式路径新增 `TokenDelta::Reasoning` 变体，解析 SSE 中的 `reasoning_content` 增量
+  - `chat` / `chat_with_tools` / `stream_chat` 的 Python 返回字典均包含 `reasoning_content`（流式为 `reasoning` 类型的 delta）
+
 ## [0.12.0] - 2026-09-01
 
 ### Added

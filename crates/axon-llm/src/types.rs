@@ -156,6 +156,9 @@ impl Message {
 pub struct LLMResponse {
     /// 文本内容（可能是 None，若仅返回工具调用）
     pub content: Option<String>,
+    /// 模型思考过程(DeepSeek-R1 / o系列 的 reasoning_content),非推理模型为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     /// 工具调用列表
     pub tool_calls: Option<Vec<ToolCall>>,
     /// Token 使用统计
@@ -169,6 +172,7 @@ impl LLMResponse {
     pub fn text(content: impl Into<String>, usage: TokenUsage) -> Self {
         Self {
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: None,
             token_usage: usage,
             finish_reason: FinishReason::Stop,
@@ -179,6 +183,7 @@ impl LLMResponse {
     pub fn tool_calls(calls: Vec<ToolCall>, usage: TokenUsage) -> Self {
         Self {
             content: None,
+            reasoning_content: None,
             tool_calls: Some(calls),
             token_usage: usage,
             finish_reason: FinishReason::ToolCalls,

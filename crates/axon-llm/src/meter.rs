@@ -226,6 +226,7 @@ mod tests {
     fn mock_with_usage(prompt: usize, completion: usize) -> MockBackend {
         let resp = LLMResponse {
             content: Some("hello".into()),
+            reasoning_content: None,
             tool_calls: None,
             token_usage: TokenUsage::new(prompt, completion),
             finish_reason: crate::types::FinishReason::Stop,
@@ -253,12 +254,14 @@ mod tests {
     async fn meter_accumulates_multiple_calls() {
         let r1 = LLMResponse {
             content: Some("a".into()),
+            reasoning_content: None,
             tool_calls: None,
             token_usage: TokenUsage::new(10, 5),
             finish_reason: crate::types::FinishReason::Stop,
         };
         let r2 = LLMResponse {
             content: Some("b".into()),
+            reasoning_content: None,
             tool_calls: None,
             token_usage: TokenUsage::new(20, 10),
             finish_reason: crate::types::FinishReason::Stop,

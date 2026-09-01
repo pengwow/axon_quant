@@ -359,6 +359,7 @@ fn raw_to_llm_response(raw: ChatCompletionResp) -> LLMResponse {
         .unwrap_or_default();
     LLMResponse {
         content,
+        reasoning_content: None,
         tool_calls,
         token_usage: usage,
         finish_reason,
