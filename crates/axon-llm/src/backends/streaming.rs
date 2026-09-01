@@ -14,6 +14,8 @@ use serde::Deserialize;
 pub enum TokenDelta {
     /// 文本片段(累加得到完整 content)
     Content(String),
+    /// 思考过程片段(reasoning_content,DeepSeek-R1 等推理模型的思考链)
+    Reasoning(String),
     /// 工具调用开始(携带 id + 函数名,参数在 `ToolCallDelta` 后续追加)
     ToolCallStart {
         /// 工具调用 ID
@@ -57,6 +59,9 @@ struct ChunkDelta {
     /// 文本片段
     #[serde(default)]
     content: Option<String>,
+    /// 思考过程片段(reasoning_content)
+    #[serde(default)]
+    reasoning_content: Option<String>,
     /// 工具调用增量
     #[serde(default)]
     tool_calls: Option<Vec<ChunkToolCall>>,
@@ -105,6 +110,11 @@ fn parse_sse_line(line: &str) -> Vec<TokenDelta> {
                     && !content.is_empty()
                 {
                     out.push(TokenDelta::Content(content));
+                }
+                if let Some(reasoning) = choice.delta.reasoning_content
+                    && !reasoning.is_empty()
+                {
+                    out.push(TokenDelta::Reasoning(reasoning));
                 }
                 if let Some(tool_calls) = choice.delta.tool_calls {
                     for tc in tool_calls {
@@ -190,6 +200,13 @@ mod tests {
         let line = r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#;
         let deltas = parse_sse_line(line);
         assert_eq!(deltas, vec![TokenDelta::Content("Hello".into())]);
+    }
+
+    #[test]
+    fn parse_reasoning_delta() {
+        let line = r#"data: {"choices":[{"delta":{"reasoning_content":"让我想想"}}]}"#;
+        let deltas = parse_sse_line(line);
+        assert_eq!(deltas, vec![TokenDelta::Reasoning("让我想想".into())]);
     }
 
     #[test]

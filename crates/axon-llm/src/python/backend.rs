@@ -73,6 +73,10 @@ impl PyLLMBackend {
 
         let dict = PyDict::new(py);
         dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item(
+            "reasoning_content",
+            resp.reasoning_content.unwrap_or_default(),
+        )?;
         dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
         dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
         dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
@@ -128,6 +132,10 @@ impl PyLLMBackend {
 
         let dict = PyDict::new(py);
         dict.set_item("content", resp.content.unwrap_or_default())?;
+        dict.set_item(
+            "reasoning_content",
+            resp.reasoning_content.unwrap_or_default(),
+        )?;
         dict.set_item("tool_calls", tool_calls_json)?;
         dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
         dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
@@ -145,6 +153,7 @@ impl PyLLMBackend {
     ///
     /// 返回 `list[dict]`,每个 dict 含 `type` 字段表示增量类型:
     ///   - `{"type": "content", "content": str}`
+    ///   - `{"type": "reasoning", "content": str}`
     ///   - `{"type": "tool_call_start", "id": str, "name": str}`
     ///   - `{"type": "tool_call_delta", "id": str, "arguments": str}`
     ///   - `{"type": "done", "finish_reason": str}`
@@ -266,6 +275,10 @@ fn delta_to_pydict(py: Python<'_>, d: TokenDelta) -> PyResult<Bound<'_, PyDict>>
     match d {
         TokenDelta::Content(s) => {
             dict.set_item("type", "content")?;
+            dict.set_item("content", s)?;
+        }
+        TokenDelta::Reasoning(s) => {
+            dict.set_item("type", "reasoning")?;
             dict.set_item("content", s)?;
         }
         TokenDelta::ToolCallStart { id, name } => {
