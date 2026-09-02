@@ -896,8 +896,10 @@ mod tests {
             .place_order(&mk_args(OrderSide::Buy, 0.1, None))
             .await;
         match result {
+            // place_order 的 fail-fast 校验先于 args_to_backtest_order 触发,
+            // 消息为 "limit order price must be positive, got None"
             Err(TradingError::InvalidArguments(msg)) => {
-                assert!(msg.contains("Limit order requires price"));
+                assert!(msg.contains("limit order price must be positive"));
             }
             other => panic!("expected InvalidArguments, got {:?}", other),
         }

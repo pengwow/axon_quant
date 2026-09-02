@@ -499,6 +499,7 @@ mod tests {
             choices: vec![ChatChoice {
                 message: ChatMessage {
                     content: Some("Hello".into()),
+                    reasoning_content: None,
                     tool_calls: None,
                 },
                 finish_reason: Some("stop".into()),
@@ -516,11 +517,29 @@ mod tests {
     }
 
     #[test]
+    fn raw_to_llm_response_reasoning_content() {
+        let raw = ChatCompletionResp {
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    content: Some("答案".into()),
+                    reasoning_content: Some("让我想想".into()),
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".into()),
+            }],
+            usage: Some(ChatUsage::default()),
+        };
+        let r = raw_to_llm_response(raw);
+        assert_eq!(r.reasoning_content.as_deref(), Some("让我想想"));
+    }
+
+    #[test]
     fn raw_to_llm_response_tool_calls() {
         let raw = ChatCompletionResp {
             choices: vec![ChatChoice {
                 message: ChatMessage {
                     content: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![OpenAIToolCall {
                         id: "call_1".into(),
                         kind: Some("function".into()),

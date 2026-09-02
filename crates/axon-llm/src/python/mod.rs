@@ -25,7 +25,7 @@ mod agent;
 use agent::{PyReActAgent, PyTool};
 
 mod backend;
-use backend::{PyLLMBackend, PyMessage};
+use backend::{PyLLMBackend, PyLLMStream, PyMessage};
 
 mod ollama;
 use ollama::{PyOllamaBackend, make_ollama_backend};
@@ -167,6 +167,7 @@ pub fn axon_llm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_backend, m)?)?;
     m.add_function(wrap_pyfunction!(make_ollama_backend, m)?)?;
     m.add_class::<PyLLMBackend>()?;
+    m.add_class::<PyLLMStream>()?;
     m.add_class::<PyOllamaBackend>()?;
     m.add_class::<PyMessage>()?;
     m.add_class::<PyTokenMeter>()?;

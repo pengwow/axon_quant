@@ -24,17 +24,54 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::useless_conversion)]
 
+use std::pin::Pin;
+use std::sync::Arc;
+
+use futures_core::Stream;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::sync::Arc;
+use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
 use crate::backend::{LLMBackend, LLMError, ToolDefinition};
 use crate::backends::{OpenAICompatBackend, TokenDelta};
-use crate::types::Message;
+use crate::types::{LLMResponse, Message};
 
 use super::helpers::pythonize;
+
+/// 类型擦除后的 LLM 流(`'static + Send`),供 `PyLLMStream` 跨 `__anext__` 调用持有
+type BoxedLLMStream = Pin<Box<dyn Stream<Item = Result<TokenDelta, LLMError>> + Send>>;
+
+// ─── dict 构建 helper(sync / async 共用) ─────────────────────
+
+/// 把 `LLMResponse` 转成 chat 返回 dict(content / reasoning_content / finish_reason / tokens)
+fn build_chat_dict(py: Python<'_>, resp: LLMResponse) -> PyResult<Bound<'_, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("content", resp.content.unwrap_or_default())?;
+    dict.set_item(
+        "reasoning_content",
+        resp.reasoning_content.unwrap_or_default(),
+    )?;
+    dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
+    dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
+    dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
+    dict.set_item("total_tokens", resp.token_usage.total_tokens)?;
+    Ok(dict)
+}
+
+/// 把 `LLMResponse` 转成 chat_with_tools 返回 dict(额外含 tool_calls JSON)
+fn build_chat_with_tools_dict(py: Python<'_>, resp: LLMResponse) -> PyResult<Bound<'_, PyDict>> {
+    // tool_calls 序列化为 JSON 字符串(避免暴露 Rust ToolCall 结构给 Python)
+    let tool_calls_json = match &resp.tool_calls {
+        Some(calls) => serde_json::to_string(calls)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
+        None => "null".to_string(),
+    };
+    let dict = build_chat_dict(py, resp)?;
+    dict.set_item("tool_calls", tool_calls_json)?;
+    Ok(dict)
+}
 
 /// Python 端可见的 LLM backend 包装
 ///
@@ -71,17 +108,30 @@ impl PyLLMBackend {
             .block_on(async move { backend.lock().await.complete(&msgs).await })
             .map_err(map_err)?;
 
-        let dict = PyDict::new(py);
-        dict.set_item("content", resp.content.unwrap_or_default())?;
-        dict.set_item(
-            "reasoning_content",
-            resp.reasoning_content.unwrap_or_default(),
-        )?;
-        dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
-        dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
-        dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
-        dict.set_item("total_tokens", resp.token_usage.total_tokens)?;
-        Ok(dict)
+        build_chat_dict(py, resp)
+    }
+
+    /// 异步 chat:同 `chat()`,但返回 awaitable,不阻塞 Python 事件循环
+    ///
+    /// ```python
+    /// resp = await backend.chat_async([{"role": "user", "content": "hi"}])
+    /// ```
+    fn chat_async<'py>(
+        &self,
+        py: Python<'py>,
+        messages: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let msgs = parse_messages(&messages)?;
+        let backend = self.inner.clone();
+        // future 在 pyo3-async-runtimes 的全局 tokio runtime 上执行;
+        // LLMError 跨 await 持有(Send),PyErr 仅在末尾 with_gil 内构造
+        future_into_py(py, async move {
+            let result = backend.lock().await.complete(&msgs).await;
+            Python::attach(|py| match result {
+                Ok(resp) => build_chat_dict(py, resp).map(Bound::unbind),
+                Err(e) => Err(map_err(e)),
+            })
+        })
     }
 
     /// 同步 chat_with_tools:带工具定义(OpenAI Function Calling)
@@ -123,25 +173,38 @@ impl PyLLMBackend {
             })
             .map_err(map_err)?;
 
-        // tool_calls 序列化为 JSON 字符串(避免暴露 Rust ToolCall 结构给 Python)
-        let tool_calls_json = match &resp.tool_calls {
-            Some(calls) => serde_json::to_string(calls)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
-            None => "null".to_string(),
-        };
+        build_chat_with_tools_dict(py, resp)
+    }
 
-        let dict = PyDict::new(py);
-        dict.set_item("content", resp.content.unwrap_or_default())?;
-        dict.set_item(
-            "reasoning_content",
-            resp.reasoning_content.unwrap_or_default(),
-        )?;
-        dict.set_item("tool_calls", tool_calls_json)?;
-        dict.set_item("finish_reason", format!("{:?}", resp.finish_reason))?;
-        dict.set_item("prompt_tokens", resp.token_usage.prompt_tokens)?;
-        dict.set_item("completion_tokens", resp.token_usage.completion_tokens)?;
-        dict.set_item("total_tokens", resp.token_usage.total_tokens)?;
-        Ok(dict)
+    /// 异步 chat_with_tools:同 `chat_with_tools()`,但返回 awaitable,不阻塞事件循环
+    ///
+    /// ```python
+    /// resp = await backend.chat_with_tools_async(msgs, tools)
+    /// ```
+    fn chat_with_tools_async<'py>(
+        &self,
+        py: Python<'py>,
+        messages: Vec<Bound<'py, PyAny>>,
+        tools: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let msgs = parse_messages(&messages)?;
+        let mut tool_defs: Vec<ToolDefinition> = Vec::with_capacity(tools.len());
+        for t in &tools {
+            tool_defs.push(parse_py_tool_definition(py, t)?);
+        }
+
+        let backend = self.inner.clone();
+        future_into_py(py, async move {
+            let result = backend
+                .lock()
+                .await
+                .complete_with_tools(&msgs, &tool_defs)
+                .await;
+            Python::attach(|py| match result {
+                Ok(resp) => build_chat_with_tools_dict(py, resp).map(Bound::unbind),
+                Err(e) => Err(map_err(e)),
+            })
+        })
     }
 
     /// 同步 stream_chat:流式 chat completion,收集全部 `TokenDelta` 并转成 Python dict 列表
@@ -187,15 +250,96 @@ impl PyLLMBackend {
         Ok(result)
     }
 
+    /// 异步流式 chat:返回异步迭代器,支持 `async for chunk in ...` 逐 chunk 实时消费
+    ///
+    /// 与同步 `stream_chat` 不同,本方法**不预先收集整个流**,而是每个 `__anext__`
+    /// 取一个 `TokenDelta` 转 dict,实现"边生成边推送"。
+    ///
+    /// ```python
+    /// async for chunk in backend.stream_chat_async(msgs):
+    ///     if chunk["type"] == "content":
+    ///         print(chunk["content"], end="")
+    /// ```
+    ///
+    /// chunk dict 结构与 `stream_chat` 元素一致:
+    ///   - `{"type": "content", "content": str}`
+    ///   - `{"type": "reasoning", "content": str}`
+    ///   - `{"type": "tool_call_start", "id": str, "name": str}`
+    ///   - `{"type": "tool_call_delta", "id": str, "arguments": str}`
+    ///   - `{"type": "done", "finish_reason": str}`
+    ///
+    /// 流结束抛 `StopAsyncIteration`(async for 自动终止);流中错误抛 `RuntimeError`。
+    fn stream_chat_async(&self, messages: Vec<Bound<'_, PyAny>>) -> PyResult<PyLLMStream> {
+        let msgs = parse_messages(&messages)?;
+        // stream_complete 返回 'static 流(内部已克隆所有字段,不借用 self),
+        // 锁仅在创建流的瞬间持有 → 多个并发流不会互相阻塞
+        let inner = self.inner.clone();
+        let stream: BoxedLLMStream = self.runtime.block_on(async move {
+            let backend = inner.lock().await;
+            Box::pin(backend.stream_complete(&msgs)) as BoxedLLMStream
+        });
+        Ok(PyLLMStream::new(stream))
+    }
+
     /// 字符串表示
     fn __repr__(&self) -> String {
         "LLMBackend(OpenAICompatBackend)".to_string()
     }
 }
 
+/// 异步流迭代器:`async for chunk in backend.stream_chat_async(...)` 逐 chunk 产出
+///
+/// 内部持有一个类型擦除的 `'static + Send` 流;每次 `__anext__` 返回 awaitable,
+/// await 时在全局 tokio runtime 上取下一个 `TokenDelta` 并转 dict。
+#[pyclass(name = "LLMStream")]
+pub struct PyLLMStream {
+    /// 流状态(用 Mutex 包装以便跨 `__anext__` 调用持有;Send + 'static)
+    stream: Arc<Mutex<BoxedLLMStream>>,
+}
+
+impl PyLLMStream {
+    fn new(stream: BoxedLLMStream) -> Self {
+        Self {
+            stream: Arc::new(Mutex::new(stream)),
+        }
+    }
+}
+
+#[pymethods]
+impl PyLLMStream {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// 取下一个 chunk;流结束抛 `StopAsyncIteration`,错误抛 `RuntimeError`
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stream = self.stream.clone();
+        future_into_py(py, async move {
+            // 取下一个 delta;None → 流结束
+            let next = stream.lock().await.next().await;
+            Python::attach(|py| match next {
+                None => Err(pyo3::exceptions::PyStopAsyncIteration::new_err(
+                    "stream exhausted",
+                )),
+                Some(Ok(delta)) => delta_to_pydict(py, delta).map(Bound::unbind),
+                Some(Err(e)) => Err(map_err(e)),
+            })
+        })
+    }
+}
+
 /// 把 Rust `LLMError` 转为 Python 异常
 fn map_err(e: LLMError) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+}
+
+/// 批量解析 Python 消息列表为 Rust `Message`(sync / async 方法共用)
+fn parse_messages(messages: &[Bound<'_, PyAny>]) -> PyResult<Vec<Message>> {
+    let mut msgs: Vec<Message> = Vec::with_capacity(messages.len());
+    for m in messages {
+        msgs.push(parse_py_message(m)?);
+    }
+    Ok(msgs)
 }
 
 /// 解析单条 Python 消息,接受 `LLMMessage` 或 dict

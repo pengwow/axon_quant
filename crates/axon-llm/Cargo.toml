@@ -14,7 +14,8 @@ description = "AXON LLM 智能体：ReAct 推理 + Tool Calling + 上下文管�
 default = []
 # PyO3 绑定(默认禁用,启用需 python toolchain)。
 # 注意:python 隐含依赖 backends,因为 OpenAICompatBackend 是 LLMBackend 的唯一实现。
-python = ["dep:pyo3", "backends", "trading-backtest"]
+# pyo3-async-runtimes 提供 tokio future → Python awaitable 桥接(chat_async / stream_chat_async)。
+python = ["dep:pyo3", "dep:pyo3-async-runtimes", "backends", "trading-backtest"]
 # 启用 axon-explain 集成(异步记录 + 工具查询)
 explain = ["dep:axon-explain"]
 # 启用真实 LLM backend(DeepSeek / OpenAI / 本地推理服务)
@@ -86,6 +87,8 @@ parking_lot = "0.12"
 # `auto-initialize`(让 `cargo test --features python` 自动初始化 Python
 # 解释器,无需 Python 进程加载)。
 pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
+# tokio future → Python awaitable 桥接(python feature 启用时激活)
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"], optional = true }
 
 # 可解释性集成(feature-gated)
 axon-explain = { workspace = true, optional = true }
