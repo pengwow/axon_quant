@@ -251,7 +251,8 @@ mod tests {
                 .unwrap()
                 .extract()
                 .unwrap();
-            assert_eq!(version, "0.10.0");
+            // 轨迹格式版本与 Rust 侧 trading/trajectory.rs 保持一致
+            assert_eq!(version, "0.11.0");
             let bars = traj.get_item("bars").unwrap().unwrap();
             let l = bars.cast::<PyList>().unwrap();
             assert_eq!(l.len(), 1);
