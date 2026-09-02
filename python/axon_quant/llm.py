@@ -52,6 +52,18 @@
     with open("config.toml", "rb") as f:
         cfg_dict = tomllib.load(f)
     backend = make_backend(cfg_dict)
+
+异步用法(0.14.0+,不阻塞事件循环,适合 FastAPI 等 async 场景)::
+
+    # 非阻塞 chat
+    resp = await backend.chat_async([LLMMessage("user", "你好")])
+
+    # 真流式:逐 chunk 实时消费(边生成边推送)
+    async for chunk in backend.stream_chat_async(msgs):
+        if chunk["type"] == "content":
+            print(chunk["content"], end="")
+        elif chunk["type"] == "reasoning":
+            ...  # DeepSeek-R1 等推理模型的思考链
 """
 
 from __future__ import annotations

@@ -6,6 +6,20 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-09-01
+
+### Added
+
+- Python 端 `LLMBackend` 新增异步绑定，不阻塞事件循环（适合 FastAPI 等 async 场景）
+  - `chat_async(messages)` / `chat_with_tools_async(messages, tools)`：返回 awaitable，结果结构与同步版一致
+  - `stream_chat_async(messages)`：返回异步迭代器，支持 `async for chunk in ...` 逐 chunk 实时消费（`content` / `reasoning` / `tool_call_start` / `tool_call_delta` / `done`），流结束抛 `StopAsyncIteration`
+  - 基于 `pyo3-async-runtimes` 将 tokio future 桥接为 Python awaitable
+  - 同步 `chat` / `chat_with_tools` / `stream_chat` 原样保留，零破坏
+
+### Fixed
+
+- 修复 `openai_compat` 测试中 `ChatMessage` 构造缺少 `reasoning_content` 字段导致的测试编译错误（0.13.0 遗留）
+
 ## [0.13.0] - 2026-09-01
 
 ### Added
