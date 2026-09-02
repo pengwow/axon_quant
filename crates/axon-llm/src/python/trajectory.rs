@@ -10,6 +10,7 @@ use std::sync::Arc as StdArc;
 
 use crate::trading::trajectory::{ToolCall, TrajectoryBar, TrajectoryRecorder};
 
+/// Python 端可见的 `TrajectoryRecorder` 包装(ReAct 轨迹记录,线程安全)
 #[pyclass(name = "TrajectoryRecorder")]
 pub struct PyTrajectoryRecorder {
     pub(crate) recorder: StdArc<std::sync::Mutex<TrajectoryRecorder>>,
@@ -159,6 +160,7 @@ impl PyTrajectoryRecorder {
     }
 }
 
+/// 把 `PyTrajectoryRecorder` 注册到 Python 模块
 pub fn register_trajectory_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTrajectoryRecorder>()?;
     Ok(())

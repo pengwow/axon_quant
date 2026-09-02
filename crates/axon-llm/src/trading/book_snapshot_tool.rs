@@ -55,6 +55,7 @@ pub struct OrderBookSnapshot {
 /// 订单簿数据源 trait
 #[async_trait]
 pub trait OrderBookProvider: Send + Sync {
+    /// 获取指定档位数的买卖盘深度,返回 `(bids, asks)`,每档为 `(price, quantity)`
     async fn depth(&self, levels: usize) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>), ToolError>;
 }
 

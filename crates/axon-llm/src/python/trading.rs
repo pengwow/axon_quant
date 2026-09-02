@@ -37,7 +37,6 @@ use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 
 use crate::tools::Tool;
 use crate::trading::backend::TradingBackend;
-use crate::trading::book_snapshot_tool::GetBookSnapshotTool as RustGetBookSnapshotTool;
 use crate::trading::cancel_order_tool::CancelOrderTool as RustCancelOrderTool;
 use crate::trading::finish_bar_tool::FinishBarTool as RustFinishBarTool;
 use crate::trading::mock::MockTradingBackend;
@@ -189,16 +188,16 @@ impl PyGetBookSnapshotTool {
                 pyo3::exceptions::PyRuntimeError::new_err("depth 返回值缺少 'asks' 字段")
             })?;
 
-        let bids_list = bids.downcast::<PyList>().map_err(|e| {
+        let bids_list = bids.cast::<PyList>().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("bids 不是列表: {}", e))
         })?;
-        let asks_list = asks.downcast::<PyList>().map_err(|e| {
+        let asks_list = asks.cast::<PyList>().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("asks 不是列表: {}", e))
         })?;
 
         // 解析订单簿档位数据,每一步都有错误处理
         let parse_level = |item: &Bound<'_, PyAny>, side: &str| -> PyResult<serde_json::Value> {
-            let d = item.downcast::<PyDict>().map_err(|e| {
+            let d = item.cast::<PyDict>().map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("{} item 不是 dict: {}", side, e))
             })?;
             let price: f64 = d
@@ -419,6 +418,7 @@ impl PyMockTradingBackend {
 // ── PyBacktestTradingBackend(Task 10)─────────────────────
 
 #[cfg(feature = "trading-backtest")]
+/// Python 端可见的 `BacktestTradingBackend` 包装(L1 回测撮合引擎 + 独立 tokio runtime)
 #[pyclass(name = "BacktestTradingBackend")]
 pub struct PyBacktestTradingBackend {
     pub(crate) backend: StdArc<BacktestTradingBackend>,
