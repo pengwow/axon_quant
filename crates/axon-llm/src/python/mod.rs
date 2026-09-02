@@ -46,7 +46,10 @@ use helpers::{pythonize, type_name};
 /// Python 端 Token 计量器
 ///
 /// 可独立使用（手动 record）或由 VotingOrchestrator 内部持有。
-#[pyclass(name = "TokenMeter")]
+///
+/// `skip_from_py_object`:Python 端只通过构造函数创建该类,
+/// 不允许从 dict 自动转换(避免 PyO3 0.28 派生 deprecation warning)。
+#[pyclass(name = "TokenMeter", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyTokenMeter {
     inner: Arc<crate::meter::TokenMeter>,

@@ -77,7 +77,10 @@ fn build_chat_with_tools_dict(py: Python<'_>, resp: LLMResponse) -> PyResult<Bou
 ///
 /// 内部持有一个 `OpenAICompatBackend` + 一个 `tokio::runtime::Runtime`,
 /// 通过 `block_on` 桥接 async → sync,使 Python 端能直接同步调用 `chat()`。
-#[pyclass(name = "LLMBackend")]
+///
+/// `skip_from_py_object`:Python 端只通过构造函数创建该类,
+/// 不允许从 dict 自动转换(避免 PyO3 0.28 派生 deprecation warning)。
+#[pyclass(name = "LLMBackend", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyLLMBackend {
     /// 内部 backend(用 Mutex 包装以便未来支持可重入)

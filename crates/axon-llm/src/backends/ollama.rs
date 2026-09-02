@@ -23,15 +23,22 @@ use std::time::Duration;
 /// Ollama backend 配置
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
+    /// Ollama API 根(默认 `http://localhost:11434/v1`)
     pub base_url: String,
+    /// 模型名(如 `llama3`)
     pub model: String,
+    /// 单次请求超时
     pub timeout: Duration,
+    /// 最大输出 token
     pub max_tokens: u32,
+    /// 采样温度
     pub temperature: f32,
+    /// 重试配置
     pub backoff: BackoffConfig,
 }
 
 impl OllamaConfig {
+    /// 从环境变量构造(读取 `OLLAMA_BASE_URL` / `OLLAMA_MODEL`,其余用默认值)
     pub fn from_env() -> Result<Self, BackendInitError> {
         Ok(Self {
             base_url: std::env::var("OLLAMA_BASE_URL")
@@ -44,6 +51,7 @@ impl OllamaConfig {
         })
     }
 
+    /// 从 `LLMConfig` 的第 `index` 个 backend 配置构造(复用全局重试参数)
     pub fn from_llm_config(cfg: &LLMConfig, index: usize) -> Result<Self, BackendInitError> {
         let b: &crate::config::BackendConfig = cfg
             .backends
@@ -64,6 +72,7 @@ impl OllamaConfig {
         })
     }
 
+    /// llama3 预设(本地默认地址 + 默认参数)
     pub fn llama3() -> Self {
         Self {
             base_url: "http://localhost:11434/v1".into(),
@@ -75,29 +84,35 @@ impl OllamaConfig {
         }
     }
 
+    /// 覆盖模型名(chainable)
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 
+    /// 覆盖 API 根地址(chainable)
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
     }
 
+    /// 覆盖最大输出 token(chainable)
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
         self
     }
 
+    /// 覆盖采样温度(chainable)
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = temperature;
         self
     }
 }
 
+/// backend 初始化错误(缺少环境变量等)
 #[derive(Debug, thiserror::Error)]
 pub enum BackendInitError {
+    /// 缺少必需的环境变量
     #[error("missing env var: {0}")]
     MissingEnv(&'static str),
 }
@@ -109,6 +124,7 @@ pub struct OllamaBackend {
 }
 
 impl OllamaBackend {
+    /// 构造 backend(内部建 reqwest client,超时取自 config)
     pub fn new(config: OllamaConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
@@ -117,6 +133,7 @@ impl OllamaBackend {
         Self { config, client }
     }
 
+    /// 只读访问配置
     pub fn config(&self) -> &OllamaConfig {
         &self.config
     }
@@ -169,6 +186,7 @@ impl OllamaBackend {
         body
     }
 
+    /// 流式补全:SSE 字节流转 `TokenDelta` 流(与 `OpenAICompatBackend::stream_complete` 同协议)
     #[allow(unused_must_use)]
     pub fn stream_complete(
         &self,

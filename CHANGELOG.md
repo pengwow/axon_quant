@@ -6,6 +6,16 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-09-02
+
+### Fixed
+
+- 清理 `axon-llm` 全部 28 个编译警告
+  - `ollama.rs` / `book_snapshot_tool.rs` / `trajectory.rs` / `trading.rs` 补齐缺失的文档注释（missing_docs）
+  - 移除 `python/trading.rs` 未使用的 `GetBookSnapshotTool` 导入
+  - `PyList` / `PyDict` 下沉检查改用 `Bound::cast`（替换已弃用的 `PyAnyMethods::downcast`）
+  - `PyLLMBackend` / `PyTokenMeter` 标注 `#[pyclass(skip_from_py_object)]`，消除 PyO3 0.28 `FromPyObject` 派生弃用警告
+
 ## [0.14.0] - 2026-09-01
 
 ### Added
