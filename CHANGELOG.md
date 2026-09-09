@@ -6,6 +6,14 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-09-09
+
+### Fixed
+
+- 撮合引擎防重复 order id / 自成交（`L1MatchingEngine`）
+  - `submit` 层新增 order id 全局唯一性预检：重复提交 / 同 id 互相对敲直接拒单
+  - `match_against_asks` / `match_against_bids` 循环新增同 id 对手兜底跳过，异常路径下也绝不与自身成交
+
 ## [0.14.1] - 2026-09-02
 
 ### Fixed

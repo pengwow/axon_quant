@@ -283,6 +283,12 @@ impl L1Book {
                 let taker_side = taker.side;
                 let taker_created = taker.created_at;
                 let maker_id = orders.front().map(|m| m.id).unwrap();
+                // 自成交兜底:正常路径已被 submit 层的 id 唯一性检查拦截,
+                // 若残留同 id 对手(异常路径)直接跳过,绝不与自身成交
+                if maker_id == taker.id {
+                    orders.pop_front();
+                    continue;
+                }
                 let fill = MatchFill {
                     fill_id,
                     taker_order_id: taker_id,
@@ -388,6 +394,12 @@ impl L1Book {
                     let taker_side = taker.side;
                     let taker_created = taker.created_at;
                     let maker_id = orders.front().map(|m| m.id).unwrap();
+                    // 自成交兜底:正常路径已被 submit 层的 id 唯一性检查拦截,
+                    // 若残留同 id 对手(异常路径)直接跳过,绝不与自身成交
+                    if maker_id == taker.id {
+                        orders.pop_front();
+                        continue;
+                    }
                     let fill = MatchFill {
                         fill_id,
                         taker_order_id: taker_id,
@@ -758,6 +770,20 @@ impl MatchingEngine for L1MatchingEngine {
             return SubmitResult::empty(taker.quantity);
         }
 
+        // 3.5 重复 order id / 自成交防护: order id 全局唯一。
+        // 检查所有 instrument 的活跃挂单簿(order_index);若 taker id 已
+        // 存在于任意簿中,视为重复提交或同 id 互相对敲,直接拒单。
+        // 边界:已成交/已取消的订单 id 会随挂单移除而释放,可复用
+        // (与上游交易所契约一致)。
+        let duplicate = self
+            .books
+            .values()
+            .any(|b| b.order_index.contains_key(&taker.id));
+        if duplicate {
+            let _ = taker.reject(axon_core::order::RejectReason::Other);
+            return SubmitResult::empty(taker.quantity);
+        }
+
         // 4. 撮合。`L1Book::match_against_*` 是关联函数,接受
         //    `(book, taker, taker_instrument, trade_sequence, tracker)` 五个
         //    独立借用,因此可以同时持有 `self.books` / `self.trade_sequence`
@@ -1004,6 +1030,43 @@ mod tests {
         assert!(engine.best_bid().is_none());
         assert!(engine.best_ask().is_none());
         assert_eq!(engine.fill_count(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_order_id_rejected() {
+        let mut engine = L1MatchingEngine::new();
+        // 挂单: id 1 卖单 @ 100
+        let sell = make_limit_order(1, Side::Sell, 100.0, 1.0, 1_000);
+        assert!(engine.submit(sell).fills.is_empty());
+        assert_eq!(engine.best_ask(), Some(Price::from_f64(100.0)));
+
+        // 同 id 订单重复提交(覆盖:重复提交 / 同 id 互相对敲) → 拒单
+        let dup_buy = make_limit_order(1, Side::Buy, 100.0, 1.0, 2_000);
+        let result = engine.submit(dup_buy);
+        assert!(result.fills.is_empty());
+        assert!(!result.is_filled);
+        assert_eq!(result.remaining_quantity, Quantity::from_f64(1.0));
+        // 原挂单不受影响
+        assert_eq!(engine.best_ask(), Some(Price::from_f64(100.0)));
+    }
+
+    #[test]
+    fn test_matching_skips_same_id_counterparty() {
+        // 撮合循环兜底:即使 submit 层唯一性检查被绕过(异常路径),
+        // 同 id 对手也应被跳过,绝不与自身成交
+        let mut book = L1Book::default();
+        let sell = make_limit_order(42, Side::Sell, 100.0, 1.0, 1_000);
+        let instrument = sell.instrument.clone();
+        book.insert_passive(sell);
+
+        // taker 与簿内卖单同 id(异常路径)
+        let mut taker = make_limit_order(42, Side::Buy, 100.0, 1.0, 2_000);
+        let seq = AtomicU64::new(1);
+        let mut tracker = PartialFillTracker::new();
+        let fills =
+            L1Book::match_against_asks(&mut book, &mut taker, &instrument, &seq, &mut tracker);
+        assert!(fills.is_empty());
+        assert_eq!(taker.remaining_quantity(), Quantity::from_f64(1.0));
     }
 
     #[test]
