@@ -175,7 +175,7 @@ class OptunaHPO:
         """收集当前 study 的所有 trial 结果（dict 格式，供 Rust 端解析）。
 
         与 `run` 不同，本方法**不**触发新的 trial 搜索，仅返回已有结果。
-        由 Rust 端在 `HPORunner.run` 完成后调用。
+        由调用方在 OptunaHPO 完成后调用。
         """
         results: list[dict[str, Any]] = []
         for t in self.study.trials:
