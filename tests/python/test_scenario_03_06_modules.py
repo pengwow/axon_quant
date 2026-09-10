@@ -9,7 +9,6 @@ class TestHPO:
     def test_import(self):
         """3.1 HPO 模块导入"""
         import axon_quant
-        assert hasattr(axon_quant.hpo, 'HPORunner')
         assert hasattr(axon_quant.hpo, 'py_compute_pareto_front')
         assert hasattr(axon_quant.hpo, 'py_compute_hypervolume')
         assert hasattr(axon_quant.hpo, 'py_validate_search_space')

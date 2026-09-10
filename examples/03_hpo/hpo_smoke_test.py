@@ -23,7 +23,6 @@ def main() -> int:
 
     # 1. 模块功能验证
     print("\n[1] 模块功能验证")
-    print(f"  ✓ HPORunner: {hpo.HPORunner}")
     print(f"  ✓ py_compute_pareto_front: {hpo.py_compute_pareto_front}")
     print(f"  ✓ py_compute_hypervolume: {hpo.py_compute_hypervolume}")
     print(f"  ✓ py_validate_search_space: {hpo.py_validate_search_space}")

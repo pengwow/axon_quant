@@ -301,7 +301,7 @@ let (obs, reward, term, trunc, info) = env.step(&vec![0.5]);
 - `crates/axon-hpo/src/trial.rs` — `TrialResult` / `TrialState`
 - `crates/axon-hpo/src/result.rs` — `HPOResult`
 - `crates/axon-hpo/src/pareto.rs` — `ParetoFront` / `compute_hypervolume` / `dominates`
-- `crates/axon-hpo/python/axon_hpo/` — Python 端 Optuna 适配器（`optuna_runner.py` / `multi_objective.py` / `pruning.py` / `search_space.py`）
+- `python/axon_hpo/` — Python 端 Optuna 适配器（`optuna_runner.py` / `multi_objective.py` / `pruning.py` / `search_space.py` / `types.py`）
 
 ### 核心机制
 - **搜索空间**：`SearchSpaceDef` 用 enum 表达每种分布，序列化后传给 Optuna
@@ -325,18 +325,20 @@ let (obs, reward, term, trunc, info) = env.step(&vec![0.5]);
 **Python 侧（主用法，直接用 Optuna 跑搜索）：**
 
 ```python
-from axon_hpo import HPORunner, SearchSpace, StudyConfig
+from axon_hpo.optuna_runner import OptunaHPO
+from axon_hpo.types import SearchSpaceDef, SamplerConfig, PrunerConfig
 import axon_quant
 
-# 1) 定义搜索空间
-space = (SearchSpace()
-    .uniform("lr", 1e-5, 1e-2)
-    .log_uniform("gamma", 0.9, 0.999)
-    .categorical("activation", ["relu", "tanh"])
-    .int_uniform("hidden_size", 64, 512, step=64))
+# 1) 定义搜索空间（dict of SearchSpaceDef）
+search_space = {
+    "lr": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-2),
+    "gamma": SearchSpaceDef(param_type="uniform", low=0.9, high=0.999),
+    "activation": SearchSpaceDef(param_type="categorical", choices=["relu", "tanh"]),
+    "hidden_size": SearchSpaceDef(param_type="int_uniform", low=64, high=512, step=64),
+}
 
-# 2) 定义目标函数（用 axon_quant.rl 训练 + 评估）
-def objective(trial_params: dict) -> float:
+# 2) 定义目标函数（用 axon_quant.rl 训练 + 评估）；必须返回列表
+def objective_fn(trial_params: dict) -> list[float]:
     env = axon_quant.rl.TradingEnv(config={**trial_params, "max_steps": 500},
                                    market_data=bars,
                                    action_space={"type": "continuous",
@@ -349,16 +351,30 @@ def objective(trial_params: dict) -> float:
         _, r, term, trunc, info = env.step(a)
         sharpe = info.get("sharpe", 0.0)
         if term or trunc: break
-    return sharpe
+    return [sharpe]
 
 # 3) 跑搜索
-study = HPORunner(study_config=StudyConfig(direction="maximize", n_trials=50))
-best = study.run(space, objective_fn=objective)
-print(best.params, best.value)
+runner = OptunaHPO(
+    search_space=search_space,
+    objective_fn=objective_fn,
+    study_name="my_study",
+    directions="maximize",
+    sampler=SamplerConfig(),
+    pruner=PrunerConfig(),
+)
+results = runner.run(n_trials=50)
+best = runner.get_best_trial()
+print(best.params, best.values)
 
 # 4) 多目标搜索（Pareto 前沿）
-pareto_study = HPORunner(study_config=StudyConfig(
-    directions=["maximize", "minimize"], n_trials=100))  # 第一个: sharpe, 第二个: maxdd
+runner_mo = OptunaHPO(
+    search_space=search_space,
+    objective_fn=objective_fn,  # 返回 [sharpe, maxdd]
+    study_name="my_multi_study",
+    directions=["maximize", "minimize"],  # 第一个: sharpe, 第二个: maxdd
+)
+runner_mo.run(n_trials=100)
+front = runner_mo.get_pareto_front()
 ```
 
 **Rust 侧（开发新 pruner / 嵌入训练 pipeline 时使用）：**

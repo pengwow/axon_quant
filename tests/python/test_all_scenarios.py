@@ -148,7 +148,6 @@ print()
 print('--- 场景 3: HPO ---')
 
 def t_hpo_import():
-    assert hasattr(axon_quant.hpo, 'HPORunner')
     assert hasattr(axon_quant.hpo, 'py_compute_pareto_front')
     assert hasattr(axon_quant.hpo, 'py_compute_hypervolume')
     assert hasattr(axon_quant.hpo, 'py_validate_search_space')
