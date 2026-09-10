@@ -68,21 +68,32 @@ response = agent.chat([llm.LLMMessage.user("Analyze BTC market")])
 ```python
 import axon_quant.hpo as hpo
 
-# Define search space
+# Rust-backed authoritative utilities (exposed via axon_quant.hpo)
+front = hpo.py_compute_pareto_front(
+    [
+        {"trial_id": 0, "values": [1.0, 0.5]},
+        {"trial_id": 1, "values": [0.5, 1.0]},
+    ],
+    ["maximize", "maximize"],
+)
+hv = hpo.py_compute_hypervolume(front, ["maximize", "maximize"], [2.0, 2.0])
+
+# The Optuna HPO loop lives in the pure-Python `axon_hpo` package
+from axon_hpo.optuna_runner import OptunaHPO
+from axon_hpo.types import SearchSpaceDef
+
 search_space = {
-    "learning_rate": hpo.SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
-    "gamma": hpo.SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
+    "learning_rate": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
+    "gamma": SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
 }
 
-# Create HPO runner
-runner = hpo.OptunaHPO(
+runner = OptunaHPO(
     search_space=search_space,
     objective_fn=objective_fn,
     study_name="ppo_optimization",
-    directions=["maximize", "maximize"],
+    directions="maximize",
 )
 
-# Run optimization
 results = runner.run(n_trials=50)
 ```
 

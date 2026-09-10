@@ -1167,9 +1167,8 @@ import asyncio
 import json
 from typing import Any
 
-import axon_quant
-
-hpo = axon_quant.hpo
+from axon_hpo.optuna_runner import OptunaHPO
+from axon_hpo.types import SamplerConfig, SamplerType, SearchSpaceDef
 
 
 async def evaluate_react_strategy(params: dict[str, Any]) -> list[float]:
@@ -1208,20 +1207,20 @@ def main() -> int:
 
     # 定义搜索空间
     search_space = {
-        "learning_rate": hpo.SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
-        "gamma": hpo.SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
+        "learning_rate": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-3),
+        "gamma": SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
     }
 
     # 创建 HPO 执行器（注意：目标函数需同步包装，因为 Optuna 不支持 async）
     def sync_objective(params):
         return asyncio.run(evaluate_react_strategy(params))
 
-    runner = hpo.OptunaHPO(
+    runner = OptunaHPO(
         search_space=search_space,
         objective_fn=sync_objective,
         study_name="react_rl_hpo",
         directions=["maximize", "maximize"],
-        sampler=hpo.SamplerConfig(sampler_type="tpe", seed=42),
+        sampler=SamplerConfig(sampler_type=SamplerType.TPE, seed=42),
     )
 
     # 执行搜索

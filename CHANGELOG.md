@@ -6,6 +6,24 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3] - 2026-09-10
+
+### Changed
+
+- 清理 `axon-hpo` 死代码并接通 Python 链路
+  - 删除孤儿副本 `crates/axon-hpo/python/`（与权威实现 `python/axon_hpo/` 重复）
+  - `axon-hpo` crate 改为纯 rlib（`crate-type = ["rlib"]`），Python 绑定统一由 `axon-python`（`axon_quant._native`）暴露
+  - `axon_quant.hpo` 仅保留不带 Optuna 依赖的纯数值工具函数：`py_compute_pareto_front` / `py_compute_hypervolume` / `py_validate_search_space`
+  - Optuna 执行器统一走纯 Python 的 `axon_hpo.OptunaHPO`（及复用它的 `axon_quant.training.RLHPOSweeper`）
+
+### Fixed
+
+- `axon_quant.training` 的 `export_onnx` / `RLHPOSweeper` 改为 `__getattr__` 延迟导入，避免 `import axon_quant.training` 硬性引入 torch / optuna
+
+### Removed
+
+- 移除 Rust 侧未使用的 `HPORunner` 类及其引用
+
 ## [0.14.2] - 2026-09-09
 
 ### Fixed
