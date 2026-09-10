@@ -6,6 +6,15 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.4] - 2026-09-10
+
+### Fixed
+
+- 修复发布的 wheel/sdist 不含 `python/` 下兄弟纯 Python 包的问题
+  - maturin 在 `module-name = "axon_quant._native"` + `python-source = "python"` 组合下默认只打包根包 `axon_quant`，`axon_hpo` / `axon_registry` / `axon_walk_forward` 从未随 PyPI 发布安装
+  - 新增 `[tool.maturin] python-packages = ["axon_hpo", "axon_registry", "axon_walk_forward"]`，三个包随 wheel 与 sdist 一起分发，安装后 `import axon_hpo` 等即可使用
+  - 新增 `hpo` extra（`pip install axon-quant[hpo]` 引入 `optuna>=3.0`），供 `axon_hpo.OptunaHPO` 完整 HPO 循环使用；`axon_walk_forward` 仅依赖 numpy（核心依赖已含）
+
 ## [0.14.3] - 2026-09-10
 
 ### Changed
