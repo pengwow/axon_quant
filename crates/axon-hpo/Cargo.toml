@@ -29,6 +29,6 @@ pyo3 = { version = "0.28", optional = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 
-# 同时生成 cdylib（供 Python `import axon_hpo` 使用）和 rlib（供 Rust crate 引用）
+# 仅 rlib：Python 绑定统一由 axon-python（module-name = "axon_quant._native"）暴露
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]

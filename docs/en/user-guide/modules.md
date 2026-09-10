@@ -298,7 +298,7 @@ Hyperparameter optimization toolchain: search space definition + Optuna integrat
 - `crates/axon-hpo/src/trial.rs` — `TrialResult` / `TrialState`
 - `crates/axon-hpo/src/result.rs` — `HPOResult`
 - `crates/axon-hpo/src/pareto.rs` — `ParetoFront` / `compute_hypervolume` / `dominates`
-- `crates/axon-hpo/python/axon_hpo/` — Python-side Optuna adapter (`optuna_runner.py` / `multi_objective.py` / `pruning.py` / `search_space.py`)
+- `python/axon_hpo/` — Python-side Optuna adapter (`optuna_runner.py` / `multi_objective.py` / `pruning.py` / `search_space.py` / `types.py`)
 
 ### Core Mechanism
 - **Search space**: `SearchSpaceDef` uses an enum to represent each distribution; serialized and passed to Optuna
@@ -322,18 +322,20 @@ Hyperparameter optimization toolchain: search space definition + Optuna integrat
 **Python side (primary usage; drive Optuna directly):**
 
 ```python
-from axon_hpo import HPORunner, SearchSpace, StudyConfig
+from axon_hpo.optuna_runner import OptunaHPO
+from axon_hpo.types import SearchSpaceDef, SamplerConfig, PrunerConfig
 import axon_quant
 
-# 1) Define the search space
-space = (SearchSpace()
-    .uniform("lr", 1e-5, 1e-2)
-    .log_uniform("gamma", 0.9, 0.999)
-    .categorical("activation", ["relu", "tanh"])
-    .int_uniform("hidden_size", 64, 512, step=64))
+# 1) Define the search space (dict of SearchSpaceDef)
+search_space = {
+    "lr": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-2),
+    "gamma": SearchSpaceDef(param_type="uniform", low=0.9, high=0.999),
+    "activation": SearchSpaceDef(param_type="categorical", choices=["relu", "tanh"]),
+    "hidden_size": SearchSpaceDef(param_type="int_uniform", low=64, high=512, step=64),
+}
 
-# 2) Define the objective (train + evaluate with axon_quant.rl)
-def objective(trial_params: dict) -> float:
+# 2) Define the objective (train + evaluate with axon_quant.rl); must return a list
+def objective_fn(trial_params: dict) -> list[float]:
     env = axon_quant.rl.TradingEnv(config={**trial_params, "max_steps": 500},
                                    market_data=bars,
                                    action_space={"type": "continuous",
@@ -346,16 +348,30 @@ def objective(trial_params: dict) -> float:
         _, r, term, trunc, info = env.step(a)
         sharpe = info.get("sharpe", 0.0)
         if term or trunc: break
-    return sharpe
+    return [sharpe]
 
 # 3) Run the search
-study = HPORunner(study_config=StudyConfig(direction="maximize", n_trials=50))
-best = study.run(space, objective_fn=objective)
-print(best.params, best.value)
+runner = OptunaHPO(
+    search_space=search_space,
+    objective_fn=objective_fn,
+    study_name="my_study",
+    directions="maximize",
+    sampler=SamplerConfig(),
+    pruner=PrunerConfig(),
+)
+results = runner.run(n_trials=50)
+best = runner.get_best_trial()
+print(best.params, best.values)
 
 # 4) Multi-objective search (Pareto front)
-pareto_study = HPORunner(study_config=StudyConfig(
-    directions=["maximize", "minimize"], n_trials=100))  # first: sharpe, second: maxdd
+runner_mo = OptunaHPO(
+    search_space=search_space,
+    objective_fn=objective_fn,  # return [sharpe, maxdd]
+    study_name="my_multi_study",
+    directions=["maximize", "minimize"],  # first: sharpe, second: maxdd
+)
+runner_mo.run(n_trials=100)
+front = runner_mo.get_pareto_front()
 ```
 
 **Rust side (use when developing new pruners / embedding into the training pipeline):**

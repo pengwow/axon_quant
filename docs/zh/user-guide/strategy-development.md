@@ -301,10 +301,14 @@ from __future__ import annotations
 import tempfile
 from typing import Any
 
-import axon_quant
-
-# Rust 端 HPO 模块的 Python 绑定
-hpo = axon_quant.hpo
+from axon_hpo.optuna_runner import OptunaHPO
+from axon_hpo.types import (
+    PrunerConfig,
+    PrunerType,
+    SamplerConfig,
+    SamplerType,
+    SearchSpaceDef,
+)
 
 
 def objective_fn(params: dict[str, Any]) -> list[float]:
@@ -337,21 +341,21 @@ def main() -> int:
     # 3.1 定义搜索空间（对应 search_space.py 中的预设）
     # -------------------------------------------------
     search_space = {
-        "learning_rate": hpo.SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-2),
-        "gamma": hpo.SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
-        "batch_size": hpo.SearchSpaceDef(param_type="choice", choices=[32, 64, 128, 256]),
+        "learning_rate": SearchSpaceDef(param_type="log_uniform", low=1e-5, high=1e-2),
+        "gamma": SearchSpaceDef(param_type="uniform", low=0.95, high=0.999),
+        "batch_size": SearchSpaceDef(param_type="choice", choices=[32, 64, 128, 256]),
     }
 
     # -------------------------------------------------
     # 3.2 创建 OptunaHPO 执行器
     # -------------------------------------------------
-    runner = hpo.OptunaHPO(
+    runner = OptunaHPO(
         search_space=search_space,
         objective_fn=objective_fn,
         study_name="ppo_momentum_multiobj",
         directions=["maximize", "maximize"],  # 双目标
-        sampler=hpo.SamplerConfig(sampler_type="tpe", n_startup_trials=5, seed=42),
-        pruner=hpo.PrunerConfig(pruner_type="median"),
+        sampler=SamplerConfig(sampler_type=SamplerType.TPE, n_startup_trials=5, seed=42),
+        pruner=PrunerConfig(pruner_type=PrunerType.MEDIAN),
     )
 
     # -------------------------------------------------
@@ -858,7 +862,7 @@ if __name__ == "__main__":
 - `crates/axon-rl/src/env/trading_env.rs` — `TradingEnv::step()` 主循环
 - `crates/axon-rl/src/vec_env/sync.rs` — `SyncVecEnv` 向量化环境
 - `crates/axon-rl/src/vec_env/async_env.rs` — `AsyncVecEnv` 异步并行环境
-- `crates/axon-hpo/python/axon_hpo/optuna_runner.py` — `OptunaHPO` 封装
+- `python/axon_hpo/optuna_runner.py` — `OptunaHPO` 封装
 - `crates/axon-walk-forward/python/axon_walk_forward/evaluation.py` — `aggregate_folds` 与 DSR
 - `crates/axon-backtest/src/engine.rs` — `BacktestEngine::run()` / `step()`
 - `crates/axon-inference/src/backend/onnx.rs` — `OnnxBackend`
