@@ -1,6 +1,6 @@
 [project]
 name = "axon-quant"
-version = "0.14.3"
+version = "0.14.5"
 description = "AI-native quantitative trading framework — high-performance Rust core with Python RL training interface, covering backtesting, training, optimization, validation and production in a single codebase."
 authors = [{ name = "pengwow", email = "pengwow@hotmail.com" }]
 license = "Apache-2.0"
@@ -32,6 +32,9 @@ Documentation = "https://github.com/pengwow/axon_quant"
 Issues = "https://github.com/pengwow/axon_quant/issues"
 
 [project.optional-dependencies]
+hpo = [
+    "optuna>=3.0.0",
+]
 onnx = [
     "onnxruntime>=1.21.0",
 ]
@@ -60,6 +63,10 @@ manifest-path = "crates/axon-python/Cargo.toml"
 module-name = "axon_quant._native"
 # Python 源文件在仓库根目录 python/ 下。
 python-source = "python"
+# maturin 对 module-name 带点的混合项目默认只打包根包 axon_quant,
+# python/ 下的兄弟纯 Python 包必须显式声明才会进 wheel/sdist
+# (否则 import axon_hpo / axon_registry / axon_walk_forward 安装后不可用)。
+python-packages = ["axon_hpo", "axon_registry", "axon_walk_forward"]
 # 启用 axon-python 的 `python` feature,让 pyo3(optional 依赖)出现在
 # cargo metadata 依赖图中,maturin 才能识别为 pyo3 绑定。
 features = ["python"]

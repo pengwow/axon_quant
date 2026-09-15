@@ -335,7 +335,7 @@ search_space = {
 }
 
 # 2) Define the objective (train + evaluate with axon_quant.rl); must return a list
-def objective_fn(trial_params: dict) -> list[float]:
+def objective_fn(trial_params: dict, report) -> list[float]:
     env = axon_quant.rl.TradingEnv(config={**trial_params, "max_steps": 500},
                                    market_data=bars,
                                    action_space={"type": "continuous",
