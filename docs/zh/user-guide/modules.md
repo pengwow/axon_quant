@@ -338,7 +338,7 @@ search_space = {
 }
 
 # 2) 定义目标函数（用 axon_quant.rl 训练 + 评估）；必须返回列表
-def objective_fn(trial_params: dict) -> list[float]:
+def objective_fn(trial_params: dict, report) -> list[float]:
     env = axon_quant.rl.TradingEnv(config={**trial_params, "max_steps": 500},
                                    market_data=bars,
                                    action_space={"type": "continuous",

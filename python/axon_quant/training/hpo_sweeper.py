@@ -4,6 +4,11 @@
 - 单进程:走 axon-hpo OptunaHPO(in-memory,轻量)
 - 多进程:sqlite storage + optuna 直接并发(optuna 内置多 worker 模式)
 - TensorBoard:make_tb_log_dir(trial_id) 生成独立 TB 目录
+
+Breaking Change (0.14.5):
+  - `sweep(objective_fn)` 的 objective_fn 签名改为双参 `(params, report)`，
+    与 OptunaHPO 保持一致。旧单参签名不再兼容。
+  - `RLHPOSweeper.__init__` 新增可选 `pruner` 参数，并行 / 串行路径都透传。
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from axon_hpo.search_space import SearchSpaceDef
+    from axon_hpo.types import PrunerConfig
 
 # 默认 PPO 搜索空间(lr / gamma / clip_param / entropy_coeff)。
 # 类型通过 TYPE_CHECKING 引用,实际使用延迟 import(避免无 axon_hpo 时顶层失败)。
@@ -63,6 +69,7 @@ class RLHPOSweeper:
         search_space: dict[str, "SearchSpaceDef"] | None = None,
         storage: str | None = None,
         n_jobs: int = 1,
+        pruner: "PrunerConfig | None" = None,
     ) -> None:
         """
         Args:
@@ -71,6 +78,7 @@ class RLHPOSweeper:
             search_space: 自定义搜索空间,None 时用 `DEFAULT_SEARCH_SPACE`
             storage: Optuna storage URL,None 时 in-memory
             n_jobs: 并发 job 数(8-CPU 并发传 8)
+            pruner: Optuna 剪枝器配置,None 时 OptunaHPO 默认配置
         """
         self.study_name = study_name
         self.n_trials = n_trials
@@ -79,18 +87,23 @@ class RLHPOSweeper:
         self.search_space = search_space or DEFAULT_SEARCH_SPACE
         self.storage = storage
         self.n_jobs = n_jobs
+        self.pruner = pruner
 
     def sweep(
         self,
-        objective_fn: Callable[[dict[str, Any]], list[float]],
+        objective_fn: Callable[..., list[float]],
     ) -> dict[str, Any]:
         """运行 sweep,返回 best_config(dict)。
 
         - n_jobs == 1:走 OptunaHPO(in-memory,轻量)
         - n_jobs > 1:走 optuna 原生 + sqlite storage(支持跨进程并发)
 
+        Breaking Change (0.14.5):
+          objective_fn 签名改为双参 `(params, report)`，report 由 OptunaHPO 注入，
+          用户在 objective 内部调用 `report(step, value)` 触发 Optuna 原生剪枝。
+
         Args:
-            objective_fn: 接收 params dict,返回 [reward] 或 [reward, ...] 列表
+            objective_fn: 接收 (params dict, report callable),返回 [reward] 或 [reward, ...] 列表
 
         Returns:
             best trial 的 params dict
@@ -101,7 +114,7 @@ class RLHPOSweeper:
 
     def _sweep_serial(
         self,
-        objective_fn: Callable[[dict[str, Any]], list[float]],
+        objective_fn: Callable[..., list[float]],
     ) -> dict[str, Any]:
         OptunaHPO, _ = _ensure_axon_hpo()
         sweeper = OptunaHPO(
@@ -110,6 +123,7 @@ class RLHPOSweeper:
             study_name=self.study_name,
             directions="maximize",
             storage=self.storage,
+            pruner=self.pruner,
         )
         _ = sweeper.run(n_trials=self.n_trials, n_jobs=1)
 
@@ -120,24 +134,28 @@ class RLHPOSweeper:
 
     def _sweep_parallel(
         self,
-        objective_fn: Callable[[dict[str, Any]], list[float]],
+        objective_fn: Callable[..., list[float]],
     ) -> dict[str, Any]:
         """并发 sweep:sqlite storage + optuna 内置多 worker 模式。
 
         optuna 的 n_jobs > 1 模式自动 fork workers,sqlite 跨进程同步 trial 状态。
         """
         import optuna  # 延迟导入,避免硬依赖
+        from axon_hpo.types import PrunerConfig as _PrunerConfig  # noqa: PLC0415
 
         storage = self.storage
         if storage is None:
             # 默认 sqlite 文件,放在 cwd 下
             storage = f"sqlite:///{self.study_name}_optuna.db"
 
+        pruner_obj = self.pruner.build() if self.pruner else _PrunerConfig().build()
+
         study = optuna.create_study(
             study_name=self.study_name,
             storage=storage,
             direction="maximize",
             sampler=optuna.samplers.TPESampler(n_startup_trials=20),
+            pruner=pruner_obj,
             load_if_exists=True,
         )
 
@@ -154,9 +172,11 @@ class RLHPOSweeper:
 
     def _optuna_objective_factory(
         self,
-        objective_fn: Callable[[dict[str, Any]], list[float]],
+        objective_fn: Callable[..., list[float]],
     ):
         """将 SearchSpaceDef 采样 + 用户 objective_fn 包装为 optuna 目标函数。
+
+        注入 report 闭包(与 OptunaHPO._objective 同签名),让并发路径也能触发剪枝。
 
         Returns:
             Callable[[optuna.Trial], list[float]]
@@ -164,10 +184,15 @@ class RLHPOSweeper:
         import optuna  # 延迟导入
 
         def _objective(trial: optuna.Trial) -> list[float]:
+            def report(step: int, value: float) -> None:
+                trial.report(value, step)
+                if trial.should_prune():
+                    raise optuna.TrialPruned(f"pruned at step {step}")
+
             params: dict[str, Any] = {}
             for name, space_def in self.search_space.items():
                 params[name] = space_def.suggest(trial, name)
-            values = objective_fn(params)
+            values = objective_fn(params, report)
             return list(values)
 
         return _objective

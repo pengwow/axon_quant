@@ -6,6 +6,38 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.5] - 2026-09-15
+
+### Fixed
+
+- OptunaHPO 的剪枝链路断裂问题（**长期失效的 bug**）
+  - 旧 `OptunaHPO.report(trial_id, step, value)` 只是把中间值缓存进自建 dict，从未调用 optuna 原生 `trial.report()` / `trial.should_prune()`，导致 Median / Hyperband / SuccessiveHalving 剪枝器全程无信号可用
+  - `RLHPOSweeper._sweep_parallel` 创建 study 时也漏传 pruner，并行路径即使修好 report 也不剪枝
+
+### Changed
+
+- **Breaking**: `objective_fn` 签名从单参 `(params) -> list[float]` 改为双参 `(params, report) -> list[float]`
+  - `report(step, value)` 由 OptunaHPO 闭包注入，内部调 optuna 原生 `trial.report(value, step)` + `trial.should_prune()`，命中直接抛 `optuna.TrialPruned` 中断当前 trial
+  - 不做旧单参签名兼容探测（`inspect.signature` 对 partial / 装饰器 / *args 会误判；且单参签名本来就无法报告中间值，等于保留 bug）
+- 中间值存储从自建 `self._intermediate` dict 迁移到 optuna 原生 `trial.intermediate_values`，结果收集时自动回填
+- 旧 `OptunaHPO.report(trial_id, step, value)` 实例方法已移除
+- `RLHPOSweeper.__init__` 新增可选 `pruner: PrunerConfig | None` 参数，串行 / 并行路径都透传
+
+### Upgrade Guide
+
+```python
+# 0.14.4 及以前（单参签名，剪枝实际不生效）
+def objective(params):
+    return [params["lr"] * 100]
+
+# 0.14.5（双参签名，剪枝真正生效）
+def objective(params, report):
+    for step in range(n_epochs):
+        value = train_one_epoch(params, step)
+        report(step, value)          # 触发 Optuna 原生剪枝
+    return [final_reward]
+```
+
 ## [0.14.4] - 2026-09-10
 
 ### Fixed

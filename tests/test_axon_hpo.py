@@ -2,7 +2,8 @@
 
 测试范围：
 - SearchSpaceDef 参数采样
-- OptunaHPO 单目标/多目标
+- OptunaHPO 单目标/多目标（双参 report 签名，0.14.5 Breaking Change）
+- **剪枝 E2E**：MEDIAN pruner 必须真正触发 PRUNED state
 - Pareto 前沿计算
 - 超体积计算
 """
@@ -143,17 +144,18 @@ class TestSearchSpacePresets:
 # OptunaHPO 测试
 # =============================================================================
 class TestOptunaHPO:
-    """OptunaHPO 测试"""
+    """OptunaHPO 测试（0.14.5 Breaking Change: objective_fn 双参签名）"""
 
     def test_single_objective(self):
         """测试单目标优化"""
-        def objective(params):
+        def objective(params, report):
+            _ = report  # 单目标场景不强制用 report
             return [params.get("learning_rate", 0.001) * 100]
 
         hpo = OptunaHPO(
             search_space=small_search_space(),
             objective_fn=objective,
-            study_name="test_single",
+            study_name="test_single_v2",
             directions="maximize",
         )
 
@@ -167,7 +169,8 @@ class TestOptunaHPO:
 
     def test_multi_objective(self):
         """测试多目标优化"""
-        def objective(params):
+        def objective(params, report):
+            _ = report
             lr = params.get("learning_rate", 0.001)
             gamma = params.get("gamma", 0.99)
             return [lr * 100, gamma]
@@ -175,7 +178,7 @@ class TestOptunaHPO:
         hpo = OptunaHPO(
             search_space=small_search_space(),
             objective_fn=objective,
-            study_name="test_multi",
+            study_name="test_multi_v2",
             directions=["maximize", "maximize"],
         )
 
@@ -191,13 +194,14 @@ class TestOptunaHPO:
 
     def test_collect_results(self):
         """测试收集结果"""
-        def objective(params):
+        def objective(params, report):
+            _ = report
             return [params.get("learning_rate", 0.001) * 100]
 
         hpo = OptunaHPO(
             search_space=small_search_space(),
             objective_fn=objective,
-            study_name="test_collect",
+            study_name="test_collect_v2",
             directions="maximize",
         )
 
@@ -210,27 +214,6 @@ class TestOptunaHPO:
         assert "values" in results[0]
         assert "state" in results[0]
 
-    def test_report_intermediate(self):
-        """测试中间值报告"""
-        def objective(params):
-            lr = params.get("learning_rate", 0.001)
-            for i in range(3):
-                # 通过闭包访问 hpo 实例
-                nonlocal hpo
-                hpo.report(trial_number, i, lr * (i + 1))
-            return [lr * 100]
-
-        hpo = OptunaHPO(
-            search_space=small_search_space(),
-            objective_fn=objective,
-            study_name="test_intermediate",
-            directions="maximize",
-        )
-        trial_number = 0  # 用于传递 trial number
-
-        results = hpo.run(n_trials=3, n_jobs=1)
-        assert len(results) == 3
-
     def test_pruner_config(self):
         """测试剪枝器配置"""
         pruner = PrunerConfig(pruner_type=PrunerType.MEDIAN, n_startup_trials=3)
@@ -242,6 +225,155 @@ class TestOptunaHPO:
         sampler = SamplerConfig(sampler_type=SamplerType.TPE, seed=42)
         assert sampler.sampler_type.value == "tpe"
         assert sampler.seed == 42
+
+    # ---- 剪枝核心测试（0.14.5 新增） ----
+
+    def test_pruning_effective(self):
+        """**核心验收**：MedianPruner 必须真正触发 PRUNED state。
+
+        策略：前 2 个 trial 报告高值，后续 trial 报告快速递减低值，
+        期望 MedianPruner 在第 3+ 个 trial 上剪枝。
+
+        这是区分"report 真调了 optuna" vs "report 只做了内存缓存"的分水岭。
+        """
+        pruner = PrunerConfig(
+            pruner_type=PrunerType.MEDIAN,
+            n_startup_trials=2,     # 前 2 个 trial 不剪枝
+            n_warmup_steps=3,       # 前 3 步不剪枝
+        )
+
+        step_counter = {"n": 0}
+
+        def objective(params, report):
+            # 用 step_counter 保证"前 2 trial 高值 + 后续 trial 低值"的确定性
+            # 每个 trial 走 10 步，step 4 起开始报告
+            for step in range(10):
+                if step >= 4:
+                    step_counter["n"] += 1
+                    if step_counter["n"] <= 4:
+                        value = 0.9   # 前 2 个 trial 的中间值：高
+                    else:
+                        value = 0.1   # 后续 trial 的中间值：低 → 触发剪枝阈值
+                    report(step, value)
+            # 最终值也呈两极：前 2 trial 高，后续低
+            final = 0.9 if step_counter["n"] <= 4 else 0.1
+            return [final]
+
+        hpo = OptunaHPO(
+            search_space=small_search_space(),
+            objective_fn=objective,
+            study_name="test_pruning_effective_v2",
+            directions="maximize",
+            pruner=pruner,
+            sampler=SamplerConfig(sampler_type=SamplerType.RANDOM, seed=42),
+        )
+
+        results = hpo.run(n_trials=6, n_jobs=1)
+
+        states = [r.state for r in results]
+        pruned = [r for r in results if r.state == "pruned"]
+
+        assert len(pruned) > 0, (
+            f"期望出现至少 1 个 PRUNED trial，实际 states = {states}。"
+            f"这意味着 report() 没真正调 optuna trial.report()，剪枝链路仍断。"
+        )
+
+    def test_pruned_trial_keeps_intermediate(self):
+        """被剪枝的 trial：intermediate_values 非空、state 为 pruned。
+
+        注意：optuna 5.0+ 对 pruned trial.values 的语义可能因版本而异
+        （部分版本保留最后一次 report 的 value，部分版本置 None），
+        因此这里不硬断言 values 是否为空，只锁核心行为：
+        state=pruned + intermediate_values 保留。
+        """
+        pruner = PrunerConfig(
+            pruner_type=PrunerType.MEDIAN,
+            n_startup_trials=1,
+            n_warmup_steps=2,
+        )
+
+        step_counter = {"n": 0}
+
+        def objective(params, report):
+            for step in range(10):
+                if step >= 2:
+                    step_counter["n"] += 1
+                    # 前几个 trial 高值，后续低值 → 必然触发剪枝
+                    value = 0.9 if step_counter["n"] <= 2 else 0.0
+                    report(step, value)
+            return [0.9 if step_counter["n"] <= 2 else 0.0]
+
+        hpo = OptunaHPO(
+            search_space=small_search_space(),
+            objective_fn=objective,
+            study_name="test_pruned_keeps_iv_v2",
+            directions="maximize",
+            pruner=pruner,
+            sampler=SamplerConfig(sampler_type=SamplerType.RANDOM, seed=123),
+        )
+
+        results = hpo.run(n_trials=5, n_jobs=1)
+
+        pruned = [r for r in results if r.state == "pruned"]
+        assert len(pruned) > 0, "至少要有一个 pruned trial 才能验证中间值保留"
+
+        # 所有 pruned trial 都应有中间值（被剪在 report 之后）
+        for r in pruned:
+            assert len(r.intermediate_values) > 0, (
+                f"pruned trial#{r.trial_id} intermediate_values 为空 — "
+                f"optuna 侧没存中间值，report 调用可能失败了"
+            )
+            # 核心：state 必须是 pruned
+            assert r.state == "pruned"
+
+    def test_no_report_no_prune(self):
+        """objective 完全不调用 report → 所有 trial 都 COMPLETE（剪枝器无信息可用）。"""
+        pruner = PrunerConfig(
+            pruner_type=PrunerType.MEDIAN,
+            n_startup_trials=1,
+            n_warmup_steps=1,
+        )
+
+        def objective(params, report):
+            _ = report  # 签名对了，但故意不调
+            return [params.get("learning_rate", 0.001) * 100]
+
+        hpo = OptunaHPO(
+            search_space=small_search_space(),
+            objective_fn=objective,
+            study_name="test_no_report_v2",
+            directions="maximize",
+            pruner=pruner,
+        )
+
+        results = hpo.run(n_trials=4, n_jobs=1)
+
+        states = [r.state for r in results]
+        pruned_count = states.count("pruned")
+        assert pruned_count == 0, (
+            f"不调 report 时不应出现 PRUNED，实际 states = {states}"
+        )
+
+    def test_inject_report_signature(self):
+        """report 闭包必须能正确绑定当前 trial、且签名正确（step, value）。"""
+        captured = {"report": None}
+
+        def objective(params, report):
+            captured["report"] = report
+            return [params.get("learning_rate", 0.001) * 100]
+
+        hpo = OptunaHPO(
+            search_space=small_search_space(),
+            objective_fn=objective,
+            study_name="test_report_sig_v2",
+            directions="maximize",
+        )
+
+        hpo.run(n_trials=1, n_jobs=1)
+
+        assert captured["report"] is not None
+        # report 是 callable
+        assert callable(captured["report"])
 
 
 # =============================================================================

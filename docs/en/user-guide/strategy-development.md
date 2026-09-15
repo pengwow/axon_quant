@@ -304,17 +304,22 @@ from axon_hpo.types import (
 )
 
 
-def objective_fn(params: dict[str, Any]) -> list[float]:
+def objective_fn(params: dict[str, Any], report) -> list[float]:
     """
     HPO objective function.
     Input: A set of hyperparameters (sampled by Optuna based on search_space)
+           + report(step, value) closure for pruning
     Output: [sharpe_ratio, -max_drawdown] (multi-objective, both maximized)
     """
     lr = params["learning_rate"]
     gamma = params["gamma"]
     batch_size = params["batch_size"]
 
-    # Reuse step 2's training logic, but with current trial's hyperparameters
+    # Report intermediate values each epoch; MedianPruner / Hyperband will
+    # early-terminate poorly-performing trials automatically (0.14.5+)
+    for epoch in range(20):
+        report(epoch, random.uniform(0.5, 2.0) + (lr * 1000) - epoch * 0.05)
+
     # Simplified: simulate training results with random numbers
     import random
     random.seed(hash((lr, gamma, batch_size)) % 2**32)
