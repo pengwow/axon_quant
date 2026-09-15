@@ -5,8 +5,18 @@
 - 单目标 / 多目标
 - TPE / Random / CMA-ES sampler
 - Median / Hyperband / SuccessiveHalving pruner
-- 中间值报告（用于早停）
+- 中间值报告（闭包注入，调用方在 objective 内触发 Optuna 原生剪枝）
 - 中途异常转 `TrialPruned`
+
+Breaking Change (0.14.5):
+  - `objective_fn` 签名从单参 `(params) -> list[float]` 改为双参
+    `(params, report) -> list[float]`。`report(step, value)` 由 OptunaHPO 注入，
+    内部调用 `trial.report(value, step)` + `trial.should_prune()`，命中剪枝
+    直接抛 `optuna.TrialPruned` 中断当前 trial。
+  - 旧 `OptunaHPO.report(trial_id, step, value)` 实例方法已移除（其唯一用途
+    被新的闭包签名取代，且旧方法从未真正触发 Optuna 剪枝）。
+  - `TrialResult.intermediate_values` 现在从 optuna trial.intermediate_values
+    读取（dict 转 list[tuple[step, value]]），不再依赖自建缓存。
 """
 
 from __future__ import annotations
@@ -48,13 +58,22 @@ def _build_sampler(sampler_cfg: SamplerConfig) -> Any:
     raise ValueError(f"Unknown sampler_type: {sampler_cfg.sampler_type}")
 
 
+def _read_intermediate(trial: Any) -> list[tuple[int, float]]:
+    """从 optuna trial.intermediate_values 读取中间值，返回按 step 排序的列表。
+
+    trial.intermediate_values 是 dict[int, float]（optuna 原生存储）。
+    """
+    iv = getattr(trial, "intermediate_values", None) or {}
+    return sorted((int(step), float(value)) for step, value in iv.items())
+
+
 class OptunaHPO:
     """Optuna HPO 执行器。"""
 
     def __init__(
         self,
         search_space: dict[str, SearchSpaceDef],
-        objective_fn: Callable[[dict[str, Any]], list[float]],
+        objective_fn: Callable[..., list[float]],
         study_name: str,
         directions: list[str] | str = "maximize",
         pruner: PrunerConfig | None = None,
@@ -79,9 +98,6 @@ class OptunaHPO:
             sampler_cfg=sampler_cfg,
             storage=storage,
         )
-
-        # 缓存中间值（按 trial_id → list[(step, value)]）
-        self._intermediate: dict[int, list[tuple[int, float]]] = {}
 
     def _create_study(
         self,
@@ -112,17 +128,19 @@ class OptunaHPO:
             load_if_exists=True,
         )
 
-    def report(self, trial_id: int, step: int, value: float) -> None:
-        """由 `objective_fn` 内部调用，向 Optuna 报告中间值。
-
-        此方法通过 `_intermediate` 缓存中间值，trial 完成后由 `_objective`
-        统一设置到 `intermediate_values` 字段。
-        """
-        self._intermediate.setdefault(trial_id, []).append((step, value))
-
     def _objective(self, trial: Any) -> list[float]:
-        """Optuna 目标函数：从 trial 采样参数，调用用户目标函数。"""
+        """Optuna 目标函数：构造 report 闭包、采样参数、调用用户目标函数。
+
+        report 闭包绑定当前 trial，内部调 optuna 原生 trial.report +
+        should_prune，命中剪枝直接抛 optuna.TrialPruned 中断当前 trial。
+        """
         import optuna  # noqa: PLC0415
+
+        def report(step: int, value: float) -> None:
+            """向 Optuna 报告中间值，剪枝命中时抛 TrialPruned。"""
+            trial.report(value, step)
+            if trial.should_prune():
+                raise optuna.TrialPruned(f"pruned at step {step}")
 
         params: dict[str, Any] = {}
         for name, space_def in self.search_space.items():
@@ -130,7 +148,7 @@ class OptunaHPO:
 
         start = time.monotonic()
         try:
-            values = self.objective_fn(params)
+            values = self.objective_fn(params, report)
         except optuna.TrialPruned:
             raise
         except Exception as e:
@@ -158,7 +176,6 @@ class OptunaHPO:
         results: list[TrialResult] = []
         for t in self.study.trials:
             duration = t.user_attrs.get("duration_ms", 0)
-            intermediate = self._intermediate.get(t.number, [])
             results.append(
                 TrialResult(
                     trial_id=t.number,
@@ -166,7 +183,7 @@ class OptunaHPO:
                     values=list(t.values) if t.values else [],
                     state=t.state.name.lower(),
                     duration_ms=int(duration),
-                    intermediate_values=intermediate,
+                    intermediate_values=_read_intermediate(t),
                 )
             )
         return results
@@ -180,7 +197,6 @@ class OptunaHPO:
         results: list[dict[str, Any]] = []
         for t in self.study.trials:
             duration = int(t.user_attrs.get("duration_ms", 0))
-            intermediate = self._intermediate.get(t.number, [])
             results.append(
                 {
                     "trial_id": t.number,
@@ -188,7 +204,7 @@ class OptunaHPO:
                     "values": list(t.values) if t.values else [],
                     "state": t.state.name.lower(),
                     "duration_ms": duration,
-                    "intermediate_values": intermediate,
+                    "intermediate_values": _read_intermediate(t),
                 }
             )
         return results

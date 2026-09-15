@@ -311,7 +311,7 @@ from axon_hpo.types import (
 )
 
 
-def objective_fn(params: dict[str, Any]) -> list[float]:
+def objective_fn(params: dict[str, Any], report) -> list[float]:
     """
     HPO 目标函数。
     输入：一组超参（由 Optuna 根据 search_space 采样）
