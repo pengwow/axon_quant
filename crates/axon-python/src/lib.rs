@@ -172,5 +172,18 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     harness::register_harness_module(&harness_module)?;
     m.add_submodule(&harness_module)?;
 
+    // `axon-strategy` 子模块（Phase 1 Rust 原生策略层）
+    // 包含 Strategy trait + SdmStrategyImpl / RuleStrategyImpl / SwarmRouteStrategyImpl
+    // + BacktestRunnerConfig DTO。
+    let strategy_module = PyModule::new(m.py(), "strategy")?;
+    axon_strategy::python::register_module(&strategy_module)?;
+    m.add_submodule(&strategy_module)?;
+
+    // `axon-worker` 子模块（Phase 1 Rust 原生编排层）
+    // 包含 BacktestRunner + StrategyManager + BacktestResult DTO。
+    let worker_module = PyModule::new(m.py(), "worker")?;
+    axon_worker::python::register_module(&worker_module)?;
+    m.add_submodule(&worker_module)?;
+
     Ok(())
 }

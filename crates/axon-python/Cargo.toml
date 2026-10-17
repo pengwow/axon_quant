@@ -55,6 +55,12 @@ python = [
     # `axon-harness` 暴露为 `_native.harness` 子模块
     # 包含 HarnessBridge / CircuitBreaker / AuditChain / PositionGuard 等类型。
     "dep:axon-harness",
+    # `axon-strategy` 暴露为 `_native.strategy` 子模块
+    # 包含 Strategy trait 的三个内置实现（SDM / Rule / SwarmRoute）+ BacktestRunnerConfig DTO。
+    "dep:axon-strategy",
+    # `axon-worker` 暴露为 `_native.worker` 子模块
+    # 包含 BacktestRunner（全 Rust 原生回测编排）+ StrategyManager + BacktestResult DTO。
+    "dep:axon-worker",
 ]
 
 [dependencies]
@@ -116,3 +122,11 @@ axon-defi = { workspace = true, optional = true, features = ["python"] }
 # `axon-harness` 暴露为 `_native.harness` 子模块
 # 包含 HarnessBridge / CircuitBreaker / AuditChain / PositionGuard。
 axon-harness = { workspace = true, optional = true }
+# `axon-strategy` 暴露为 `_native.strategy` 子模块
+# 包含 Strategy trait + SdmStrategyImpl / RuleStrategyImpl / SwarmRouteStrategyImpl。
+# 策略层纯 Rust（Strategy trait 不依赖 PyO3），Python 绑定是 DTO + 构造器。
+axon-strategy = { workspace = true, optional = true, features = ["python"] }
+# `axon-worker` 暴露为 `_native.worker` 子模块
+# 包含 BacktestRunner + StrategyManager + BacktestResult。
+# 编排层 Rust 原生，Python 绑定是回测结果 DTO + 配置构造器。
+axon-worker = { workspace = true, optional = true, features = ["python"] }

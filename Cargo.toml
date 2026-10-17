@@ -4,6 +4,8 @@ resolver = "2"
 members = [
     "crates/axon-core",
     "crates/axon-backtest",
+    "crates/axon-strategy",
+    "crates/axon-worker",
     "crates/axon-rl",
     "crates/axon-hpo",
     "crates/axon-walk-forward",
@@ -29,7 +31,7 @@ members = [
 
 # 统一的目标目录,加速增量编译
 [workspace.package]
-version = "0.17.2"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"
@@ -45,6 +47,8 @@ authors = ["pengwow <pengwow@hotmail.com>"]
 # 内部 crate
 axon-core = { path = "crates/axon-core" }
 axon-backtest = { path = "crates/axon-backtest" }
+axon-strategy = { path = "crates/axon-strategy" }
+axon-worker = { path = "crates/axon-worker" }
 axon-rl = { path = "crates/axon-rl" }
 axon-hpo = { path = "crates/axon-hpo" }
 axon-walk-forward = { path = "crates/axon-walk-forward" }
@@ -75,6 +79,10 @@ anyhow = "1.0"
 # 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Python 绑定（PyO3 0.28，所有 python feature crate 共享）
+# NOTE: 用 workspace 统一 pyo3 版本，避免各 crate 独立声明导致 Cargo.lock 分裂
+pyo3 = { version = "0.28", features = ["extension-module"] }
 
 # 日志 / 追踪
 log = "0.4"

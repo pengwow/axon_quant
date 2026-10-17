@@ -1,0 +1,29 @@
+[package]
+name = "axon-strategy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "统一策略 trait 与实现（回测/实盘复用同一 decide() 入口）"
+
+[lib]
+name = "axon_strategy"
+
+[features]
+default = []
+# Python 绑定：axon-python 聚合时启用
+python = ["dep:pyo3"]
+
+[dependencies]
+axon-core    = { workspace = true }
+axon-llm     = { workspace = true, features = ["decision"] }
+axon-harness = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+pyo3         = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

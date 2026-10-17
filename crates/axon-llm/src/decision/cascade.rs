@@ -118,9 +118,13 @@ impl FallbackDecider for RuleFallback {
     }
 }
 
-/// 提取 3 个并行子问题信号；仅离线归因，禁止参与门控
+/// 提取子问题信号（v1 全部 3 个 + v2 新增 3 个可数值化的）。
+///
+/// 仅离线归因，禁止参与门控。position_size 和 execution_urgency 是 Choice 类型，
+/// 走 harness 层路由，不在这里做数值化提取。
 fn extract_sub_signals(resp: &DecisionResponse) -> BTreeMap<String, f64> {
     let mut sub = BTreeMap::new();
+    // v1 既有
     if let Some(Answer::Noul { noul }) = resp.answers.get("trend_confirms") {
         sub.insert("trend_confirms".to_string(), *noul);
     }
@@ -129,6 +133,13 @@ fn extract_sub_signals(resp: &DecisionResponse) -> BTreeMap<String, f64> {
     }
     if let Some(Answer::Score { score, .. }) = resp.answers.get("signal_clarity") {
         sub.insert("signal_clarity".to_string(), *score);
+    }
+    // v2 新增可数值化的
+    if let Some(Answer::Score { score, .. }) = resp.answers.get("volatility_regime") {
+        sub.insert("volatility_regime".to_string(), *score);
+    }
+    if let Some(Answer::Noul { noul }) = resp.answers.get("drawdown_risk") {
+        sub.insert("drawdown_risk".to_string(), *noul);
     }
     sub
 }
@@ -412,5 +423,73 @@ mod tests {
             d.fallback_reason.as_deref(),
             Some("fallback_error: Backend")
         );
+    }
+
+    /// choice_resp + v1 3 子信号 + v2 2 新增子信号（volatility_regime + drawdown_risk）
+    fn full_v2_resp(choice: &str, conf: f64) -> DecisionResponse {
+        let mut answers = BTreeMap::new();
+        answers.insert(
+            "next_direction".to_string(),
+            Answer::Choice {
+                choice: choice.to_string(),
+                confidence: conf,
+                probabilities: BTreeMap::from([
+                    ("buy".to_string(), 0.7),
+                    ("sell".to_string(), 0.1),
+                    ("hold".to_string(), 0.2),
+                ]),
+            },
+        );
+        // v1 子信号
+        answers.insert("trend_confirms".to_string(), Answer::Noul { noul: 0.85 });
+        answers.insert("risk_regime_bad".to_string(), Answer::Noul { noul: 0.3 });
+        answers.insert(
+            "signal_clarity".to_string(),
+            Answer::Score {
+                score: 2.0,
+                confidence: 0.8,
+                probabilities: BTreeMap::from([
+                    ("0".to_string(), 0.0),
+                    ("1".to_string(), 0.1),
+                    ("2".to_string(), 0.9),
+                ]),
+            },
+        );
+        // v2 新增可数值化子信号
+        answers.insert(
+            "volatility_regime".to_string(),
+            Answer::Score {
+                score: 1.0,
+                confidence: 0.75,
+                probabilities: BTreeMap::new(),
+            },
+        );
+        answers.insert("drawdown_risk".to_string(), Answer::Noul { noul: 0.25 });
+        DecisionResponse {
+            model: "m".into(),
+            answers,
+            usage: DecisionUsage {
+                input_tokens: 10,
+                cost_usd: 0.02,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn v2_sub_signals_pass_through_to_cascade_decision() {
+        let (b, req) = req_with(Some(full_v2_resp("buy", 0.9)));
+        let layer = SdmCascadeDecisionLayer::new(
+            b,
+            Arc::new(RuleFallback::new()),
+            CascadeConfig::default(),
+        );
+        let d = layer.decide(&req).await;
+        // v1 3 个子信号都在
+        assert_eq!(d.sub_signals.get("trend_confirms"), Some(&0.85));
+        assert_eq!(d.sub_signals.get("risk_regime_bad"), Some(&0.3));
+        assert_eq!(d.sub_signals.get("signal_clarity"), Some(&2.0));
+        // v2 新增的 volatility_regime 和 drawdown_risk 也在
+        assert_eq!(d.sub_signals.get("volatility_regime"), Some(&1.0));
+        assert_eq!(d.sub_signals.get("drawdown_risk"), Some(&0.25));
     }
 }

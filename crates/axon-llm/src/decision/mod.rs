@@ -11,6 +11,7 @@ pub mod backend;
 pub mod cascade;
 pub mod fingerprint;
 pub mod llm_fallback;
+pub mod quant_questions;
 pub mod replay;
 pub mod stub;
 pub mod types;

@@ -1,0 +1,29 @@
+[package]
+name = "axon-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "策略编排 + 全 Rust 原生回测运行器"
+
+[lib]
+name = "axon_worker"
+
+[features]
+default = []
+# Python 绑定：axon-python 聚合时启用
+python = ["dep:pyo3", "axon-strategy/python"]
+
+[dependencies]
+axon-core     = { workspace = true }
+axon-strategy = { workspace = true }
+axon-llm      = { workspace = true, features = ["decision"] }
+axon-backtest = { workspace = true }
+axon-harness  = { workspace = true }
+async-trait   = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+tokio         = { workspace = true }
+pyo3          = { workspace = true, optional = true }

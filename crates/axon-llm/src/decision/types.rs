@@ -103,6 +103,32 @@ pub enum Question {
     },
 }
 
+impl Question {
+    /// 构造最小可用的 blank 问题（给测试 / 快速原型用）
+    ///
+    /// kind 是 "choice" / "noul" / "score"。字段全部空值，StubDecisionBackend
+    /// 只做 contains_key 检查所以够用。
+    pub fn blank(kind: &str) -> Self {
+        match kind {
+            "choice" => Self::Choice {
+                instructions: ChoiceInstructions {
+                    question: String::new(),
+                    focus: String::new(),
+                },
+                criteria: BTreeMap::new(),
+            },
+            "noul" => Self::Noul {
+                instructions: String::new(),
+            },
+            "score" => Self::Score {
+                instructions: String::new(),
+                criteria: Vec::new(),
+            },
+            other => panic!("Question::blank: unknown kind '{other}' (use choice|noul|score)"),
+        }
+    }
+}
+
 /// 单个问题的答案（内部 tag = `type`，结构体变体保证 serde 稳定）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
