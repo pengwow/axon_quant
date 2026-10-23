@@ -456,6 +456,14 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
             let k = v.get("k").unwrap_or(&serde_json::Value::Null);
             let interval = k.get("i").and_then(|i| i.as_str()).unwrap_or("");
             let is_closed = k.get("x").and_then(|x| x.as_bool()).unwrap_or(false);
+            // `k.t` 是 K 线**起始时间**（ms）。内核聚合器用它做去重 / 缺口检测 /
+            // 收市时刻推导，不能用接收时刻（此前误用 Utc::now()）。字段缺失时
+            // 退回当前时间，保证不 panic。
+            let bar_timestamp = k
+                .get("t")
+                .and_then(|t| t.as_i64())
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .unwrap_or_else(chrono::Utc::now);
             Ok(WsMessage::Kline(crate::types::Kline {
                 symbol: Symbol::new(symbol),
                 interval: interval.to_string(),
@@ -489,7 +497,7 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
                     .unwrap_or("0")
                     .parse()
                     .unwrap_or_default(),
-                timestamp: chrono::Utc::now(),
+                timestamp: bar_timestamp,
                 is_closed,
             }))
         }
