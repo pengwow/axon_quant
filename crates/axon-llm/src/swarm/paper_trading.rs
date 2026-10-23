@@ -1,4 +1,15 @@
 //! PaperTrading 模拟盘验证
+//!
+//! # 已废弃
+//!
+//! 本模块（`PaperTradingRunner` / `PaperPortfolio` / `PaperTradingConfig`）由 `axon-kernel`
+//! 的 `PaperSink` + `axon-worker` 的 `pump::KernelPump` 取代：paper 与回测 / live 走同一条
+//! 内核主回路，模拟成交入口只剩 `PaperSink`。M6 之后的新代码不得使用本模块。
+//!
+//! 只做文档标注、不加 `#[deprecated]` 属性：工作区内仍有使用点 —— `swarm/mod.rs` 公开
+//! `pub mod paper_trading`，`trading/paper_backend.rs`（`PaperTradingBackend`）直接依赖
+//! 本模块的 `PaperPortfolio` / `PaperTradingConfig`（该文件共 25 处引用，含其单测），
+//! 属性会把工作区门禁的 `-D warnings` 打成失败。移除随下个大版本进行。
 
 use std::collections::HashMap;
 

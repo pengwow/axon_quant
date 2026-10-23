@@ -1,5 +1,17 @@
 //! 模拟盘模式
 //!
+//! # 已废弃
+//!
+//! 本模块（`PaperTradingEngine` / `SimulatedExchange`）由 `axon-kernel` 的 `PaperSink` +
+//! `axon-worker` 的 `pump::KernelPump` 取代：paper 与回测 / live 走同一条内核主回路，
+//! 模拟成交入口只剩 `PaperSink`。M6 之后的新代码不得使用本模块。
+//!
+//! 只做文档标注、不加 `#[deprecated]` 属性：工作区内仍有使用点 —— 同目录 `engine.rs`
+//! （`StreamingEngine` 的 `PaperTrading` 模式）与 `mod.rs` 的 re-export，以及 4 个 legacy
+//! 集成测试（`paper_partial_fill_test.rs` / `e2e_streaming_paper.rs` /
+//! `streaming_metrics_e2e.rs` / `streaming_report_e2e.rs`）仍在跑这条路径，属性会把
+//! 工作区门禁的 `-D warnings` 打成失败。移除随下个大版本进行。
+//!
 //! 0.4.0:PaperTradingEngine 强化 — `partial fill` 裁决生效,
 //! `seed` 化 rng 让测试可重复。
 //!
