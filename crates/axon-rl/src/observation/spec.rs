@@ -55,6 +55,15 @@ impl NormalizerConfig {
 }
 
 /// 观测组装规格
+///
+/// # 破坏性语义（两次口径变更，旧模型均需重训）
+///
+/// 1. `build_observation_and_update` 上线前，训练观测恒为全零（Z-Score 统计量从未
+///    累积），那之前的权重不可与之后的产物比较。
+/// 2. 本规格曾把「最新在前」的 `history` 切成 `history[len-window..]`，即窗口里**最旧**
+///    的那几根进了观测，`_t0` 槽位装的反而是最旧 bar。现已统一为 `history[0]` = 当前
+///    bar、`_t0` = 当前 bar、`_t1` = 上一根。槽位整体错位，**按旧口径训练的模型必须
+///    重训**，不能直接加载新数据做推理。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservationSpec {
     /// 窗口大小（每个特征保留最近 N 根 bar）
@@ -110,27 +119,28 @@ impl ObservationSpec {
 
     /// 提取窗口内全部原始特征值（按「特征 → 时间步」展开，与观测向量排列一致）
     ///
+    /// `history` 是**最新在前**的窗口：`history[0]` 是当前 bar，`history[t]` 是距今
+    /// `t` 步的 bar。因此槽位号 `_tN` 就是「距当前 bar 的步数」——`_t0` 是当前 bar，
+    /// `_t1` 是上一根，越往后越旧。
+    ///
     /// `build_observation` 与 `build_observation_and_update` 共用本方法：特征提取
     /// 只保留这一份实现，避免顺序漂移让两边观测静默错位。
     fn extract_window_values(
         &self,
         history: &[MarketState],
     ) -> Result<Vec<RawFeatureValue>, ObservationError> {
-        // 起始索引：保留最多 window 个历史点
-        let start = if history.len() >= self.window_size {
-            history.len() - self.window_size
-        } else {
-            0
-        };
-        let mut values = Vec::with_capacity(self.features.len() * (history.len() - start));
+        // 只保留最新的 window_size 根；历史不足时按可用根数产出短向量（不补零）
+        let take = self.window_size.min(history.len());
+        let mut values = Vec::with_capacity(self.features.len() * take);
         for (feature_idx, feat_config) in self.features.iter().enumerate() {
-            for t in start..history.len() {
-                let raw = extract_feature_value(&feat_config.source, &history[t], &history[..t])?;
+            for t in 0..take {
+                // history[t] 是距今 t 步的 bar；窗口聚合要的「过去」是更早的 t+1.. （同样最新在前）
+                let raw =
+                    extract_feature_value(&feat_config.source, &history[t], &history[t + 1..])?;
                 values.push(RawFeatureValue {
                     feature_idx,
                     raw,
-                    // `history` 最新在前，槽位号 = 距当前 bar 的步数
-                    name: format!("{}_t{}", feat_config.name, history.len() - t - 1),
+                    name: format!("{}_t{}", feat_config.name, t),
                 });
             }
         }
@@ -159,6 +169,10 @@ impl ObservationSpec {
     /// 这是**唯一**的特征组装实现：`DefaultObservationSpace::build` 也委托到这里。
     /// `state` 目前只贡献观测的时间戳（与历史实现逐字一致），特征值一律从
     /// `history` 里取。
+    ///
+    /// `history` 必须**最新在前**（`history[0]` = 当前 bar）：`_t0` 槽位装最新一根，
+    /// `_t1` 装上一根，依此类推。`TradingEnv::observation_inputs` 与内核
+    /// `RLStrategyHost` 都已按这个顺序收集。
     pub fn build_observation(
         &self,
         state: &MarketState,
@@ -187,6 +201,8 @@ impl ObservationSpec {
     ///
     /// 此前训练路径只有只读 `build`，统计量恒为空、Z-Score 观测恒为 0；因此
     /// **旧模型是在全零观测上训的，不可与本次之后的产物比较。**
+    ///
+    /// `history` 与 [`Self::build_observation`] 同口径：**最新在前**，`_t0` = 当前 bar。
     pub fn build_observation_and_update(
         &mut self,
         state: &MarketState,
@@ -350,7 +366,8 @@ mod tests {
             }
         }
 
-        // 6 根 bar：窗口聚合要求 t >= window，因此历史长度至少 2 × window
+        // 6 根 bar：最旧的观测槽位（t = window-1）也要给窗口聚合留下 window 根过去历史，
+        // 因此历史长度至少 window_size + window（这里 3 + 2）
         let bars: Vec<MarketBar> = (0..6u64)
             .map(|i| bar(i * 60_000, 100.0 + i as f64))
             .collect();

@@ -300,6 +300,9 @@ impl TradingEnv {
     }
 
     /// 收集当前步的原始输入：当前状态（含组合字段）+ 最新在前的行情窗口
+    ///
+    /// `history[0]` 必须是当前 bar：观测侧按 `_t0` = 最新一根编号，这里用 `.rev()`
+    /// 让最新的 `current_step` 落在索引 0，与 `ObservationSpec` 的口径保持一致。
     fn observation_inputs(&self) -> (MarketState, Vec<MarketState>) {
         let bar = self.market_data[self.current_step];
         let market_state = MarketState {

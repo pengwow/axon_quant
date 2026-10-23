@@ -43,7 +43,7 @@ pub enum AggregationType {
     Max,
     /// 最小值
     Min,
-    /// 最后一个值
+    /// 最新值（`history` 最新在前 ⇒ 窗口里距当前最近的一根）
     Last,
     /// 偏度
     Skew,
@@ -334,7 +334,8 @@ pub(crate) fn extract_feature_value(
                     have: history.len(),
                 });
             }
-            let values: Vec<f64> = history[history.len() - window..]
+            // `history` 最新在前：最新的 `window` 根就在 `history[..window]`
+            let values: Vec<f64> = history[..*window]
                 .iter()
                 .map(|s| extract_feature_value(inner, s, &[]))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -348,7 +349,8 @@ pub(crate) fn extract_feature_value(
                 }
                 AggregationType::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
                 AggregationType::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
-                AggregationType::Last => values.last().copied().unwrap_or(0.0),
+                // Last = 距当前最近的一根；窗口最新在前，故取首元素而非末元素
+                AggregationType::Last => values.first().copied().unwrap_or(0.0),
                 AggregationType::Skew => {
                     let n = values.len() as f64;
                     let mean = values.iter().sum::<f64>() / n;
