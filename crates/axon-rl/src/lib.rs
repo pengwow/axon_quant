@@ -39,6 +39,7 @@ pub use action::types::{
 };
 pub use env::action_decoder::ActionDecoder;
 pub use env::config::EnvConfig;
+pub use env::cost::CostModel;
 pub use env::error::{EnvError, EnvResult};
 pub use env::executor::Executor;
 pub use env::trading_env::{StepResult, TradingEnv};
@@ -49,6 +50,9 @@ pub use observation::normalizer::{
     make_normalizer,
 };
 pub use observation::space::DefaultObservationSpace;
+pub use observation::spec::{
+    DEFAULT_SPEC_VERSION, NormalizerConfig, ObservationInput, ObservationSpec,
+};
 pub use observation::types::{
     AggregationType, BoxSpace, DType, FeatureConfig, FeatureSource, MarketState, NormalizerType,
     Observation, ObservationSpace, TimeFeature,

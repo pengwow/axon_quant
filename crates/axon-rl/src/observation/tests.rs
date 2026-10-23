@@ -361,11 +361,11 @@ fn test_observation_space_feature_names() {
 #[test]
 fn test_observation_space_reset_stats() {
     let mut space = DefaultObservationSpace::new(2, vec![close_feature()]).unwrap();
-    space.running_stats[0].update(10.0);
-    space.running_stats[0].update(20.0);
-    assert_eq!(space.running_stats[0].count, 2);
+    space.running_stats_mut(0).update(10.0);
+    space.running_stats_mut(0).update(20.0);
+    assert_eq!(space.running_stats(0).count, 2);
     space.reset_stats();
-    assert_eq!(space.running_stats[0].count, 0);
+    assert_eq!(space.running_stats(0).count, 0);
 }
 
 // ── 特征提取测试 ─────────────────────────────────────────
