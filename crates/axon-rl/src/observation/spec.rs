@@ -18,7 +18,8 @@ use crate::env::types::MarketBar;
 use crate::observation::error::{ObservationError, validate_observation_space};
 use crate::observation::normalizer::RunningStats;
 use crate::observation::types::{
-    FeatureConfig, MarketState, Observation, extract_feature_value, normalize_and_clip,
+    FeatureConfig, FeatureSource, MarketState, Observation, extract_feature_value,
+    normalize_and_clip,
 };
 
 /// 默认规格版本
@@ -115,6 +116,25 @@ impl ObservationSpec {
     /// 特征维度总数（`num_features × window_size`）
     pub fn num_features(&self) -> usize {
         self.features.len() * self.window_size
+    }
+
+    /// 组装一次观测所需的 `history` 最少根数
+    ///
+    /// `window_size` 覆盖槽位数（`_t0.._t{window_size-1}`）；若任一特征使用
+    /// `WindowAgg { window }`，最旧的那个槽位 `_t{window_size-1}` 还要再往前
+    /// `window` 根更早的历史，因此总深度是 `window_size + max(window)`。
+    ///
+    /// 无 `WindowAgg` 时等于 `window_size`。调用方（内核 `RLStrategyHost`）按本值
+    /// 缓存已收市 bar：只留 `window_size` 根时，窗口聚合特征永远 `InsufficientData`，
+    /// 观测组装失败 → 推理降级为 Hold。
+    pub fn required_history_depth(&self) -> usize {
+        let max_window = self
+            .features
+            .iter()
+            .map(|feat| max_window_agg_window(&feat.source, 0))
+            .max()
+            .unwrap_or(0);
+        self.window_size + max_window
     }
 
     /// 提取窗口内全部原始特征值（按「特征 → 时间步」展开，与观测向量排列一致）
@@ -259,6 +279,33 @@ impl ObservationSpec {
             }
         }
     }
+}
+
+/// `WindowAgg` 嵌套递归的深度上限
+///
+/// 正常配置只有一层聚合；嵌套是为了「聚合再聚合」才出现的场景。超过该深度视为
+/// 配置异常，停止下探并返回已取到的最大值，避免恶意 / 坏配置把递归打穿。
+const MAX_WINDOW_AGG_DEPTH: usize = 8;
+
+/// 递归取特征来源里最大的窗口聚合窗口（无 `WindowAgg` 返回 0）
+///
+/// **只取最大，不做嵌套累加**：`extract_feature_value` 对 `WindowAgg` 的内层
+/// `source` 是「窗口内逐 bar 各取一次」调用（`&[]` 空历史），内层再是 `WindowAgg`
+/// 也拿不到额外历史，因此外层的窗口大小才是真正的深度需求。累加只会无谓放大缓存。
+fn max_window_agg_window(source: &FeatureSource, depth: usize) -> usize {
+    let FeatureSource::WindowAgg {
+        source: inner,
+        window,
+        ..
+    } = source
+    else {
+        return 0;
+    };
+    if depth >= MAX_WINDOW_AGG_DEPTH {
+        // 超出深度上限：不再下探，本层窗口即为已知最大值
+        return *window;
+    }
+    (*window).max(max_window_agg_window(inner, depth + 1))
 }
 
 /// 观测组装输入
@@ -448,6 +495,87 @@ mod tests {
         assert_eq!(spec.shape(), vec![features().len() * 4]);
         assert_eq!(spec.num_features(), features().len() * 4);
         assert_eq!(spec.spec_version, "2.0.0");
+    }
+
+    /// 无 `WindowAgg` 时所需历史深度就等于窗口大小
+    #[test]
+    fn test_required_history_depth_without_window_agg() {
+        let feat = feature(
+            "close",
+            FeatureSource::PriceField("close".into()),
+            NormalizerType::None,
+        );
+        let spec = ObservationSpec::new(4, vec![feat]).unwrap();
+        assert_eq!(spec.required_history_depth(), 4);
+    }
+
+    /// 有 `WindowAgg { window: 3 }` 时深度 = window_size + 3
+    #[test]
+    fn test_required_history_depth_with_window_agg() {
+        let feat = |name: &str, window: usize| {
+            feature(
+                name,
+                FeatureSource::WindowAgg {
+                    source: Box::new(FeatureSource::PriceField("close".into())),
+                    agg: AggregationType::Mean,
+                    window,
+                },
+                NormalizerType::None,
+            )
+        };
+        // 多个聚合取最大窗口，不是各窗口相加
+        let spec = ObservationSpec::new(
+            2,
+            vec![feat("mean2", 2), feat("mean3", 3), features()[0].clone()],
+        )
+        .unwrap();
+        assert_eq!(spec.required_history_depth(), 5, "2 + max(2, 3)");
+    }
+
+    /// 按 `required_history_depth` 备够历史时，每个槽位（含最旧）都能算出观测
+    #[test]
+    fn test_required_history_depth_is_enough_for_all_slots() {
+        let window_size = 3;
+        let spec = ObservationSpec::new(
+            window_size,
+            vec![feature(
+                "close_mean",
+                FeatureSource::WindowAgg {
+                    source: Box::new(FeatureSource::PriceField("close".into())),
+                    agg: AggregationType::Mean,
+                    window: 2,
+                },
+                NormalizerType::None,
+            )],
+        )
+        .unwrap();
+        let depth = spec.required_history_depth();
+        assert_eq!(depth, window_size + 2);
+
+        let bars: Vec<MarketBar> = (0..depth as u64)
+            .map(|i| bar(i * 60_000, 100.0 + i as f64))
+            .collect();
+        let mut newest_first = bars.clone();
+        newest_first.reverse();
+        let portfolio = PortfolioState::default();
+        let obs = spec
+            .try_build(&ObservationInput {
+                bar: &newest_first[0],
+                history: &newest_first,
+                portfolio: &portfolio,
+            })
+            .expect("深度够时必须成功");
+        assert_eq!(obs.len(), window_size);
+
+        // 少一根就必然失败：证明 depth 是紧致下界而非保守上界
+        assert!(
+            spec.try_build(&ObservationInput {
+                bar: &newest_first[0],
+                history: &newest_first[..depth - 1],
+                portfolio: &portfolio,
+            })
+            .is_err()
+        );
     }
 
     #[test]

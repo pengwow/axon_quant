@@ -43,7 +43,12 @@ pub struct RLStrategyHost {
     spec: ObservationSpec,
     /// 本 Host 负责的品种
     symbol: Instrument,
-    /// 已收市窗口，最多 `spec.window_size` 根，按时间升序存放
+    /// 已收市窗口，最多 `spec.required_history_depth()` 根，按时间升序存放
+    ///
+    /// 深度是 `window_size + 最大聚合窗口`，不是 `window_size`：观测窗口里最旧的
+    /// 那个槽位 `_t{window_size-1}` 还要再往前 `window` 根更早的历史，`WindowAgg`
+    /// 特征才凑得齐窗口。只留 `window_size` 根时聚合特征永远 `InsufficientData`，
+    /// 观测组装失败、推理降级为 Hold。
     ///
     /// 对外组装观测时会反转成「最新在前」，与 `TradingEnv` 收集历史的顺序一致。
     history: Vec<MarketBar>,
@@ -110,9 +115,9 @@ impl StrategyHost for RLStrategyHost {
 
         let bar = market_bar_of(ev.bar);
 
-        // 1) 维护已收市窗口：只保留最近 window_size 根
+        // 1) 维护已收市窗口：只保留窗口聚合所需的历史深度（`window_size + 最大聚合窗口`）
         self.history.push(bar);
-        if self.history.len() > self.spec.window_size {
+        if self.history.len() > self.spec.required_history_depth() {
             self.history.remove(0);
         }
 
@@ -194,7 +199,9 @@ mod tests {
     use crate::kernel_loop::Kernel;
     use crate::pump::GridFrame;
     use crate::sink::BacktestSink;
-    use axon_rl::observation::types::{FeatureConfig, FeatureSource, NormalizerType};
+    use axon_rl::observation::types::{
+        AggregationType, FeatureConfig, FeatureSource, NormalizerType,
+    };
 
     const MIN: i64 = 60_000_000_000;
 
@@ -303,6 +310,42 @@ mod tests {
         }
     }
 
+    /// 含窗口聚合特征的规格：单个特征，`WindowAgg { Mean, window }`
+    fn spec_with_window_agg(window_size: usize, agg_window: usize) -> ObservationSpec {
+        ObservationSpec::new(
+            window_size,
+            vec![FeatureConfig {
+                name: "close_mean".into(),
+                source: FeatureSource::WindowAgg {
+                    source: Box::new(FeatureSource::PriceField("close".into())),
+                    agg: AggregationType::Mean,
+                    window: agg_window,
+                },
+                normalizer: NormalizerType::None,
+                clip_range: None,
+            }],
+        )
+        .unwrap()
+        .with_version("v1-test")
+    }
+
+    /// 记录每次完整观测的假后端（用于断言观测长度 / 取值 / 无 NaN）
+    struct RecordingBackend {
+        model: String,
+        observations: Arc<Mutex<Vec<Vec<f64>>>>,
+    }
+
+    impl InferenceBackend for RecordingBackend {
+        fn infer(&mut self, obs: &[f64]) -> Action {
+            self.observations.lock().unwrap().push(obs.to_vec());
+            Action::continuous(vec![0.3])
+        }
+
+        fn model_id(&self) -> &str {
+            &self.model
+        }
+    }
+
     #[test]
     fn test_host_ratio_history_and_window_truncation() {
         let mut h = host(2, 0.5);
@@ -317,6 +360,58 @@ mod tests {
         let closes: Vec<f64> = h.history().iter().map(|b| b.close).collect();
         assert_eq!(closes, vec![101.0, 102.0]);
         assert_eq!(h.model_id(), "fake-model");
+    }
+
+    /// 含 `WindowAgg` 特征时 Host 必须缓存 `window_size + 聚合窗口` 根历史
+    ///
+    /// 旧实现只留 `window_size` 根，最旧槽位 `_t{window_size-1}` 还要再往前 `window`
+    /// 根更早历史，永远 `InsufficientData` → 观测失败 → 每根 bar 都 Hold。这里连喂
+    /// 足量 bar：预热期之后每根都必须真的产出 `SetTarget`，且缓存深度稳定不增长。
+    #[test]
+    fn test_host_window_agg_history_depth() {
+        let (window_size, agg_window) = (3usize, 2usize);
+        let depth = window_size + agg_window;
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut h = RLStrategyHost::new(
+            Box::new(RecordingBackend {
+                model: "agg-model".to_string(),
+                observations: Arc::clone(&observations),
+            }),
+            spec_with_window_agg(window_size, agg_window),
+            btc(),
+            ActionSpace::Continuous(axon_rl::action::types::ContinuousActionSpace::new(
+                -1.0, 1.0,
+            )),
+        )
+        .unwrap();
+        assert_eq!(h.spec().required_history_depth(), depth);
+
+        let c = ctx(10_000.0, 0.0, 100.0);
+        let mut successes = 0;
+        for idx in 0..8i64 {
+            let ratio = run_bar(&mut h, bar(idx * MIN, 100.0 + idx as f64), &c);
+            if idx as usize + 1 < depth {
+                // 预热期：更早的 bar 还没收够 `window` 根，聚合特征缺数只能 Hold
+                assert_eq!(ratio, None, "第 {} 根 bar 仍处于预热期", idx + 1);
+            } else {
+                assert_eq!(ratio, Some(0.3), "第 {} 根 bar 必须产出 SetTarget", idx + 1);
+                successes += 1;
+            }
+            assert!(h.history().len() <= depth, "缓存不得超过所需深度");
+        }
+        assert_eq!(h.history().len(), depth, "缓存深度稳定在 window_size + 2");
+
+        let recorded = observations.lock().unwrap();
+        assert_eq!(recorded.len(), successes, "每根成功 bar 一次推理");
+        let last = recorded.last().expect("至少有一次成功观测");
+        assert_eq!(last.len(), window_size, "观测长度 = features × window_size");
+        assert!(
+            last.iter().all(|value| value.is_finite()),
+            "观测不得含 NaN: {last:?}"
+        );
+        // 最后一根 bar close = 107，最新在前且聚合取「更早」的 window 根：
+        // t0 = mean(106,105)、t1 = mean(105,104)、t2 = mean(104,103)
+        assert_eq!(last.as_slice(), [105.5, 104.5, 103.5]);
     }
 
     #[test]
