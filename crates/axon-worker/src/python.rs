@@ -26,7 +26,9 @@ use axon_kernel::{
     BacktestSink, InferenceBackend, InstrumentMode, Kernel, KernelConfig, KernelResult,
     RLStrategyHost, build_frames,
 };
-use axon_rl::{Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec};
+use axon_rl::{
+    Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec, RunningStats,
+};
 use axon_strategy::impl_::PythonStrategyImpl;
 use axon_strategy::python::PyRuleStrategyImpl;
 use axon_strategy::trait_::Strategy;
@@ -630,6 +632,19 @@ fn parse_features(features: &Bound<'_, PyAny>) -> PyResult<Vec<FeatureConfig>> {
     })
 }
 
+/// Python `list[dict]` → `Vec<RunningStats>`
+///
+/// 与 `TradingEnv.observation_stats()` 的输出同格式（`RunningStats` 的 serde 表示）。
+fn parse_normalizer_stats(stats: &Bound<'_, PyAny>) -> PyResult<Vec<RunningStats>> {
+    let json_mod = stats.py().import("json")?;
+    let json_str: String = json_mod.call_method1("dumps", (stats,))?.extract()?;
+    serde_json::from_str(&json_str).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "stats 解析失败（期望 list[dict]，元素含 mean/m2/min/max/count/median_buffer）: {e}"
+        ))
+    })
+}
+
 /// Python 端统一交易内核（薄包装）
 ///
 /// 只做类型转换与转发：参数解析复用 `BacktestRunner` 的同一组辅助函数，
@@ -719,7 +734,13 @@ impl PyKernel {
     ///
     /// `symbol` 必须带分隔符（`BTC/USDT` / `BTC-USDT`）：内核按它构造 `Instrument`，
     /// 无分隔符会退化成默认品种，导致 Host 过滤不到任何 bar。
-    #[pyo3(signature = (predict, model_id, spec_version, window_size, features, action_space=None, symbol="BTC/USDT"))]
+    ///
+    /// `stats` 是训练期观测归一化统计量（`TradingEnv.observation_stats()` 的 JSON
+    /// 反序列化结果），`None` 时保持全空（Z-Score 恒为 0，与训练分布不一致）。
+    /// 传了就按特征逐条对齐，条数必须等于特征数。
+    // 绑定层签名由 Python 调用方决定（7 个必填 + 2 个可选），拆结构体会破坏现有位置参数
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (predict, model_id, spec_version, window_size, features, action_space=None, symbol="BTC/USDT", stats=None))]
     fn add_rl_strategy(
         &self,
         predict: &Bound<'_, PyAny>,
@@ -729,6 +750,7 @@ impl PyKernel {
         features: &Bound<'_, PyAny>,
         action_space: Option<&Bound<'_, PyDict>>,
         symbol: &str,
+        stats: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
         if !predict.is_callable() {
             return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -746,11 +768,29 @@ impl PyKernel {
             )));
         }
 
-        let spec = ObservationSpec::new(window_size, parse_features(features)?)
+        let mut spec = ObservationSpec::new(window_size, parse_features(features)?)
             .map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("ObservationSpec 构造失败: {e}"))
             })?
             .with_version(spec_version);
+
+        // 训练期统计量：观测组装按特征下标取统计，条数不符会在推理时越界，
+        // 因此注册阶段就拒绝。空 list 与 None 同义（保持全空）。
+        let stats = match stats {
+            Some(stats) => parse_normalizer_stats(stats)?,
+            None => Vec::new(),
+        };
+        if !stats.is_empty() {
+            if stats.len() != spec.features.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "stats 条数必须等于特征数 {}（每特征一条），收到 {}",
+                    spec.features.len(),
+                    stats.len()
+                )));
+            }
+            spec.normalizer.stats = stats;
+        }
+
         let action_space = match action_space {
             Some(dict) => axon_rl::python::parse_action_space(dict)?,
             None => ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0)),
