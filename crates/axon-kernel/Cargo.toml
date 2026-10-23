@@ -1,0 +1,25 @@
+[package]
+name = "axon-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+description = "统一交易内核：回测 / paper / live 共用唯一主回路（事件调度 + Host 决策 + ExecutionSink）"
+
+[dependencies]
+axon-core = { workspace = true }
+axon-backtest = { workspace = true }
+# 观测 / 动作解码 / 成本模型与 TradingEnv 共用同一份实现（统一内核设计 6.2）
+axon-rl = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# journal 落盘测试（创建 / 读回 / 损坏行）用临时文件
+tempfile = { workspace = true }
