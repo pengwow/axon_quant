@@ -639,6 +639,62 @@ mod tests {
         assert!(result.run.fills >= 1, "0.5 权益占比必须真的成交");
     }
 
+    /// 用指定费率跑同一段网格(3 根 bar、恒定 0.5 权益占比)
+    fn run_with_fee_rate(fee_rate: f64) -> KernelResult {
+        let config = KernelConfig {
+            initial_cash: 10_000.0,
+            fee_rate,
+            expected_instruments: [btc()].into_iter().collect(),
+            ..KernelConfig::default()
+        };
+        let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+        kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+        kernel.run_history(frames_3bars()).expect("回测应跑通")
+    }
+
+    #[test]
+    fn test_fee_rate_is_applied() {
+        let free = run_with_fee_rate(0.0);
+        let cheap = run_with_fee_rate(0.001);
+        let pricey = run_with_fee_rate(0.01);
+
+        assert!(free.run.fills > 0, "没有成交则手续费断言无意义");
+        assert_eq!(free.run.total_fees, 0.0, "fee_rate = 0 不应产生手续费");
+
+        // 手续费口径 = Σ(成交价 × 成交数量) × 费率,名义按该跑自己的 fills 累加
+        let notional: f64 = pricey
+            .run
+            .fills_detail
+            .iter()
+            .map(|fill| fill.price.as_f64() * fill.quantity.as_f64())
+            .sum();
+        assert!(notional > 0.0, "必须有成交量才能校验名义");
+        let expected = 0.01 * notional;
+        assert!(
+            (pricey.run.total_fees - expected).abs() < expected * 1e-9 + 1e-9,
+            "0.01 费率应收到 {} ,实际 {}",
+            expected,
+            pricey.run.total_fees
+        );
+        assert!(
+            pricey.run.total_fees > cheap.run.total_fees && cheap.run.total_fees > 0.0,
+            "费率越高手续费越高: 0.001 -> {}, 0.01 -> {}",
+            cheap.run.total_fees,
+            pricey.run.total_fees
+        );
+    }
+
+    #[test]
+    fn test_default_fee_rate_matches_engine_default() {
+        use axon_backtest::engine::FeeConfig;
+
+        assert_eq!(
+            KernelConfig::default().fee_rate,
+            FeeConfig::default().taker_rate,
+            "内核默认费率必须与引擎 FeeConfig 默认值同源"
+        );
+    }
+
     #[test]
     fn test_multi_symbol_grid_with_gap_still_frames_every_point() {
         let eth = Instrument::Spot(SpotInstrument {

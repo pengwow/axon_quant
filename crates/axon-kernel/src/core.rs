@@ -96,6 +96,11 @@ impl Default for SeedLiquidity {
 pub struct KernelConfig {
     /// 初始资金(所有 instrument 共享同一笔)
     pub initial_cash: f64,
+    /// 手续费率(taker 单费率,与 `BacktestEngine` 的 `FeeConfig` 同义)
+    ///
+    /// 默认取引擎默认值,保证不传时与旧回测逐位一致;RL 训练侧用
+    /// `transaction_cost` 口径时需要显式传入以对齐。
+    pub fee_rate: f64,
     /// 回测结束 EOD 是否强制市价平仓(透传引擎)
     pub force_liquidate: bool,
     /// 每品种保证金规格(key = `"BTC/USDT"`);空 = 不启用保证金模拟
@@ -124,6 +129,8 @@ impl Default for KernelConfig {
     fn default() -> Self {
         Self {
             initial_cash: 100_000.0,
+            // 不在这里重复硬编码 0.001:费率口径的唯一来源是引擎的 `FeeConfig`
+            fee_rate: FeeConfig::default().taker_rate,
             force_liquidate: false,
             margin_specs: HashMap::new(),
             instrument_mode: InstrumentMode::Spot,
@@ -179,7 +186,9 @@ impl KernelCore {
                 matching_engine: Box::new(L1MatchingEngine::new()),
                 impact_model: None,
                 initial_cash: config.initial_cash,
-                fee_config: FeeConfig::default(),
+                fee_config: FeeConfig {
+                    taker_rate: config.fee_rate,
+                },
                 force_liquidate: config.force_liquidate,
                 margin_specs: config.margin_specs.clone(),
             },

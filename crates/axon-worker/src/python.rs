@@ -663,6 +663,8 @@ pub struct PyKernel {
     force_liquidate: bool,
     instrument_mode: InstrumentMode,
     interval: String,
+    /// 手续费率(已解析默认值并校验,`None` 在构造时即折算为默认值)
+    fee_rate: f64,
     margin_specs: Mutex<HashMap<String, MarginSpec>>,
     /// 已注册策略及其交易 symbol（symbol 用于构造 Host 的品种过滤）
     strategies: Mutex<Vec<(String, Arc<dyn Strategy>)>>,
@@ -677,7 +679,7 @@ pub struct PyKernel {
 #[pymethods]
 impl PyKernel {
     #[new]
-    #[pyo3(signature = (initial_cash=100000.0, futures=false, force_liquidate=false, settle=None, contract_size=1.0, interval="1m".to_string()))]
+    #[pyo3(signature = (initial_cash=100000.0, futures=false, force_liquidate=false, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None))]
     fn new(
         initial_cash: f64,
         futures: bool,
@@ -685,16 +687,29 @@ impl PyKernel {
         settle: Option<String>,
         contract_size: f64,
         interval: String,
+        fee_rate: Option<f64>,
     ) -> PyResult<Self> {
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("创建 tokio runtime 失败: {e}"))
         })?;
+        // `None` = 引擎默认费率(0.001);显式传入才校验,
+        // 负数或 NaN/inf 会让手续费累计失真,直接在构造期拒绝
+        let fee_rate = match fee_rate {
+            None => KernelConfig::default().fee_rate,
+            Some(rate) if rate.is_finite() && rate >= 0.0 => rate,
+            Some(rate) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "fee_rate 必须是有限非负数，收到: {rate}"
+                )));
+            }
+        };
         Ok(Self {
             initial_cash,
             force_liquidate,
             // 与 `PyBacktestRunner::new` 同规则：futures 才谈结算方式与乘数
             instrument_mode: build_instrument_mode(futures, settle.as_deref(), contract_size)?,
             interval,
+            fee_rate,
             margin_specs: Mutex::new(HashMap::new()),
             strategies: Mutex::new(Vec::new()),
             rl_strategies: Mutex::new(Vec::new()),
@@ -873,6 +888,7 @@ impl PyKernel {
 
         let config = KernelConfig {
             initial_cash: self.initial_cash,
+            fee_rate: self.fee_rate,
             force_liquidate: self.force_liquidate,
             margin_specs,
             instrument_mode: self.instrument_mode,
