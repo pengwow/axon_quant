@@ -227,10 +227,43 @@ pub trait ObservationSpace: Send + Sync {
         state: &MarketState,
         history: &[MarketState],
     ) -> Result<Observation, ObservationError>;
+    /// 训练专用：先按当前统计量归一化，再用原始特征值更新统计量
+    ///
+    /// 推理侧必须继续用 [`Self::build`]（只读），否则同一次运行会随 step 改变观测口径。
+    /// 默认实现委托 [`Self::build`]：没有归一化状态的实现没有可累积的东西。
+    ///
+    /// # 破坏性语义
+    ///
+    /// 在这个入口出现之前，训练路径只走只读 `build`，Z-Score 统计量恒为空，
+    /// 喂给模型的观测全是 0。**此前训练的模型是在全零观测上训的，不可与本次之后的
+    /// 产物比较、也不可用同一套权重做基线。**
+    fn build_and_update(
+        &mut self,
+        state: &MarketState,
+        history: &[MarketState],
+    ) -> Result<Observation, ObservationError> {
+        self.build(state, history)
+    }
     /// 所有特征名（按 `features` 顺序）
     fn feature_names(&self) -> Vec<String>;
     /// 特征维度总数（`num_features × window_size`）
     fn num_features(&self) -> usize;
+    /// 归一化运行时统计量（仅带归一化的实现返回 `Some`）
+    ///
+    /// 顺序与特征配置逐条对齐（一特征一条统计）。训练结束时调用方把它落进
+    /// 模型旁车，推理侧再灌回，才不至于让 Z-Score 在推理期因空统计恒为 0。
+    fn normalizer_stats(&self) -> Option<&[RunningStats]> {
+        None
+    }
+    /// 灌回归一化运行时统计量（训练恢复 / 内核复现用）
+    ///
+    /// 默认拒绝：不持有归一化状态的实现没有可灌回的位置。实现方必须校验
+    /// 长度与特征数一致——观测组装按下标取统计，长度不符就会越界。
+    fn set_normalizer_stats(&mut self, _stats: Vec<RunningStats>) -> Result<(), ObservationError> {
+        Err(ObservationError::NormalizationFailed {
+            reason: "observation space does not support normalizer stats".to_string(),
+        })
+    }
 }
 
 // ── 内部辅助：从历史 + 当前状态提取归一化后的特征值 ──────

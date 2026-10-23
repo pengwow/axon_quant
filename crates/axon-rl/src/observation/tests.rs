@@ -368,6 +368,160 @@ fn test_observation_space_reset_stats() {
     assert_eq!(space.running_stats(0).count, 0);
 }
 
+// ── 归一化统计量导出 / 灌回 ───────────────────────────────
+
+/// 训练侧导出入口：每个特征一条统计，`build` 不写统计量（现有归一化数值行为不变）
+#[test]
+fn test_normalizer_stats_exposed_per_feature() {
+    let mut space =
+        DefaultObservationSpace::new(2, vec![close_feature(), volume_feature()]).unwrap();
+    for value in [10.0, 12.0, 14.0] {
+        space.running_stats_mut(0).update(value);
+    }
+
+    let history: Vec<MarketState> = (0..3)
+        .map(|i| sample_state(i * 60_000, 100.0 + i as f64))
+        .collect();
+    for _ in 0..3 {
+        space.build(history.last().unwrap(), &history).unwrap();
+    }
+
+    let stats = space
+        .normalizer_stats()
+        .expect("默认观测空间必须暴露统计量");
+    assert_eq!(stats.len(), 2, "每个特征一条统计");
+    assert_eq!(stats[0].count, 3, "build 只读统计量，不写入");
+    assert_eq!(stats[1].count, 0);
+}
+
+/// 灌回训练统计量后：归一化真的参与计算，且反复灌回同一份统计量结果逐位相等
+#[test]
+fn test_set_normalizer_stats_reproduces_bitwise() {
+    let mut space =
+        DefaultObservationSpace::new(2, vec![close_feature(), volume_feature()]).unwrap();
+    let history: Vec<MarketState> = (0..3)
+        .map(|i| sample_state(i * 60_000, 100.0 + i as f64))
+        .collect();
+
+    // 模拟训练期积累的统计量（经 serde 往返，等价于旁车落盘 → 读回）
+    let mut stats = vec![RunningStats::new(), RunningStats::new()];
+    for value in [95.0, 100.0, 110.0] {
+        stats[0].update(value);
+    }
+    for value in [10.0, 50.0, 200.0] {
+        stats[1].update(value);
+    }
+    let restored: Vec<RunningStats> =
+        serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+
+    space.set_normalizer_stats(restored.clone()).unwrap();
+    let expected = space.build(history.last().unwrap(), &history).unwrap();
+    assert!(
+        expected.features.iter().any(|value| *value != 0.0),
+        "统计量必须真的参与归一化: {:?}",
+        expected.features
+    );
+
+    space.set_normalizer_stats(restored).unwrap();
+    let actual = space.build(history.last().unwrap(), &history).unwrap();
+    assert_eq!(actual.features, expected.features, "灌回后必须逐位复现");
+}
+
+#[test]
+fn test_set_normalizer_stats_rejects_length_mismatch() {
+    let mut space = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    let err = space
+        .set_normalizer_stats(vec![RunningStats::new(), RunningStats::new()])
+        .unwrap_err();
+    assert_eq!(
+        err,
+        ObservationError::FeatureCountMismatch {
+            expected: 1,
+            actual: 2,
+        }
+    );
+}
+
+// ── 训练入口 build_and_update ─────────────────────────────
+
+/// 训练入口：每调用一次都把窗口内的原始特征值累积进统计量（窗口=1 ⇒ 每特征 +1）
+#[test]
+fn test_build_and_update_accumulates_stats() {
+    let mut space =
+        DefaultObservationSpace::new(1, vec![close_feature(), volume_feature()]).unwrap();
+
+    let mut last = Observation::empty();
+    for (close, volume) in [(100.0, 100.0), (110.0, 200.0), (120.0, 300.0)] {
+        let mut state = sample_state(0, close);
+        state.volume = volume;
+        last = space
+            .build_and_update(&state, std::slice::from_ref(&state))
+            .unwrap();
+    }
+
+    let stats = space.normalizer_stats().unwrap();
+    assert_eq!(stats[0].count, 3, "每个特征累积 3 个原始值");
+    assert_eq!(stats[1].count, 3);
+    // 第 3 次归一化用的是前 2 个值（mean=105、std≈7.07）⇒ Z-Score 分支必须给出非零
+    assert!(
+        last.features.iter().any(|value| *value != 0.0),
+        "统计量必须真的参与归一化: {:?}",
+        last.features
+    );
+}
+
+/// 只读 `build` 不写统计量：推理路径反复调用不得改变观测口径
+#[test]
+fn test_build_does_not_update_stats() {
+    let space = DefaultObservationSpace::new(1, vec![close_feature(), volume_feature()]).unwrap();
+    let state = sample_state(0, 100.0);
+    for _ in 0..3 {
+        space.build(&state, std::slice::from_ref(&state)).unwrap();
+    }
+
+    let stats = space.normalizer_stats().unwrap();
+    assert_eq!(stats[0].count, 0, "build 只读统计量");
+    assert_eq!(stats[1].count, 0);
+}
+
+/// 灌回训练落盘的统计量后，推理 `build` 与训练路径对同一输入必须逐位相等
+///
+/// 比较对象刻意取**第 6 步**而不是第 5 步：`build_and_update` 先归一化后更新，
+/// 第 5 步的观测用的是「更新 4 次」的统计量，与落盘的「更新 5 次」统计量差一次
+/// `update`，两者本就不该相等。第 6 步的归一化正好用落盘的最终统计量，才是
+/// 「训练看到的观测」与「推理看到的观测」真正可比的同一口径。
+#[test]
+fn test_inference_with_final_stats_matches_last_training_step() {
+    let mut train = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    for close in [100.0, 104.0, 98.0, 103.0, 99.0] {
+        let state = sample_state(0, close);
+        train
+            .build_and_update(&state, std::slice::from_ref(&state))
+            .unwrap();
+    }
+    let final_stats = train.normalizer_stats().unwrap().to_vec();
+    assert_eq!(final_stats[0].count, 5, "训练 5 步 ⇒ 5 个样本");
+
+    let input = sample_state(0, 106.0);
+    let training_obs = train
+        .build_and_update(&input, std::slice::from_ref(&input))
+        .unwrap();
+
+    let mut inference = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    inference.set_normalizer_stats(final_stats).unwrap();
+    let inference_obs = inference
+        .build(&input, std::slice::from_ref(&input))
+        .unwrap();
+
+    assert_eq!(
+        training_obs.features, inference_obs.features,
+        "同一份统计量、同一输入，训练与推理观测必须逐位相等"
+    );
+    assert_ne!(inference_obs.features[0], 0.0, "Z-Score 必须吃统计量");
+    // 只读推理不得污染自己灌回的统计量
+    assert_eq!(inference.normalizer_stats().unwrap()[0].count, 5);
+}
+
 // ── 特征提取测试 ─────────────────────────────────────────
 
 #[test]

@@ -67,6 +67,18 @@ pub struct ObservationSpec {
     pub spec_version: String,
 }
 
+/// 窗口内的单个原始特征值
+///
+/// 归一化与统计量更新都必须基于同一批原始值，否则观测与训练统计不同源。
+struct RawFeatureValue {
+    /// 所属特征在 [`ObservationSpec::features`] 中的下标（决定用哪条运行时统计）
+    feature_idx: usize,
+    /// 归一化前的原始特征值
+    raw: f64,
+    /// 观测槽位名（`{feature}_t{N}`）
+    name: String,
+}
+
 impl ObservationSpec {
     /// 构造规格（统计量全空，对应训练冷启动）
     pub fn new(window_size: usize, features: Vec<FeatureConfig>) -> Result<Self, ObservationError> {
@@ -96,7 +108,53 @@ impl ObservationSpec {
         self.features.len() * self.window_size
     }
 
-    /// 从 `MarketState` 与历史窗口构建完整观测
+    /// 提取窗口内全部原始特征值（按「特征 → 时间步」展开，与观测向量排列一致）
+    ///
+    /// `build_observation` 与 `build_observation_and_update` 共用本方法：特征提取
+    /// 只保留这一份实现，避免顺序漂移让两边观测静默错位。
+    fn extract_window_values(
+        &self,
+        history: &[MarketState],
+    ) -> Result<Vec<RawFeatureValue>, ObservationError> {
+        // 起始索引：保留最多 window 个历史点
+        let start = if history.len() >= self.window_size {
+            history.len() - self.window_size
+        } else {
+            0
+        };
+        let mut values = Vec::with_capacity(self.features.len() * (history.len() - start));
+        for (feature_idx, feat_config) in self.features.iter().enumerate() {
+            for t in start..history.len() {
+                let raw = extract_feature_value(&feat_config.source, &history[t], &history[..t])?;
+                values.push(RawFeatureValue {
+                    feature_idx,
+                    raw,
+                    // `history` 最新在前，槽位号 = 距当前 bar 的步数
+                    name: format!("{}_t{}", feat_config.name, history.len() - t - 1),
+                });
+            }
+        }
+        Ok(values)
+    }
+
+    /// 用当前统计量归一化全部原始值（不改统计量）
+    fn normalize_values(&self, values: &[RawFeatureValue]) -> (Vec<f64>, Vec<String>) {
+        let mut features = Vec::with_capacity(values.len());
+        let mut feature_names = Vec::with_capacity(values.len());
+        for value in values {
+            let feat_config = &self.features[value.feature_idx];
+            features.push(normalize_and_clip(
+                value.raw,
+                &feat_config.normalizer,
+                &self.normalizer.stats[value.feature_idx],
+                feat_config.clip_range,
+            ));
+            feature_names.push(value.name.clone());
+        }
+        (features, feature_names)
+    }
+
+    /// 从 `MarketState` 与历史窗口构建完整观测（只读，不改统计量）
     ///
     /// 这是**唯一**的特征组装实现：`DefaultObservationSpace::build` 也委托到这里。
     /// `state` 目前只贡献观测的时间戳（与历史实现逐字一致），特征值一律从
@@ -106,30 +164,43 @@ impl ObservationSpec {
         state: &MarketState,
         history: &[MarketState],
     ) -> Result<Observation, ObservationError> {
-        let num_features = self.features.len();
-        let window = self.window_size;
-        let mut features = Vec::with_capacity(num_features * window);
-        let mut feature_names = Vec::with_capacity(num_features * window);
+        let values = self.extract_window_values(history)?;
+        let (features, feature_names) = self.normalize_values(&values);
 
-        // 起始索引：保留最多 window 个历史点
-        let start = if history.len() >= window {
-            history.len() - window
-        } else {
-            0
-        };
+        Ok(Observation {
+            features,
+            feature_names,
+            timestamp: Some(state.timestamp),
+        })
+    }
 
-        for (feat_idx, feat_config) in self.features.iter().enumerate() {
-            for t in start..history.len() {
-                let raw = extract_feature_value(&feat_config.source, &history[t], &history[..t])?;
-                let normalized = normalize_and_clip(
-                    raw,
-                    &feat_config.normalizer,
-                    &self.normalizer.stats[feat_idx],
-                    feat_config.clip_range,
-                );
-                features.push(normalized);
-                feature_names.push(format!("{}_t{}", feat_config.name, history.len() - t - 1));
-            }
+    /// 训练专用：先按当前统计量归一化产出观测，再用同一批原始特征值更新统计量
+    ///
+    /// # 为什么「先归一化后更新」
+    ///
+    /// 第 N 步的观测必须只用第 N 步之前累积的统计量。这样训练观测与只读推理
+    /// （灌回第 N-1 步落盘的统计量后 `build`）之间只差一次 `update`，误差有界且可解释。
+    /// 反过来先更新，训练观测就会用上包含当前 bar 的统计量，推理侧永远追不平——
+    /// 那是一种训练/推理口径不一致，且无法靠落盘修复。
+    ///
+    /// # 破坏性语义
+    ///
+    /// 此前训练路径只有只读 `build`，统计量恒为空、Z-Score 观测恒为 0；因此
+    /// **旧模型是在全零观测上训的，不可与本次之后的产物比较。**
+    pub fn build_observation_and_update(
+        &mut self,
+        state: &MarketState,
+        history: &[MarketState],
+    ) -> Result<Observation, ObservationError> {
+        // 1) 先提取原始特征值（借结束即释放，后面才能可变借用统计量）
+        let values = self.extract_window_values(history)?;
+
+        // 2) 用「更新前」的统计量归一化，语义见上方文档注释
+        let (features, feature_names) = self.normalize_values(&values);
+
+        // 3) 再用同一批原始值累积统计量：窗口内每个时间步都计入，与观测里出现的值完全同源
+        for value in &values {
+            self.normalizer.stats[value.feature_idx].update(value.raw);
         }
 
         Ok(Observation {

@@ -6,6 +6,7 @@
 //! 计算都委托给它，保证 Gymnasium 训练/评估与内核推理是同一份代码。
 
 use crate::observation::error::ObservationError;
+use crate::observation::normalizer::RunningStats;
 use crate::observation::spec::ObservationSpec;
 use crate::observation::types::{
     BoxSpace, DType, FeatureConfig, MarketState, Observation, ObservationSpace,
@@ -84,6 +85,18 @@ impl ObservationSpace for DefaultObservationSpace {
         self.spec.build_observation(state, history)
     }
 
+    /// 训练专用：先按当前统计量归一化产出观测，再用原始特征值更新统计量
+    ///
+    /// 归一化统计量的累积逻辑只在 [`ObservationSpec`] 里实现一份，本方法只是
+    /// 可变借用的转发；推理侧仍走只读 [`Self::build`]。
+    fn build_and_update(
+        &mut self,
+        state: &MarketState,
+        history: &[MarketState],
+    ) -> Result<Observation, ObservationError> {
+        self.spec.build_observation_and_update(state, history)
+    }
+
     fn feature_names(&self) -> Vec<String> {
         let mut names = Vec::with_capacity(self.spec.num_features());
         for feat in &self.spec.features {
@@ -96,5 +109,22 @@ impl ObservationSpace for DefaultObservationSpace {
 
     fn num_features(&self) -> usize {
         self.spec.num_features()
+    }
+
+    fn normalizer_stats(&self) -> Option<&[RunningStats]> {
+        Some(&self.spec.normalizer.stats)
+    }
+
+    fn set_normalizer_stats(&mut self, stats: Vec<RunningStats>) -> Result<(), ObservationError> {
+        // 观测组装按特征下标取统计，长度不符会在 build 时越界，宁可这里拒绝
+        let expected = self.spec.features.len();
+        if stats.len() != expected {
+            return Err(ObservationError::FeatureCountMismatch {
+                expected,
+                actual: stats.len(),
+            });
+        }
+        self.spec.normalizer.stats = stats;
+        Ok(())
     }
 }
