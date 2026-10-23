@@ -7,5 +7,21 @@ pub mod backtest;
 
 pub use backtest::*;
 
+/// `Strategy` → 内核 `StrategyHost` 桥接（`BarContextSim`）
+pub mod kernel_host;
+
+/// 实时数据泵：交易所 WS 消息 → 内核事件（去重 + 缺口检测）
+pub mod pump;
+
+pub use pump::{Gap, KernelPump, KernelPumpBatch};
+
+/// M5 live 执行出口：意图 → 同步网关 → 交易所回报（当前只到 gateway 抽象）
+pub mod live_sink;
+
+pub use live_sink::{GatewayAck, LiveOrderGateway, LiveSink, RiskCheck, VenueUpdate};
+
+/// M3 Shadow oracle：旧路径与新内核双跑，按类别计数差异并落盘
+pub mod shadow;
+
 #[cfg(feature = "python")]
 pub mod python;
