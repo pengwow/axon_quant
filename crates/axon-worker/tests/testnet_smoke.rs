@@ -27,14 +27,15 @@
 //! - 对账的持仓来自 `/fapi/v2/positionRisk` 的 `positionAmt`，现金用
 //!   `/fapi/v2/account` 的 USDT `availableBalance`。
 //!
-//! # 两个必须在报告里说明的对账缺口
+//! # 成交 / 撤单终态只认 OMS 账本（即 user data stream 链路）
 //!
-//! - `axon-exchange` 的 Binance adapter 只订阅行情流，**没有 user data stream**，
-//!   `executionReport` 不会到网关，`LiveSink::poll` 拿不到成交回报 —— 所以本测试的
-//!   成交 / 撤单终态一律用签名 REST 查询确认（adapter 未暴露「按订单号查询」接口，
-//!   这里用同一份配置直接发请求，不新增依赖）；
-//! - 因此 OMS 影子账本里没有成交记录，对账报告的持仓 / 现金 break 是**预期**的
-//!   （真实数据在交易所侧），报告只用于验证 `reconcile` 能吃真网快照。
+//! 本测试的关键断言全部落在 `LiveSink` 的 OMS 上：市价单 / 撤单的终态必须是
+//! **WS 回报驱动**出来的，而不是测试自己用 REST 兜出来的。REST 查询只做交叉
+//! 校验（交易所侧确实成交 / 确实撤销）。
+//!
+//! 现金对账在合约口径下仍会 break：OMS 影子账本按「成交价 × 数量」扣现金，而
+//! 交易所 `availableBalance` 扣的是逐仓 / 全仓的**初始保证金 + 手续费**。持仓
+//! 对账必须干净（这一段是真账），现金差异按实际数值打印、不放宽阈值。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
@@ -50,6 +51,7 @@ use axon_exchange::types::{
 use axon_exchange::{build_http_client, sign_binance};
 use axon_kernel::{ExecutionSink, HostCtx, KernelConfig, KernelCore, OrderIntent, OrderSpec};
 use axon_oms::OrderId as OmsOrderId;
+use axon_oms::OrderStatus as OmsOrderStatus;
 use axon_worker::reconcile::{LocalSnapshot, ReconcileConfig, VenueSnapshot, reconcile};
 use axon_worker::{ExchangeGateway, LiveSink};
 use rust_decimal::Decimal;
@@ -67,6 +69,8 @@ const SMOKE_QTY: f64 = 0.001;
 const LIMIT_PRICE_RATIO: f64 = 0.97;
 /// 市价单 / 平仓单等待成交的上限
 const FILL_TIMEOUT: Duration = Duration::from_secs(15);
+/// 等 user data stream 回报（成交 / 撤单终态）的上限
+const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// 等 WS ticker 的上限
 const TICKER_TIMEOUT: Duration = Duration::from_secs(20);
 /// 合约 BTCUSDT 的 tickSize 是 0.10
@@ -195,25 +199,38 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
     assert_eq!(status, "NEW", "限价单应停在 NEW（实际 {status}）");
     assert_eq!(executed, Decimal::ZERO, "挂单不应有成交量");
 
-    // ── 3) 撤单 → 确认终态 ─────────────────────────────────────────────
-    // LiveSink 的内核订单号从 1 单调递增，此时只有这一笔挂单。
-    let (events, cancel_err) = cancel_kernel_order(&mut sink, &mut core, 1, &runtime, &config);
-    assert!(cancel_err.is_none(), "撤单 REST 一直失败: {cancel_err:?}");
-    if !events.is_empty() {
-        assert!(
-            matches!(
-                events.as_slice(),
-                [Event::Order(e)] if matches!(e.action, OrderAction::Cancelled(_))
-            ),
-            "撤单必须回流一条 Cancelled 事件: {events:?}"
-        );
-    }
+    // ── 3) 撤单：REST 撤单，终态必须由 user data stream 回报驱动 OMS ────
+    signed_delete(
+        &runtime,
+        &config,
+        "/fapi/v1/order",
+        &format!("symbol={SYMBOL}&origClientOrderId={limit_id}"),
+    );
+    let (cancel_events, cancel_status) = wait_oms_terminal(&mut sink, &limit_id, STREAM_TIMEOUT);
+    assert!(
+        matches!(
+            cancel_status,
+            Some(OmsOrderStatus::Cancelled { filled_qty }) if filled_qty == Decimal::ZERO
+        ),
+        "OMS 未在 {}s 内收到 Cancelled 回报（当前 {:?}）",
+        STREAM_TIMEOUT.as_secs(),
+        cancel_status
+    );
+    assert!(
+        cancel_events.iter().any(
+            |e| matches!(e, Event::Order(oe) if matches!(oe.action, OrderAction::Cancelled(_)))
+        ),
+        "撤单回报必须回流内核事件: {cancel_events:?}"
+    );
     let (status, executed) = order_status(&runtime, &config, &limit_id);
-    assert_eq!(status, "CANCELED", "撤单后应终态 CANCELED（实际 {status}）");
+    assert_eq!(
+        status, "CANCELED",
+        "交易所侧应终态 CANCELED（实际 {status}）"
+    );
     assert_eq!(executed, Decimal::ZERO);
-    println!("[smoke] 限价单已撤销（CANCELED）");
+    println!("[smoke] 限价单已撤销，OMS 收到 Cancelled（WS 回报）");
 
-    // ── 4) 市价买单 → 轮询直到 FILLED 或超时 ────────────────────────────
+    // ── 4) 市价买单 → 轮询 LiveSink 直到 OMS 收到 Filled ─────────────────
     sink.submit(
         OrderIntent::Submit(OrderSpec {
             instrument: btc(),
@@ -231,26 +248,40 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
         tail6(&market_id.to_string())
     );
 
-    let deadline = Instant::now() + FILL_TIMEOUT;
-    let mut executed = Decimal::ZERO;
-    let mut filled = false;
-    while Instant::now() < deadline {
-        // 网关 WS 通道：adapter 没有 user data stream，这里通常是 0 条回报。
-        let _ = sink.poll().expect("poll 不应失败");
-        let (status, qty) = order_status(&runtime, &config, &market_id);
-        if status == "FILLED" {
-            executed = qty;
-            filled = true;
-            break;
-        }
-        if matches!(status.as_str(), "CANCELED" | "REJECTED" | "EXPIRED") {
-            panic!("市价单未成交就进入终态 {status}");
-        }
-        sleep(Duration::from_millis(500));
+    let (market_events, market_status) = wait_oms_terminal(&mut sink, &market_id, STREAM_TIMEOUT);
+    let oms_filled = matches!(
+        market_status,
+        Some(OmsOrderStatus::Filled {
+            filled_qty,
+            ..
+        }) if filled_qty == Decimal::from_f64(SMOKE_QTY).expect("SMOKE_QTY 可转 Decimal")
+    );
+    assert!(
+        oms_filled,
+        "OMS 未在 {}s 内收到该市价单的 Filled（当前 {:?}）",
+        STREAM_TIMEOUT.as_secs(),
+        market_status
+    );
+    assert!(
+        market_events.iter().any(|e| matches!(e, Event::Fill(_))),
+        "成交回报必须回流 Fill 事件: {market_events:?}"
+    );
+    if let Some(OmsOrderStatus::Filled {
+        filled_qty,
+        avg_price,
+    }) = market_status
+    {
+        println!("[smoke] OMS 收到 Filled：成交量 {filled_qty} 均价 {avg_price}");
     }
-    assert!(filled, "市价单 {}s 内未成交", FILL_TIMEOUT.as_secs());
+
+    // REST 交叉校验：交易所侧确实成交（不是 OMS 凭空记的）
+    let (venue_status, executed) = order_status(&runtime, &config, &market_id);
+    assert_eq!(
+        venue_status, "FILLED",
+        "交易所侧应 FILLED（实际 {venue_status}）"
+    );
     assert!(executed > Decimal::ZERO, "市价单成交量应为正");
-    println!("[smoke] 市价单已成交 executedQty = {executed}");
+    println!("[smoke] 交易所侧 executedQty = {executed}");
 
     // 合约特有：成交必须体现在 positionRisk 上（现货是查余额，合约是查持仓）
     let position = position_amount(&runtime, &config);
@@ -271,12 +302,28 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
     println!("[smoke] LocalSnapshot = {local:?}");
     println!("[smoke] VenueSnapshot = {venue:?}");
     println!("[smoke] ReconcileReport = {report:#?}");
-    // 合约成交没有进 OMS（无 user data stream），交易所有持仓就必须被冻结。
-    let instrument = format!("{BASE}/{QUOTE}");
+    // 成交已由 user data stream 落进 OMS：持仓对账必须干净，不放宽容差。
     assert!(
-        report.frozen_instruments.contains(&instrument),
-        "本地未记账的合约持仓必须进 frozen_instruments: {report:?}"
+        report.position_breaks.is_empty(),
+        "OMS 持仓与 positionRisk 不一致: {report:#?}"
     );
+    assert!(
+        report.frozen_instruments.is_empty(),
+        "持仓干净时不应冻结任何品种: {report:#?}"
+    );
+    // 现金口径差异（保证金 vs 全额）与 venue 成交编号缺失在这里如实打印。
+    if let Some(cash_break) = &report.cash_break {
+        println!(
+            "[smoke] 现金差异（合约保证金口径，非 bug）：local {} / venue {} / diff {}",
+            cash_break.local, cash_break.venue, cash_break.diff
+        );
+    }
+    if !report.extra_fills.is_empty() {
+        println!(
+            "[smoke] 本地已记账成交 {} 笔（交易所该端点无 fetch_my_trades，无法交叉比对）",
+            report.extra_fills.len()
+        );
+    }
 
     // ── 6) 收尾：留一笔未成交挂单，验证 shutdown 会撤单 + disconnect ─────
     sink.submit(
@@ -291,15 +338,9 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
     )
     .expect("收尾前的挂单应被接受");
     let resting_id = latest_order_id(&sink);
-    let shutdown = sink.shutdown();
-    match &shutdown {
-        Ok(()) => println!("[smoke] 收尾完成：未成交单已撤销，连接已关闭"),
-        // 市价单在 OMS 里仍是 Acknowledged（没有 user data stream 回报），交易所侧
-        // 早已 FILLED，撤它会返回「订单不存在」。这是已知缺口，不是收尾逻辑的错。
-        // testnet 偶发丢连接时撤单也会失败，一并在这里打印；真正的收尾效果由下面的
-        // 交易所终态断言（CANCELED + 无活动单）判定。
-        Err(err) => println!("[smoke] 收尾告警：{err}"),
-    }
+    // 市价单已由回报落为 Filled（终态），shutdown 只撤未完成订单，不会再撞 -2011。
+    sink.shutdown().expect("shutdown 必须成功");
+    println!("[smoke] 收尾完成：未成交单已撤销，连接已关闭");
     let (status, _) = order_status(&runtime, &config, &resting_id);
     assert_eq!(
         status, "CANCELED",
@@ -524,45 +565,6 @@ fn open_orders(runtime: &Runtime, config: &ExchangeConfig) -> Vec<Value> {
         .to_vec()
 }
 
-/// 通过 sink 撤单，对 testnet 的传输抖动重试
-///
-/// 返回 `(事件, 最后一次错误)`。若某次请求其实已到达交易所但响应丢了，重试会
-/// 报「订单不存在」—— 此时以交易所终态（CANCELED）为准，事件按空返回。
-fn cancel_kernel_order(
-    sink: &mut LiveSink,
-    core: &mut KernelCore,
-    kernel_id: u64,
-    runtime: &Runtime,
-    config: &ExchangeConfig,
-) -> (Vec<Event>, Option<String>) {
-    let client_order_id = *sink
-        .oms()
-        .snapshot()
-        .active_orders
-        .keys()
-        .next()
-        .expect("撤单前应有一笔活动单");
-    let mut last_err = None;
-    for attempt in 1..=REST_ATTEMPTS {
-        match sink.submit(OrderIntent::Cancel(kernel_id), core, &HostCtx::default()) {
-            Ok(events) => return (events, None),
-            Err(err) => {
-                last_err = Some(err.to_string());
-                println!(
-                    "[smoke] 撤单第 {attempt} 次失败: {}",
-                    last_err.as_deref().unwrap_or_default()
-                );
-                if order_status(runtime, config, &client_order_id).0 == "CANCELED" {
-                    println!("[smoke] 交易所侧已撤销（撤单响应丢失），用 REST 终态兜底");
-                    return (Vec::new(), None);
-                }
-                sleep(Duration::from_millis(300 * attempt as u64));
-            }
-        }
-    }
-    (Vec::new(), last_err)
-}
-
 /// 撤销交易所侧所有遗留挂单
 ///
 /// 上一次运行中途崩溃可能留下挂单，会让「shutdown 后无活动单」的断言误报。
@@ -662,6 +664,37 @@ fn order_status(
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────────
+
+/// 轮询 `LiveSink`，直到 OMS 里该订单进入终态（或超时）
+///
+/// 只靠 `sink.poll()` 推动：终态必须由交易所回报驱动，测试不自己改 OMS 状态。
+fn wait_oms_terminal(
+    sink: &mut LiveSink,
+    id: &OmsOrderId,
+    timeout: Duration,
+) -> (Vec<Event>, Option<OmsOrderStatus>) {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    loop {
+        events.extend(sink.poll().expect("poll 不应失败"));
+        let status = oms_order_status(sink, id);
+        if status.as_ref().is_some_and(|s| s.is_terminal()) || Instant::now() >= deadline {
+            return (events, status);
+        }
+        sleep(Duration::from_millis(200));
+    }
+}
+
+/// 从 OMS 订单历史里读某笔订单的当前状态
+fn oms_order_status(sink: &LiveSink, id: &OmsOrderId) -> Option<OmsOrderStatus> {
+    sink.oms()
+        .snapshot()
+        .order_history
+        .iter()
+        .rev()
+        .find(|record| record.order.id == *id)
+        .map(|record| record.order.status.clone())
+}
 
 fn wait_ticker(gateway: &ExchangeGateway, timeout: Duration) -> Ticker {
     let symbol = ExchangeSymbol::new(SYMBOL);

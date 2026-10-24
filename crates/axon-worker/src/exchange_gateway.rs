@@ -20,14 +20,14 @@
 //! - `ExchangeAdapter::send_order` 只回传 client order id（交易所侧 orderId 被
 //!   adapter 内部日志吞掉），所以 [`GatewayAck::venue_order_id`] 填的是 client
 //!   order id；
-//! - Binance adapter 目前**没有 user data stream**，WS 只订阅行情流，
-//!   `executionReport` 不会到达 —— `poll_updates` 在真网下通常返回空，成交只能
-//!   靠 REST 查询确认；
 //! - `axon_exchange::OrderUpdate` 不带手续费，`VenueUpdate::fee` 固定为 0（对账
 //!   时表现为现金 break）；
 //! - 网关取走了 adapter 唯一的行情通道，`KernelPump` 就拿不到行情了。接 live 主
 //!   回路时必须把消息 fan-out 成「行情给 `KernelPump` + 回报给网关」两路，否则
 //!   长时间挂机时通道（容量 4096）会被行情塞满，adapter 的读循环会被阻塞。
+//!
+//! Binance 合约的 user data stream（`ORDER_TRADE_UPDATE`）已在 adapter 内实现，
+//! 回报与行情共用同一条通道，因此上面的「单消费者」约束仍然成立。
 
 use std::collections::HashMap;
 use std::sync::Arc;
