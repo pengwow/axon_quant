@@ -5,11 +5,13 @@ use async_trait::async_trait;
 use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
+use parking_lot::Mutex as PkMutex;
 use reqwest::Client;
 use rust_decimal::Decimal;
 use sha2::Sha256;
-use tokio::sync::{Mutex, Notify, mpsc};
-use tokio::time::{Duration, interval};
+use tokio::sync::{Mutex, Notify, mpsc, watch};
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, interval, interval_at};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -21,7 +23,7 @@ use crate::traits::ExchangeAdapter;
 use crate::types::{
     AccountBalance, AccountInfo, DepthSnapshot, ExchangeConfig, ExchangeId, FundingRate,
     LeverageBracket, LongShortRatio, MarginType, OpenInterest, Order, OrderId, OrderStatus,
-    Position, PositionMode, Symbol, Ticker, WsMessage,
+    OrderUpdate, Position, PositionMode, Symbol, Ticker, WsMessage,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -37,7 +39,8 @@ pub struct BinanceAdapter {
     market_rx: Mutex<Option<mpsc::Receiver<WsMessage>>>,
     depth_cache: Arc<Mutex<HashMap<String, DepthSnapshot>>>,
     ticker_cache: Arc<Mutex<HashMap<String, Ticker>>>,
-    connected: Mutex<bool>,
+    /// 是否处于已连接状态（user data stream 监督任务也据此判断是否退出）
+    connected: Arc<Mutex<bool>>,
     // 已订阅的 symbol 列表，重连时用于重新订阅
     subscribed_symbols: Arc<Mutex<Vec<Symbol>>>,
     // 客户端订单 ID -> 交易对，用于撤单时获取 symbol
@@ -48,6 +51,12 @@ pub struct BinanceAdapter {
     disconnect_notify: Arc<Notify>,
     // 优雅停止信号（disconnect 时使用）
     shutdown: Arc<Notify>,
+    // 合约 user data stream 的 listenKey。只存在内存里，绝不写日志 / 落盘。
+    listen_key: Arc<PkMutex<Option<String>>>,
+    // user data stream 监督任务句柄（disconnect 时 abort）
+    user_stream_handle: Mutex<Option<JoinHandle<()>>>,
+    // user data stream 是否已建立（connect 等它就绪后才算连上，避免头几秒丢回报）
+    user_stream_ready: watch::Sender<bool>,
 }
 
 impl BinanceAdapter {
@@ -61,12 +70,15 @@ impl BinanceAdapter {
             market_rx: Mutex::new(Some(market_rx)),
             depth_cache: Arc::new(Mutex::new(HashMap::new())),
             ticker_cache: Arc::new(Mutex::new(HashMap::new())),
-            connected: Mutex::new(false),
+            connected: Arc::new(Mutex::new(false)),
             subscribed_symbols: Arc::new(Mutex::new(Vec::new())),
             order_symbols: Mutex::new(HashMap::new()),
             ws_writer: Arc::new(Mutex::new(None)),
             disconnect_notify: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
+            listen_key: Arc::new(PkMutex::new(None)),
+            user_stream_handle: Mutex::new(None),
+            user_stream_ready: watch::Sender::new(false),
         }
     }
 
@@ -264,6 +276,42 @@ impl BinanceAdapter {
             .await
             .map_err(|e| ExchangeError::WebSocket(e.to_string()))?;
         Ok(ws_stream.split())
+    }
+
+    /// 启动合约 user data stream（成交 / 撤单回报的来源）
+    ///
+    /// 现货分支本阶段明确不支持：`/api/v3/userDataStream` 的生命周期与这里相同，
+    /// 但现货 `executionReport` 报文字段与合约 `ORDER_TRADE_UPDATE` 不同，未经
+    /// testnet 验证不做猜测。现货行情路径不受影响（`connect` 只在合约下调用本方法）。
+    async fn start_user_stream(&self) -> Result<(), ExchangeError> {
+        if !self.is_futures() {
+            return Err(ExchangeError::ConnectionFailed(
+                "Binance 现货 user data stream 暂不支持（仅合约可用）".into(),
+            ));
+        }
+
+        // 重连（connect 被再次调用）时先停掉上一轮的监督任务，避免两个任务同抢一条流。
+        self.user_stream_ready.send_replace(false);
+        if let Some(handle) = self.user_stream_handle.lock().await.take() {
+            handle.abort();
+        }
+
+        let config = self.config.clone();
+        let client = self.client.clone();
+        let listen_key = self.listen_key.clone();
+        let tx = self.market_tx.clone();
+        let connected = self.connected.clone();
+        let shutdown = self.shutdown.clone();
+        let ready = self.user_stream_ready.clone();
+
+        // 先把 listenKey 拿到手：失败要让 connect() 直接报错，而不是静默地收不到回报。
+        ensure_listen_key(&config, &client, &listen_key).await?;
+
+        let handle = tokio::spawn(async move {
+            run_user_stream(config, client, listen_key, tx, connected, shutdown, ready).await;
+        });
+        *self.user_stream_handle.lock().await = Some(handle);
+        Ok(())
     }
 
     /// Ping 保活任务：定时向 ws 写入 ping 帧，断线时退出
@@ -572,6 +620,391 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
     }
 }
 
+// ============================================================================
+// 合约 user data stream：listenKey 生命周期 + ORDER_TRADE_UPDATE 接入
+// ============================================================================
+//
+// 落点说明：订单回报统一送进**已有的** `market_tx` 通道（`ExchangeGateway::poll_updates`
+// 就是从这个通道里筛 `WsMessage::OrderUpdate`）。不新开第二条通道，否则网关要同时
+// drain 两个 rx，行情泵和回报的优先级又会打架。
+
+/// listenKey 续期周期：Binance 要求 60 分钟内至少续期一次，25 分钟留足抖动余量
+const LISTEN_KEY_KEEPALIVE: Duration = Duration::from_secs(25 * 60);
+/// user data stream 重连的初始退避与上限
+const USER_STREAM_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const USER_STREAM_MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// 续期连续失败达到该次数即视为 key 已不可用：重建 listenKey 并重连
+const KEEPALIVE_MAX_FAILURES: u32 = 3;
+/// 连接稳定超过该时长才把退避清零，避免「连上即断」时 1 秒一次地打交易所
+const USER_STREAM_STABLE_AFTER: Duration = Duration::from_secs(60);
+/// connect() 等 user data stream 建立的上限
+const USER_STREAM_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// user data stream 事件
+enum UserStreamEvent {
+    /// 已归一到 `WsMessage::OrderUpdate` 的订单回报
+    Order(WsMessage),
+    /// 服务端通知 listenKey 过期：必须重新 POST 并重连
+    ListenKeyExpired,
+    /// 我们不关心的推送（ACCOUNT_UPDATE / MARGIN_CALL / 非 Uuid client id 等）
+    Ignored,
+}
+
+/// 合约 REST 基础 URL（配置优先，否则按 testnet 推断）
+fn fapi_base_url_of(config: &ExchangeConfig) -> &str {
+    if let Some(url) = config.fapi_base_url.as_deref() {
+        url
+    } else if config.testnet {
+        "https://testnet.binancefuture.com"
+    } else {
+        "https://fapi.binance.com"
+    }
+}
+
+/// user data stream 的 WS 入口。testnet 实测可用的是 `fstream.binancefuture.com`，
+/// 生产是 `fstream.binance.com`；两者路径都是 `/ws/<listenKey>`。
+fn user_stream_ws_base(config: &ExchangeConfig) -> &'static str {
+    if config.testnet {
+        "wss://fstream.binancefuture.com/ws"
+    } else {
+        "wss://fstream.binance.com/ws"
+    }
+}
+
+fn user_stream_api_error(status: reqwest::StatusCode, body: &serde_json::Value) -> ExchangeError {
+    ExchangeError::ApiError {
+        code: body["code"].as_i64().unwrap_or(status.as_u16() as i64) as i32,
+        message: body["msg"].as_str().unwrap_or("unknown error").to_string(),
+    }
+}
+
+/// `POST /fapi/v1/listenKey`：只带 `X-MBX-APIKEY`，**没有签名参数**
+async fn create_listen_key(
+    config: &ExchangeConfig,
+    client: &Client,
+) -> Result<String, ExchangeError> {
+    let url = format!("{}/fapi/v1/listenKey", fapi_base_url_of(config));
+    let resp = client
+        .post(&url)
+        .header("X-MBX-APIKEY", config.api_key.as_str())
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await?;
+    if !status.is_success() {
+        return Err(user_stream_api_error(status, &body));
+    }
+    body["listenKey"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| ExchangeError::ParseError("listenKey 响应缺 listenKey 字段".into()))
+}
+
+/// `PUT /fapi/v1/listenKey`：续期（同样只带 API key，无签名）
+async fn put_listen_key(config: &ExchangeConfig, client: &Client) -> Result<(), ExchangeError> {
+    let url = format!("{}/fapi/v1/listenKey", fapi_base_url_of(config));
+    let resp = client
+        .put(&url)
+        .header("X-MBX-APIKEY", config.api_key.as_str())
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        return Err(user_stream_api_error(status, &body));
+    }
+    Ok(())
+}
+
+/// `DELETE /fapi/v1/listenKey`：断开时释放 key
+async fn delete_listen_key(config: &ExchangeConfig, client: &Client) -> Result<(), ExchangeError> {
+    let url = format!("{}/fapi/v1/listenKey", fapi_base_url_of(config));
+    let resp = client
+        .delete(&url)
+        .header("X-MBX-APIKEY", config.api_key.as_str())
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        return Err(user_stream_api_error(status, &body));
+    }
+    Ok(())
+}
+
+/// 复用内存里的 listenKey；没有才去申请新的
+async fn ensure_listen_key(
+    config: &ExchangeConfig,
+    client: &Client,
+    slot: &Arc<PkMutex<Option<String>>>,
+) -> Result<String, ExchangeError> {
+    if let Some(key) = slot.lock().clone() {
+        return Ok(key);
+    }
+    let key = create_listen_key(config, client).await?;
+    *slot.lock() = Some(key.clone());
+    tracing::info!("Binance 合约 user data stream: listenKey 已获取");
+    Ok(key)
+}
+
+/// user data stream 监督任务：拿 key → 连 WS → 读回报 → 25 分钟续期 → 断线退避重连
+async fn run_user_stream(
+    config: ExchangeConfig,
+    client: Client,
+    listen_key: Arc<PkMutex<Option<String>>>,
+    tx: mpsc::Sender<WsMessage>,
+    connected: Arc<Mutex<bool>>,
+    shutdown: Arc<Notify>,
+    ready: watch::Sender<bool>,
+) {
+    let mut backoff = USER_STREAM_INITIAL_BACKOFF;
+    let mut attempt: u32 = 0;
+
+    'supervisor: loop {
+        if !*connected.lock().await {
+            break;
+        }
+        if attempt > 0 {
+            tokio::select! {
+                _ = shutdown.notified() => break,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            if !*connected.lock().await {
+                break;
+            }
+        }
+
+        let key = match ensure_listen_key(&config, &client, &listen_key).await {
+            Ok(key) => key,
+            Err(err) => {
+                attempt += 1;
+                // 长时间断网时不刷屏：前 3 次 + 每 10 次记一条
+                if attempt <= 3 || attempt.is_multiple_of(10) {
+                    tracing::warn!(attempt, error = %err, "Binance user data stream: 获取 listenKey 失败");
+                }
+                backoff = (backoff * 2).min(USER_STREAM_MAX_BACKOFF);
+                continue;
+            }
+        };
+
+        let url = format!("{}/{}", user_stream_ws_base(&config), key);
+        let (mut write, mut read) = match BinanceAdapter::open_ws(&url).await {
+            Ok(pair) => pair,
+            Err(err) => {
+                attempt += 1;
+                if attempt <= 3 || attempt.is_multiple_of(10) {
+                    // 握手错误可能把含 listenKey 的 URL 带进 message，先脱敏再打日志
+                    let redacted = err.to_string().replace(&key, "<listenKey>");
+                    tracing::warn!(attempt, error = %redacted, "Binance user data stream: 连接失败");
+                }
+                backoff = (backoff * 2).min(USER_STREAM_MAX_BACKOFF);
+                continue;
+            }
+        };
+
+        tracing::info!("Binance 合约 user data stream 已连接");
+        ready.send_replace(true);
+        let connected_at = tokio::time::Instant::now();
+        let mut keepalive = interval_at(
+            tokio::time::Instant::now() + LISTEN_KEY_KEEPALIVE,
+            LISTEN_KEY_KEEPALIVE,
+        );
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 服务端明确说过 key 失效 / 续期连续失败：下一轮必须重新 POST
+        let mut need_new_key = false;
+
+        loop {
+            tokio::select! {
+                _ = shutdown.notified() => break,
+                _ = keepalive.tick() => {
+                    // 续期失败立刻做短重试（不是等下一个 25 分钟）：listenKey 只有
+                    // 60 分钟寿命，等下一轮再试就已经过期了。
+                    let mut last_error = None;
+                    let mut renewed = false;
+                    for attempt in 1..=KEEPALIVE_MAX_FAILURES {
+                        match put_listen_key(&config, &client).await {
+                            Ok(()) => {
+                                renewed = true;
+                                break;
+                            }
+                            Err(err) => {
+                                last_error = Some(err.to_string());
+                                if attempt < KEEPALIVE_MAX_FAILURES {
+                                    tracing::warn!(
+                                        attempt,
+                                        error = %err,
+                                        "Binance user data stream: listenKey 续期失败，5s 后重试"
+                                    );
+                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                }
+                            }
+                        }
+                    }
+                    if !renewed {
+                        // 连续 3 次失败基本等于 key 已死：重建 listenKey 并重连，记 error 不 panic
+                        tracing::error!(
+                            failures = KEEPALIVE_MAX_FAILURES,
+                            error = last_error.as_deref().unwrap_or("unknown"),
+                            "Binance user data stream: listenKey 续期连续失败，重建 listenKey"
+                        );
+                        need_new_key = true;
+                        break;
+                    }
+                }
+                message = read.next() => {
+                    match message {
+                        Some(Ok(Message::Text(text))) => {
+                            match parse_user_stream_event(&text) {
+                                Ok(UserStreamEvent::Order(message)) => {
+                                    // 与行情共用同一条通道：网关从里面筛 OrderUpdate。
+                                    if tx.send(message).await.is_err() {
+                                        // 消费端已销毁 = 进程在收尾，直接退出并释放 key
+                                        break 'supervisor;
+                                    }
+                                }
+                                Ok(UserStreamEvent::ListenKeyExpired) => {
+                                    tracing::warn!("Binance user data stream: listenKey 过期，重建并重连");
+                                    need_new_key = true;
+                                    break;
+                                }
+                                Ok(UserStreamEvent::Ignored) => {}
+                                Err(err) => {
+                                    tracing::warn!(error = %err, "Binance user data stream: 收到非 JSON 消息");
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            if let Err(err) = write.send(Message::Pong(data)).await {
+                                tracing::warn!(error = %err, "Binance user data stream: 回 Pong 失败");
+                                break;
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => break,
+                        Some(Err(err)) => {
+                            tracing::warn!(error = %err, "Binance user data stream: 读取失败");
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // 连接已断：先对 connect() 侧标记「未就绪」，重连成功后再置回 true
+        ready.send_replace(false);
+        if need_new_key {
+            // 旧 key 已失效，丢弃内存值让下一轮重新申请
+            listen_key.lock().take();
+        }
+        if !*connected.lock().await {
+            break;
+        }
+
+        // 稳定连接过一段时间的断开按首次重连处理；连上即断的则继续指数退避
+        if connected_at.elapsed() >= USER_STREAM_STABLE_AFTER {
+            attempt = 1;
+            backoff = USER_STREAM_INITIAL_BACKOFF;
+        } else {
+            attempt += 1;
+            backoff = (backoff * 2).min(USER_STREAM_MAX_BACKOFF);
+        }
+        if attempt <= 3 || attempt.is_multiple_of(10) {
+            tracing::warn!(attempt, "Binance user data stream 断开，准备重连");
+        }
+    }
+
+    // 退出（shutdown / 通道关闭）：先撤「就绪」标记，再主动释放 key
+    ready.send_replace(false);
+    if listen_key.lock().take().is_some() {
+        let _ = delete_listen_key(&config, &client).await;
+    }
+}
+
+/// 解析 user data stream 推送
+///
+/// 只处理 `ORDER_TRADE_UPDATE` 与 `listenKeyExpired`：`ACCOUNT_UPDATE` /
+/// `MARGIN_CALL` 等当前没有消费方，按 `Ignored` 丢掉，不制造空事件。
+fn parse_user_stream_event(text: &str) -> Result<UserStreamEvent, serde_json::Error> {
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    match v.get("e").and_then(|e| e.as_str()).unwrap_or("") {
+        "listenKeyExpired" => Ok(UserStreamEvent::ListenKeyExpired),
+        "ORDER_TRADE_UPDATE" => {
+            let o = v.get("o").unwrap_or(&serde_json::Value::Null);
+            let raw_client_id = o.get("c").and_then(|c| c.as_str()).unwrap_or("");
+            // 我们的 client order id 就是 Uuid；解析不出来就无法归因到 OMS 订单，跳过。
+            let Ok(client_uuid) = uuid::Uuid::parse_str(raw_client_id) else {
+                tracing::warn!(
+                    client_order_id = tail6(raw_client_id),
+                    "Binance user stream: client order id 不是 Uuid，跳过该条回报"
+                );
+                return Ok(UserStreamEvent::Ignored);
+            };
+
+            // `z` 是累计成交量，`ap` 是累计均价（未成交时为空串 → 0）
+            let filled_qty = decimal_field(o, "z");
+            let avg_price = decimal_field(o, "ap");
+            let status = match o.get("X").and_then(|x| x.as_str()).unwrap_or("") {
+                "NEW" => OrderStatus::Acknowledged,
+                "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled {
+                    filled_qty,
+                    avg_price,
+                },
+                "FILLED" => OrderStatus::Filled {
+                    filled_qty,
+                    avg_price,
+                },
+                "CANCELED" | "EXPIRED" => OrderStatus::Cancelled { filled_qty },
+                "REJECTED" => OrderStatus::Rejected {
+                    reason: o
+                        .get("r")
+                        .and_then(|r| r.as_str())
+                        .filter(|r| !r.is_empty() && *r != "NONE")
+                        .unwrap_or("rejected")
+                        .to_string(),
+                },
+                _ => OrderStatus::Pending,
+            };
+            let timestamp = v
+                .get("E")
+                .and_then(|e| e.as_i64())
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .unwrap_or_else(chrono::Utc::now);
+
+            Ok(UserStreamEvent::Order(WsMessage::OrderUpdate(
+                OrderUpdate {
+                    order_id: o
+                        .get("i")
+                        .and_then(|i| i.as_i64())
+                        .map(|i| i.to_string())
+                        .unwrap_or_default(),
+                    client_order_id: OrderId(client_uuid),
+                    status,
+                    filled_qty,
+                    // 只在真正成交后带均价；NEW / CANCELED 的 `ap` 是 0
+                    avg_price: (avg_price > Decimal::ZERO).then_some(avg_price),
+                    timestamp,
+                },
+            )))
+        }
+        _ => Ok(UserStreamEvent::Ignored),
+    }
+}
+
+fn decimal_field(value: &serde_json::Value, key: &str) -> Decimal {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default()
+}
+
+/// 只留尾部 6 位，日志里不出现完整订单号
+fn tail6(value: &str) -> &str {
+    &value[value.len().saturating_sub(6)..]
+}
+
 /// 解析 Binance 价格层数组 `[["price","qty"], ...]`
 fn parse_price_level_array(
     val: Option<&serde_json::Value>,
@@ -672,11 +1105,45 @@ impl ExchangeAdapter for BinanceAdapter {
 
         // 启动 WebSocket（重连逻辑在内部 tokio 任务中循环）
         self.start_ws().await?;
+        *self.connected.lock().await = true;
+
+        // 合约额外接 user data stream：ORDER_TRADE_UPDATE 是成交 / 撤单回报的唯一来源。
+        // 现货不接（见 start_user_stream 注释），行情路径保持不变。
+        if self.is_futures() {
+            // 先订阅再启动：watch 的当前值会被立刻读到，不会丢通知。
+            let mut ready = self.user_stream_ready.subscribe();
+            if let Err(err) = self.start_user_stream().await {
+                // user stream 起不来就等于拿不到成交回报，不能假装连接成功。
+                *self.connected.lock().await = false;
+                self.shutdown.notify_waiters();
+                return Err(err);
+            }
+            // 等回报流真正建立再返回：否则「已连接」之后头几秒的订单回报会静默丢失。
+            let established = tokio::time::timeout(USER_STREAM_READY_TIMEOUT, async {
+                ready.wait_for(|value| *value).await.map(|_| ())
+            })
+            .await;
+            let failure = match established {
+                Ok(Ok(())) => None,
+                Ok(Err(err)) => Some(format!("user data stream 任务提前退出: {err}")),
+                Err(_) => Some(format!(
+                    "user data stream {}s 内未建立",
+                    USER_STREAM_READY_TIMEOUT.as_secs()
+                )),
+            };
+            if let Some(reason) = failure {
+                *self.connected.lock().await = false;
+                self.shutdown.notify_waiters();
+                if let Some(handle) = self.user_stream_handle.lock().await.take() {
+                    handle.abort();
+                }
+                return Err(ExchangeError::ConnectionFailed(reason));
+            }
+        }
 
         // 等待连接建立
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        *self.connected.lock().await = true;
         tracing::info!("Binance adapter connected");
         Ok(())
     }
@@ -685,6 +1152,16 @@ impl ExchangeAdapter for BinanceAdapter {
         *self.connected.lock().await = false;
         // 通知重连监督任务退出
         self.shutdown.notify_waiters();
+        // 停掉 user data stream 监督任务，避免它在 DELETE 之后又续期旧 key
+        self.user_stream_ready.send_replace(false);
+        if let Some(handle) = self.user_stream_handle.lock().await.take() {
+            handle.abort();
+        }
+        // 释放 listenKey：服务端在停止续期后仍会保留它一段时间，主动 DELETE 才是干净收尾。
+        // listenKey 只走内存，任何分支都不打印它的值。
+        if self.listen_key.lock().take().is_some() {
+            let _ = delete_listen_key(&self.config, &self.client).await;
+        }
         tracing::info!("Binance adapter disconnected");
         Ok(())
     }
@@ -1117,13 +1594,7 @@ impl BinanceAdapter {
 
     /// 拿合约 base URL(优先配置,否则按 testnet 推断)
     fn fapi_base_url(&self) -> &str {
-        if let Some(url) = self.config.fapi_base_url.as_deref() {
-            url
-        } else if self.config.testnet {
-            "https://testnet.binancefuture.com"
-        } else {
-            "https://fapi.binance.com"
-        }
+        fapi_base_url_of(&self.config)
     }
 
     /// 签名 GET 请求到 fapi
@@ -1226,6 +1697,30 @@ impl BinanceAdapter {
             });
         }
         Ok(body)
+    }
+}
+
+impl Drop for BinanceAdapter {
+    fn drop(&mut self) {
+        // Drop 是同步的，无法 await：有 tokio 运行时上下文时 fire-and-forget 释放
+        // listenKey；没有运行时（纯结构体析构）就跳过 —— 服务端 60 分钟无续期会
+        // 让 key 自然失效。listenKey 的值绝不进日志。
+        if self.listen_key.lock().take().is_none() {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let client = self.client.clone();
+        let url = format!("{}/fapi/v1/listenKey", fapi_base_url_of(&self.config));
+        let api_key = self.config.api_key.clone();
+        handle.spawn(async move {
+            let _ = client
+                .delete(&url)
+                .header("X-MBX-APIKEY", api_key.as_str())
+                .send()
+                .await;
+        });
     }
 }
 
@@ -1383,6 +1878,209 @@ mod tests {
             }
             _ => panic!("expected OrderUpdate"),
         }
+    }
+
+    // ============== 合约 user data stream：解析 ==============
+
+    /// 构造一条最小 `ORDER_TRADE_UPDATE`（字段名与 Binance 合约推送一致）
+    fn order_trade_update(client_id: &str, status: &str, filled: &str, avg: &str) -> String {
+        serde_json::json!({
+            "e": "ORDER_TRADE_UPDATE",
+            "E": 1_700_000_000_123_i64,
+            "T": 1_700_000_000_120_i64,
+            "o": {
+                "s": "BTCUSDT",
+                "c": client_id,
+                "S": "BUY",
+                "o": "MARKET",
+                "q": "0.001",
+                "p": "0",
+                "ap": avg,
+                "x": "TRADE",
+                "X": status,
+                "i": 8886774_i64,
+                "l": "0.001",
+                "z": filled,
+                "T": 1_700_000_000_120_i64,
+                "r": "NONE"
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parse_order_trade_update_filled_maps_fields() {
+        let client_id = uuid::Uuid::now_v7();
+        let parsed = parse_user_stream_event(&order_trade_update(
+            &client_id.to_string(),
+            "FILLED",
+            "0.001",
+            "80123.4",
+        ))
+        .unwrap();
+        match parsed {
+            UserStreamEvent::Order(WsMessage::OrderUpdate(update)) => {
+                assert_eq!(
+                    update.order_id, "8886774",
+                    "order_id ← o.i（交易所订单号字符串化）"
+                );
+                assert_eq!(
+                    update.client_order_id,
+                    OrderId(client_id),
+                    "client id ← o.c（Uuid）"
+                );
+                assert_eq!(
+                    update.status,
+                    OrderStatus::Filled {
+                        filled_qty: "0.001".parse().unwrap(),
+                        avg_price: "80123.4".parse().unwrap(),
+                    }
+                );
+                assert_eq!(
+                    update.filled_qty,
+                    "0.001".parse::<Decimal>().unwrap(),
+                    "filled_qty ← o.z"
+                );
+                assert_eq!(
+                    update.avg_price,
+                    Some("80123.4".parse().unwrap()),
+                    "avg_price ← o.ap"
+                );
+                assert_eq!(
+                    update.timestamp.timestamp_millis(),
+                    1_700_000_000_123,
+                    "timestamp ← E（毫秒）"
+                );
+            }
+            _ => panic!("expected OrderUpdate"),
+        }
+    }
+
+    #[test]
+    fn parse_order_trade_update_partially_filled_and_canceled() {
+        let client_id = uuid::Uuid::now_v7().to_string();
+
+        let parsed = parse_user_stream_event(&order_trade_update(
+            &client_id,
+            "PARTIALLY_FILLED",
+            "0.0004",
+            "80000.5",
+        ))
+        .unwrap();
+        match parsed {
+            UserStreamEvent::Order(WsMessage::OrderUpdate(update)) => {
+                assert_eq!(
+                    update.status,
+                    OrderStatus::PartiallyFilled {
+                        filled_qty: "0.0004".parse().unwrap(),
+                        avg_price: "80000.5".parse().unwrap(),
+                    }
+                );
+            }
+            _ => panic!("expected OrderUpdate"),
+        }
+
+        // CANCELED 的 ap 是 0：不带均价（否则会污染 OMS 的成交价）
+        let parsed =
+            parse_user_stream_event(&order_trade_update(&client_id, "CANCELED", "0", "0")).unwrap();
+        match parsed {
+            UserStreamEvent::Order(WsMessage::OrderUpdate(update)) => {
+                assert_eq!(
+                    update.status,
+                    OrderStatus::Cancelled {
+                        filled_qty: Decimal::ZERO
+                    }
+                );
+                assert_eq!(update.avg_price, None);
+            }
+            _ => panic!("expected OrderUpdate"),
+        }
+    }
+
+    #[test]
+    fn parse_order_trade_update_skips_non_uuid_client_id() {
+        // 交易所侧手搓的 client id（不是 Uuid）无法归因到 OMS 订单，必须跳过而不是塞 nil uuid
+        let parsed =
+            parse_user_stream_event(&order_trade_update("my-order-1", "FILLED", "0.001", "1"))
+                .unwrap();
+        assert!(matches!(parsed, UserStreamEvent::Ignored));
+    }
+
+    #[test]
+    fn parse_listen_key_expired_and_ignores_other_events() {
+        let expired = r#"{"e":"listenKeyExpired","E":1700000000000}"#;
+        assert!(matches!(
+            parse_user_stream_event(expired).unwrap(),
+            UserStreamEvent::ListenKeyExpired
+        ));
+
+        let account_update = r#"{"e":"ACCOUNT_UPDATE","E":1700000000000,"a":{}}"#;
+        assert!(matches!(
+            parse_user_stream_event(account_update).unwrap(),
+            UserStreamEvent::Ignored
+        ));
+    }
+
+    #[test]
+    fn user_stream_ws_base_switches_with_testnet() {
+        assert_eq!(
+            user_stream_ws_base(&testnet_config()),
+            "wss://fstream.binancefuture.com/ws"
+        );
+        let prod = ExchangeConfig {
+            testnet: false,
+            fapi_base_url: None,
+            ..testnet_config()
+        };
+        assert_eq!(user_stream_ws_base(&prod), "wss://fstream.binance.com/ws");
+        assert_eq!(fapi_base_url_of(&prod), "https://fapi.binance.com");
+    }
+
+    /// listenKey 的三个端点只带 `X-MBX-APIKEY`，不带签名参数（带签名会被 -1022 拒）
+    #[test]
+    fn listen_key_lifecycle_uses_api_key_header_only() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/fapi/v1/listenKey"))
+                .and(header("X-MBX-APIKEY", "test_key"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "listenKey": "lk_test" })),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/fapi/v1/listenKey"))
+                .and(header("X-MBX-APIKEY", "test_key"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path("/fapi/v1/listenKey"))
+                .and(header("X-MBX-APIKEY", "test_key"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let config = wiremock_config(&server.uri());
+            let client = crate::build_http_client(&config);
+
+            let key = create_listen_key(&config, &client).await.expect("create");
+            assert_eq!(key, "lk_test");
+            put_listen_key(&config, &client).await.expect("keepalive");
+            delete_listen_key(&config, &client).await.expect("delete");
+        });
     }
 
     #[test]
