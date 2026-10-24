@@ -93,8 +93,13 @@ impl BinanceAdapter {
     /// REST GET 请求
     async fn rest_get(&self, path: &str, params: &str) -> Result<serde_json::Value, ExchangeError> {
         let query = self.signed_query(params)?;
-        let url = format!("{}{path}?{query}", self.config.rest_base_url);
-        let resp = self.client.get(&url).send().await?;
+        let url = format!("{}{path}?{query}", self.trading_base_url());
+        let resp = self
+            .client
+            .get(&url)
+            .header("X-MBX-APIKEY", self.config.api_key.as_str())
+            .send()
+            .await?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await?;
         if !status.is_success() {
@@ -109,14 +114,21 @@ impl BinanceAdapter {
     }
 
     /// REST POST 请求（下单）
-    async fn rest_post(&self, path: &str, body: &str) -> Result<serde_json::Value, ExchangeError> {
-        let query = self.signed_query("")?;
-        let url = format!("{}{path}?{query}", self.config.rest_base_url);
+    ///
+    /// 参数全部放在 query string 里：Binance 的签名覆盖「query + form body」的
+    /// 全部参数，只把 timestamp 放进 query、其余放 body 会导致签名与交易所算出的
+    /// 不一致（-1022）。query 方式现货与合约端点都接受。
+    async fn rest_post(
+        &self,
+        path: &str,
+        params: &str,
+    ) -> Result<serde_json::Value, ExchangeError> {
+        let query = self.signed_query(params)?;
+        let url = format!("{}{path}?{query}", self.trading_base_url());
         let resp = self
             .client
             .post(&url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.to_string())
+            .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
             .await?;
         let status = resp.status();
@@ -139,8 +151,13 @@ impl BinanceAdapter {
         params: &str,
     ) -> Result<serde_json::Value, ExchangeError> {
         let query = self.signed_query(params)?;
-        let url = format!("{}{path}?{query}", self.config.rest_base_url);
-        let resp = self.client.delete(&url).send().await?;
+        let url = format!("{}{path}?{query}", self.trading_base_url());
+        let resp = self
+            .client
+            .delete(&url)
+            .header("X-MBX-APIKEY", self.config.api_key.as_str())
+            .send()
+            .await?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await?;
         if !status.is_success() {
@@ -572,6 +589,24 @@ fn parse_price_level_array(
         .unwrap_or_default()
 }
 
+/// 探活端点：合约（USDⓈ-M）`/fapi/v1/ping`，现货 `/api/v3/ping`
+fn ping_path(is_futures: bool) -> &'static str {
+    if is_futures {
+        "/fapi/v1/ping"
+    } else {
+        "/api/v3/ping"
+    }
+}
+
+/// 下单 / 撤单端点：合约 `/fapi/v1/order`，现货 `/api/v3/order`
+fn order_path(is_futures: bool) -> &'static str {
+    if is_futures {
+        "/fapi/v1/order"
+    } else {
+        "/api/v3/order"
+    }
+}
+
 /// 将 axon Order 转换为 Binance REST 请求参数
 fn order_to_binance_params(order: &Order) -> String {
     let symbol = order.symbol.to_string().to_uppercase();
@@ -625,8 +660,9 @@ impl ExchangeAdapter for BinanceAdapter {
     }
 
     async fn connect(&mut self) -> Result<(), ExchangeError> {
-        // 验证 REST 连接：查询服务器时间
-        let url = format!("{}/api/v3/ping", self.config.rest_base_url);
+        // 验证 REST 连接：合约 ping 公开端点无需签名，现货 /api/v3/ping 同理
+        let is_futures = self.is_futures();
+        let url = format!("{}{}", self.trading_base_url(), ping_path(is_futures));
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
             return Err(ExchangeError::ConnectionFailed(
@@ -691,7 +727,9 @@ impl ExchangeAdapter for BinanceAdapter {
             .insert(order.client_order_id.to_string(), order.symbol.to_string());
 
         let params = order_to_binance_params(&order);
-        let resp = self.rest_post("/api/v3/order", &params).await?;
+        let resp = self
+            .rest_post(order_path(self.is_futures()), &params)
+            .await?;
 
         let exchange_order_id = resp["orderId"]
             .as_i64()
@@ -721,8 +759,10 @@ impl ExchangeAdapter for BinanceAdapter {
             .get(&order_id.to_string())
             .cloned();
 
+        // Binance 撤单需要 symbol + (orderId 或 origClientOrderId)；合约与现货
+        // 都不认裸 `clientOrderId`（合约返回 -1102）。
         let params = match symbol {
-            Some(sym) => format!("symbol={sym}&clientOrderId={order_id}"),
+            Some(sym) => format!("symbol={sym}&origClientOrderId={order_id}"),
             None => {
                 tracing::warn!(
                     "cancel_order: no symbol mapping for client_order_id={order_id}, \
@@ -731,7 +771,8 @@ impl ExchangeAdapter for BinanceAdapter {
                 return Err(ExchangeError::OrderNotFound(order_id.to_string()));
             }
         };
-        self.rest_delete("/api/v3/order", &params).await?;
+        self.rest_delete(order_path(self.is_futures()), &params)
+            .await?;
 
         // 清理映射
         self.order_symbols
@@ -1051,6 +1092,29 @@ impl ExchangeAdapter for BinanceAdapter {
 // === 私有 helper(独立 impl 块,不进 trait) ===
 
 impl BinanceAdapter {
+    /// 是否走合约端点(USDⓈ-M)
+    ///
+    /// ponytail: 用 URL 推断而不是新增 `market` 字段——`ExchangeConfig` 的
+    /// struct literal 散布在 31 处(含 axon-llm 示例),加字段的破坏面远大于收益。
+    /// 升级路径: 后续统一到显式 `MarketType` 并一次性迁移所有构造点。
+    fn is_futures(&self) -> bool {
+        self.config.fapi_base_url.is_some()
+            || self.config.rest_base_url.contains("binancefuture")
+            || self.config.ws_url.contains("binancefuture")
+    }
+
+    /// 交易域基础 URL：合约走 fapi，现货保持 `rest_base_url`
+    ///
+    /// 签名类端点（下单 / 撤单 / 持仓）跟 `is_futures()` 一起切换域；这样
+    /// `rest_base_url` 写现货域、`fapi_base_url` 写合约域的配置也不会串域。
+    fn trading_base_url(&self) -> &str {
+        if self.is_futures() {
+            self.fapi_base_url()
+        } else {
+            &self.config.rest_base_url
+        }
+    }
+
     /// 拿合约 base URL(优先配置,否则按 testnet 推断)
     fn fapi_base_url(&self) -> &str {
         if let Some(url) = self.config.fapi_base_url.as_deref() {
@@ -1363,6 +1427,77 @@ mod tests {
         // 20 * 2 = 40 > 30，应被截断到 30
         let b = next_backoff(cfg.initial_backoff, &cfg);
         assert_eq!(b, Duration::from_secs(30));
+    }
+
+    // ============== 现货 / 合约端点路由 ==============
+
+    /// 全现货 URL（无 fapi 配置）的配置
+    fn spot_config() -> ExchangeConfig {
+        ExchangeConfig {
+            rest_base_url: "https://api.binance.com".into(),
+            ws_url: "wss://stream.binance.com/ws".into(),
+            fapi_base_url: None,
+            position_endpoint: String::new(),
+            ..testnet_config()
+        }
+    }
+
+    #[test]
+    fn is_futures_true_when_fapi_base_url_configured() {
+        let adapter = BinanceAdapter::new(spot_config());
+        assert!(!adapter.is_futures(), "纯现货 URL 不应判定为合约");
+
+        let cfg = ExchangeConfig {
+            fapi_base_url: Some("https://fapi.binance.com".into()),
+            ..spot_config()
+        };
+        assert!(BinanceAdapter::new(cfg).is_futures());
+    }
+
+    #[test]
+    fn is_futures_true_when_rest_base_url_is_binancefuture() {
+        let cfg = ExchangeConfig {
+            rest_base_url: "https://testnet.binancefuture.com".into(),
+            ..spot_config()
+        };
+        let adapter = BinanceAdapter::new(cfg);
+        assert!(adapter.is_futures());
+        // 未显式配置 fapi 时按 testnet 推断到合约 testnet 域
+        assert_eq!(
+            adapter.trading_base_url(),
+            "https://testnet.binancefuture.com"
+        );
+    }
+
+    #[test]
+    fn is_futures_true_when_ws_url_is_binancefuture() {
+        let cfg = ExchangeConfig {
+            ws_url: "wss://fstream.binancefuture.com/ws".into(),
+            ..spot_config()
+        };
+        assert!(BinanceAdapter::new(cfg).is_futures());
+    }
+
+    #[test]
+    fn endpoint_paths_follow_market() {
+        assert_eq!(ping_path(true), "/fapi/v1/ping");
+        assert_eq!(ping_path(false), "/api/v3/ping");
+        assert_eq!(order_path(true), "/fapi/v1/order");
+        assert_eq!(order_path(false), "/api/v3/order");
+
+        // trading_base_url 必须跟着市场切域，而不是永远用 rest_base_url
+        let spot = BinanceAdapter::new(spot_config());
+        assert_eq!(spot.trading_base_url(), "https://api.binance.com");
+
+        let futures = BinanceAdapter::new(ExchangeConfig {
+            rest_base_url: "https://testnet.binance.vision".into(),
+            fapi_base_url: Some("https://testnet.binancefuture.com".into()),
+            ..spot_config()
+        });
+        assert_eq!(
+            futures.trading_base_url(),
+            "https://testnet.binancefuture.com"
+        );
     }
 
     #[test]
