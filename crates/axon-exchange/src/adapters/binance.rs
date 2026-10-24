@@ -592,9 +592,18 @@ fn order_to_binance_params(order: &Order) -> String {
     };
 
     let mut params = format!(
-        "symbol={symbol}&side={side}&type={order_type}&timeInForce={tif}&quantity={}",
+        "symbol={symbol}&side={side}&type={order_type}&quantity={}",
         order.quantity
     );
+
+    // 只有限价类订单要 timeInForce：Binance 对 MARKET 携带该参数会返回
+    // -1106 `Parameter 'timeInForce' sent when not required.`
+    if matches!(
+        order.order_type,
+        crate::types::OrderType::Limit | crate::types::OrderType::StopLimit
+    ) {
+        params.push_str(&format!("&timeInForce={tif}"));
+    }
 
     if let Some(price) = order.price {
         params.push_str(&format!("&price={price}"));
@@ -1228,6 +1237,29 @@ mod tests {
         assert!(params.contains("timeInForce=GTC"));
         assert!(params.contains("quantity=0.001"));
         assert!(params.contains("price=50000.00"));
+    }
+
+    /// 市价单不能带 `timeInForce` / `price`（Binance 会返回 -1106）
+    #[test]
+    fn test_market_order_omits_time_in_force_and_price() {
+        let order = Order {
+            client_order_id: OrderId::new(),
+            symbol: Symbol::new("BTCUSDT"),
+            side: crate::types::Side::Buy,
+            order_type: crate::types::OrderType::Market,
+            price: None,
+            quantity: "0.0001".parse().unwrap(),
+            time_in_force: TimeInForce::Gtc,
+            exchange: ExchangeId::Binance,
+            meta: HashMap::new(),
+        };
+        let params = order_to_binance_params(&order);
+        assert!(params.contains("type=MARKET"));
+        assert!(
+            !params.contains("timeInForce"),
+            "MARKET 不得携带 timeInForce: {params}"
+        );
+        assert!(!params.contains("price="), "市价单不得携带 price: {params}");
     }
 
     #[test]
