@@ -20,6 +20,11 @@ pub mod live_sink;
 
 pub use live_sink::{GatewayAck, LiveOrderGateway, LiveSink, RiskCheck, VenueUpdate};
 
+/// async `ExchangeAdapter` → 同步 `LiveOrderGateway` 桥接（M5 testnet）
+pub mod exchange_gateway;
+
+pub use exchange_gateway::ExchangeGateway;
+
 /// M5 对账与恢复：内核 / OMS 快照 vs 交易所快照，只报告不改账
 pub mod reconcile;
 

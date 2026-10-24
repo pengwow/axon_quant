@@ -46,7 +46,7 @@ use axon_oms::{
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 /// 下单失败后的最大尝试次数（含首次）
 ///
@@ -100,6 +100,10 @@ pub trait LiveOrderGateway: Send {
     fn cancel(&mut self, id: &OmsOrderId) -> Result<(), String>;
     /// 非阻塞拉取交易所回报（内部可缓存；无回报时返回空）
     fn poll_updates(&mut self) -> Result<Vec<VenueUpdate>, String>;
+    /// 关闭与交易所的连接（默认空实现；真实网关在此断开 WS / REST）
+    fn disconnect(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// 下单前风控检查
@@ -174,6 +178,49 @@ impl LiveSink {
     pub fn with_risk(mut self, risk: Box<dyn RiskCheck>) -> Self {
         self.risk = risk;
         self
+    }
+
+    /// 只读访问 OMS 账本（对账 / 冒烟测试用；不暴露可变句柄）
+    pub fn oms(&self) -> &OrderManager {
+        &self.oms
+    }
+
+    /// 退出前收尾：撤销所有未完成订单，然后关闭交易所连接
+    ///
+    /// 只撤非终态订单：`OrderManager::add_fill` 把订单改成 `Filled` 后仍留在活动集合里，
+    /// 对已成交 / 已撤的订单再发一次撤单只会被交易所拒绝。
+    ///
+    /// 撤单失败（典型是订单刚好成交）只记录并继续撤下一笔，最后把所有失败原因
+    /// 一起返回，调用方据此决定是否告警。连接关闭失败同样汇总在返回值里。
+    pub fn shutdown(&mut self) -> Result<(), String> {
+        let active: Vec<OmsOrderId> = self
+            .oms
+            .snapshot()
+            .active_orders
+            .iter()
+            .filter(|(_, order)| !order.status.is_terminal())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut errors = Vec::new();
+        for id in active {
+            match self.gateway.cancel(&id) {
+                Ok(()) => {
+                    // 交易所撤单成功后才把 OMS 落到终态。
+                    if let Err(err) = self.oms.cancel(id) {
+                        errors.push(format!("{id}: {err}"));
+                    }
+                }
+                Err(err) => errors.push(format!("{id}: {err}")),
+            }
+        }
+        if let Err(err) = self.gateway.disconnect() {
+            errors.push(format!("disconnect: {err}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     /// 当前持仓（数量，正多负空）
@@ -538,9 +585,12 @@ fn symbol_of(instrument: &Instrument) -> String {
 }
 
 /// `f64` → `Decimal`（NaN / 溢出直接报错，不做静默截断）
+///
+/// 用 `from_f64`（最短十进制表示）而不是 `from_f64_retain`：交易所的
+/// LOT_SIZE / PRICE_FILTER 按十进制字符串校验，`from_f64_retain` 会把 f64 的
+/// 二进制尾差展开成 `0.0001000000000000000047…` 这样的数量，必然被判非法。
 fn to_decimal(value: f64) -> Result<Decimal, KernelError> {
-    Decimal::from_f64_retain(value)
-        .ok_or_else(|| KernelError::Sink(format!("非法数量/价格: {value}")))
+    Decimal::from_f64(value).ok_or_else(|| KernelError::Sink(format!("非法数量/价格: {value}")))
 }
 
 /// 纳秒时间戳 → `chrono::DateTime<Utc>`（OMS `Fill` 的时间字段）
@@ -569,6 +619,10 @@ mod tests {
     struct MockGateway {
         placed: Arc<Mutex<Vec<Placed>>>,
         updates: Arc<Mutex<Vec<VenueUpdate>>>,
+        /// `shutdown` 收尾时撤掉的 OMS 订单号
+        cancelled: Arc<Mutex<Vec<OmsOrderId>>>,
+        /// `shutdown` 是否调用过 `disconnect`
+        disconnected: Arc<Mutex<bool>>,
         /// 前 N 次 `place` 返回错误（模拟传输超时）
         fail_remaining: usize,
         venue_seq: usize,
@@ -592,12 +646,18 @@ mod tests {
             })
         }
 
-        fn cancel(&mut self, _id: &OmsOrderId) -> Result<(), String> {
+        fn cancel(&mut self, id: &OmsOrderId) -> Result<(), String> {
+            self.cancelled.lock().unwrap().push(*id);
             Ok(())
         }
 
         fn poll_updates(&mut self) -> Result<Vec<VenueUpdate>, String> {
             Ok(std::mem::take(&mut *self.updates.lock().unwrap()))
+        }
+
+        fn disconnect(&mut self) -> Result<(), String> {
+            *self.disconnected.lock().unwrap() = true;
+            Ok(())
         }
     }
 
@@ -609,19 +669,25 @@ mod tests {
         }
     }
 
-    /// mock 网关 + 测试需要观察的两个共享句柄
+    /// mock 网关 + 测试需要观察的共享句柄
     struct MockHandles {
         gateway: Box<dyn LiveOrderGateway>,
         placed: Arc<Mutex<Vec<Placed>>>,
         updates: Arc<Mutex<Vec<VenueUpdate>>>,
+        cancelled: Arc<Mutex<Vec<OmsOrderId>>>,
+        disconnected: Arc<Mutex<bool>>,
     }
 
     fn mock(fail_remaining: usize) -> MockHandles {
         let placed = Arc::new(Mutex::new(Vec::new()));
         let updates = Arc::new(Mutex::new(Vec::new()));
+        let cancelled = Arc::new(Mutex::new(Vec::new()));
+        let disconnected = Arc::new(Mutex::new(false));
         let gateway = MockGateway {
             placed: placed.clone(),
             updates: updates.clone(),
+            cancelled: cancelled.clone(),
+            disconnected: disconnected.clone(),
             fail_remaining,
             venue_seq: 0,
         };
@@ -629,6 +695,8 @@ mod tests {
             gateway: Box::new(gateway),
             placed,
             updates,
+            cancelled,
+            disconnected,
         }
     }
 
@@ -674,9 +742,7 @@ mod tests {
     #[test]
     fn test_place_retry_reuses_idempotency_key() {
         let MockHandles {
-            gateway,
-            placed,
-            updates: _,
+            gateway, placed, ..
         } = mock(1);
         let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
         let mut core = core(10_000.0);
@@ -703,9 +769,7 @@ mod tests {
     #[test]
     fn test_duplicate_trade_id_booked_once() {
         let MockHandles {
-            gateway,
-            placed: _,
-            updates,
+            gateway, updates, ..
         } = mock(0);
         let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
         let mut core = core(10_000.0);
@@ -738,9 +802,7 @@ mod tests {
     #[test]
     fn test_invalid_transition_is_rejected() {
         let MockHandles {
-            gateway,
-            placed: _,
-            updates,
+            gateway, updates, ..
         } = mock(0);
         let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
         let mut core = core(10_000.0);
@@ -787,6 +849,7 @@ mod tests {
             gateway,
             placed,
             updates,
+            ..
         } = mock(0);
         let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
         let mut core = core(15.0);
@@ -837,9 +900,7 @@ mod tests {
     #[test]
     fn test_risk_rejection_blocks_gateway() {
         let MockHandles {
-            gateway,
-            placed,
-            updates: _,
+            gateway, placed, ..
         } = mock(0);
         let mut sink =
             LiveSink::new(gateway, Decimal::from(1_000_000u32)).with_risk(Box::new(DenyAllRisk));
@@ -856,5 +917,44 @@ mod tests {
         assert!(matches!(err, KernelError::Sink(_)), "错误类型应为 Sink");
         assert!(placed.lock().unwrap().is_empty(), "网关不得被调用");
         assert_eq!(sink.oms.history_count(), 0);
+    }
+
+    /// 6) 退出收尾：撤销所有未完成订单并关闭交易所连接
+    #[test]
+    fn test_shutdown_cancels_active_orders_and_disconnects() {
+        let MockHandles {
+            gateway,
+            cancelled,
+            disconnected,
+            ..
+        } = mock(0);
+        let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
+        let mut core = core(10_000.0);
+        sink.submit(
+            OrderIntent::Submit(spec(CoreSide::Buy, 1.0)),
+            &mut core,
+            &HostCtx::default(),
+        )
+        .expect("下单应成功");
+        let oms_id = *sink.orders.keys().next().expect("应有订单");
+
+        sink.shutdown().expect("收尾应成功");
+
+        assert_eq!(
+            *cancelled.lock().unwrap(),
+            vec![oms_id],
+            "收尾必须撤销未完成订单"
+        );
+        assert!(*disconnected.lock().unwrap(), "收尾必须关闭连接");
+        assert_eq!(sink.oms.active_count(), 0, "撤单后 OMS 不应留有活动订单");
+    }
+
+    /// 7) `f64` → `Decimal` 走最短表示：交易所按十进制字符串校验数量 / 价格
+    #[test]
+    fn test_to_decimal_uses_shortest_representation() {
+        assert_eq!(to_decimal(0.0001).unwrap().to_string(), "0.0001");
+        assert_eq!(to_decimal(0.1).unwrap().to_string(), "0.1");
+        assert_eq!(to_decimal(50_000.5).unwrap().to_string(), "50000.5");
+        assert!(to_decimal(f64::NAN).is_err(), "NaN 必须报错");
     }
 }
