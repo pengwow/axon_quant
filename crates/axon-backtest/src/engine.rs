@@ -1943,7 +1943,7 @@ impl BacktestEngine {
     /// - 若无,**fallback_mark** 给定(通常是本次 fill_price,旧场景无 mark 数据)
     /// - 既无 mark 也无 fallback 的 instrument 用其 `avg_cost` 占位(避免
     ///   没 mark 时 NAV 看起来是 0,误导回测)
-    fn compute_nav(&self, _timestamp: Timestamp, fallback_mark: f64) -> f64 {
+    pub fn compute_nav(&self, _timestamp: Timestamp, fallback_mark: f64) -> f64 {
         // 分段估值：
         // - 保证金品种只计浮盈亏（名义由保证金账本承担，不再占 cash）
         // - 其余品种保持旧式 `qty × mark` 市值估值
@@ -1972,6 +1972,18 @@ impl BacktestEngine {
             .fold((0.0, 0.0), |acc, x| (acc.0 + x.0, acc.1 + x.1));
         let isolated_total: f64 = self.bt_state.isolated.values().sum();
         self.bt_state.cash + isolated_total + margined_value + legacy_value
+    }
+
+    /// 当前 NAV(供内核在 bar 边界填 `HostCtx.equity`)
+    ///
+    /// 只读查询:不写 `equity_curve` / `nav_peak` / `bar_nav_curve`,不改变任何
+    /// 账务状态,可安全地在每根 bar 决策前调用。
+    ///
+    /// `fallback_mark` 传 `0.0` 是安全的:0.19.0 起 `compute_nav` 在
+    /// `mark_cache` 缺失时优先用 `bar_mid_by_instrument`(本 bar 每个品种自己的
+    /// mid),不会把 A 品种持仓用 B 品种价格估值。
+    pub fn nav(&self, ts: Timestamp) -> f64 {
+        self.compute_nav(ts, 0.0)
     }
 
     /// 0.21.0 新增:按持仓成本口径计算 balance(MT4 语义)

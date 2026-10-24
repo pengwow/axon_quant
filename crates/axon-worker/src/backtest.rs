@@ -475,7 +475,7 @@ fn action_to_target(act: axon_llm::decision::Action) -> f64 {
 ///
 /// 与 QuantCell `_normalize_symbol` 同规则：已有分隔符原样保留，否则去掉
 /// "-"/"_" 后按已知计价币后缀切分（长的优先，避免 USDC 被 USD 抢先截断）。
-fn instrument_key_for(sym: &str) -> String {
+pub(crate) fn instrument_key_for(sym: &str) -> String {
     let s = sym.to_uppercase();
     if s.contains('/') {
         return s;

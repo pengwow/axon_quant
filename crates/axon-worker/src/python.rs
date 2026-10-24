@@ -2,6 +2,7 @@
 //!
 //! 暴露：
 //! - `BacktestRunner`：Rust 原生回测编排器（构造 + 注册策略 + run）
+//! - `Kernel`：统一交易内核的薄包装（M2），结果与 `BacktestRunner` 等价
 //! - `BacktestResult`：回测结果 DTO
 //!
 //! `run()` 内部用 tokio runtime `block_on` 执行 async 回测循环，
@@ -9,8 +10,8 @@
 
 #![cfg(feature = "python")]
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -21,11 +22,19 @@ use axon_core::market::bar::Bar;
 use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::time::Timestamp;
 use axon_core::types::{Instrument, Price, Quantity, SwapSettle};
+use axon_kernel::{
+    BacktestSink, InferenceBackend, InstrumentMode, Kernel, KernelConfig, KernelResult,
+    RLStrategyHost, build_frames,
+};
+use axon_rl::{
+    Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec, RunningStats,
+};
 use axon_strategy::impl_::PythonStrategyImpl;
 use axon_strategy::python::PyRuleStrategyImpl;
 use axon_strategy::trait_::Strategy;
 
 use crate::backtest::{BacktestResult, BacktestRunner};
+use crate::kernel_host::BarContextSim;
 
 /// Python 端 BacktestResult（DTO，纯数据）
 ///
@@ -158,6 +167,67 @@ impl From<&BacktestResult> for PyBacktestResult {
             margin_specs_effective: r.margin_specs_effective.clone(),
             liquidation_count: r.liquidation_count,
             margin_shortfall_count: r.margin_shortfall_count,
+        }
+    }
+}
+
+impl PyBacktestResult {
+    /// 从内核 `KernelResult` 构造（字段口径与 `BacktestResult` 一致）
+    ///
+    /// `n_bars` 取内核已处理帧数（= 网格长度），与 `BacktestRunner` 的 `grid_len` 同源；
+    /// `duration_secs` 用内核自己的墙钟（引擎 `run()` 内部的 `duration` 只覆盖收尾瞬间）。
+    fn from_kernel(r: &KernelResult, n_strategies: u32) -> Self {
+        let run = &r.run;
+        Self {
+            events_processed: run.events_processed,
+            orders_accepted: run.orders_accepted,
+            orders_rejected: run.orders_rejected,
+            orders_cancelled: run.orders_cancelled,
+            orders_modified: run.orders_modified,
+            fills: run.fills,
+            total_pnl: run.total_pnl,
+            max_drawdown: run.max_drawdown,
+            max_drawdown_pct: run.max_drawdown_pct,
+            nav_peak: run.nav_peak,
+            final_nav: run.final_nav,
+            total_fees: run.total_fees,
+            total_funding_pnl: run.total_funding_pnl,
+            win_rate: run.win_rate,
+            sharpe_ratio: run.sharpe_ratio,
+            duration_secs: r.duration.as_secs_f64(),
+            final_time_ns: run.final_time.nanos,
+            rebalances_triggered: run.rebalances_triggered,
+            n_bars: r.bars_processed,
+            n_strategies,
+            bar_nav_curve: run
+                .bar_nav_curve
+                .iter()
+                .map(|(ts, nav)| (ts.nanos, *nav))
+                .collect(),
+            bar_balance_curve: run
+                .bar_balance_curve
+                .iter()
+                .map(|(ts, bal)| (ts.nanos, *bal))
+                .collect(),
+            equity_curve: run
+                .equity_curve
+                .iter()
+                .map(|(ts, nav)| (ts.nanos, *nav))
+                .collect(),
+            trades: run.trades.clone(),
+            fills_detail: run.fills_detail.clone(),
+            final_positions: run
+                .positions
+                .iter()
+                .map(|(inst, qty)| (inst.clone(), *qty))
+                .collect(),
+            liquidation_events: run.liquidation_events.clone(),
+            insurance_fund_loss: run.insurance_fund_loss,
+            price_basis: run.price_basis.clone(),
+            margin_applied: run.margin_applied,
+            margin_specs_effective: run.margin_specs_effective.clone(),
+            liquidation_count: run.liquidation_count,
+            margin_shortfall_count: run.margin_shortfall_count,
         }
     }
 }
@@ -351,16 +421,7 @@ impl PyBacktestRunner {
             // 合约乘数默认 1.0。注意 `contract_size` 目前只是品种元数据 ——
             // axon-backtest 引擎尚未把乘数计入名义价值/盈亏（engine.rs 里挂着 0.8.0 待办），
             // 币本位只有结算方式被如实标注，账务仍是近似。
-            let settle = match settle.as_deref().unwrap_or("usd_margin") {
-                "usd_margin" => SwapSettle::UsdMargin,
-                "coin_margin" => SwapSettle::CoinMargin,
-                other => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "unknown settle: {other} (expected 'usd_margin' / 'coin_margin')"
-                    )));
-                }
-            };
-            runner = runner.with_futures(settle, contract_size);
+            runner = runner.with_futures(parse_settle(settle.as_deref())?, contract_size);
         }
         // 回测结束 EOD 强制平仓
         runner = runner.with_force_liquidate(force_liquidate);
@@ -383,30 +444,7 @@ impl PyBacktestRunner {
         name: Option<String>,
         symbol: Option<String>,
     ) -> PyResult<()> {
-        let s: Arc<dyn Strategy> =
-            if let Ok(py_rule) = strategy.extract::<PyRef<'_, PyRuleStrategyImpl>>() {
-                // Rust 内置策略：直接提取 Arc<dyn Strategy>
-                py_rule.inner.clone()
-            } else {
-                // Python 自定义策略：用 PythonStrategyImpl 包装
-                let name = name.unwrap_or_else(|| {
-                    strategy
-                        .getattr("name")
-                        .and_then(|v| v.extract::<String>())
-                        .unwrap_or_else(|_| "python_strategy".to_string())
-                });
-                let symbol = symbol.unwrap_or_else(|| {
-                    strategy
-                        .getattr("symbol")
-                        .and_then(|v| v.extract::<String>())
-                        .unwrap_or_else(|_| "UNKNOWN".to_string())
-                });
-                Arc::new(PythonStrategyImpl::new(
-                    name,
-                    symbol,
-                    strategy.clone().unbind(),
-                ))
-            };
+        let (_, s) = wrap_strategy(strategy, name, symbol)?;
 
         self.inner
             .lock()
@@ -431,89 +469,7 @@ impl PyBacktestRunner {
     /// })
     /// ```
     fn with_margin(&self, specs: &Bound<'_, PyDict>) -> PyResult<()> {
-        let mut parsed: HashMap<String, MarginSpec> = HashMap::new();
-        for (k, v) in specs.iter() {
-            let sym: String = k.extract()?;
-            let d = v.cast::<PyDict>()?;
-
-            let leverage: f64 = d
-                .get_item("leverage")?
-                .map(|x| x.extract::<f64>())
-                .transpose()?
-                .unwrap_or(1.0);
-            let mode = match d
-                .get_item("mode")?
-                .map(|x| x.extract::<String>())
-                .transpose()?
-                .unwrap_or_else(|| "cross".to_string())
-                .as_str()
-            {
-                "isolated" => MarginMode::Isolated,
-                "cross" => MarginMode::Cross,
-                other => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "unknown margin mode: {other} (expected 'isolated' / 'cross')"
-                    )));
-                }
-            };
-
-            // brackets 没有默认值：缺档位就无法算维持保证金，宁可直接报错
-            let brackets_obj = d.get_item("brackets")?.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!("{sym} 缺少 brackets"))
-            })?;
-            let brackets_list: Vec<Bound<'_, PyAny>> = brackets_obj.extract()?;
-            let mut brackets = Vec::with_capacity(brackets_list.len());
-            for item in brackets_list {
-                let bd = item.cast::<PyDict>()?;
-                brackets.push(Bracket {
-                    notional_floor: bd
-                        .get_item("notional_floor")?
-                        .map(|x| x.extract::<f64>())
-                        .transpose()?
-                        .unwrap_or(0.0),
-                    notional_cap: bd
-                        .get_item("notional_cap")?
-                        .map(|x| x.extract::<Option<f64>>())
-                        .transpose()?
-                        .flatten(),
-                    mmr: bd
-                        .get_item("mmr")?
-                        .map(|x| x.extract::<f64>())
-                        .transpose()?
-                        .unwrap_or(0.0),
-                    cum: bd
-                        .get_item("cum")?
-                        .map(|x| x.extract::<f64>())
-                        .transpose()?
-                        .unwrap_or(0.0),
-                    liquidation_fee_rate: bd
-                        .get_item("liquidation_fee_rate")?
-                        .map(|x| x.extract::<f64>())
-                        .transpose()?
-                        .unwrap_or(0.001),
-                    max_leverage: bd
-                        .get_item("max_leverage")?
-                        .map(|x| x.extract::<f64>())
-                        .transpose()?
-                        .unwrap_or(125.0),
-                });
-            }
-            // 档位来源只用于结果回显，缺省按 "default"（旧调用方不传该键）
-            let bracket_source = d
-                .get_item("bracket_source")?
-                .map(|x| x.extract::<String>())
-                .transpose()?
-                .unwrap_or_else(|| "default".to_string());
-            parsed.insert(
-                sym,
-                MarginSpec {
-                    leverage,
-                    mode,
-                    brackets,
-                    bracket_source,
-                },
-            );
-        }
+        let parsed = parse_margin_specs(specs)?;
 
         // 原地替换：保留已注册策略与 futures 品种配置
         self.inner
@@ -548,20 +504,7 @@ impl PyBacktestRunner {
         capital_budget: Option<f64>,
     ) -> PyResult<PyBacktestResult> {
         // 1) dict[str, list[dict|None]] → BTreeMap<String, Vec<Option<Bar>>>
-        let mut bars_map: BTreeMap<String, Vec<Option<Bar>>> = BTreeMap::new();
-        for (k, v) in bars_by_symbol.iter() {
-            let key: String = k.extract()?;
-            let items: Vec<Bound<'_, PyAny>> = v.extract()?;
-            let mut per_grid: Vec<Option<Bar>> = Vec::with_capacity(items.len());
-            for it in items.iter() {
-                if it.is_none() {
-                    per_grid.push(None);
-                } else {
-                    per_grid.push(Some(dict_to_bar(it.cast::<PyDict>()?)?));
-                }
-            }
-            bars_map.insert(key, per_grid);
-        }
+        let bars_map = parse_bars(bars_by_symbol)?;
         if bars_map.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "bars_by_symbol 不能为空",
@@ -569,44 +512,11 @@ impl PyBacktestRunner {
         }
         let grid_len = bars_map.values().map(|v| v.len()).max().unwrap_or(0);
 
-        let py = bars_by_symbol.py();
-        let json_mod = py.import("json")?;
-
         // 2) states_by_symbol（逐 bar；长度不齐时按网格长度补齐「每 bar 同值」）
-        let states: BTreeMap<String, Vec<serde_json::Value>> = match states_by_symbol {
-            Some(d) => {
-                let mut m = BTreeMap::new();
-                for (k, v) in d.iter() {
-                    let key: String = k.extract()?;
-                    let list = if v.is_instance_of::<PyList>() {
-                        let items: Vec<Bound<'_, PyAny>> = v.extract()?;
-                        items
-                            .iter()
-                            .map(|it| dict_to_json_value(&json_mod, it))
-                            .collect::<PyResult<Vec<_>>>()?
-                    } else {
-                        vec![dict_to_json_value(&json_mod, &v)?; grid_len]
-                    };
-                    m.insert(key, list);
-                }
-                m
-            }
-            None => BTreeMap::new(),
-        };
+        let states = parse_states(states_by_symbol.as_ref(), grid_len)?;
 
         // 3) funding_by_symbol → BTreeMap<String, BTreeMap<i64, (f64, f64)>>
-        let funding: BTreeMap<String, BTreeMap<i64, (f64, f64)>> = match funding_by_symbol {
-            Some(d) => {
-                let mut m = BTreeMap::new();
-                for (k, v) in d.iter() {
-                    let key: String = k.extract()?;
-                    let sched: BTreeMap<i64, (f64, f64)> = v.extract()?;
-                    m.insert(key, sched);
-                }
-                m
-            }
-            None => BTreeMap::new(),
-        };
+        let funding = parse_funding(funding_by_symbol.as_ref())?;
 
         // 4) block_on 执行 async 回测
         let runner = self.inner.lock().map_err(|e| {
@@ -618,6 +528,650 @@ impl PyBacktestRunner {
 
         Ok((&result).into())
     }
+}
+
+/// 已注册的 RL 策略规格
+///
+/// 只保存「构造一次 Host 所需」的静态信息；`RLStrategyHost` 自带逐 bar 历史窗口，
+/// 因此每次 `Kernel.run` 都按本规格重建 Host，窗口不跨回测复用。
+struct RlStrategySpec {
+    /// Python 预测回调：`obs -> target_ratio ∈ [-1, 1]`
+    predict: Py<PyAny>,
+    /// 模型标识（进入 journal / 日志）
+    model_id: String,
+    /// 观测组装规格（与训练侧同一份实现）
+    spec: ObservationSpec,
+    /// 本策略负责的品种
+    symbol: Instrument,
+    /// 训练时的动作空间（必须覆盖 `[-1, 1]`，见 `ensure_ratio_passthrough`）
+    action_space: ActionSpace,
+}
+
+/// Python 预测回调 → 内核推理后端
+///
+/// 内核只认 `obs -> Action`；SB3 的 `predict` 在 Python 侧已经包成
+/// `list[float] -> target_ratio`，这里把 ratio 放进连续动作的第一个分量。
+/// 动作空间固定覆盖 `[-1, 1]`，所以
+/// `ratio → Action::continuous([ratio]) → decode_target_ratio` 是恒等映射
+/// （`decode_target_ratio` 只做 clip）。
+struct PyRatioBackend {
+    predict: Py<PyAny>,
+    model_id: String,
+    /// 最近一次成功推理的目标占比
+    ///
+    /// 推理抛异常 / 返回非有限值时沿用上次结果：`SetTarget` 契约没有「Hold」，
+    /// 退回 0.0 会强制平仓，把一次模型异常放大成清仓动作。
+    last_ratio: f64,
+}
+
+impl PyRatioBackend {
+    fn new(predict: Py<PyAny>, model_id: String) -> Self {
+        Self {
+            predict,
+            model_id,
+            last_ratio: 0.0,
+        }
+    }
+}
+
+impl InferenceBackend for PyRatioBackend {
+    fn infer(&mut self, obs: &[f64]) -> Action {
+        let ratio = Python::attach(|py| {
+            self.predict
+                .call1(py, (obs,))
+                .and_then(|result| result.extract::<f64>(py))
+        });
+        match ratio {
+            Ok(value) if value.is_finite() => self.last_ratio = value.clamp(-1.0, 1.0),
+            Ok(value) => tracing::warn!(
+                model = %self.model_id,
+                value,
+                "rl backend: predict 返回非有限值，沿用上次目标"
+            ),
+            Err(err) => tracing::warn!(
+                model = %self.model_id,
+                error = %err,
+                "rl backend: predict 调用失败，沿用上次目标"
+            ),
+        }
+        Action::continuous(vec![self.last_ratio])
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+}
+
+/// 断言动作空间能无损承载 `[-1, 1]` 的目标占比
+///
+/// 离散空间会把 ratio 量化到 bin，窄于 `[-1, 1]` 的连续空间会裁剪，
+/// 两者都会让 `ratio → Action → decode_target_ratio` 不再是恒等映射。
+/// 与其造一条有损往返，不如在注册时直接拒绝。
+fn ensure_ratio_passthrough(space: &ActionSpace) -> PyResult<()> {
+    match space {
+        ActionSpace::Continuous(space) if space.min <= -1.0 && space.max >= 1.0 => Ok(()),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(
+            "action_space 必须是覆盖 [-1, 1] 的连续空间（如 \
+             {'type': 'continuous', 'min': -1.0, 'max': 1.0}）；\
+             离散或更窄的空间会量化/裁剪 predict 返回值",
+        )),
+    }
+}
+
+/// Python `list[dict]` → `Vec<FeatureConfig>`
+///
+/// 复用 `FeatureConfig` 的 serde 表示（`source` / `normalizer` 为外部标记枚举），
+/// 避免在绑定层再手写一套枚举解析。
+fn parse_features(features: &Bound<'_, PyAny>) -> PyResult<Vec<FeatureConfig>> {
+    let json_mod = features.py().import("json")?;
+    let json_str: String = json_mod.call_method1("dumps", (features,))?.extract()?;
+    serde_json::from_str(&json_str).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "features 解析失败（期望 list[dict]）: {e}"
+        ))
+    })
+}
+
+/// Python `list[dict]` → `Vec<RunningStats>`
+///
+/// 与 `TradingEnv.observation_stats()` 的输出同格式（`RunningStats` 的 serde 表示）。
+fn parse_normalizer_stats(stats: &Bound<'_, PyAny>) -> PyResult<Vec<RunningStats>> {
+    let json_mod = stats.py().import("json")?;
+    let json_str: String = json_mod.call_method1("dumps", (stats,))?.extract()?;
+    serde_json::from_str(&json_str).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "stats 解析失败（期望 list[dict]，元素含 mean/m2/min/max/count/median_buffer）: {e}"
+        ))
+    })
+}
+
+/// Python 端统一交易内核（薄包装）
+///
+/// 只做类型转换与转发：参数解析复用 `BacktestRunner` 的同一组辅助函数，
+/// 编排语义全部在内核里。结果与 `BacktestRunner` 等价（`BacktestSink` 的
+/// 占比 → 数量换算 + `BarContextSim` 的逆运算互逆，见 `kernel_host`）。
+///
+/// ```python
+/// from axon_quant import strategy, worker
+/// k = worker.Kernel(initial_cash=100000.0)
+/// k.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+/// result = k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...})
+/// ```
+#[pyclass(name = "Kernel", module = "axon_worker")]
+pub struct PyKernel {
+    initial_cash: f64,
+    force_liquidate: bool,
+    instrument_mode: InstrumentMode,
+    interval: String,
+    /// 手续费率(已解析默认值并校验,`None` 在构造时即折算为默认值)
+    fee_rate: f64,
+    margin_specs: Mutex<HashMap<String, MarginSpec>>,
+    /// 已注册策略及其交易 symbol（symbol 用于构造 Host 的品种过滤）
+    strategies: Mutex<Vec<(String, Arc<dyn Strategy>)>>,
+    /// 已注册的 RL 策略（每次 `run` 按规格重建 `RLStrategyHost`）
+    rl_strategies: Mutex<Vec<RlStrategySpec>>,
+    manifest: Mutex<axon_kernel::persist::RunManifest>,
+    last_result: Mutex<Option<PyBacktestResult>>,
+    /// 驱动策略 `decide()` 的 runtime；`Kernel` 主回路本身是同步的
+    runtime: tokio::runtime::Runtime,
+}
+
+#[pymethods]
+impl PyKernel {
+    #[new]
+    #[pyo3(signature = (initial_cash=100000.0, futures=false, force_liquidate=false, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None))]
+    fn new(
+        initial_cash: f64,
+        futures: bool,
+        force_liquidate: bool,
+        settle: Option<String>,
+        contract_size: f64,
+        interval: String,
+        fee_rate: Option<f64>,
+    ) -> PyResult<Self> {
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("创建 tokio runtime 失败: {e}"))
+        })?;
+        // `None` = 引擎默认费率(0.001);显式传入才校验,
+        // 负数或 NaN/inf 会让手续费累计失真,直接在构造期拒绝
+        let fee_rate = match fee_rate {
+            None => KernelConfig::default().fee_rate,
+            Some(rate) if rate.is_finite() && rate >= 0.0 => rate,
+            Some(rate) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "fee_rate 必须是有限非负数，收到: {rate}"
+                )));
+            }
+        };
+        Ok(Self {
+            initial_cash,
+            force_liquidate,
+            // 与 `PyBacktestRunner::new` 同规则：futures 才谈结算方式与乘数
+            instrument_mode: build_instrument_mode(futures, settle.as_deref(), contract_size)?,
+            interval,
+            fee_rate,
+            margin_specs: Mutex::new(HashMap::new()),
+            strategies: Mutex::new(Vec::new()),
+            rl_strategies: Mutex::new(Vec::new()),
+            manifest: Mutex::new(axon_kernel::persist::RunManifest::default()),
+            last_result: Mutex::new(None),
+            runtime,
+        })
+    }
+
+    /// 注册一个策略（包装规则与 `BacktestRunner.add_strategy` 完全一致）
+    #[pyo3(signature = (strategy, name=None, symbol=None))]
+    fn add_strategy(
+        &self,
+        strategy: &Bound<'_, PyAny>,
+        name: Option<String>,
+        symbol: Option<String>,
+    ) -> PyResult<()> {
+        let (symbol, s) = wrap_strategy(strategy, name, symbol)?;
+        kernel_lock(&self.strategies, "strategies")?.push((symbol, s));
+        Ok(())
+    }
+
+    /// 注册一个 RL 策略（Python 推理回调 → 内核 `RLStrategyHost`）
+    ///
+    /// `predict(obs: list[float]) -> float` 返回目标权益占比，内核把它原样作为
+    /// `SetTarget.target_ratio`：`ratio → Action → decode_target_ratio` 必须是恒等
+    /// 映射，因此 `action_space` 只接受覆盖 `[-1, 1]` 的连续空间（默认
+    /// `{"type": "continuous", "min": -1.0, "max": 1.0}`）。
+    ///
+    /// `features` 是 `ObservationSpec` 的特征配置（与训练侧同一份实现），元素形如：
+    /// ```python
+    /// {"name": "close", "source": {"PriceField": "close"},
+    ///  "normalizer": "None", "clip_range": None}
+    /// ```
+    /// `source` / `normalizer` 使用 serde 的外部标记枚举写法
+    /// （`FeatureSource` / `NormalizerType`）。
+    ///
+    /// `symbol` 必须带分隔符（`BTC/USDT` / `BTC-USDT`）：内核按它构造 `Instrument`，
+    /// 无分隔符会退化成默认品种，导致 Host 过滤不到任何 bar。
+    ///
+    /// `stats` 是训练期观测归一化统计量（`TradingEnv.observation_stats()` 的 JSON
+    /// 反序列化结果），`None` 时保持全空（Z-Score 恒为 0，与训练分布不一致）。
+    /// 传了就按特征逐条对齐，条数必须等于特征数。
+    // 绑定层签名由 Python 调用方决定（7 个必填 + 2 个可选），拆结构体会破坏现有位置参数
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (predict, model_id, spec_version, window_size, features, action_space=None, symbol="BTC/USDT", stats=None))]
+    fn add_rl_strategy(
+        &self,
+        predict: &Bound<'_, PyAny>,
+        model_id: &str,
+        spec_version: &str,
+        window_size: usize,
+        features: &Bound<'_, PyAny>,
+        action_space: Option<&Bound<'_, PyDict>>,
+        symbol: &str,
+        stats: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        if !predict.is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "predict 必须是可调用对象 (list[float]) -> float",
+            ));
+        }
+        if model_id.is_empty() || spec_version.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "model_id / spec_version 不能为空",
+            ));
+        }
+        if !symbol.contains('/') && !symbol.contains('-') {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "symbol 需要 BASE/QUOTE 形式（如 BTC/USDT），收到: {symbol}"
+            )));
+        }
+
+        let mut spec = ObservationSpec::new(window_size, parse_features(features)?)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("ObservationSpec 构造失败: {e}"))
+            })?
+            .with_version(spec_version);
+
+        // 训练期统计量：观测组装按特征下标取统计，条数不符会在推理时越界，
+        // 因此注册阶段就拒绝。空 list 与 None 同义（保持全空）。
+        let stats = match stats {
+            Some(stats) => parse_normalizer_stats(stats)?,
+            None => Vec::new(),
+        };
+        if !stats.is_empty() {
+            if stats.len() != spec.features.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "stats 条数必须等于特征数 {}（每特征一条），收到 {}",
+                    spec.features.len(),
+                    stats.len()
+                )));
+            }
+            spec.normalizer.stats = stats;
+        }
+
+        let action_space = match action_space {
+            Some(dict) => axon_rl::python::parse_action_space(dict)?,
+            None => ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0)),
+        };
+        ensure_ratio_passthrough(&action_space)?;
+
+        kernel_lock(&self.rl_strategies, "rl strategies")?.push(RlStrategySpec {
+            predict: predict.clone().unbind(),
+            model_id: model_id.to_string(),
+            spec,
+            symbol: self.instrument_mode.instrument(symbol),
+            action_space,
+        });
+        Ok(())
+    }
+
+    /// 注入每品种保证金规格（解析逻辑与 `BacktestRunner.with_margin` 共用）
+    fn with_margin(&self, specs: &Bound<'_, PyDict>) -> PyResult<()> {
+        *kernel_lock(&self.margin_specs, "margin")? = parse_margin_specs(specs)?;
+        Ok(())
+    }
+
+    /// 设置重演凭证（透传 `RunManifest`，默认 code_version 取 crate 版本）
+    #[pyo3(signature = (config_hash=None, data_hash=None, seed=0))]
+    fn set_manifest(
+        &self,
+        config_hash: Option<String>,
+        data_hash: Option<String>,
+        seed: u64,
+    ) -> PyResult<()> {
+        let manifest = axon_kernel::persist::RunManifest {
+            config_hash: config_hash.unwrap_or_default(),
+            data_hash: data_hash.unwrap_or_default(),
+            seed,
+            ..axon_kernel::persist::RunManifest::default()
+        };
+        *kernel_lock(&self.manifest, "manifest")? = manifest;
+        Ok(())
+    }
+
+    /// 参数语义与 `BacktestRunner.run` 完全一致
+    ///
+    /// - `bars_by_symbol`: `dict[str, list[dict | None]]`，各 symbol 等长逐网格点
+    /// - `states_by_symbol`: dict[str, dict | list[dict]]；list 按逐 bar 注入，
+    ///   单对象展开为「每 bar 同值」。state 经 `build_frames` 进帧，再由内核
+    ///   按 `(帧时间戳, 品种)` 回填到 `BarClosedEvent.state`
+    /// - `funding_by_symbol`: `dict[str, dict[int, tuple(rate, mark_price)]]`
+    /// - `capital_budget`: `float | None`（`initial_cash × leverage`）
+    #[pyo3(signature = (bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None))]
+    fn run(
+        &self,
+        py: Python<'_>,
+        bars_by_symbol: &Bound<'_, PyDict>,
+        states_by_symbol: Option<Bound<'_, PyDict>>,
+        funding_by_symbol: Option<Bound<'_, PyDict>>,
+        capital_budget: Option<f64>,
+    ) -> PyResult<PyBacktestResult> {
+        let bars_map = parse_bars(bars_by_symbol)?;
+        if bars_map.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "bars_by_symbol 不能为空",
+            ));
+        }
+        let grid_len = bars_map.values().map(|v| v.len()).max().unwrap_or(0);
+        let states = parse_states(states_by_symbol.as_ref(), grid_len)?;
+        let funding = parse_funding(funding_by_symbol.as_ref())?;
+
+        let frames = build_frames(&bars_map, &self.instrument_mode, Some(&states))
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        // 屏障的期望品种全集 = 本次网格里出现过的全部 instrument
+        let expected_instruments: HashSet<Instrument> = frames
+            .iter()
+            .flat_map(|frame| frame.bars.iter().map(|(instrument, _)| instrument.clone()))
+            .collect();
+
+        // 先克隆出本次运行需要的状态，避免持锁跑完整段回测
+        let strategies = kernel_lock(&self.strategies, "strategies")?.clone();
+        let margin_specs = kernel_lock(&self.margin_specs, "margin")?.clone();
+        let manifest = kernel_lock(&self.manifest, "manifest")?.clone();
+
+        let config = KernelConfig {
+            initial_cash: self.initial_cash,
+            fee_rate: self.fee_rate,
+            force_liquidate: self.force_liquidate,
+            margin_specs,
+            instrument_mode: self.instrument_mode,
+            interval: self.interval.clone(),
+            capital_budget,
+            funding_by_symbol: funding,
+            expected_instruments,
+            // rebalance_threshold / seed 走默认值（0.001 / 0.0005 / 5 / 100.0），
+            // 与 `BacktestRunner` 的模块常量逐位一致（parity 前提）
+            ..KernelConfig::default()
+        };
+        let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+        kernel.set_manifest(manifest);
+
+        let handle = self.runtime.handle().clone();
+        for (symbol, strategy) in &strategies {
+            kernel.add_host(Box::new(BarContextSim::new(
+                strategy.clone(),
+                self.instrument_mode.instrument(symbol),
+                handle.clone(),
+            )));
+        }
+
+        // RL host 每次运行重建：`RLStrategyHost` 自带逐 bar 历史窗口，
+        // 跨回测复用会把上一次的窗口带进下一次观测。
+        let rl_count = {
+            let rl_strategies = kernel_lock(&self.rl_strategies, "rl strategies")?;
+            for spec in rl_strategies.iter() {
+                let backend =
+                    PyRatioBackend::new(spec.predict.clone_ref(py), spec.model_id.clone());
+                let host = RLStrategyHost::new(
+                    Box::new(backend),
+                    spec.spec.clone(),
+                    spec.symbol.clone(),
+                    spec.action_space.clone(),
+                )
+                .map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "构造 RL host 失败 (model={}): {e}",
+                        spec.model_id
+                    ))
+                })?;
+                kernel.add_host(Box::new(host));
+            }
+            rl_strategies.len()
+        };
+
+        let result = kernel.run_history(frames).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel 回测失败: {e}"))
+        })?;
+        let py_result =
+            PyBacktestResult::from_kernel(&result, (strategies.len() + rl_count) as u32);
+        *kernel_lock(&self.last_result, "result")? = Some(py_result.clone());
+        Ok(py_result)
+    }
+
+    /// 最近一次运行的结果（未跑过返回 `None`）
+    fn result(&self) -> PyResult<Option<PyBacktestResult>> {
+        Ok(kernel_lock(&self.last_result, "result")?.clone())
+    }
+}
+
+/// `Kernel` 的可变状态加锁（统一错误信息，避免每处复制 map_err）
+fn kernel_lock<'a, T>(m: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>> {
+    m.lock().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel {what} lock 失败: {e}"))
+    })
+}
+
+/// futures / settle / contract_size → 品种撮合口径
+fn build_instrument_mode(
+    futures: bool,
+    settle: Option<&str>,
+    contract_size: f64,
+) -> PyResult<InstrumentMode> {
+    if !futures {
+        return Ok(InstrumentMode::Spot);
+    }
+    Ok(InstrumentMode::Swap {
+        settle: parse_settle(settle)?,
+        contract_size,
+    })
+}
+
+/// 结算方式字符串 → `SwapSettle`（缺省 `usd_margin`）
+fn parse_settle(settle: Option<&str>) -> PyResult<SwapSettle> {
+    match settle.unwrap_or("usd_margin") {
+        "usd_margin" => Ok(SwapSettle::UsdMargin),
+        "coin_margin" => Ok(SwapSettle::CoinMargin),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown settle: {other} (expected 'usd_margin' / 'coin_margin')"
+        ))),
+    }
+}
+
+/// `dict[str, list[dict | None]]` → 逐网格点 bar 列
+fn parse_bars(bars_by_symbol: &Bound<'_, PyDict>) -> PyResult<BTreeMap<String, Vec<Option<Bar>>>> {
+    let mut bars_map: BTreeMap<String, Vec<Option<Bar>>> = BTreeMap::new();
+    for (k, v) in bars_by_symbol.iter() {
+        let key: String = k.extract()?;
+        let items: Vec<Bound<'_, PyAny>> = v.extract()?;
+        let mut per_grid: Vec<Option<Bar>> = Vec::with_capacity(items.len());
+        for it in items.iter() {
+            if it.is_none() {
+                per_grid.push(None);
+            } else {
+                per_grid.push(Some(dict_to_bar(it.cast::<PyDict>()?)?));
+            }
+        }
+        bars_map.insert(key, per_grid);
+    }
+    Ok(bars_map)
+}
+
+/// `states_by_symbol` → 逐 bar state 列
+///
+/// 值为 list 时按逐 bar 注入；值为单对象时展开成 `grid_len` 份「每 bar 同值」。
+fn parse_states(
+    states_by_symbol: Option<&Bound<'_, PyDict>>,
+    grid_len: usize,
+) -> PyResult<BTreeMap<String, Vec<serde_json::Value>>> {
+    let Some(d) = states_by_symbol else {
+        return Ok(BTreeMap::new());
+    };
+    let py = d.py();
+    let json_mod = py.import("json")?;
+    let mut m = BTreeMap::new();
+    for (k, v) in d.iter() {
+        let key: String = k.extract()?;
+        let list = if v.is_instance_of::<PyList>() {
+            let items: Vec<Bound<'_, PyAny>> = v.extract()?;
+            items
+                .iter()
+                .map(|it| dict_to_json_value(&json_mod, it))
+                .collect::<PyResult<Vec<_>>>()?
+        } else {
+            vec![dict_to_json_value(&json_mod, &v)?; grid_len]
+        };
+        m.insert(key, list);
+    }
+    Ok(m)
+}
+
+/// 资金费查找表：`symbol -> (纳秒时间戳 -> (rate, mark_price))`
+type FundingTable = BTreeMap<String, BTreeMap<i64, (f64, f64)>>;
+
+/// `funding_by_symbol` → 资金费查找表（键为 bar 纳秒时间戳）
+fn parse_funding(funding_by_symbol: Option<&Bound<'_, PyDict>>) -> PyResult<FundingTable> {
+    let Some(d) = funding_by_symbol else {
+        return Ok(BTreeMap::new());
+    };
+    let mut m = BTreeMap::new();
+    for (k, v) in d.iter() {
+        let key: String = k.extract()?;
+        let sched: BTreeMap<i64, (f64, f64)> = v.extract()?;
+        m.insert(key, sched);
+    }
+    Ok(m)
+}
+
+/// Python dict → 每品种保证金规格
+fn parse_margin_specs(specs: &Bound<'_, PyDict>) -> PyResult<HashMap<String, MarginSpec>> {
+    let mut parsed: HashMap<String, MarginSpec> = HashMap::new();
+    for (k, v) in specs.iter() {
+        let sym: String = k.extract()?;
+        let d = v.cast::<PyDict>()?;
+
+        let leverage: f64 = d
+            .get_item("leverage")?
+            .map(|x| x.extract::<f64>())
+            .transpose()?
+            .unwrap_or(1.0);
+        let mode = match d
+            .get_item("mode")?
+            .map(|x| x.extract::<String>())
+            .transpose()?
+            .unwrap_or_else(|| "cross".to_string())
+            .as_str()
+        {
+            "isolated" => MarginMode::Isolated,
+            "cross" => MarginMode::Cross,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown margin mode: {other} (expected 'isolated' / 'cross')"
+                )));
+            }
+        };
+
+        // brackets 没有默认值：缺档位就无法算维持保证金，宁可直接报错
+        let brackets_obj = d.get_item("brackets")?.ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!("{sym} 缺少 brackets"))
+        })?;
+        let brackets_list: Vec<Bound<'_, PyAny>> = brackets_obj.extract()?;
+        let mut brackets = Vec::with_capacity(brackets_list.len());
+        for item in brackets_list {
+            let bd = item.cast::<PyDict>()?;
+            brackets.push(Bracket {
+                notional_floor: bd
+                    .get_item("notional_floor")?
+                    .map(|x| x.extract::<f64>())
+                    .transpose()?
+                    .unwrap_or(0.0),
+                notional_cap: bd
+                    .get_item("notional_cap")?
+                    .map(|x| x.extract::<Option<f64>>())
+                    .transpose()?
+                    .flatten(),
+                mmr: bd
+                    .get_item("mmr")?
+                    .map(|x| x.extract::<f64>())
+                    .transpose()?
+                    .unwrap_or(0.0),
+                cum: bd
+                    .get_item("cum")?
+                    .map(|x| x.extract::<f64>())
+                    .transpose()?
+                    .unwrap_or(0.0),
+                liquidation_fee_rate: bd
+                    .get_item("liquidation_fee_rate")?
+                    .map(|x| x.extract::<f64>())
+                    .transpose()?
+                    .unwrap_or(0.001),
+                max_leverage: bd
+                    .get_item("max_leverage")?
+                    .map(|x| x.extract::<f64>())
+                    .transpose()?
+                    .unwrap_or(125.0),
+            });
+        }
+        // 档位来源只用于结果回显，缺省按 "default"（旧调用方不传该键）
+        let bracket_source = d
+            .get_item("bracket_source")?
+            .map(|x| x.extract::<String>())
+            .transpose()?
+            .unwrap_or_else(|| "default".to_string());
+        parsed.insert(
+            sym,
+            MarginSpec {
+                leverage,
+                mode,
+                brackets,
+                bracket_source,
+            },
+        );
+    }
+    Ok(parsed)
+}
+
+/// 把 Python 策略对象包装成 `Arc<dyn Strategy>`，同时返回它声明的交易 symbol
+///
+/// - `strategy.RuleStrategyImpl`：直接取内部 `Arc`，symbol 从策略自身读
+/// - 任意 Python 对象：包装成 `PythonStrategyImpl`，symbol 优先取显式参数
+fn wrap_strategy(
+    strategy: &Bound<'_, PyAny>,
+    name: Option<String>,
+    symbol: Option<String>,
+) -> PyResult<(String, Arc<dyn Strategy>)> {
+    if let Ok(py_rule) = strategy.extract::<PyRef<'_, PyRuleStrategyImpl>>() {
+        let inner = py_rule.inner.clone();
+        let symbol = inner.symbol().to_string();
+        return Ok((symbol, inner));
+    }
+
+    let name = name.unwrap_or_else(|| {
+        strategy
+            .getattr("name")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_else(|_| "python_strategy".to_string())
+    });
+    let symbol = symbol.unwrap_or_else(|| {
+        strategy
+            .getattr("symbol")
+            .and_then(|v| v.extract::<String>())
+            .unwrap_or_else(|_| "UNKNOWN".to_string())
+    });
+    Ok((
+        symbol.clone(),
+        Arc::new(PythonStrategyImpl::new(
+            name,
+            symbol,
+            strategy.clone().unbind(),
+        )),
+    ))
 }
 
 /// Python 对象 → serde_json::Value（经 json.dumps，避免 str() 的单引号问题）
@@ -670,5 +1224,6 @@ fn dict_to_bar(d: &Bound<'_, PyDict>) -> PyResult<Bar> {
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBacktestResult>()?;
     m.add_class::<PyBacktestRunner>()?;
+    m.add_class::<PyKernel>()?;
     Ok(())
 }

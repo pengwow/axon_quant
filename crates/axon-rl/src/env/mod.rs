@@ -4,6 +4,7 @@
 
 pub mod action_decoder;
 pub mod config;
+pub mod cost;
 pub mod error;
 pub mod executor;
 pub mod trading_env;
@@ -11,6 +12,7 @@ pub mod types;
 
 pub use action_decoder::ActionDecoder;
 pub use config::EnvConfig;
+pub use cost::CostModel;
 pub use error::{EnvError, EnvResult};
 pub use executor::Executor;
 pub use trading_env::{StepResult, TradingEnv};

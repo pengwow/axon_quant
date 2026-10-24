@@ -1,63 +1,71 @@
 //! 默认观测空间实现
 //!
 //! 组合特征提取 + 归一化 + 窗口聚合，对外暴露 `ObservationSpace` trait。
+//!
+//! 组装逻辑**不再在本模块重复实现**：内部持有一份 [`ObservationSpec`]，所有
+//! 计算都委托给它，保证 Gymnasium 训练/评估与内核推理是同一份代码。
 
 use crate::observation::error::ObservationError;
 use crate::observation::normalizer::RunningStats;
+use crate::observation::spec::ObservationSpec;
 use crate::observation::types::{
     BoxSpace, DType, FeatureConfig, MarketState, Observation, ObservationSpace,
-    extract_feature_value, normalize_and_clip,
 };
 
 /// 默认观测空间：特征工程管线
 ///
-/// 内部维护环形缓冲区 + 每个特征的运行时统计量。
+/// 内部只有一个 [`ObservationSpec`]；运行时统计量挂在
+/// `spec.normalizer.stats` 上。
 pub struct DefaultObservationSpace {
-    /// 窗口大小（保留最近 N 个 tick）
-    pub window_size: usize,
-    /// 特征配置列表
-    pub features: Vec<FeatureConfig>,
-    /// 每个特征的运行时统计量
-    pub(crate) running_stats: Vec<RunningStats>,
+    /// 唯一一份组装规格
+    spec: ObservationSpec,
 }
 
 impl DefaultObservationSpace {
     /// 构造默认观测空间（Z-Score 归一化）
     pub fn new(window_size: usize, features: Vec<FeatureConfig>) -> Result<Self, ObservationError> {
-        crate::observation::validate_observation_space(&features, window_size)?;
-        let n = features.len();
         Ok(Self {
-            window_size,
-            features,
-            running_stats: vec![RunningStats::new(); n],
+            spec: ObservationSpec::new(window_size, features)?,
         })
+    }
+
+    /// 观测组装规格（只读）
+    pub fn spec(&self) -> &ObservationSpec {
+        &self.spec
     }
 
     /// 获取某个特征的运行时统计量（仅测试可见）
     #[cfg(test)]
-    pub fn running_stats(&self, idx: usize) -> &RunningStats {
-        &self.running_stats[idx]
+    pub fn running_stats(&self, idx: usize) -> &crate::observation::normalizer::RunningStats {
+        &self.spec.normalizer.stats[idx]
+    }
+
+    /// 获取某个特征的运行时统计量（可变，仅测试可见）
+    #[cfg(test)]
+    pub fn running_stats_mut(
+        &mut self,
+        idx: usize,
+    ) -> &mut crate::observation::normalizer::RunningStats {
+        &mut self.spec.normalizer.stats[idx]
     }
 
     /// 重置所有运行时统计量
     pub fn reset_stats(&mut self) {
-        for stats in &mut self.running_stats {
-            stats.reset();
-        }
+        self.spec.normalizer.reset();
     }
 }
 
 impl ObservationSpace for DefaultObservationSpace {
     fn shape(&self) -> Vec<usize> {
-        vec![self.features.len() * self.window_size]
+        self.spec.shape()
     }
 
     fn low(&self) -> Vec<f64> {
-        vec![-5.0; self.features.len() * self.window_size]
+        vec![-5.0; self.spec.num_features()]
     }
 
     fn high(&self) -> Vec<f64> {
-        vec![5.0; self.features.len() * self.window_size]
+        vec![5.0; self.spec.num_features()]
     }
 
     fn gymnasium_box(&self) -> BoxSpace {
@@ -74,43 +82,25 @@ impl ObservationSpace for DefaultObservationSpace {
         state: &MarketState,
         history: &[MarketState],
     ) -> Result<Observation, ObservationError> {
-        let num_features = self.features.len();
-        let window = self.window_size;
-        let mut features = Vec::with_capacity(num_features * window);
-        let mut feature_names = Vec::with_capacity(num_features * window);
+        self.spec.build_observation(state, history)
+    }
 
-        // 起始索引：保留最多 window 个历史点
-        let start = if history.len() >= window {
-            history.len() - window
-        } else {
-            0
-        };
-
-        for (feat_idx, feat_config) in self.features.iter().enumerate() {
-            for t in start..history.len() {
-                let raw = extract_feature_value(&feat_config.source, &history[t], &history[..t])?;
-                let normalized = normalize_and_clip(
-                    raw,
-                    &feat_config.normalizer,
-                    &self.running_stats[feat_idx],
-                    feat_config.clip_range,
-                );
-                features.push(normalized);
-                feature_names.push(format!("{}_t{}", feat_config.name, history.len() - t - 1));
-            }
-        }
-
-        Ok(Observation {
-            features,
-            feature_names,
-            timestamp: Some(state.timestamp),
-        })
+    /// 训练专用：先按当前统计量归一化产出观测，再用原始特征值更新统计量
+    ///
+    /// 归一化统计量的累积逻辑只在 [`ObservationSpec`] 里实现一份，本方法只是
+    /// 可变借用的转发；推理侧仍走只读 [`Self::build`]。
+    fn build_and_update(
+        &mut self,
+        state: &MarketState,
+        history: &[MarketState],
+    ) -> Result<Observation, ObservationError> {
+        self.spec.build_observation_and_update(state, history)
     }
 
     fn feature_names(&self) -> Vec<String> {
-        let mut names = Vec::with_capacity(self.features.len() * self.window_size);
-        for feat in &self.features {
-            for t in 0..self.window_size {
+        let mut names = Vec::with_capacity(self.spec.num_features());
+        for feat in &self.spec.features {
+            for t in 0..self.spec.window_size {
                 names.push(format!("{}_t{}", feat.name, t));
             }
         }
@@ -118,6 +108,23 @@ impl ObservationSpace for DefaultObservationSpace {
     }
 
     fn num_features(&self) -> usize {
-        self.features.len() * self.window_size
+        self.spec.num_features()
+    }
+
+    fn normalizer_stats(&self) -> Option<&[RunningStats]> {
+        Some(&self.spec.normalizer.stats)
+    }
+
+    fn set_normalizer_stats(&mut self, stats: Vec<RunningStats>) -> Result<(), ObservationError> {
+        // 观测组装按特征下标取统计，长度不符会在 build 时越界，宁可这里拒绝
+        let expected = self.spec.features.len();
+        if stats.len() != expected {
+            return Err(ObservationError::FeatureCountMismatch {
+                expected,
+                actual: stats.len(),
+            });
+        }
+        self.spec.normalizer.stats = stats;
+        Ok(())
     }
 }

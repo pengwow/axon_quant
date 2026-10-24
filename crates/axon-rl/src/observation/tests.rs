@@ -53,6 +53,19 @@ fn volume_feature() -> FeatureConfig {
     }
 }
 
+/// 构造**最新在前**的行情窗口：`closes` 按「最新 → 最旧」给出
+///
+/// 时间戳反过来递增，保证 `history[0]` 的 timestamp 最大。观测组装约定
+/// `history[0]` = 当前 bar，`history[t]` = 距今 t 步。
+fn newest_first_history(closes: &[f64]) -> Vec<MarketState> {
+    let last_idx = closes.len().saturating_sub(1);
+    closes
+        .iter()
+        .enumerate()
+        .map(|(i, &close)| sample_state((last_idx - i) as u64 * 60_000, close))
+        .collect()
+}
+
 // ── 类型测试 ──────────────────────────────────────────────
 
 #[test]
@@ -325,26 +338,28 @@ fn test_observation_space_gymnasium_box() {
 #[test]
 fn test_observation_space_build_basic() {
     let space = DefaultObservationSpace::new(3, vec![close_feature()]).unwrap();
-    let history: Vec<MarketState> = (0..3)
-        .map(|i| sample_state(i * 60_000, 100.0 + i as f64))
-        .collect();
-    let state = history.last().unwrap();
-    let obs = space.build(state, &history).unwrap();
+    // 最新在前：close = [102, 101, 100]
+    let history = newest_first_history(&[102.0, 101.0, 100.0]);
+    let obs = space.build(&history[0], &history).unwrap();
     assert_eq!(obs.features.len(), 3);
-    assert_eq!(obs.feature_names.len(), 3);
-    assert!(obs.feature_names[0].contains("close"));
+    assert_eq!(
+        obs.feature_names,
+        vec![
+            "close_t0".to_string(),
+            "close_t1".to_string(),
+            "close_t2".to_string(),
+        ]
+    );
 }
 
 #[test]
 fn test_observation_space_build_with_insufficient_history() {
     // history 短于 window 时应仍能 build（仅取可用）
     let space = DefaultObservationSpace::new(5, vec![close_feature()]).unwrap();
-    let history: Vec<MarketState> = (0..2)
-        .map(|i| sample_state(i * 60_000, 100.0 + i as f64))
-        .collect();
-    let state = history.last().unwrap();
-    let obs = space.build(state, &history).unwrap();
+    let history = newest_first_history(&[101.0, 100.0]);
+    let obs = space.build(&history[0], &history).unwrap();
     assert_eq!(obs.features.len(), 2);
+    assert_eq!(obs.feature_names[0], "close_t0", "_t0 仍是当前 bar");
 }
 
 #[test]
@@ -361,11 +376,161 @@ fn test_observation_space_feature_names() {
 #[test]
 fn test_observation_space_reset_stats() {
     let mut space = DefaultObservationSpace::new(2, vec![close_feature()]).unwrap();
-    space.running_stats[0].update(10.0);
-    space.running_stats[0].update(20.0);
-    assert_eq!(space.running_stats[0].count, 2);
+    space.running_stats_mut(0).update(10.0);
+    space.running_stats_mut(0).update(20.0);
+    assert_eq!(space.running_stats(0).count, 2);
     space.reset_stats();
-    assert_eq!(space.running_stats[0].count, 0);
+    assert_eq!(space.running_stats(0).count, 0);
+}
+
+// ── 归一化统计量导出 / 灌回 ───────────────────────────────
+
+/// 训练侧导出入口：每个特征一条统计，`build` 不写统计量（现有归一化数值行为不变）
+#[test]
+fn test_normalizer_stats_exposed_per_feature() {
+    let mut space =
+        DefaultObservationSpace::new(2, vec![close_feature(), volume_feature()]).unwrap();
+    for value in [10.0, 12.0, 14.0] {
+        space.running_stats_mut(0).update(value);
+    }
+
+    let history = newest_first_history(&[102.0, 101.0, 100.0]);
+    for _ in 0..3 {
+        space.build(&history[0], &history).unwrap();
+    }
+
+    let stats = space
+        .normalizer_stats()
+        .expect("默认观测空间必须暴露统计量");
+    assert_eq!(stats.len(), 2, "每个特征一条统计");
+    assert_eq!(stats[0].count, 3, "build 只读统计量，不写入");
+    assert_eq!(stats[1].count, 0);
+}
+
+/// 灌回训练统计量后：归一化真的参与计算，且反复灌回同一份统计量结果逐位相等
+#[test]
+fn test_set_normalizer_stats_reproduces_bitwise() {
+    let mut space =
+        DefaultObservationSpace::new(2, vec![close_feature(), volume_feature()]).unwrap();
+    let history = newest_first_history(&[102.0, 101.0, 100.0]);
+
+    // 模拟训练期积累的统计量（经 serde 往返，等价于旁车落盘 → 读回）
+    let mut stats = vec![RunningStats::new(), RunningStats::new()];
+    for value in [95.0, 100.0, 110.0] {
+        stats[0].update(value);
+    }
+    for value in [10.0, 50.0, 200.0] {
+        stats[1].update(value);
+    }
+    let restored: Vec<RunningStats> =
+        serde_json::from_str(&serde_json::to_string(&stats).unwrap()).unwrap();
+
+    space.set_normalizer_stats(restored.clone()).unwrap();
+    let expected = space.build(&history[0], &history).unwrap();
+    assert!(
+        expected.features.iter().any(|value| *value != 0.0),
+        "统计量必须真的参与归一化: {:?}",
+        expected.features
+    );
+
+    space.set_normalizer_stats(restored).unwrap();
+    let actual = space.build(&history[0], &history).unwrap();
+    assert_eq!(actual.features, expected.features, "灌回后必须逐位复现");
+}
+
+#[test]
+fn test_set_normalizer_stats_rejects_length_mismatch() {
+    let mut space = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    let err = space
+        .set_normalizer_stats(vec![RunningStats::new(), RunningStats::new()])
+        .unwrap_err();
+    assert_eq!(
+        err,
+        ObservationError::FeatureCountMismatch {
+            expected: 1,
+            actual: 2,
+        }
+    );
+}
+
+// ── 训练入口 build_and_update ─────────────────────────────
+
+/// 训练入口：每调用一次都把窗口内的原始特征值累积进统计量（窗口=1 ⇒ 每特征 +1）
+#[test]
+fn test_build_and_update_accumulates_stats() {
+    let mut space =
+        DefaultObservationSpace::new(1, vec![close_feature(), volume_feature()]).unwrap();
+
+    let mut last = Observation::empty();
+    for (close, volume) in [(100.0, 100.0), (110.0, 200.0), (120.0, 300.0)] {
+        let mut state = sample_state(0, close);
+        state.volume = volume;
+        last = space
+            .build_and_update(&state, std::slice::from_ref(&state))
+            .unwrap();
+    }
+
+    let stats = space.normalizer_stats().unwrap();
+    assert_eq!(stats[0].count, 3, "每个特征累积 3 个原始值");
+    assert_eq!(stats[1].count, 3);
+    // 第 3 次归一化用的是前 2 个值（mean=105、std≈7.07）⇒ Z-Score 分支必须给出非零
+    assert!(
+        last.features.iter().any(|value| *value != 0.0),
+        "统计量必须真的参与归一化: {:?}",
+        last.features
+    );
+}
+
+/// 只读 `build` 不写统计量：推理路径反复调用不得改变观测口径
+#[test]
+fn test_build_does_not_update_stats() {
+    let space = DefaultObservationSpace::new(1, vec![close_feature(), volume_feature()]).unwrap();
+    let state = sample_state(0, 100.0);
+    for _ in 0..3 {
+        space.build(&state, std::slice::from_ref(&state)).unwrap();
+    }
+
+    let stats = space.normalizer_stats().unwrap();
+    assert_eq!(stats[0].count, 0, "build 只读统计量");
+    assert_eq!(stats[1].count, 0);
+}
+
+/// 灌回训练落盘的统计量后，推理 `build` 与训练路径对同一输入必须逐位相等
+///
+/// 比较对象刻意取**第 6 步**而不是第 5 步：`build_and_update` 先归一化后更新，
+/// 第 5 步的观测用的是「更新 4 次」的统计量，与落盘的「更新 5 次」统计量差一次
+/// `update`，两者本就不该相等。第 6 步的归一化正好用落盘的最终统计量，才是
+/// 「训练看到的观测」与「推理看到的观测」真正可比的同一口径。
+#[test]
+fn test_inference_with_final_stats_matches_last_training_step() {
+    let mut train = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    for close in [100.0, 104.0, 98.0, 103.0, 99.0] {
+        let state = sample_state(0, close);
+        train
+            .build_and_update(&state, std::slice::from_ref(&state))
+            .unwrap();
+    }
+    let final_stats = train.normalizer_stats().unwrap().to_vec();
+    assert_eq!(final_stats[0].count, 5, "训练 5 步 ⇒ 5 个样本");
+
+    let input = sample_state(0, 106.0);
+    let training_obs = train
+        .build_and_update(&input, std::slice::from_ref(&input))
+        .unwrap();
+
+    let mut inference = DefaultObservationSpace::new(1, vec![close_feature()]).unwrap();
+    inference.set_normalizer_stats(final_stats).unwrap();
+    let inference_obs = inference
+        .build(&input, std::slice::from_ref(&input))
+        .unwrap();
+
+    assert_eq!(
+        training_obs.features, inference_obs.features,
+        "同一份统计量、同一输入，训练与推理观测必须逐位相等"
+    );
+    assert_ne!(inference_obs.features[0], 0.0, "Z-Score 必须吃统计量");
+    // 只读推理不得污染自己灌回的统计量
+    assert_eq!(inference.normalizer_stats().unwrap()[0].count, 5);
 }
 
 // ── 特征提取测试 ─────────────────────────────────────────
@@ -455,7 +620,8 @@ fn test_extract_time_field_sin_cos() {
 #[test]
 fn test_extract_window_agg_mean() {
     let s = sample_state(0, 100.0);
-    let history: Vec<MarketState> = (0..5).map(|i| sample_state(i, 100.0 + i as f64)).collect();
+    // 最新在前：close = 104,103,102,101,100
+    let history = newest_first_history(&[104.0, 103.0, 102.0, 101.0, 100.0]);
     let v = extract_feature_value(
         &FeatureSource::WindowAgg {
             source: Box::new(FeatureSource::PriceField("close".into())),
@@ -492,7 +658,8 @@ fn test_extract_window_agg_insufficient_data() {
 #[test]
 fn test_extract_window_agg_min_max() {
     let s = sample_state(0, 100.0);
-    let history: Vec<MarketState> = (0..5).map(|i| sample_state(i, 100.0 + i as f64)).collect();
+    // 最新在前：close = 104,103,102,101,100
+    let history = newest_first_history(&[104.0, 103.0, 102.0, 101.0, 100.0]);
     let mn = extract_feature_value(
         &FeatureSource::WindowAgg {
             source: Box::new(FeatureSource::PriceField("close".into())),
@@ -520,7 +687,8 @@ fn test_extract_window_agg_min_max() {
 #[test]
 fn test_extract_window_agg_std_last() {
     let s = sample_state(0, 100.0);
-    let history: Vec<MarketState> = (0..4).map(|i| sample_state(i, 100.0 + i as f64)).collect();
+    // 最新在前：close = 103,102,101,100
+    let history = newest_first_history(&[103.0, 102.0, 101.0, 100.0]);
     let std = extract_feature_value(
         &FeatureSource::WindowAgg {
             source: Box::new(FeatureSource::PriceField("close".into())),
@@ -542,7 +710,65 @@ fn test_extract_window_agg_std_last() {
         &history,
     )
     .unwrap();
+    // history 最新在前 ⇒ Last 取窗口首元素（最新的一根），即 close = 103
     assert_eq!(last, 103.0);
+}
+
+// ── 窗口顺序：history 最新在前，_t0 = 当前 bar ─────────────
+
+/// `_t0` 槽位必须装最新一根，`_t1` 装上一根（旧实现把最旧的一根命名为 `_t0`）
+#[test]
+fn test_window_slots_are_newest_first() {
+    // 时间顺序 close 递增，最新在前 ⇒ [104, 103, 102, 101]
+    let history = newest_first_history(&[104.0, 103.0, 102.0, 101.0]);
+    let feature = FeatureConfig {
+        name: "close".into(),
+        source: FeatureSource::PriceField("close".into()),
+        // Noop 归一化且不 clip，断言拿到的是原始 close 值
+        normalizer: NormalizerType::None,
+        clip_range: None,
+    };
+    let spec = ObservationSpec::new(2, vec![feature]).unwrap();
+
+    let obs = spec.build_observation(&history[0], &history).unwrap();
+    assert_eq!(obs.feature_names, vec!["close_t0", "close_t1"]);
+    assert_eq!(obs.features, vec![104.0, 103.0], "_t0 必须是最新一根");
+}
+
+/// `WindowAgg::Last` 取「距当前最近的一根」，不是窗口里最旧的一根
+#[test]
+fn test_window_agg_last_uses_newest() {
+    let history = newest_first_history(&[104.0, 103.0, 102.0, 101.0]);
+    let v = extract_feature_value(
+        &FeatureSource::WindowAgg {
+            source: Box::new(FeatureSource::PriceField("close".into())),
+            agg: AggregationType::Last,
+            window: 2,
+        },
+        &history[0],
+        &history,
+    )
+    .unwrap();
+    assert_eq!(v, 104.0, "Last 必须取距当前最近的一根");
+}
+
+/// `WindowAgg` 的窗口必须是 `history[..window]`（最新那几根），不是最旧那几根
+#[test]
+fn test_window_agg_mean_uses_latest_window() {
+    // 时间顺序 close = 1,2,3,4 ⇒ 最新在前 = [4, 3, 2, 1]
+    let history = newest_first_history(&[4.0, 3.0, 2.0, 1.0]);
+    let v = extract_feature_value(
+        &FeatureSource::WindowAgg {
+            source: Box::new(FeatureSource::PriceField("close".into())),
+            agg: AggregationType::Mean,
+            window: 2,
+        },
+        &history[0],
+        &history,
+    )
+    .unwrap();
+    // 最新两根是 4 和 3；旧实现会取到最旧的 1、2 ⇒ 1.5
+    assert!((v - 3.5).abs() < 1e-12, "必须聚合最新的窗口，实际 {v}");
 }
 
 // ── validate_observation_space 测试 ──────────────────────
