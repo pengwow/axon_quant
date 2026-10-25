@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use axon_core::market::Side as CoreSide;
 use axon_core::types::{Instrument, Price, Quantity, SpotInstrument, Symbol};
 use axon_core::{Event, OrderAction};
+use axon_exchange::ExchangeAdapter;
 use axon_exchange::adapters::binance::BinanceAdapter;
 use axon_exchange::types::{
     ExchangeConfig, ExchangeId, RateLimitConfig, ReconnectConfig, Symbol as ExchangeSymbol, Ticker,
@@ -160,6 +161,13 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
     // 合约钱包口径：开仓不扣名义价值，钱包余额只受手续费 / 已实现盈亏影响。
     let opening = account_balances(&runtime, &config);
     let opening_cash = opening.wallet;
+    // fills 对账窗口起点：只覆盖本 run 的成交。前置的平遗留仓（会产生交易所
+    // 成交但本地 OMS 看不到）已被排除在窗口外；收尾挂单不会成交、平仓发生在
+    // 对账之后，均不污染窗口。
+    let trade_window_start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时钟不应早于 1970")
+        .as_millis() as i64;
     println!(
         "[smoke] 账户 totalWalletBalance {} / totalUnrealizedProfit {} / availableBalance {} {QUOTE}",
         opening.wallet, opening.unrealized, opening.available
@@ -310,7 +318,7 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
     // ── 5) 对账：本地 OMS 影子账本 vs 交易所快照 ─────────────────────────
     let local = local_snapshot(&sink);
     let venue_balances = account_balances(&runtime, &config);
-    let venue = venue_snapshot(&runtime, &config, &venue_balances);
+    let venue = venue_snapshot(&runtime, &config, &venue_balances, trade_window_start);
     let report = reconcile(&local, &venue, &ReconcileConfig::default());
     println!("[smoke] LocalSnapshot = {local:?}");
     println!("[smoke] VenueSnapshot = {venue:?}");
@@ -349,12 +357,14 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
         local.cash,
         venue.cash
     );
-    if !report.extra_fills.is_empty() {
-        println!(
-            "[smoke] 本地已记账成交 {} 笔（交易所该端点无 fetch_my_trades，无法交叉比对）",
-            report.extra_fills.len()
-        );
-    }
+    // 三路对账的最后一路：fills 交叉比对。两侧同源于撮合成交号
+    // （WS `o.t` ⇄ REST userTrades `id`），任何漏记 / 多记都会在这里爆出。
+    assert!(
+        report.missing_fills.is_empty() && report.extra_fills.is_empty(),
+        "fills 对账未闭合: missing={:?} extra={:?}",
+        report.missing_fills,
+        report.extra_fills
+    );
 
     // ── 6) 收尾：留一笔未成交挂单，验证 shutdown 会撤单 + disconnect ─────
     sink.submit(
@@ -820,6 +830,7 @@ fn venue_snapshot(
     runtime: &Runtime,
     config: &ExchangeConfig,
     balances: &AccountBalances,
+    fills_since_ms: i64,
 ) -> VenueSnapshot {
     let mut positions = BTreeMap::new();
     // 合约持仓看 positionRisk；positionAmt 为净持仓，空头是负数
@@ -829,12 +840,27 @@ fn venue_snapshot(
     {
         positions.insert(format!("{BASE}/{QUOTE}"), quantity);
     }
+    // 交易所侧成交：REST /fapi/v1/userTrades，与 user stream 互为独立数据源。
+    // trade_id 是 adapter 归一号（binfut:{symbol}:{id}），与 WS 回报同源，
+    // 独立 adapter 实例即可查询（签名端点不依赖 connect）。
+    let trade_adapter = BinanceAdapter::new(config.clone());
+    let venue_fills = runtime
+        .block_on(trade_adapter.fetch_my_trades(
+            &ExchangeSymbol::new(SYMBOL),
+            Some(fills_since_ms),
+            1000,
+        ))
+        .expect("fetch_my_trades 不应失败");
+    let fill_ids: BTreeSet<String> = venue_fills.iter().map(|t| t.trade_id.clone()).collect();
+    println!(
+        "[smoke] userTrades（窗口内）{} 笔：{fill_ids:?}",
+        venue_fills.len()
+    );
     VenueSnapshot {
         positions,
         // 合约钱包口径：与 OMS `AccountingMode::Wallet` 的 cash 对齐
         cash: balances.wallet.to_f64().unwrap_or(0.0),
-        // adapter 没有 fetch_my_trades，交易所侧成交编号留空。
-        fill_ids: BTreeSet::new(),
+        fill_ids,
     }
 }
 

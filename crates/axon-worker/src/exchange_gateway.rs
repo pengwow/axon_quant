@@ -174,11 +174,12 @@ impl LiveOrderGateway for ExchangeGateway {
 
 /// 交易所回报 → [`VenueUpdate`]，累计成交量转成增量
 ///
-/// `trade_id` 用 `订单号:纳秒时间戳:本次增量` 合成：交易所回报不带成交编号，
-/// 而 `LiveSink` 靠 `trade_id` 去重。这个三元组在「同一订单 + 同一纳秒 + 同一
-/// 增量」上唯一 —— 重复投递得到完全相同的键，会被 sink 丢弃；代价是同一订单在
-/// 同一纳秒内两笔等量成交会被误判为重复，方向是**宁可漏记不重复记账**，与
-/// [`crate::live_sink`] 的硬约束一致。
+/// `trade_id` 优先透传 adapter 归一后的原生成交编号；回报不带成交号的交易所
+/// 用 `订单号:纳秒时间戳:本次增量` 合成：而 `LiveSink` 靠 `trade_id` 去重。
+/// 这个三元组在「同一订单 + 同一纳秒 + 同一增量」上唯一 —— 重复投递得到
+/// 完全相同的键，会被 sink 丢弃；代价是同一订单在同一纳秒内两笔等量成交会被
+/// 误判为重复，方向是**宁可漏记不重复记账**，与 [`crate::live_sink`] 的硬约束
+/// 一致。
 fn convert(
     last_filled: &mut HashMap<String, Decimal>,
     update: axon_exchange::OrderUpdate,
@@ -199,8 +200,15 @@ fn convert(
         Decimal::ZERO
     };
     let timestamp = Timestamp::from_datetime(&update.timestamp);
-    let trade_id = (fill_quantity > Decimal::ZERO)
-        .then(|| format!("{order_id}:{}:{fill_quantity}", timestamp.nanos));
+    let trade_id = (fill_quantity > Decimal::ZERO).then(|| {
+        // adapter 透出的原生成交号（如 Binance 合约 `binfut:{symbol}:{id}`）优先：
+        // 与 REST userTrades 侧同源，成交对账两侧天然得到同一个键。回报不带
+        // 成交号的交易所回退到旧合成格式。
+        update
+            .trade_id
+            .clone()
+            .unwrap_or_else(|| format!("{order_id}:{}:{fill_quantity}", timestamp.nanos))
+    });
     Some(VenueUpdate {
         order_id,
         status: map_status(update.status),
