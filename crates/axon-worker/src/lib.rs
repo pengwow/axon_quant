@@ -30,6 +30,11 @@ pub mod live_driver;
 
 pub use live_driver::LiveDriver;
 
+/// 纸面驱动：Kernel + KernelPump + PaperSink 装配（M6 paper 接线）
+pub mod paper_driver;
+
+pub use paper_driver::{PaperDriver, PaperSnapshot};
+
 /// M5 对账与恢复：内核 / OMS 快照 vs 交易所快照，只报告不改账
 pub mod reconcile;
 
