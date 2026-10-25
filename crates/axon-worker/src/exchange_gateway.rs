@@ -20,8 +20,9 @@
 //! - `ExchangeAdapter::send_order` 只回传 client order id（交易所侧 orderId 被
 //!   adapter 内部日志吞掉），所以 [`GatewayAck::venue_order_id`] 填的是 client
 //!   order id；
-//! - `axon_exchange::OrderUpdate` 不带手续费，`VenueUpdate::fee` 固定为 0（对账
-//!   时表现为现金 break）；
+//! - `axon_exchange::OrderUpdate` 的手续费来自合约回报的 `n` 字段（本笔增量），
+//!   [`VenueUpdate::fee`] 直接透传；现货 `executionReport` 因返佣币可能是 BNB，
+//!   adapter 填 0，现货影子账本仍会少记手续费；
 //! - 网关取走了 adapter 唯一的行情通道，`KernelPump` 就拿不到行情了。接 live 主
 //!   回路时必须把消息 fan-out 成「行情给 `KernelPump` + 回报给网关」两路，否则
 //!   长时间挂机时通道（容量 4096）会被行情塞满，adapter 的读循环会被阻塞。
@@ -206,7 +207,8 @@ fn convert(
         fill_quantity,
         // 交易所只给累计均价；单订单内价格差异通常极小，按均价记本次成交。
         fill_price: update.avg_price.unwrap_or(Decimal::ZERO),
-        fee: Decimal::ZERO,
+        // `n` 已由 adapter 归一成「本笔增量」的手续费，可直接进钱包口径账本。
+        fee: update.fee,
         trade_id,
         timestamp,
     })

@@ -41,8 +41,8 @@ use axon_core::types::{Price, Quantity};
 use axon_core::{Event, Instrument, MarketDataPayload, OrderAction, OrderEvent, Timestamp, Trade};
 use axon_kernel::{ExecutionSink, HostCtx, KernelCore, KernelError, OrderId, OrderIntent};
 use axon_oms::{
-    Fill, Order as OmsOrder, OrderId as OmsOrderId, OrderManager, OrderStatus as OmsOrderStatus,
-    OrderType as OmsOrderType, Side as OmsSide,
+    AccountingMode, Fill, Order as OmsOrder, OrderId as OmsOrderId, OrderManager,
+    OrderStatus as OmsOrderStatus, OrderType as OmsOrderType, Side as OmsSide,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -159,6 +159,9 @@ impl LiveSink {
     /// `shadow_cash` 是 OMS 影子账本的 USDT 初始余额。真实资金在交易所，影子
     /// 账本只用于订单 / 成交流水校验（`axon-oms` 的 `Portfolio` 把计价币硬编码
     /// 为 USDT）。传 `0` 会让所有买入成交被影子账本以「现金不足」拒绝。
+    ///
+    /// 账务模式默认 [`AccountingMode::Cash`]（现货口径）；合约账户必须用
+    /// [`Self::with_accounting_mode`] 切到 [`AccountingMode::Wallet`]。
     pub fn new(gateway: Box<dyn LiveOrderGateway>, shadow_cash: Decimal) -> Self {
         let oms = OrderManager::new();
         oms.deposit("USDT", shadow_cash);
@@ -172,6 +175,21 @@ impl LiveSink {
             next_order_id: 1,
             last_price: HashMap::new(),
         }
+    }
+
+    /// 设置 OMS 影子账本的账务模式（默认 [`AccountingMode::Cash`]）
+    ///
+    /// **合约必须用 [`AccountingMode::Wallet`]**：合约开仓不扣名义价值、只占用
+    /// 保证金，交易所钱包余额（`totalWalletBalance`）只受手续费与已实现盈亏
+    /// 影响。按 `Cash` 的全额口径扣现金，现金对账必然偏差。
+    pub fn with_accounting_mode(self, mode: AccountingMode) -> Self {
+        self.oms.set_accounting_mode(mode);
+        self
+    }
+
+    /// 运行时切换账务模式（语义同 [`Self::with_accounting_mode`]）
+    pub fn set_accounting_mode(&mut self, mode: AccountingMode) {
+        self.oms.set_accounting_mode(mode);
     }
 
     /// 替换风控实现（默认 [`AllowAllRisk`]）

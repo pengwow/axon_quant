@@ -24,8 +24,15 @@
 //! - 合约账户默认可能处于**双向持仓**（`dualSidePosition=true`），此时下单必须带
 //!   `positionSide`，否则 `-4061`。adapter 不传 `positionSide`（单向模式约定），
 //!   所以本测试先把账户切成单向持仓，收尾再平仓，保证可重复运行；
-//! - 对账的持仓来自 `/fapi/v2/positionRisk` 的 `positionAmt`，现金用
-//!   `/fapi/v2/account` 的 USDT `availableBalance`。
+//! - 对账的持仓来自 `/fapi/v2/positionRisk` 的 `positionAmt`；现金用
+//!   `/fapi/v2/account` 的 **`totalWalletBalance`**（钱包余额）。
+//!
+//! # 合约钱包口径（`AccountingMode::Wallet`）
+//!
+//! 合约开仓不扣名义价值、只占用保证金，钱包余额只受**手续费**与**已实现盈亏**
+//! 影响。因此影子账本必须切到 [`axon_oms::AccountingMode::Wallet`]，现金起点与
+//! 对账基准都用 `totalWalletBalance`；若沿用现货口径（`Cash`），本地会多扣一整笔
+//! 名义价值（实测约 75 USDT），现金对账必然偏差。
 //!
 //! # 成交 / 撤单终态只认 OMS 账本（即 user data stream 链路）
 //!
@@ -33,9 +40,9 @@
 //! **WS 回报驱动**出来的，而不是测试自己用 REST 兜出来的。REST 查询只做交叉
 //! 校验（交易所侧确实成交 / 确实撤销）。
 //!
-//! 现金对账在合约口径下仍会 break：OMS 影子账本按「成交价 × 数量」扣现金，而
-//! 交易所 `availableBalance` 扣的是逐仓 / 全仓的**初始保证金 + 手续费**。持仓
-//! 对账必须干净（这一段是真账），现金差异按实际数值打印、不放宽阈值。
+//! 现金对账要求**归零**：容差只留 f64 往返的相对误差（`1e-6 × max(1, |cash|)`），
+//! 不按保证金 / 名义价值放宽。若仍有差，把 `totalWalletBalance` /
+//! `totalUnrealizedProfit` / `availableBalance` 与 OMS cash 一起打印出来。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
@@ -50,8 +57,7 @@ use axon_exchange::types::{
 };
 use axon_exchange::{build_http_client, sign_binance};
 use axon_kernel::{ExecutionSink, HostCtx, KernelConfig, KernelCore, OrderIntent, OrderSpec};
-use axon_oms::OrderId as OmsOrderId;
-use axon_oms::OrderStatus as OmsOrderStatus;
+use axon_oms::{AccountingMode, OrderId as OmsOrderId, OrderStatus as OmsOrderStatus};
 use axon_worker::reconcile::{LocalSnapshot, ReconcileConfig, VenueSnapshot, reconcile};
 use axon_worker::{ExchangeGateway, LiveSink};
 use rust_decimal::Decimal;
@@ -150,14 +156,20 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
         bars.last().expect("应有 K 线").close
     );
 
-    // ── 影子账本起点：交易所 USDT 可用保证金 ────────────────────────────
-    let opening_cash = account_available_balance(&runtime, &config);
-    println!("[smoke] 账户可用保证金 {opening_cash} {QUOTE}");
+    // ── 影子账本起点：交易所 USDT 钱包余额（totalWalletBalance）────────────
+    // 合约钱包口径：开仓不扣名义价值，钱包余额只受手续费 / 已实现盈亏影响。
+    let opening = account_balances(&runtime, &config);
+    let opening_cash = opening.wallet;
+    println!(
+        "[smoke] 账户 totalWalletBalance {} / totalUnrealizedProfit {} / availableBalance {} {QUOTE}",
+        opening.wallet, opening.unrealized, opening.available
+    );
     assert!(
         opening_cash > Decimal::ZERO,
         "合约 testnet 账户没有可用保证金，先领测试币"
     );
-    let mut sink = LiveSink::new(Box::new(gateway), opening_cash);
+    let mut sink =
+        LiveSink::new(Box::new(gateway), opening_cash).with_accounting_mode(AccountingMode::Wallet);
     let mut core = KernelCore::new(&KernelConfig {
         initial_cash: opening_cash.to_f64().unwrap_or(0.0),
         ..KernelConfig::default()
@@ -297,7 +309,8 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
 
     // ── 5) 对账：本地 OMS 影子账本 vs 交易所快照 ─────────────────────────
     let local = local_snapshot(&sink);
-    let venue = venue_snapshot(&runtime, &config);
+    let venue_balances = account_balances(&runtime, &config);
+    let venue = venue_snapshot(&runtime, &config, &venue_balances);
     let report = reconcile(&local, &venue, &ReconcileConfig::default());
     println!("[smoke] LocalSnapshot = {local:?}");
     println!("[smoke] VenueSnapshot = {venue:?}");
@@ -311,13 +324,31 @@ fn testnet_smoke_limit_cancel_market_reconcile() {
         report.frozen_instruments.is_empty(),
         "持仓干净时不应冻结任何品种: {report:#?}"
     );
-    // 现金口径差异（保证金 vs 全额）与 venue 成交编号缺失在这里如实打印。
+    // 现金必须归零：容差只留 f64 往返的相对误差（1e-6 × max(1, |cash|)），
+    // 不按保证金 / 名义价值放宽。
+    let cash_diff = report.cash_break.as_ref().map_or(0.0, |b| b.diff);
+    let cash_tolerance = 1e-6 * local.cash.abs().max(1.0);
     if let Some(cash_break) = &report.cash_break {
         println!(
-            "[smoke] 现金差异（合约保证金口径，非 bug）：local {} / venue {} / diff {}",
+            "[smoke] 现金差异 local {} / venue {} / diff {}（容差 {cash_tolerance}）",
             cash_break.local, cash_break.venue, cash_break.diff
         );
+        println!(
+            "[smoke] 交易所账户 totalWalletBalance {} / totalUnrealizedProfit {} / availableBalance {}",
+            venue_balances.wallet, venue_balances.unrealized, venue_balances.available
+        );
+    } else {
+        println!(
+            "[smoke] 现金对账归零：local {} / venue {}",
+            local.cash, venue.cash
+        );
     }
+    assert!(
+        cash_diff.abs() <= cash_tolerance,
+        "现金对账未归零: diff {cash_diff} > 容差 {cash_tolerance}（local {} / venue {}）",
+        local.cash,
+        venue.cash
+    );
     if !report.extra_fills.is_empty() {
         println!(
             "[smoke] 本地已记账成交 {} 笔（交易所该端点无 fetch_my_trades，无法交叉比对）",
@@ -510,14 +541,31 @@ fn public_get(runtime: &Runtime, config: &ExchangeConfig, path: &str, query: &st
     panic!("testnet REST {path} {REST_ATTEMPTS} 次传输均失败: {last_err}");
 }
 
-/// 账户 USDT 可用保证金（`/fapi/v2/account` 的 availableBalance）
-fn account_available_balance(runtime: &Runtime, config: &ExchangeConfig) -> Decimal {
+/// `/fapi/v2/account` 中与现金对账相关的三项 USDT 余额
+#[derive(Debug, Clone, Copy)]
+struct AccountBalances {
+    /// 钱包余额：只受手续费 / 已实现盈亏 / 划转影响（不含未实现盈亏）
+    wallet: Decimal,
+    /// 未实现盈亏
+    unrealized: Decimal,
+    /// 可用保证金（已扣初始保证金与手续费）
+    available: Decimal,
+}
+
+fn account_balances(runtime: &Runtime, config: &ExchangeConfig) -> AccountBalances {
     let body = signed_get(runtime, config, "/fapi/v2/account", "");
-    body["availableBalance"]
-        .as_str()
-        .unwrap_or_else(|| panic!("账户响应缺 availableBalance: {body}"))
-        .parse()
-        .expect("availableBalance 不是合法小数")
+    let field = |key: &str| -> Decimal {
+        body[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("账户响应缺 {key}: {body}"))
+            .parse()
+            .expect("账户余额不是合法小数")
+    };
+    AccountBalances {
+        wallet: field("totalWalletBalance"),
+        unrealized: field("totalUnrealizedProfit"),
+        available: field("availableBalance"),
+    }
 }
 
 /// 标记价（公开端点，限价单要避开盘口又要过 PERCENT_PRICE）
@@ -768,7 +816,11 @@ fn local_snapshot(sink: &LiveSink) -> LocalSnapshot {
     }
 }
 
-fn venue_snapshot(runtime: &Runtime, config: &ExchangeConfig) -> VenueSnapshot {
+fn venue_snapshot(
+    runtime: &Runtime,
+    config: &ExchangeConfig,
+    balances: &AccountBalances,
+) -> VenueSnapshot {
     let mut positions = BTreeMap::new();
     // 合约持仓看 positionRisk；positionAmt 为净持仓，空头是负数
     let quantity = position_amount(runtime, config);
@@ -779,9 +831,8 @@ fn venue_snapshot(runtime: &Runtime, config: &ExchangeConfig) -> VenueSnapshot {
     }
     VenueSnapshot {
         positions,
-        cash: account_available_balance(runtime, config)
-            .to_f64()
-            .unwrap_or(0.0),
+        // 合约钱包口径：与 OMS `AccountingMode::Wallet` 的 cash 对齐
+        cash: balances.wallet.to_f64().unwrap_or(0.0),
         // adapter 没有 fetch_my_trades，交易所侧成交编号留空。
         fill_ids: BTreeSet::new(),
     }
