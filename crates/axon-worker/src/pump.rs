@@ -14,23 +14,22 @@
 //! `WsMessage::Kline.timestamp` 必须是 **bar 的起始时间**（Binance `k.t`），
 //! 不是消息接收时间：去重、缺口检测、收市时刻推导都以它为准。
 //!
-//! # 边界（M4 不做）
+//! # 边界
 //!
 //! - `OrderUpdate` 先原样转成 `Event::System`，M5 接入 OMS 后再细化为
 //!   `Event::Order` / `Event::Fill`；
 //! - `Ticker` / `Ping` / `Pong` 不产生事件（paper 的报价由 `Trade` / `Depth` 驱动）；
-//! - 品种一律按现货解析（`BTCUSDT` → `BTC/USDT`）。ponytail: paper 只跑现货时
-//!   够用；永续 paper 需要泵拿到 `InstrumentMode`（构造参数），在 M5 接 live 时
-//!   一起补，而不是让内核猜。
+//! - 品种解析口径由构造参数决定：缺省现货（`BTCUSDT` → `BTC/USDT`），
+//!   live 跑永续时用 `with_instrument_mode` 传 `InstrumentMode::Swap`。
 
 use std::collections::HashMap;
 
 use axon_core::{
     Bar, Event, Instrument, MarketDataEvent, MarketDataPayload, OrderBookLevel, OrderBookSnapshot,
-    Price, Quantity, Side, Symbol, SystemAction, SystemEvent, Tick, Timestamp,
+    Price, Quantity, Side, SystemAction, SystemEvent, Tick, Timestamp,
 };
 use axon_exchange::types::{Kline, Side as WsSide, WsMessage};
-use axon_kernel::{BarAggregator, interval_to_nanos};
+use axon_kernel::{BarAggregator, InstrumentMode, interval_to_nanos};
 use tokio::sync::mpsc;
 
 use crate::backtest::instrument_key_for;
@@ -64,6 +63,8 @@ pub struct Gap {
 pub struct KernelPump {
     rx: mpsc::Receiver<WsMessage>,
     aggregator: BarAggregator,
+    /// 品种解析口径：缺省 Spot，live 永续传 Swap（`with_instrument_mode`）
+    instrument_mode: InstrumentMode,
     /// 每个 `(instrument, interval)` 已见到的最新 bar 起始时间（缺口检测用）
     last_bar_start: HashMap<(Instrument, String), i64>,
     gaps: Vec<Gap>,
@@ -71,11 +72,21 @@ pub struct KernelPump {
 }
 
 impl KernelPump {
-    /// 用交易所行情 channel 的接收端创建泵
+    /// 用交易所行情 channel 的接收端创建泵（缺省按现货解析品种）
     pub fn new(rx: mpsc::Receiver<WsMessage>) -> Self {
+        Self::with_instrument_mode(rx, InstrumentMode::Spot)
+    }
+
+    /// 指定品种解析口径创建泵：live 永续链路传 `InstrumentMode::Swap`，
+    /// 让泵产出的 bar 与内核屏障 / LiveSink 的 Swap 品种一致
+    pub fn with_instrument_mode(
+        rx: mpsc::Receiver<WsMessage>,
+        instrument_mode: InstrumentMode,
+    ) -> Self {
         Self {
             rx,
             aggregator: BarAggregator::new(),
+            instrument_mode,
             last_bar_start: HashMap::new(),
             gaps: Vec::new(),
             next_seq: 0,
@@ -154,13 +165,19 @@ impl KernelPump {
 
     /// 单条 kline：未收市只更新聚合器，收市产出 `BarClosed` 并做缺口检测
     fn on_kline(&mut self, kline: &Kline, skipped_duplicates: &mut usize) -> Vec<Event> {
-        let Some(instrument) = instrument_for(&kline.symbol.0) else {
+        // 先按交易所原始写法归一化成带分隔符的 key（复用 `instrument_key_for`，
+        // 与 QuantCell 的 `_normalize_symbol` 同口径），再按构造口径解析成
+        // Spot / Swap 品种——live 永续的屏障与账务都按 Swap instrument 走。
+        let instrument = self
+            .instrument_mode
+            .instrument(&instrument_key_for(&kline.symbol.0));
+        if instrument.base().as_str().is_empty() || instrument.quote().as_str().is_empty() {
             tracing::warn!(
                 symbol = %kline.symbol,
                 "kernel pump: 无法解析交易对，丢弃 kline"
             );
             return Vec::new();
-        };
+        }
         let bar = Bar {
             timestamp: nanos(kline.timestamp),
             open: Price::from_f64(kline.open.as_f64()),
@@ -273,18 +290,6 @@ impl KernelPump {
     }
 }
 
-/// 交易所 symbol（`BTCUSDT` / `BTC-USDT` / `BTC/USDT`）→ 内核 `Instrument`
-///
-/// 归一化规则复用 `BacktestRunner` 的 `instrument_key_for`（与 QuantCell 的
-/// `_normalize_symbol` 同口径），避免两条路径对同一 symbol 造出不同品种。
-fn instrument_for(symbol: &str) -> Option<Instrument> {
-    let instrument = Instrument::from_symbol(&Symbol::from(instrument_key_for(symbol)));
-    if instrument.base().as_str().is_empty() || instrument.quote().as_str().is_empty() {
-        return None;
-    }
-    Some(instrument)
-}
-
 /// `chrono::DateTime<Utc>` → 纳秒 `Timestamp`
 fn nanos(ts: chrono::DateTime<chrono::Utc>) -> Timestamp {
     Timestamp::from_nanos(
@@ -295,7 +300,7 @@ fn nanos(ts: chrono::DateTime<chrono::Utc>) -> Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use axon_core::types::{SpotInstrument, Symbol};
+    use axon_core::types::{SpotInstrument, SwapSettle, Symbol};
 
     use super::*;
 
@@ -391,6 +396,31 @@ mod tests {
         };
         assert_eq!(instrument, &btc(), "BTCUSDT 必须归一化成 BTC/USDT");
         assert_eq!(bar.timestamp.nanos, 0, "bar.timestamp 仍是起始时间");
+    }
+
+    #[test]
+    fn test_swap_mode_resolves_swap_instrument() {
+        let (tx, rx) = mpsc::channel(8);
+        let mut pump = KernelPump::with_instrument_mode(
+            rx,
+            InstrumentMode::Swap {
+                settle: SwapSettle::UsdMargin,
+                contract_size: 1.0,
+            },
+        );
+        tx.try_send(kline(0, true)).expect("channel 容量足够");
+
+        let batch = pump.drain();
+        let Event::MarketData(md) = &batch.events[0] else {
+            panic!("Kline 必须转成市场数据事件");
+        };
+        let MarketDataPayload::BarClosed { instrument, .. } = &md.payload else {
+            panic!("必须是 BarClosed");
+        };
+        assert!(
+            matches!(instrument, Instrument::Swap(_)),
+            "Swap 模式下 BTCUSDT 必须解析成永续品种：{instrument:?}"
+        );
     }
 
     #[test]

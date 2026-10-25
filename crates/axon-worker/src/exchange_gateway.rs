@@ -23,9 +23,13 @@
 //! - `axon_exchange::OrderUpdate` 的手续费来自合约回报的 `n` 字段（本笔增量），
 //!   [`VenueUpdate::fee`] 直接透传；现货 `executionReport` 因返佣币可能是 BNB，
 //!   adapter 填 0，现货影子账本仍会少记手续费；
-//! - 网关取走了 adapter 唯一的行情通道，`KernelPump` 就拿不到行情了。接 live 主
-//!   回路时必须把消息 fan-out 成「行情给 `KernelPump` + 回报给网关」两路，否则
-//!   长时间挂机时通道（容量 4096）会被行情塞满，adapter 的读循环会被阻塞。
+//! - 「网关独占行情通道」已由 [`Self::with_market_data_fanout`] 解决：live 主
+//!   回路接上 fan-out 通道后，`poll_updates` 把行情类消息转发给 [`crate::KernelPump`]，
+//!   网关只留下回报；未接 fan-out（paper 等独立使用）时行情直接丢弃。
+//!
+//! 崩溃恢复编排（[`crate::live_driver`]）还需要拿 REST 快照对账，本模块把
+//! `get_positions` / `get_account_info` / `fetch_my_trades` 包成了同步方法；
+//! REST 快照与 WS 回报流共享同一个 adapter（[`Self::shared`]），不会多建连接。
 //!
 //! Binance 合约的 user data stream（`ORDER_TRADE_UPDATE`）已在 adapter 内实现，
 //! 回报与行情共用同一条通道，因此上面的「单消费者」约束仍然成立。
@@ -36,9 +40,9 @@ use std::sync::Arc;
 use axon_core::{Bar, Timestamp};
 use axon_exchange::ExchangeAdapter;
 use axon_exchange::types::{
-    ExchangeId, Order as ExchangeOrder, OrderId as ExchangeOrderId,
-    OrderStatus as ExchangeOrderStatus, OrderType as ExchangeOrderType, Side as ExchangeSide,
-    Symbol as ExchangeSymbol, Ticker, TimeInForce, WsMessage,
+    AccountInfo, ExchangeId, Order as ExchangeOrder, OrderId as ExchangeOrderId,
+    OrderStatus as ExchangeOrderStatus, OrderType as ExchangeOrderType, Position,
+    Side as ExchangeSide, Symbol as ExchangeSymbol, Ticker, TimeInForce, UserTrade, WsMessage,
 };
 use axon_oms::{
     Order as OmsOrder, OrderId as OmsOrderId, OrderStatus as OmsOrderStatus,
@@ -56,6 +60,8 @@ pub struct ExchangeGateway {
     runtime: Runtime,
     /// adapter 唯一的行情 / 回报通道（构造时取走，之后只在这里 drain）
     updates: Option<mpsc::Receiver<WsMessage>>,
+    /// 行情 fan-out 通道（`with_market_data_fanout` 接上；KernelPump 在另一端消费）
+    market_data_tx: Option<mpsc::Sender<WsMessage>>,
     /// OMS 订单号 → 已回报的**累计**成交量（累计 → 增量的转换状态）
     last_filled: HashMap<String, Decimal>,
 }
@@ -66,19 +72,39 @@ impl ExchangeGateway {
     /// 必须在 runtime 之外调用：内部会创建 Runtime，并取走 adapter 的
     /// `market_data_rx`（单消费者通道，且实现里用 `blocking_lock`）。
     pub fn new(adapter: Box<dyn ExchangeAdapter>) -> Result<Self, String> {
+        Self::shared(Arc::new(Mutex::new(adapter)))
+    }
+
+    /// 从已有 adapter Arc 创建网关
+    ///
+    /// 崩溃恢复编排（`live_driver`）要同时拿 WS 回报流（本网关）和 REST 快照
+    /// （对账），两者必须共享同一个 adapter，所以支持从外部传入 Arc。
+    /// 同样必须在 runtime 之外调用（`blocking_lock` + 创建 Runtime）。
+    pub fn shared(adapter: Arc<Mutex<Box<dyn ExchangeAdapter>>>) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("构建 tokio 运行时失败: {e}"))?;
         // 同步上下文取通道：adapter 的 `market_data_rx` 用 `blocking_lock`，
         // 在 async 任务里调用会 panic，所以只能在这里取一次。
-        let updates = adapter.market_data_rx();
+        let updates = adapter.blocking_lock().market_data_rx();
         Ok(Self {
-            adapter: Arc::new(Mutex::new(adapter)),
+            adapter,
             runtime,
             updates: Some(updates),
+            market_data_tx: None,
             last_filled: HashMap::new(),
         })
+    }
+
+    /// 接上行情 fan-out 通道（live 主回路必用）
+    ///
+    /// 接上后 `poll_updates` 会把行情类消息（Kline / Trade / Depth 等）转到
+    /// 该通道，由 [`crate::KernelPump`] 消费；网关只保留回报。不接则行情直接
+    /// 丢弃（paper 等独立使用网关的场景）。
+    pub fn with_market_data_fanout(mut self, tx: mpsc::Sender<WsMessage>) -> Self {
+        self.market_data_tx = Some(tx);
+        self
     }
 
     /// 建立交易所连接（REST 探活 + 启动 WS 监督任务）
@@ -90,6 +116,19 @@ impl ExchangeGateway {
         adapter
             .connect()
             .await
+            .map_err(|e| format!("adapter connect: {e}"))
+    }
+
+    /// [`Self::connect`] 的同步包装（LiveDriver 等同步编排器在无 tokio
+    /// 上下文的线程上调用）
+    ///
+    /// 不能直接 `block_on(self.connect())`：`connect` 的 future 借 `&mut self`，
+    /// 而 `self.runtime` 位于 `&self` 字段上——receiver 双重借用整体冲突。先取
+    /// guard 把字段投影抽出来，与 [`Self::subscribe`] 同型。
+    pub fn connect_sync(&mut self) -> Result<(), String> {
+        let mut adapter = self.adapter.blocking_lock();
+        self.runtime
+            .block_on(adapter.connect())
             .map_err(|e| format!("adapter connect: {e}"))
     }
 
@@ -117,6 +156,46 @@ impl ExchangeGateway {
         self.runtime
             .block_on(adapter.fetch_ohlcv(symbol, interval, limit))
             .map_err(|e| format!("adapter fetch_ohlcv: {e}"))
+    }
+
+    /// 全部持仓快照（崩溃恢复对账用）
+    pub fn positions(&self) -> Result<Vec<Position>, String> {
+        let adapter = self.adapter.blocking_lock();
+        self.runtime
+            .block_on(adapter.get_positions())
+            .map_err(|e| format!("adapter get_positions: {e}"))
+    }
+
+    /// 账户信息快照（钱包口径现金对账用；`cash = total_balance - unrealized_pnl`）
+    pub fn account_info(&self) -> Result<AccountInfo, String> {
+        let adapter = self.adapter.blocking_lock();
+        self.runtime
+            .block_on(adapter.get_account_info())
+            .map_err(|e| format!("adapter get_account_info: {e}"))
+    }
+
+    /// 账户成交明细（成交对账用；对应 `fill_ids` 差异核对）
+    pub fn fetch_my_trades(
+        &self,
+        symbol: &ExchangeSymbol,
+        since_ms: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<UserTrade>, String> {
+        let adapter = self.adapter.blocking_lock();
+        self.runtime
+            .block_on(adapter.fetch_my_trades(symbol, since_ms, limit))
+            .map_err(|e| format!("adapter fetch_my_trades: {e}"))
+    }
+
+    /// 行情消息转入 fan-out 通道（poll_updates 用）
+    ///
+    /// 通道满 / 接收端已关闭直接丢弃：行情是时效信息，下一根 bar 会再来，
+    /// 丢消息远好于阻塞 adapter 读循环。未接 fan-out 时不处理（独立网关用法）。
+    fn forward_market_data(&mut self, message: WsMessage) {
+        if let Some(tx) = self.market_data_tx.as_ref() {
+            // Full / Closed 都按丢消息处理（Full = 下游没排空，Closed = 下游已撤）。
+            let _ = tx.try_send(message);
+        }
     }
 }
 
@@ -146,19 +225,24 @@ impl LiveOrderGateway for ExchangeGateway {
     }
 
     fn poll_updates(&mut self) -> Result<Vec<VenueUpdate>, String> {
-        let Some(updates) = self.updates.as_mut() else {
-            return Ok(Vec::new());
-        };
+        // 先把通道 drain 到本地，再逐条分发：转发行情要再借 self（fan-out 通道），
+        // 直接在 drain 循环里调方法会撞上首个 &mut 借用（单 tick 至多 4096 条）。
+        let mut messages = Vec::new();
+        if let Some(updates) = self.updates.as_mut() {
+            while let Ok(message) = updates.try_recv() {
+                messages.push(message);
+            }
+        }
         let mut out = Vec::new();
-        // 非阻塞 drain：有回报就转，没有就返回空，绝不阻塞主回路。
-        // `try_recv` 返回「空」或「断线」都意味着本轮没有更多回报。
-        while let Ok(message) = updates.try_recv() {
-            // 行情类消息属于 KernelPump 的通道，这里不重复消费（直接丢弃）。
-            let WsMessage::OrderUpdate(update) = message else {
-                continue;
-            };
-            if let Some(venue_update) = convert(&mut self.last_filled, update) {
-                out.push(venue_update);
+        for message in messages {
+            match message {
+                WsMessage::OrderUpdate(update) => {
+                    if let Some(venue_update) = convert(&mut self.last_filled, update) {
+                        out.push(venue_update);
+                    }
+                }
+                // 行情类消息归 KernelPump（fan-out 通道），网关不消费。
+                other => self.forward_market_data(other),
             }
         }
         Ok(out)
@@ -282,5 +366,120 @@ fn map_status(status: ExchangeOrderStatus) -> OmsOrderStatus {
         },
         ExchangeOrderStatus::Cancelled { filled_qty } => OmsOrderStatus::Cancelled { filled_qty },
         ExchangeOrderStatus::Rejected { reason } => OmsOrderStatus::Rejected { reason },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::mock_exchange;
+    use axon_exchange::types::{Kline, OrderUpdate as ExchangeOrderUpdate};
+    use chrono::Utc;
+
+    fn sample_kline() -> WsMessage {
+        WsMessage::Kline(Kline {
+            symbol: ExchangeSymbol::new("BTCUSDT"),
+            interval: "1m".into(),
+            open: Decimal::from(100),
+            high: Decimal::from(101),
+            low: Decimal::from(99),
+            close: Decimal::from(100),
+            volume: Decimal::from(1),
+            timestamp: Utc::now(),
+            is_closed: true,
+        })
+    }
+
+    fn sample_fill(order_id: ExchangeOrderId, filled_qty: i64) -> WsMessage {
+        WsMessage::OrderUpdate(ExchangeOrderUpdate {
+            order_id: "venue-1".into(),
+            client_order_id: order_id,
+            status: ExchangeOrderStatus::Filled {
+                filled_qty: Decimal::from(filled_qty),
+                avg_price: Decimal::from(100),
+            },
+            filled_qty: Decimal::from(filled_qty),
+            avg_price: Some(Decimal::from(100)),
+            fee: Decimal::ZERO,
+            trade_id: Some(format!("binfut:BTCUSDT:{filled_qty}")),
+            timestamp: Utc::now(),
+        })
+    }
+
+    #[test]
+    fn fanout_gives_market_data_to_pump_keeps_fills() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut gateway = ExchangeGateway::shared(adapter)
+            .unwrap()
+            .with_market_data_fanout(tx);
+
+        handle.push_message(sample_kline());
+        handle.push_message(sample_fill(ExchangeOrderId::new(), 2));
+        handle.push_message(WsMessage::Ping);
+
+        let updates = gateway.poll_updates().unwrap();
+        // 回报归网关，行情两条（Kline + Ping）进 fan-out 通道。
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].fill_quantity, Decimal::from(2));
+        assert!(matches!(rx.try_recv().unwrap(), WsMessage::Kline(_)));
+        assert!(matches!(rx.try_recv().unwrap(), WsMessage::Ping));
+    }
+
+    #[test]
+    fn without_fanout_market_data_is_dropped() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        let mut gateway = ExchangeGateway::shared(adapter).unwrap();
+
+        handle.push_message(sample_kline());
+        handle.push_message(sample_fill(ExchangeOrderId::new(), 1));
+
+        let updates = gateway.poll_updates().unwrap();
+        assert_eq!(updates.len(), 1);
+        // 再 drain 一轮：行情已被丢弃，不残留。
+        assert!(gateway.poll_updates().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rest_snapshots_read_shared_adapter() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        let gateway = ExchangeGateway::shared(adapter).unwrap();
+        let symbol = ExchangeSymbol::new("BTCUSDT");
+
+        {
+            let mut state = handle.state();
+            state.positions.push(Position {
+                symbol: symbol.clone(),
+                side: ExchangeSide::Buy,
+                quantity: Decimal::from(3),
+                avg_entry_price: Decimal::from(100),
+                unrealized_pnl: Decimal::from(5),
+            });
+            state.account.total_balance = Decimal::from(12_345);
+            state.trades.push(UserTrade {
+                trade_id: "binfut:BTCUSDT:373270969".into(),
+                symbol: "BTCUSDT".into(),
+                order_id: "venue-1".into(),
+                side: ExchangeSide::Buy,
+                price: Decimal::from(100),
+                qty: Decimal::from(3),
+                quote_qty: Decimal::from(300),
+                commission: Decimal::ZERO,
+                commission_asset: "USDT".into(),
+                realized_pnl: Decimal::ZERO,
+                time_ms: 0,
+            });
+        }
+
+        let positions = gateway.positions().unwrap();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].quantity, Decimal::from(3));
+        assert_eq!(
+            gateway.account_info().unwrap().total_balance,
+            Decimal::from(12_345)
+        );
+        let trades = gateway.fetch_my_trades(&symbol, None, 1000).unwrap();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].trade_id, "binfut:BTCUSDT:373270969");
     }
 }

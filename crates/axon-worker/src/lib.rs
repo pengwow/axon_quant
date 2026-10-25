@@ -25,6 +25,11 @@ pub mod exchange_gateway;
 
 pub use exchange_gateway::ExchangeGateway;
 
+/// 实时驱动编排：Kernel + KernelPump + ExchangeGateway 装配状态机（M6 live 接线）
+pub mod live_driver;
+
+pub use live_driver::LiveDriver;
+
 /// M5 对账与恢复：内核 / OMS 快照 vs 交易所快照，只报告不改账
 pub mod reconcile;
 
@@ -35,6 +40,10 @@ pub use reconcile::{
 
 /// M3 Shadow oracle：旧路径与新内核双跑，按类别计数差异并落盘
 pub mod shadow;
+
+/// crate 内测试共享的交易所 mock（仅测试编译）
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(feature = "python")]
 pub mod python;

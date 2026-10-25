@@ -375,6 +375,15 @@ impl LiveSink {
         self
     }
 
+    /// 挂载真实网关（崩溃恢复续跑用）
+    ///
+    /// 重演期挂的是假网关（`for_replay` 的 `ReplayGateway`）：重演时宿主重决策
+    /// 会走 `place`，绝不能打真单。对账 + 恢复护栏全部通过后，恢复编排才用本
+    /// 方法换成真实网关继续跑——「护栏通过前不得调用」由 LiveDriver 状态机保证。
+    pub fn set_gateway(&mut self, gateway: Box<dyn LiveOrderGateway>) {
+        self.gateway = gateway;
+    }
+
     /// 只读访问 OMS 账本（对账 / 冒烟测试用；不暴露可变句柄）
     pub fn oms(&self) -> &OrderManager {
         &self.oms
@@ -793,6 +802,10 @@ impl ExecutionSink for LiveSink {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }

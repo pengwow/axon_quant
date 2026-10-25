@@ -27,9 +27,12 @@ use axon_core::market::bar::Bar;
 use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::time::Timestamp;
 use axon_core::types::{Instrument, Price, Quantity, SwapSettle};
+use axon_exchange::ExchangeAdapter;
+use axon_exchange::adapters::binance::BinanceAdapter;
+use axon_exchange::python::config::PyExchangeConfig;
 use axon_kernel::{
     BacktestSink, InferenceBackend, InstrumentMode, Journal, Kernel, KernelConfig, KernelResult,
-    RLStrategyHost, RunManifest, build_frames,
+    RLStrategyHost, RunManifest, StrategyHost, build_frames,
 };
 use axon_oms::AccountingMode;
 use axon_rl::{
@@ -42,6 +45,7 @@ use axon_strategy::trait_::Strategy;
 use crate::LiveSink;
 use crate::backtest::{BacktestResult, BacktestRunner};
 use crate::kernel_host::BarContextSim;
+use crate::live_driver::LiveDriver;
 use crate::reconcile::{
     LocalSnapshot, ReconcileConfig, ReconcileReport, VenueSnapshot, reconcile as reconcile_impl,
     resume_guard as resume_guard_impl,
@@ -1198,16 +1202,312 @@ impl PyLiveRecovery {
             })?;
         let local = LocalSnapshot::from_sink(live_sink);
 
-        let d = PyDict::new(py);
-        let positions = PyDict::new(py);
-        for (k, v) in &local.positions {
-            positions.set_item(k, v)?;
-        }
-        d.set_item("positions", positions)?;
-        d.set_item("cash", local.cash)?;
-        d.set_item("fill_ids", local.fill_ids.iter().collect::<Vec<_>>())?;
+        let d = local_snapshot_dict(py, &local)?;
         d.set_item("manifest", manifest_d)?;
         Ok(d.into_any())
+    }
+}
+
+// ── 实盘驱动器绑定（统一内核实时原语的 Python 面） ─────────────────────
+
+/// `LocalSnapshot` → Python dict `{positions, cash, fill_ids}`
+///
+/// `positions` / `fill_ids` 键序固定（BTreeMap / BTreeSet），对账两侧可逐键比对。
+fn local_snapshot_dict<'py>(
+    py: Python<'py>,
+    local: &LocalSnapshot,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    let positions = PyDict::new(py);
+    for (k, v) in &local.positions {
+        positions.set_item(k, v)?;
+    }
+    d.set_item("positions", positions)?;
+    d.set_item("cash", local.cash)?;
+    d.set_item("fill_ids", local.fill_ids.iter().collect::<Vec<_>>())?;
+    Ok(d)
+}
+
+/// 从注册容器组装宿主列表（start / resume 共用）
+///
+/// RL host 每次调用重建：自带逐 bar 历史窗口，复用会把上一次窗口带进
+/// 下一次观测（与 `PyKernel.run` 同口径）。
+fn live_hosts(driver: &PyLiveDriver, py: Python<'_>) -> PyResult<Vec<Box<dyn StrategyHost>>> {
+    let strategies = kernel_lock(&driver.strategies, "strategies")?.clone();
+    let handle = driver.runtime.handle().clone();
+    let mut hosts: Vec<Box<dyn StrategyHost>> = strategies
+        .iter()
+        .map(|(symbol, s)| {
+            Box::new(BarContextSim::new(
+                s.clone(),
+                driver.instrument_mode.instrument(symbol),
+                handle.clone(),
+            )) as Box<dyn StrategyHost>
+        })
+        .collect();
+    let rl_strategies = kernel_lock(&driver.rl_strategies, "rl strategies")?;
+    for spec in rl_strategies.iter() {
+        let backend = PyRatioBackend::new(spec.predict.clone_ref(py), spec.model_id.clone());
+        let host = RLStrategyHost::new(
+            Box::new(backend),
+            spec.spec.clone(),
+            spec.symbol.clone(),
+            spec.action_space.clone(),
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "构造 RL host 失败 (model={}): {e}",
+                spec.model_id
+            ))
+        })?;
+        hosts.push(Box::new(host));
+    }
+    Ok(hosts)
+}
+
+/// 实盘驱动器：统一内核实时原语的 Python 面
+///
+/// 装配链：WS 行情 fan-out → KernelPump → Kernel（实时步进）→ LiveSink
+/// （下单与回报簿记）。数据是拉取式：每 `tick()` 尾部拉一次 WS 消息，
+/// 回报账面落定落后一拍（two-tick 语义）。
+///
+/// v1 边界（`LiveDriver::new` 构造期强制）：仅永续合约（Swap）+ 钱包口径
+/// （Wallet）。adapter 由内部自建（收 `ExchangeConfig`），连接生命周期归
+/// driver（connect 成败皆可重试）。崩溃恢复走 `resume`：journal 重演 →
+/// 三路对账 → 守卫放行；纯重演子集（无交易所）见 `LiveRecovery`。
+#[pyclass(name = "LiveDriver", module = "axon_worker")]
+pub struct PyLiveDriver {
+    /// 装配原料（add_rl_strategy 品种解析 + hosts 组装共用）
+    instrument_mode: InstrumentMode,
+    /// 规则策略容器（复刻 PyKernel：攒列表、start/resume 时构造 hosts）
+    strategies: Mutex<Vec<(String, Arc<dyn Strategy>)>>,
+    rl_strategies: Mutex<Vec<RlStrategySpec>>,
+    /// 核心 driver；构造期即建成（adapter 封装 + v1 校验在 new 里发生）
+    inner: Mutex<LiveDriver>,
+    /// 驱动策略 decide() 的 runtime；Kernel 主回路本身是同步的
+    runtime: tokio::runtime::Runtime,
+}
+
+#[pymethods]
+impl PyLiveDriver {
+    /// adapter 裸建后封进 tokio Mutex 的 trait object：gateway（自建 runtime）
+    /// 接管其全部异步调用，绑定层不再直接触碰 adapter
+    #[allow(clippy::too_many_arguments)]
+    #[new]
+    #[pyo3(signature = (config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet".to_string(), futures=true, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None))]
+    fn new(
+        config: PyExchangeConfig,
+        symbols: Vec<String>,
+        initial_cash: f64,
+        shadow_cash: Option<f64>,
+        accounting: String,
+        futures: bool,
+        settle: Option<String>,
+        contract_size: f64,
+        interval: String,
+        fee_rate: Option<f64>,
+    ) -> PyResult<Self> {
+        if !initial_cash.is_finite() || initial_cash <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "initial_cash 必须是正有限数，收到: {initial_cash}"
+            )));
+        }
+        let shadow_cash = shadow_cash.unwrap_or(initial_cash);
+        if !shadow_cash.is_finite() || shadow_cash < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "shadow_cash 必须是有限非负数，收到: {shadow_cash}"
+            )));
+        }
+        // `None` = 引擎默认费率；负数 / NaN 会让手续费累计失真，构造期拒绝
+        let fee_rate = match fee_rate {
+            None => KernelConfig::default().fee_rate,
+            Some(rate) if rate.is_finite() && rate >= 0.0 => rate,
+            Some(rate) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "fee_rate 必须是有限非负数，收到: {rate}"
+                )));
+            }
+        };
+        let accounting_mode = match accounting.as_str() {
+            "cash" => AccountingMode::Cash,
+            "wallet" => AccountingMode::Wallet,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown accounting: {other} (expected 'cash' / 'wallet')"
+                )));
+            }
+        };
+        let instrument_mode = build_instrument_mode(futures, settle.as_deref(), contract_size)?;
+        let kernel_config = KernelConfig {
+            initial_cash,
+            fee_rate,
+            instrument_mode,
+            interval: interval.clone(),
+            ..KernelConfig::default()
+        };
+        let adapter: Arc<tokio::sync::Mutex<Box<dyn ExchangeAdapter>>> = Arc::new(
+            tokio::sync::Mutex::new(Box::new(BinanceAdapter::new(config.inner))),
+        );
+        // LiveDriver::new 会校验 v1 边界（Spot / Cash / 空品种在此报错），不放行坏配置
+        let live = LiveDriver::new(
+            adapter,
+            kernel_config,
+            accounting_mode,
+            shadow_cash,
+            symbols,
+        )
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(Self {
+            instrument_mode,
+            strategies: Mutex::new(Vec::new()),
+            rl_strategies: Mutex::new(Vec::new()),
+            inner: Mutex::new(live),
+            runtime: tokio::runtime::Runtime::new().map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("创建 tokio runtime 失败: {e}"))
+            })?,
+        })
+    }
+
+    /// 注册一个宿主策略（包装规则与 `Kernel.add_strategy` 完全一致）
+    #[pyo3(signature = (strategy, name=None, symbol=None))]
+    fn add_strategy(
+        &self,
+        strategy: &Bound<'_, PyAny>,
+        name: Option<String>,
+        symbol: Option<String>,
+    ) -> PyResult<()> {
+        let (symbol, s) = wrap_strategy(strategy, name, symbol)?;
+        kernel_lock(&self.strategies, "strategies")?.push((symbol, s));
+        Ok(())
+    }
+
+    /// 注册 RL 策略（校验链与 `Kernel.add_rl_strategy` 完全一致）
+    ///
+    /// 文档同 `Kernel.add_rl_strategy`：`predict` 是 `(list[float]) -> float`
+    /// 的目标占比回调；`stats` 是训练期归一化统计量，条数必须等于特征数。
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (predict, model_id, spec_version, window_size, features, action_space=None, symbol="BTC/USDT", stats=None))]
+    fn add_rl_strategy(
+        &self,
+        predict: &Bound<'_, PyAny>,
+        model_id: &str,
+        spec_version: &str,
+        window_size: usize,
+        features: &Bound<'_, PyAny>,
+        action_space: Option<&Bound<'_, PyDict>>,
+        symbol: &str,
+        stats: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        if !predict.is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "predict 必须是可调用对象 (list[float]) -> float",
+            ));
+        }
+        if model_id.is_empty() || spec_version.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "model_id / spec_version 不能为空",
+            ));
+        }
+        if !symbol.contains('/') && !symbol.contains('-') {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "symbol 需要 BASE/QUOTE 形式（如 BTC/USDT），收到: {symbol}"
+            )));
+        }
+
+        let mut spec = ObservationSpec::new(window_size, parse_features(features)?)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("ObservationSpec 构造失败: {e}"))
+            })?
+            .with_version(spec_version);
+
+        // 训练期统计量：观测组装按特征下标取统计，条数不符会在推理时越界，
+        // 因此注册阶段就拒绝。空 list 与 None 同义（保持全空）。
+        let stats = match stats {
+            Some(stats) => parse_normalizer_stats(stats)?,
+            None => Vec::new(),
+        };
+        if !stats.is_empty() {
+            if stats.len() != spec.features.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "stats 条数必须等于特征数 {}（每特征一条），收到 {}",
+                    spec.features.len(),
+                    stats.len()
+                )));
+            }
+            spec.normalizer.stats = stats;
+        }
+
+        let action_space = match action_space {
+            Some(dict) => axon_rl::python::parse_action_space(dict)?,
+            None => ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0)),
+        };
+        ensure_ratio_passthrough(&action_space)?;
+
+        kernel_lock(&self.rl_strategies, "rl strategies")?.push(RlStrategySpec {
+            predict: predict.clone().unbind(),
+            model_id: model_id.to_string(),
+            spec,
+            symbol: self.instrument_mode.instrument(symbol),
+            action_space,
+        });
+        Ok(())
+    }
+
+    fn connect(&mut self) -> PyResult<()> {
+        kernel_lock(&self.inner, "live driver")?
+            .connect()
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// 全新起跑：建内核、挂 journal、注册 hosts（需先 connect 成功）
+    ///
+    /// journal 是崩溃恢复的根基，路径必须是文件（目录会报错 fail-fast）。
+    #[pyo3(signature = (journal_path))]
+    fn start(&self, py: Python<'_>, journal_path: String) -> PyResult<()> {
+        let hosts = live_hosts(self, py)?;
+        kernel_lock(&self.inner, "live driver")?
+            .start(Path::new(&journal_path), hosts)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// 崩溃恢复：journal 重演 → 本地快照 → 交易所对账 → 守卫放行
+    ///
+    /// 守卫拒绝（对账超容差 / fill 断裂）时报错且网关放回 driver 可整体重试；
+    /// 成功返回 ReconcileReport dict（serde → `json.loads`，与 `reconcile`
+    /// 的返回契约一致）。
+    #[pyo3(signature = (journal_path))]
+    fn resume<'py>(&self, py: Python<'py>, journal_path: String) -> PyResult<Bound<'py, PyAny>> {
+        let hosts = live_hosts(self, py)?;
+        let report = kernel_lock(&self.inner, "live driver")?
+            .resume(Path::new(&journal_path), hosts)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let json_mod = py.import("json")?;
+        let s = serde_json::to_string(&report).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("report 序列化失败: {e}"))
+        })?;
+        json_mod.call_method1("loads", (s,))
+    }
+
+    /// 推进一拍：泵行情 → 步进内核 → 尾部拉 WS 回报（下一拍消化）
+    fn tick(&mut self) -> PyResult<()> {
+        kernel_lock(&self.inner, "live driver")?
+            .tick()
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// 本地账面快照：`{positions, cash, fill_ids}`（需已 start/resume）
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let snap = kernel_lock(&self.inner, "live driver")?
+            .snapshot()
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        local_snapshot_dict(py, &snap)
+    }
+
+    /// 收尾：请求 sink 终止（.flush 状态下的持仓/订单收口由内核编排决定）
+    fn shutdown(&mut self) -> PyResult<()> {
+        kernel_lock(&self.inner, "live driver")?
+            .shutdown()
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 }
 
@@ -1570,6 +1870,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBacktestRunner>()?;
     m.add_class::<PyKernel>()?;
     m.add_class::<PyLiveRecovery>()?;
+    m.add_class::<PyLiveDriver>()?;
     m.add_function(wrap_pyfunction!(read_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(reconcile_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(enforce_resume_guard, m)?)?;
