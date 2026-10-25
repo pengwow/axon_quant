@@ -1,5 +1,12 @@
 //! PaperTradingBackend — 模拟盘后端(基于 `PaperPortfolio`)
 //!
+//! # 已废弃
+//!
+//! 模拟成交引擎职责已移交 `axon-kernel` 的 `PaperSink`（与回测 / live 共用内核主回路），
+//! 本后端的账务能力完全依赖 `swarm::paper_trading`（同批废弃）。工作区内已无生产装配点
+//! （只在本文件单测中出现）；M6 之后的新代码请走内核 paper 路径。只做文档标注、不加
+//! `#[deprecated]` 属性（自身单测仍引用，`-D warnings` 门禁会失败），移除随下个大版本。
+//!
 //! 与 `MockTradingBackend` 的差异:
 //! - `MockTradingBackend`:通用测试桩,无价格滑点 / 手续费建模
 //! - `PaperTradingBackend`:模拟真实交易摩擦(滑点 + 手续费),初始余额 / 持仓来自
