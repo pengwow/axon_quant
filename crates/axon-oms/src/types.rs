@@ -13,6 +13,15 @@ impl OrderId {
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
+
+    /// 从确定性种子构造订单 ID（崩溃恢复重演用）
+    ///
+    /// LiveSink 的回报按 OMS 订单号匹配簿记，而 `new()` 是随机 UUID：
+    /// 重演 sink 生成的订单号与 journal 里首跑回报记录的订单号必然不同，
+    /// 回报全被丢弃。内核序号 → 固定 UUID 让两次跑的订单号序列一致。
+    pub fn deterministic(n: u64) -> Self {
+        Self(Uuid::from_u128(n as u128))
+    }
 }
 
 impl Default for OrderId {
@@ -24,6 +33,16 @@ impl Default for OrderId {
 impl std::fmt::Display for OrderId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+// 崩溃恢复重演需要从 journal 的 JSON 状态里还原订单 ID（Display 的逆操作），
+// 没有它 from_journal_state 只能新建 ID，OMS 账本就与首跑对不上
+impl std::str::FromStr for OrderId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
     }
 }
 

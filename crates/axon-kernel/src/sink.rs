@@ -43,6 +43,42 @@ pub trait ExecutionSink {
     /// `set_target_position + rebalance_to_target` 在这里统一执行一次 ——
     /// 多品种同一帧只允许一次 rebalance，否则资金约束与 NAV 采样会重复。
     fn finish_bar(&mut self, core: &mut KernelCore) -> Result<Vec<Event>, KernelError>;
+
+    /// 是否由 sink 记录外部交易所回报（live 档 = `true`）
+    ///
+    /// 打开此标志后，主回路在 [`Self::poll`] 之后调 [`Self::take_update_states`]，
+    /// 把 poll 拉到的每条原始回报写进 journal（broker 侧的外部输入，重演必需）。
+    /// 回测 / paper 的 poll 恒空，默认 `false` 即可。
+    fn records_external_responses(&self) -> bool {
+        false
+    }
+
+    /// 取走 poll 阶段攒下的原始回报（journal 落盘用）
+    ///
+    /// 只在 [`Self::records_external_responses`] 为 `true` 时被调用。约定：`poll`
+    /// 内每 apply 一条交易所回报就同步攒一条对应的 JSON 状态，两者一一对应、
+    /// 顺序一致；被 sink 丢弃的回报（未知订单 / 去重）也照攒——重演时同样的
+    /// 丢弃决策会再次发生，条数与顺序才能逐字对齐。本方法取走后清空。
+    fn take_update_states(&mut self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+
+    /// 重演：把 journal 里记录的一条外部回报注回 sink
+    ///
+    /// 与首跑 `poll → apply` 等价地更新内部账本（OMS 状态机 / 成交去重表），
+    /// 返回派生事件（回流主队列）。默认拒绝：非 live 实现的 journal 里不应
+    /// 出现回报条目，出现即为文件被写坏，宁可拒绝恢复也不静默跳过。
+    fn replay_external(&mut self, _state: &serde_json::Value) -> Result<Vec<Event>, KernelError> {
+        Err(KernelError::Sink(
+            "该 sink 不支持重演外部回报（非 live 实现）".to_string(),
+        ))
+    }
+
+    /// downcast 到具体类型（崩溃恢复对账用）
+    ///
+    /// 主回路持有 `Box<dyn ExecutionSink>`，恢复编排需要拿具体 sink（如
+    /// `LiveSink`）的本地快照做三路对账，trait object 只能经此桥回去。
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// 空实现：什么都不做，永远返回空事件
@@ -71,6 +107,10 @@ impl ExecutionSink for NullSink {
 
     fn finish_bar(&mut self, _core: &mut KernelCore) -> Result<Vec<Event>, KernelError> {
         Ok(Vec::new())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -193,6 +233,10 @@ impl ExecutionSink for BacktestSink {
         core.drain();
         Ok(Vec::new())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Paper 执行出口：L1 撮合 + 实时报价驱动的虚拟账
@@ -281,6 +325,10 @@ impl ExecutionSink for PaperSink {
 
     fn finish_bar(&mut self, core: &mut KernelCore) -> Result<Vec<Event>, KernelError> {
         self.inner.finish_bar(core)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
