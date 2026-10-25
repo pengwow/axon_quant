@@ -4,17 +4,22 @@
 //! - `BacktestRunner`：Rust 原生回测编排器（构造 + 注册策略 + run）
 //! - `Kernel`：统一交易内核的薄包装（M2），结果与 `BacktestRunner` 等价
 //! - `BacktestResult`：回测结果 DTO
+//! - `LiveRecovery` + `read_manifest` / `reconcile` / `resume_guard`：崩溃恢复
+//!   三原语（journal 重演恢复 OMS / 三路对账 / 恢复门禁）
 //!
 //! `run()` 内部用 tokio runtime `block_on` 执行 async 回测循环，
 //! bars 从 Python `list[dict]` 构造（每根 bar 含 timestamp/open/high/low/close/volume）。
 
 #![cfg(feature = "python")]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 
 use axon_backtest::engine::EffectiveMarginSpec;
 use axon_backtest::margin::{Bracket, LiquidateReason, LiquidationEvent, MarginMode, MarginSpec};
@@ -23,9 +28,10 @@ use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::time::Timestamp;
 use axon_core::types::{Instrument, Price, Quantity, SwapSettle};
 use axon_kernel::{
-    BacktestSink, InferenceBackend, InstrumentMode, Kernel, KernelConfig, KernelResult,
-    RLStrategyHost, build_frames,
+    BacktestSink, InferenceBackend, InstrumentMode, Journal, Kernel, KernelConfig, KernelResult,
+    RLStrategyHost, RunManifest, build_frames,
 };
+use axon_oms::AccountingMode;
 use axon_rl::{
     Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec, RunningStats,
 };
@@ -33,8 +39,13 @@ use axon_strategy::impl_::PythonStrategyImpl;
 use axon_strategy::python::PyRuleStrategyImpl;
 use axon_strategy::trait_::Strategy;
 
+use crate::LiveSink;
 use crate::backtest::{BacktestResult, BacktestRunner};
 use crate::kernel_host::BarContextSim;
+use crate::reconcile::{
+    LocalSnapshot, ReconcileConfig, ReconcileReport, VenueSnapshot, reconcile as reconcile_impl,
+    resume_guard as resume_guard_impl,
+};
 
 /// Python 端 BacktestResult（DTO，纯数据）
 ///
@@ -854,7 +865,11 @@ impl PyKernel {
     ///   按 `(帧时间戳, 品种)` 回填到 `BarClosedEvent.state`
     /// - `funding_by_symbol`: `dict[str, dict[int, tuple(rate, mark_price)]]`
     /// - `capital_budget`: `float | None`（`initial_cash × leverage`）
-    #[pyo3(signature = (bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None))]
+    /// - `journal_path`: `str | None`，首跑录制：传入则把本次运行收到的全部外部
+    ///   输入（含当帧逐 bar state）落 journal，供 `LiveRecovery.resume` 崩溃恢复
+    ///   重演 / 契约测试构造 fixture。对照重演：`LiveRecovery` 构造参数必须与
+    ///   本侧内核参数一致（initial_cash / interval / fee_rate / 品种口径）。
+    #[pyo3(signature = (bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None, journal_path=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -862,6 +877,7 @@ impl PyKernel {
         states_by_symbol: Option<Bound<'_, PyDict>>,
         funding_by_symbol: Option<Bound<'_, PyDict>>,
         capital_budget: Option<f64>,
+        journal_path: Option<String>,
     ) -> PyResult<PyBacktestResult> {
         let bars_map = parse_bars(bars_by_symbol)?;
         if bars_map.is_empty() {
@@ -902,6 +918,11 @@ impl PyKernel {
         };
         let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
         kernel.set_manifest(manifest);
+        if let Some(path) = journal_path {
+            kernel.attach_journal(Path::new(&path)).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("创建 journal 失败 {path}: {e}"))
+            })?;
+        }
 
         let handle = self.runtime.handle().clone();
         for (symbol, strategy) in &strategies {
@@ -949,6 +970,329 @@ impl PyKernel {
     fn result(&self) -> PyResult<Option<PyBacktestResult>> {
         Ok(kernel_lock(&self.last_result, "result")?.clone())
     }
+}
+
+// ── 崩溃恢复绑定（journal 重演 / 三路对账 / 恢复门禁） ─────────────────
+
+/// journal 头 manifest → Python dict（加载 entries 条目数）
+///
+/// ReconcileReport / RunManifest 无 pyclass 且 pyo3 未开 serde feature：
+/// serde 序列化后经 `json.loads` 还原为 dict，字段形状与 Rust 侧逐一对齐
+/// （`resume_guard` 的反序列化走同一 serde 契约，两侧天然一致）。
+fn manifest_dict<'py>(
+    py: Python<'py>,
+    manifest: &RunManifest,
+    entries: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    let json_mod = py.import("json")?;
+    let s = serde_json::to_string(manifest).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("manifest 序列化失败: {e}"))
+    })?;
+    let d = json_mod.call_method1("loads", (s,))?;
+    d.set_item("entries", entries)?;
+    Ok(d)
+}
+
+/// 快照 dict 三字段 → (positions, cash, fill_ids)
+///
+/// `positions` / `cash` / `fill_ids` 缺省取空值：venue 初始无仓、无成交是常态；
+/// `LocalSnapshot` 与 `VenueSnapshot` 字段同构，共用本函数。
+fn snapshot_from_dict(
+    d: &Bound<'_, PyDict>,
+) -> PyResult<(BTreeMap<String, f64>, f64, BTreeSet<String>)> {
+    let positions: BTreeMap<String, f64> = d
+        .get_item("positions")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or_default();
+    let cash: f64 = d
+        .get_item("cash")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or(0.0);
+    let fill_ids: BTreeSet<String> = d
+        .get_item("fill_ids")?
+        .map(|v| v.extract::<Vec<String>>())
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    Ok((positions, cash, fill_ids))
+}
+
+/// 崩溃恢复重演器：从 journal 重建 OMS 影子账本并抽取本地快照
+///
+/// 与 `Kernel`（回测编排，`run_history` 末尾做 finalize 收尾）不同：本类装配
+/// `LiveSink::for_replay` 走 `resume_replay`（逐条重演、不做 finalize），恢复出
+/// 的是「可继续跑」的内核状态。宿主必须参与重演（journal 行情条目 → 宿主重决策
+/// → 订单进 OMS），因此 `resume` 前至少注册一个策略，且决策必须确定（同一输入
+/// 同一输出）——这是重演保真成立的前提。
+///
+/// 与 Rust 侧 crash_recovery 演练同一时序：
+///
+/// ```python
+/// rec = axon_worker.LiveRecovery(initial_cash=100_000.0)
+/// rec.add_strategy(strategy)
+/// snap = rec.resume("/path/live.journal")   # 构造参数必须与首跑一致
+/// report = axon_worker.reconcile(snap, venue_snapshot)
+/// axon_worker.resume_guard(report)          # 有 break → ValueError
+/// ```
+#[pyclass(name = "LiveRecovery", module = "axon_worker")]
+pub struct PyLiveRecovery {
+    initial_cash: f64,
+    /// 重演 sink 的入金（对账现金基线），必须与首跑 LiveSink 入金一致——
+    /// 静默改掉只会把账目差异藏起来
+    shadow_cash: Decimal,
+    instrument_mode: InstrumentMode,
+    /// 合约必须 `AccountingMode::Wallet`（开仓不扣现金，cash 口径对账必偏差）
+    accounting: AccountingMode,
+    interval: String,
+    fee_rate: f64,
+    strategies: Mutex<Vec<(String, Arc<dyn Strategy>)>>,
+    /// 驱动策略 `decide()` 的 runtime；`Kernel` 主回路本身是同步的
+    runtime: tokio::runtime::Runtime,
+}
+
+#[pymethods]
+impl PyLiveRecovery {
+    /// `shadow_cash` 缺省取 `initial_cash`（首跑 LiveSink 以 initial_cash 入金）
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (initial_cash=100000.0, shadow_cash=None, accounting="cash".to_string(), futures=false, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None))]
+    fn new(
+        initial_cash: f64,
+        shadow_cash: Option<f64>,
+        accounting: String,
+        futures: bool,
+        settle: Option<String>,
+        contract_size: f64,
+        interval: String,
+        fee_rate: Option<f64>,
+    ) -> PyResult<Self> {
+        if !initial_cash.is_finite() || initial_cash <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "initial_cash 必须是正有限数，收到: {initial_cash}"
+            )));
+        }
+        let shadow_cash = shadow_cash.unwrap_or(initial_cash);
+        if !shadow_cash.is_finite() || shadow_cash < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "shadow_cash 必须是有限非负数，收到: {shadow_cash}"
+            )));
+        }
+        // `None` = 引擎默认费率；负数 / NaN 会让手续费累计失真，构造期拒绝
+        let fee_rate = match fee_rate {
+            None => KernelConfig::default().fee_rate,
+            Some(rate) if rate.is_finite() && rate >= 0.0 => rate,
+            Some(rate) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "fee_rate 必须是有限非负数，收到: {rate}"
+                )));
+            }
+        };
+        let accounting_mode = match accounting.as_str() {
+            "cash" => AccountingMode::Cash,
+            "wallet" => AccountingMode::Wallet,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown accounting: {other} (expected 'cash' / 'wallet')"
+                )));
+            }
+        };
+        if futures && accounting_mode == AccountingMode::Cash {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "合约账户必须用 wallet 账务模式（合约开仓不扣现金，cash 口径现金对账必然偏差）",
+            ));
+        }
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("创建 tokio runtime 失败: {e}"))
+        })?;
+        Ok(Self {
+            initial_cash,
+            shadow_cash: Decimal::from_f64(shadow_cash).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("shadow_cash 转 Decimal 失败")
+            })?,
+            instrument_mode: build_instrument_mode(futures, settle.as_deref(), contract_size)?,
+            accounting: accounting_mode,
+            interval,
+            fee_rate,
+            strategies: Mutex::new(Vec::new()),
+            runtime,
+        })
+    }
+
+    /// 注册一个宿主策略（包装规则与 `PyKernel.add_strategy` 完全一致）
+    #[pyo3(signature = (strategy, name=None, symbol=None))]
+    fn add_strategy(
+        &self,
+        strategy: &Bound<'_, PyAny>,
+        name: Option<String>,
+        symbol: Option<String>,
+    ) -> PyResult<()> {
+        let (symbol, s) = wrap_strategy(strategy, name, symbol)?;
+        kernel_lock(&self.strategies, "strategies")?.push((symbol, s));
+        Ok(())
+    }
+
+    /// 重演 journal（崩溃恢复）并返回本地快照
+    ///
+    /// 返回 `{positions, cash, fill_ids, manifest}`：前三者是对账的
+    /// local 槽（可直接传给 `reconcile`），`manifest` 供归档比对（内含
+    /// `entries` 键 = 重演条目数）。manifest 取自 journal 头整份传入，杜绝
+    /// Python 侧手工拼
+    /// config_hash / data_hash / seed 的错配；`resume_replay` 的逐字段校验是
+    /// 第二道门。恢复 kernel 不 attach_journal（会截断既有文件），接管续写由
+    /// `resume_replay` 内部的 `Journal::resume` 完成。
+    ///
+    /// ponytail: 预读（manifest + 条目数）与 `resume_replay` 各解析一遍 journal，
+    /// live 规模（万级行文本）可忽略；换内核状态透出 API 不值。
+    #[pyo3(signature = (journal_path))]
+    fn resume<'py>(&self, py: Python<'py>, journal_path: String) -> PyResult<Bound<'py, PyAny>> {
+        let strategies = kernel_lock(&self.strategies, "strategies")?.clone();
+        if strategies.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "重演需要至少一个宿主策略：journal 行情条目必须经宿主重决策才能恢复 OMS 状态",
+            ));
+        }
+        let path = Path::new(&journal_path);
+        // 预读：manifest 对齐 + 条目数；坏行在预读即报错，不带病进重演
+        let (manifest, entries) = Journal::open(path).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "读取 journal 失败 {journal_path}: {e}"
+            ))
+        })?;
+        let manifest_d = manifest_dict(py, &manifest, entries.len())?;
+
+        let config = KernelConfig {
+            initial_cash: self.initial_cash,
+            fee_rate: self.fee_rate,
+            instrument_mode: self.instrument_mode,
+            interval: self.interval.clone(),
+            // 屏障期望品种留空：由 restore_frame_metadata 按 journal 条目重建
+            //（传了反而压制重建语义，见 set_expected_if_empty）
+            ..KernelConfig::default()
+        };
+        let sink = LiveSink::for_replay(self.shadow_cash).with_accounting_mode(self.accounting);
+        let mut kernel = Kernel::new(config, Box::new(sink));
+        kernel.set_manifest(manifest);
+        let handle = self.runtime.handle().clone();
+        for (symbol, strategy) in &strategies {
+            kernel.add_host(Box::new(BarContextSim::new(
+                strategy.clone(),
+                self.instrument_mode.instrument(symbol),
+                handle.clone(),
+            )));
+        }
+        kernel.resume_replay(path).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("journal 重演失败: {e}"))
+        })?;
+
+        let live_sink = kernel
+            .sink()
+            .as_any()
+            .downcast_ref::<LiveSink>()
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "内核 sink 不是 LiveSink，无法抽取本地快照",
+                )
+            })?;
+        let local = LocalSnapshot::from_sink(live_sink);
+
+        let d = PyDict::new(py);
+        let positions = PyDict::new(py);
+        for (k, v) in &local.positions {
+            positions.set_item(k, v)?;
+        }
+        d.set_item("positions", positions)?;
+        d.set_item("cash", local.cash)?;
+        d.set_item("fill_ids", local.fill_ids.iter().collect::<Vec<_>>())?;
+        d.set_item("manifest", manifest_d)?;
+        Ok(d.into_any())
+    }
+}
+
+/// 只读探查 journal 头 manifest（不接管文件、不重演）
+///
+/// 供恢复前预检（journal 是否可读 / 归档 manifest 指纹）；任何坏行直接报错，
+/// 与 `Journal::open` 的全量严格口径一致。
+#[pyfunction]
+#[pyo3(signature = (path))]
+fn read_manifest(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyAny>> {
+    let (manifest, entries) = Journal::open(Path::new(&path)).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("读取 journal 失败 {path}: {e}"))
+    })?;
+    manifest_dict(py, &manifest, entries.len())
+}
+
+/// 三路对账：`local`（`resume()` 返回的快照）vs `venue`（交易所流水组装）
+///
+/// 只报告不修账。`position_tolerance` / `cash_tolerance` 缺省走引擎默认
+///（1e-8 / 1e-6）；负容差会把「差异必报」退化成「永不报」，构造期拒绝。
+/// `local` 可直接传 `resume()` 的返回值（多出的 entries / manifest 键被忽略）。
+#[pyfunction]
+#[pyo3(name = "reconcile", signature = (local, venue, position_tolerance=None, cash_tolerance=None))]
+fn reconcile_snapshots<'py>(
+    py: Python<'py>,
+    local: &Bound<'_, PyAny>,
+    venue: &Bound<'_, PyAny>,
+    position_tolerance: Option<f64>,
+    cash_tolerance: Option<f64>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let mut config = ReconcileConfig::default();
+    for (name, value, target) in [
+        (
+            "position_tolerance",
+            position_tolerance,
+            &mut config.position_tolerance,
+        ),
+        ("cash_tolerance", cash_tolerance, &mut config.cash_tolerance),
+    ] {
+        let Some(t) = value else { continue };
+        if !t.is_finite() || t < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} 必须是有限非负数，收到: {t}"
+            )));
+        }
+        *target = t;
+    }
+    let (positions, cash, fill_ids) = snapshot_from_dict(local.cast::<PyDict>()?)?;
+    let local = LocalSnapshot {
+        positions,
+        cash,
+        fill_ids,
+    };
+    let (positions, cash, fill_ids) = snapshot_from_dict(venue.cast::<PyDict>()?)?;
+    let venue = VenueSnapshot {
+        positions,
+        cash,
+        fill_ids,
+    };
+    let report = reconcile_impl(&local, &venue, &config);
+    let json_mod = py.import("json")?;
+    let s = serde_json::to_string(&report).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("report 序列化失败: {e}"))
+    })?;
+    json_mod.call_method1("loads", (s,))
+}
+
+/// 恢复门禁（Rust 侧 `resume_guard` 语义原样透传，不在 Python 侧重写）
+///
+/// 持仓 break 或现金 break → `ValueError` 禁止自动续跑；仅成交差异 → 放行，
+/// 但调用方必须告警人工核对（交易所侧在崩溃窗口内可能已发生 journal 之外的
+/// 状态变化）。`report` 形状以 serde 契约为准（`reconcile()` 的返回值可直接
+/// 传入）。
+#[pyfunction]
+#[pyo3(name = "resume_guard", signature = (report))]
+fn enforce_resume_guard(py: Python<'_>, report: &Bound<'_, PyAny>) -> PyResult<()> {
+    let json_mod = py.import("json")?;
+    let value = dict_to_json_value(&json_mod, report)?;
+    let parsed: ReconcileReport = serde_json::from_value(value).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "report 不符合 ReconcileReport serde 契约: {e}"
+        ))
+    })?;
+    resume_guard_impl(&parsed)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("恢复门禁: {e}")))
 }
 
 /// `Kernel` 的可变状态加锁（统一错误信息，避免每处复制 map_err）
@@ -1225,5 +1569,9 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBacktestResult>()?;
     m.add_class::<PyBacktestRunner>()?;
     m.add_class::<PyKernel>()?;
+    m.add_class::<PyLiveRecovery>()?;
+    m.add_function(wrap_pyfunction!(read_manifest, m)?)?;
+    m.add_function(wrap_pyfunction!(reconcile_snapshots, m)?)?;
+    m.add_function(wrap_pyfunction!(enforce_resume_guard, m)?)?;
     Ok(())
 }
