@@ -595,6 +595,9 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
                     status,
                     filled_qty,
                     avg_price: Some(avg_price),
+                    // OKX 的 `fee` 是负数且可能以非计价币结算；OKX 尚未接实盘
+                    // 网关，这里不解析，避免把错误币种的数字记进 USDT 账本。
+                    fee: Decimal::ZERO,
                     timestamp: chrono::Utc::now(),
                 }))
             } else {

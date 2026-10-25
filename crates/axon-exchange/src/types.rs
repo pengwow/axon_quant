@@ -176,6 +176,12 @@ pub struct OrderUpdate {
     pub status: OrderStatus,
     pub filled_qty: Decimal,
     pub avg_price: Option<Decimal>,
+    /// 本次成交手续费（计价币、正数；回报里没有该字段时为 `0`）
+    ///
+    /// 合约 `ORDER_TRADE_UPDATE` 的 `n` 就是本笔增量成交的手续费，可据此做钱包
+    /// 口径的现金对账。
+    #[serde(default)]
+    pub fee: Decimal,
     pub timestamp: DateTime<Utc>,
 }
 

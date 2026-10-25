@@ -613,6 +613,9 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
                 status,
                 filled_qty,
                 avg_price: Some(avg_price),
+                // 现货 `executionReport` 的 `n` 是手续费，但返佣币可能是 BNB（`N`）；
+                // 影子账本只按 USDT 计价，这里不猜币种，留 0。
+                fee: Decimal::ZERO,
                 timestamp: chrono::Utc::now(),
             }))
         }
@@ -984,6 +987,8 @@ fn parse_user_stream_event(text: &str) -> Result<UserStreamEvent, serde_json::Er
                     filled_qty,
                     // 只在真正成交后带均价；NEW / CANCELED 的 `ap` 是 0
                     avg_price: (avg_price > Decimal::ZERO).then_some(avg_price),
+                    // `n` 是本笔增量成交的手续费（USDT-M 结算币为 USDT）
+                    fee: decimal_field(o, "n"),
                     timestamp,
                 },
             )))
@@ -1901,6 +1906,7 @@ mod tests {
                 "i": 8886774_i64,
                 "l": "0.001",
                 "z": filled,
+                "n": "0.03230808",
                 "T": 1_700_000_000_120_i64,
                 "r": "NONE"
             }
@@ -1945,6 +1951,11 @@ mod tests {
                     update.avg_price,
                     Some("80123.4".parse().unwrap()),
                     "avg_price ← o.ap"
+                );
+                assert_eq!(
+                    update.fee,
+                    "0.03230808".parse().unwrap(),
+                    "fee ← o.n（本笔增量手续费）"
                 );
                 assert_eq!(
                     update.timestamp.timestamp_millis(),
