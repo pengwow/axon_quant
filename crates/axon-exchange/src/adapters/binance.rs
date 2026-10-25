@@ -23,7 +23,7 @@ use crate::traits::ExchangeAdapter;
 use crate::types::{
     AccountBalance, AccountInfo, DepthSnapshot, ExchangeConfig, ExchangeId, FundingRate,
     LeverageBracket, LongShortRatio, MarginType, OpenInterest, Order, OrderId, OrderStatus,
-    OrderUpdate, Position, PositionMode, Symbol, Ticker, WsMessage,
+    OrderUpdate, Position, PositionMode, Symbol, Ticker, UserTrade, WsMessage,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -616,6 +616,8 @@ fn parse_ws_message(text: &str) -> Result<WsMessage, serde_json::Error> {
                 // 现货 `executionReport` 的 `n` 是手续费，但返佣币可能是 BNB（`N`）；
                 // 影子账本只按 USDT 计价，这里不猜币种，留 0。
                 fee: Decimal::ZERO,
+                // 现货侧暂不透出原生成交号：现货成交对账还没有消费方
+                trade_id: None,
                 timestamp: chrono::Utc::now(),
             }))
         }
@@ -948,6 +950,18 @@ fn parse_user_stream_event(text: &str) -> Result<UserStreamEvent, serde_json::Er
             // `z` 是累计成交量，`ap` 是累计均价（未成交时为空串 → 0）
             let filled_qty = decimal_field(o, "z");
             let avg_price = decimal_field(o, "ap");
+            // `t` 是撮合引擎成交号（与 REST userTrades 的 `id` 同源）。成交号归一
+            // 后透传给 gateway，成交对账两侧才会得到同一个键；无成交的事件
+            // （NEW / CANCELED 等 `t=0`）或 symbol 缺失都归 None，走合成路径兜底。
+            let trade_id = match (
+                o.get("s").and_then(|s| s.as_str()),
+                o.get("t").and_then(|t| t.as_i64()),
+            ) {
+                (Some(symbol), Some(native_id)) if native_id > 0 => {
+                    Some(normalized_futures_trade_id(symbol, native_id))
+                }
+                _ => None,
+            };
             let status = match o.get("X").and_then(|x| x.as_str()).unwrap_or("") {
                 "NEW" => OrderStatus::Acknowledged,
                 "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled {
@@ -989,12 +1003,22 @@ fn parse_user_stream_event(text: &str) -> Result<UserStreamEvent, serde_json::Er
                     avg_price: (avg_price > Decimal::ZERO).then_some(avg_price),
                     // `n` 是本笔增量成交的手续费（USDT-M 结算币为 USDT）
                     fee: decimal_field(o, "n"),
+                    trade_id,
                     timestamp,
                 },
             )))
         }
         _ => Ok(UserStreamEvent::Ignored),
     }
+}
+
+/// Binance 合约成交归一编号：`binfut:{symbol}:{成交号}`
+///
+/// user data stream 的 `o.t` 与 REST userTrades 的 `id` 是同一个撮合成交号，
+/// 两侧必须产出完全相同的字符串，成交对账才能做集合差集——因此 WS 解析与
+/// REST 解析共用本函数，格式只此一处。
+fn normalized_futures_trade_id(symbol: &str, trade_id: i64) -> String {
+    format!("binfut:{symbol}:{trade_id}")
 }
 
 fn decimal_field(value: &serde_json::Value, key: &str) -> Decimal {
@@ -1569,6 +1593,66 @@ impl ExchangeAdapter for BinanceAdapter {
 
         Ok(bars)
     }
+
+    async fn fetch_my_trades(
+        &self,
+        symbol: &Symbol,
+        since_ms: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<UserTrade>, ExchangeError> {
+        // 成交是签名端点；现货 /api/v3/myTrades 字段与合约不同，当前只接合约
+        if !self.is_futures() {
+            return Err(ExchangeError::ApiError {
+                code: -1,
+                message: "fetch_my_trades 仅支持合约(USDⓈ-M)适配器".into(),
+            });
+        }
+        let mut params = format!("symbol={symbol}&limit={limit}");
+        if let Some(since) = since_ms {
+            params.push_str(&format!("&startTime={since}"));
+        }
+        let body = self.fapi_get("/fapi/v1/userTrades", &params).await?;
+        let rows = body.as_array().ok_or_else(|| {
+            ExchangeError::ParseError("userTrades: response is not an array".into())
+        })?;
+        rows.iter()
+            .map(|row| {
+                let symbol_str = row["symbol"].as_str().unwrap_or_default();
+                let side = match row["side"].as_str().unwrap_or("") {
+                    "BUY" => crate::types::Side::Buy,
+                    "SELL" => crate::types::Side::Sell,
+                    other => {
+                        return Err(ExchangeError::ParseError(format!(
+                            "userTrades: 未知 side {other:?}"
+                        )));
+                    }
+                };
+                Ok(UserTrade {
+                    // 与 ORDER_TRADE_UPDATE 的 `t` 同源，两侧 id 天然一致
+                    trade_id: normalized_futures_trade_id(
+                        symbol_str,
+                        row["id"].as_i64().unwrap_or(0),
+                    ),
+                    symbol: symbol_str.to_string(),
+                    order_id: row["orderId"]
+                        .as_i64()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    side,
+                    price: decimal_field(row, "price"),
+                    qty: decimal_field(row, "qty"),
+                    quote_qty: decimal_field(row, "quoteQty"),
+                    commission: decimal_field(row, "commission"),
+                    commission_asset: row["commissionAsset"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    realized_pnl: decimal_field(row, "realizedPnl"),
+                    time_ms: row["time"].as_i64().unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
 }
 
 // === 私有 helper(独立 impl 块,不进 trait) ===
@@ -1612,8 +1696,13 @@ impl BinanceAdapter {
         };
         let sig = sign::binance::sign_query(&query, &self.config.api_secret);
         let url = format!("{}{path}?{query}&signature={sig}", self.fapi_base_url());
-        // 先读 headers/status 再消费 resp，避免 borrow-of-moved-value
-        let resp = self.client.get(&url).send().await?;
+        // 签名端点必须带 API key 头，缺了会被 -2014 "API-key format invalid" 拒
+        let resp = self
+            .client
+            .get(&url)
+            .header("X-MBX-APIKEY", self.config.api_key.as_str())
+            .send()
+            .await?;
         let status = resp.status();
         if status.as_u16() == 429 {
             let wait_ms = resp
@@ -1651,11 +1740,12 @@ impl BinanceAdapter {
         };
         let sig = sign::binance::sign_query(&query, &self.config.api_secret);
         let url = format!("{}{path}?{query}&signature={sig}", self.fapi_base_url());
-        // 先读 headers/status 再消费 resp，避免 borrow-of-moved-value
+        // 签名端点必须带 API key 头，缺了会被 -2014 "API-key format invalid" 拒
         let resp = self
             .client
             .post(&url)
             .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
             .await?;
         let status = resp.status();

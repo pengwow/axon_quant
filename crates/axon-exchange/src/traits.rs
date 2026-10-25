@@ -8,7 +8,8 @@ use axon_core::Bar;
 use crate::error::ExchangeError;
 use crate::types::{
     AccountBalance, AccountInfo, DepthSnapshot, ExchangeId, FundingRate, LeverageBracket,
-    LongShortRatio, MarginType, OpenInterest, Order, OrderId, Position, Symbol, Ticker, WsMessage,
+    LongShortRatio, MarginType, OpenInterest, Order, OrderId, Position, Symbol, Ticker, UserTrade,
+    WsMessage,
 };
 
 #[async_trait]
@@ -72,4 +73,26 @@ pub trait ExchangeAdapter: Send + Sync {
         interval: &str,
         limit: usize,
     ) -> Result<Vec<Bar>, ExchangeError>;
+
+    /// 拉取账户成交明细（REST 独立数据源，用于成交对账 / 断线补齐）
+    ///
+    /// 默认实现返回错误：adapter 不带成交通道（如 axon-llm 的 mock），
+    /// 用到成交对账的消费方必须自行实现或显式不支持。
+    ///
+    /// Args:
+    /// - `symbol`: 交易对
+    /// - `since_ms`: 起始时间（毫秒，含）；不传则返回最近 `limit` 笔
+    /// - `limit`: 返回条数上限（交易所通常 1000）
+    async fn fetch_my_trades(
+        &self,
+        symbol: &Symbol,
+        since_ms: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<UserTrade>, ExchangeError> {
+        let _ = (symbol, since_ms, limit);
+        Err(ExchangeError::ApiError {
+            code: -1,
+            message: "fetch_my_trades not implemented for this adapter".into(),
+        })
+    }
 }

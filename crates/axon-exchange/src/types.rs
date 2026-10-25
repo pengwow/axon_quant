@@ -182,7 +182,36 @@ pub struct OrderUpdate {
     /// 口径的现金对账。
     #[serde(default)]
     pub fee: Decimal,
+    /// 交易所原生成交编号（已归一，如 `binfut:BTCUSDT:373270969`）
+    ///
+    /// 归一格式同时是 REST `fetch_my_trades` 侧的 `UserTrade.trade_id` 格式，
+    /// 两侧产出同一字符串才能做成交集合对账。回报不带成交号的交易所为
+    /// `None`，由 exchange gateway 按旧格式（订单号:纳秒:增量）合成。
+    #[serde(default)]
+    pub trade_id: Option<String>,
     pub timestamp: DateTime<Utc>,
+}
+
+/// 交易所成交明细（`fetch_my_trades` 返回，REST 独立数据源）
+///
+/// `trade_id` 与 user data stream 回报里 `OrderUpdate.trade_id` 的归一格式
+/// 完全一致：同一笔成交在 WS 与 REST 两侧得到相同的 id，可直接做集合差集。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserTrade {
+    pub trade_id: String,
+    pub symbol: String,
+    /// 交易所内部订单号（数值型备查，如 Binance 合约 `orderId`）
+    pub order_id: String,
+    pub side: Side,
+    pub price: Decimal,
+    /// 本笔成交量：REST 逐笔返回，本身就是增量，无需差分
+    pub qty: Decimal,
+    pub quote_qty: Decimal,
+    pub commission: Decimal,
+    pub commission_asset: String,
+    pub realized_pnl: Decimal,
+    /// 成交时间（毫秒时间戳）
+    pub time_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
