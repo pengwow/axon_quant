@@ -15,7 +15,7 @@ use axon_core::{
 };
 
 use crate::KernelError;
-use crate::core::{KernelConfig, KernelCore};
+use crate::core::{KernelConfig, KernelCore, symbol_key};
 use crate::event::{close_time, interval_to_nanos};
 use crate::host::{HostCtx, StrategyHost};
 use crate::journal::{Journal, JournalEntry};
@@ -413,6 +413,22 @@ impl Kernel {
     /// 因此只应在队列耗尽后调用。
     pub fn result(&mut self) -> KernelResult {
         self.finalize()
+    }
+
+    /// 运行中账务快照：当前权益（NAV，只读不推进账务）
+    ///
+    /// paper 循环的外部观察口：按 tick 轮询 NAV 而不必等 `result()` 收尾。
+    pub fn equity_snapshot(&self) -> f64 {
+        self.core.equity()
+    }
+
+    /// 运行中账务快照：非零持仓（key = `"BASE/QUOTE"`，与 `symbol_key` 同口径）
+    pub fn positions_snapshot(&self) -> BTreeMap<String, f64> {
+        self.core
+            .positions()
+            .into_iter()
+            .map(|(instrument, qty)| (symbol_key(&instrument), qty))
+            .collect()
     }
 
     /// 队列耗尽后的收尾
