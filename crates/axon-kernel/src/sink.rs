@@ -19,7 +19,11 @@ use crate::core::KernelCore;
 use crate::host::{HostCtx, OrderIntent};
 
 /// 执行出口
-pub trait ExecutionSink {
+///
+/// Send 约束：pyo3 的 pyclass 强制 Send+Sync（`PyLiveDriver` 持
+/// `Mutex<LiveDriver>`，LiveDriver 内含 `Box<dyn ExecutionSink>`），
+/// 全部实现者已逐一核实为事实 Send（纯内存 / Arc / 已声明 Send 的 gateway）。
+pub trait ExecutionSink: Send {
     /// 提交一个策略意图，返回因此产生的事件（订单确认 / 成交等）
     ///
     /// `core` 是账务核心：`SetTarget` 换算数量需要当前权益与最新价，而换算点
@@ -79,6 +83,12 @@ pub trait ExecutionSink {
     /// 主回路持有 `Box<dyn ExecutionSink>`，恢复编排需要拿具体 sink（如
     /// `LiveSink`）的本地快照做三路对账，trait object 只能经此桥回去。
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// 可变 downcast（恢复护栏通过后挂载真实网关等编排用）
+    ///
+    /// 重演期 sink 挂的是假网关（重演时宿主重决策不能打真单），对账通过后
+    /// 必须换成真实网关才能继续跑，可变访问只能经 trait object 桥回去。
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// 空实现：什么都不做，永远返回空事件
@@ -110,6 +120,10 @@ impl ExecutionSink for NullSink {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }
@@ -237,6 +251,10 @@ impl ExecutionSink for BacktestSink {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// Paper 执行出口：L1 撮合 + 实时报价驱动的虚拟账
@@ -328,6 +346,10 @@ impl ExecutionSink for PaperSink {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }

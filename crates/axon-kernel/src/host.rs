@@ -73,7 +73,12 @@ pub struct HostCtx {
 ///   不会触发决策。
 /// - 返回**空 `Vec<OrderIntent>` 表示「维持上次生效的目标」**，不是平仓；
 ///   平仓必须显式返回 `OrderIntent::SetTarget { target_ratio: 0.0 }`。
-pub trait StrategyHost {
+///
+/// Send 约束：pyo3 的 pyclass 强制 Send+Sync（`PyLiveDriver` 组装
+/// `Vec<Box<dyn StrategyHost>>` 跨线程交给内核），全部实现者已逐一核实为
+/// 事实 Send（内部只持 `Arc<dyn Strategy>` / `Box<dyn InferenceBackend>`，
+/// 两者均已声明 Send）。
+pub trait StrategyHost: Send {
     /// Host 名称（日志 / 诊断用）
     fn name(&self) -> &str;
 

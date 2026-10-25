@@ -389,6 +389,14 @@ impl Kernel {
         self.sink.as_ref()
     }
 
+    /// 可变借用执行出口（恢复编排用）
+    ///
+    /// 恢复护栏通过后要把重演期的假网关换成真实网关，可变 downcast 需要经由
+    /// trait object，规则与 [`Self::sink`] 一致：不转移所有权。
+    pub fn sink_mut(&mut self) -> &mut dyn ExecutionSink {
+        self.sink.as_mut()
+    }
+
     /// 主动拉取一次 sink 外部回报并回流主队列
     ///
     /// [`Self::step`] 只在队列有事件时才排空回报——live 驱动循环的节奏是
@@ -510,9 +518,7 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     use axon_core::market::Side;
     use axon_core::types::{SpotInstrument, Symbol};
@@ -530,8 +536,8 @@ mod tests {
 
     /// 只记录「被调用了多少次 / 最后一次拿到的 ts」的测试 Host
     struct CountingHost {
-        calls: Rc<Cell<usize>>,
-        last_ts: Rc<Cell<i64>>,
+        calls: Arc<Mutex<usize>>,
+        last_ts: Arc<Mutex<i64>>,
     }
 
     impl StrategyHost for CountingHost {
@@ -540,8 +546,8 @@ mod tests {
         }
 
         fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
-            self.calls.set(self.calls.get() + 1);
-            self.last_ts.set(ev.ts.nanos);
+            *self.calls.lock().unwrap() += 1;
+            *self.last_ts.lock().unwrap() = ev.ts.nanos;
             // Hold：空 vec = 维持上次目标
             Vec::new()
         }
@@ -615,8 +621,8 @@ mod tests {
 
     #[test]
     fn test_only_bar_closed_triggers_host() {
-        let calls = Rc::new(Cell::new(0));
-        let last_ts = Rc::new(Cell::new(0));
+        let calls = Arc::new(Mutex::new(0));
+        let last_ts = Arc::new(Mutex::new(0));
 
         let mut kernel = Kernel::new(KernelConfig::default(), Box::new(NullSink));
         // bar 内的 tick：不应触发决策
@@ -644,8 +650,16 @@ mod tests {
 
         let result = kernel.run().expect("跑队列不应失败");
 
-        assert_eq!(calls.get(), 1, "只有 BarClosed 触发一次决策，Tick 不触发");
-        assert_eq!(last_ts.get(), START + ONE_MIN, "视图 ts 应是收市时刻");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            1,
+            "只有 BarClosed 触发一次决策，Tick 不触发"
+        );
+        assert_eq!(
+            *last_ts.lock().unwrap(),
+            START + ONE_MIN,
+            "视图 ts 应是收市时刻"
+        );
         assert_eq!(kernel.journal().len(), 2, "两个外部输入都进 journal");
         assert_eq!(result.bars_processed, 1);
         assert_eq!(result.orders_submitted, 0, "Hold 不产生意图");
@@ -658,8 +672,8 @@ mod tests {
         queue.push(bar_closed(START));
         queue.pause();
 
-        let calls = Rc::new(Cell::new(0));
-        let last_ts = Rc::new(Cell::new(0));
+        let calls = Arc::new(Mutex::new(0));
+        let last_ts = Arc::new(Mutex::new(0));
         let mut kernel = Kernel::new(KernelConfig::default(), Box::new(NullSink));
         kernel.queue = queue;
         kernel.add_host(Box::new(CountingHost {
@@ -671,7 +685,7 @@ mod tests {
 
         assert_eq!(result.bars_processed, 0, "Paused 下不消费任何事件");
         assert!(kernel.journal().is_empty());
-        assert_eq!(calls.get(), 0, "Paused 下不触发决策");
+        assert_eq!(*calls.lock().unwrap(), 0, "Paused 下不触发决策");
     }
 
     fn frames_3bars() -> Vec<GridFrame> {
@@ -686,7 +700,7 @@ mod tests {
 
     /// 记录每根 bar 拿到的 state 的 Host
     struct StateHost {
-        seen: Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+        seen: Arc<Mutex<Vec<serde_json::Value>>>,
     }
 
     impl StrategyHost for StateHost {
@@ -695,7 +709,7 @@ mod tests {
         }
 
         fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
-            self.seen.borrow_mut().push(ev.state.clone());
+            self.seen.lock().unwrap().push(ev.state.clone());
             Vec::new()
         }
     }
@@ -716,12 +730,12 @@ mod tests {
         let frames =
             build_frames(&bars, &InstrumentMode::Spot, Some(&states)).expect("网格应能展平成帧");
 
-        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
         let mut kernel = empty_kernel();
         kernel.add_host(Box::new(StateHost { seen: seen.clone() }));
         kernel.run_history(frames).expect("回测应跑通");
 
-        let seen = seen.borrow();
+        let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2, "每帧一次决策");
         assert_eq!(
             seen[0],
@@ -943,6 +957,10 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
     fn run_manifest() -> RunManifest {
@@ -1144,7 +1162,7 @@ mod tests {
     /// 没有 state 时按 0.0（空仓）——若重演丢了 state,三条 bar 全部空仓,
     /// 成交数会从「有成交」变成 0,`assert_same_run` 立刻失败。
     struct StateRatioHost {
-        seen: Rc<RefCell<Vec<serde_json::Value>>>,
+        seen: Arc<Mutex<Vec<serde_json::Value>>>,
     }
 
     impl StrategyHost for StateRatioHost {
@@ -1153,7 +1171,7 @@ mod tests {
         }
 
         fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
-            self.seen.borrow_mut().push(ev.state.clone());
+            self.seen.lock().unwrap().push(ev.state.clone());
             let ratio = ev
                 .state
                 .get("sma5_vs_sma20")
@@ -1197,7 +1215,7 @@ mod tests {
             ..KernelConfig::default()
         };
 
-        let first_seen = Rc::new(RefCell::new(Vec::new()));
+        let first_seen = Arc::new(Mutex::new(Vec::new()));
         let mut kernel = Kernel::new(config(), Box::new(BacktestSink::new()));
         kernel.set_manifest(manifest.clone());
         kernel.attach_journal(&path).expect("打开落盘 journal");
@@ -1219,7 +1237,7 @@ mod tests {
             "逐 bar state 必须落盘: {entries:?}"
         );
 
-        let second_seen = Rc::new(RefCell::new(Vec::new()));
+        let second_seen = Arc::new(Mutex::new(Vec::new()));
         let mut replayed = Kernel::new(config(), Box::new(BacktestSink::new()));
         replayed.set_manifest(manifest);
         replayed.add_host(Box::new(StateRatioHost {
@@ -1228,12 +1246,12 @@ mod tests {
         let second = replayed.replay_from(&path).expect("重演应跑通");
 
         assert_eq!(
-            *first_seen.borrow(),
-            *second_seen.borrow(),
+            *first_seen.lock().unwrap(),
+            *second_seen.lock().unwrap(),
             "重演时 Host 收到的 state 必须与首跑逐条相同"
         );
         assert_eq!(
-            first_seen.borrow()[0],
+            first_seen.lock().unwrap()[0],
             serde_json::json!({"sma5_vs_sma20": 0.5}),
             "首帧 state 应按 (帧时间戳, 品种) 回填"
         );
