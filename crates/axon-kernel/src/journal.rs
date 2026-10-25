@@ -7,6 +7,9 @@
 //! 落盘格式是 append-only JSONL：第一行 [`RunManifest`]，其后每行一个
 //! [`JournalEntry`]，即 `{"event": <Event>, "state": <Value|null>}`。
 //!
+//! 崩溃后恢复走 [`Journal::resume`]：同一套逐行校验，额外容忍文件末尾一行没收尾
+//! 的半行（截掉后以追加模式继续写），供内核 `resume_replay` 使用。
+//!
 //! `state` 是这条外部输入在当帧的逐 bar state（编排层注入、不在
 //! `MarketDataPayload` 里），无状态时写 `null`。它必须落盘：带 state 决策的
 //! 策略重演时如果拿不到同一份 state，会静默按 `Value::Null` 产出一套不同结果。
@@ -121,6 +124,63 @@ impl Journal {
         let content = std::fs::read_to_string(path).map_err(|e| {
             KernelError::Journal(format!("无法读取 journal 文件 {}: {e}", path.display()))
         })?;
+        Self::parse_parts(&content, path)
+    }
+
+    /// 崩溃恢复：读回 journal 并接管续写，返回 `(manifest, 已落盘条目, 可续写的 journal)`
+    ///
+    /// 与 [`Journal::open`] 的差别在容错边界：崩溃可能发生在 `writeln!` 中途，文件
+    /// 末尾留下没有 '\n' 结尾的半行。约定「flush 成功的行必然以 '\n' 结尾」，因此
+    /// 最后一个 '\n' 之后的内容一律视为半行：先按完整前缀逐行校验，通过后把半行从
+    /// 文件里截掉，再以 append 模式接管续写。半行里那条输入不重演——它对应的交易
+    /// 所回报是否已生效，由上层对账阶段兜底，这里不猜。
+    ///
+    /// 前缀里任何一行损坏仍然拒绝（同 [`Journal::open`]）；半行截断在解析通过之后
+    /// 才执行，解析失败不动文件。
+    pub fn resume(path: &Path) -> Result<(RunManifest, Vec<JournalEntry>, Journal), KernelError> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            KernelError::Journal(format!("无法读取 journal 文件 {}: {e}", path.display()))
+        })?;
+        let complete_end = content.rfind('\n').map_or(0, |i| i + 1);
+        let has_partial_tail = !content[complete_end..].trim().is_empty();
+        let kept = &content[..complete_end];
+
+        // 先校验完整前缀：坏行 / 空 saved 文件在这里报错，文件保持原样
+        let (manifest, entries) = Self::parse_parts(kept, path)?;
+
+        if has_partial_tail {
+            // read_to_string 已保证内容是合法 UTF-8，字符串字节长度即文件字节长度
+            let file = File::options().write(true).open(path).map_err(|e| {
+                KernelError::Journal(format!("无法打开 journal {}: {e}", path.display()))
+            })?;
+            file.set_len(kept.len() as u64).map_err(|e| {
+                KernelError::Journal(format!("截断 journal 半行失败 {}: {e}", path.display()))
+            })?;
+        }
+
+        let file = File::options().append(true).open(path).map_err(|e| {
+            KernelError::Journal(format!(
+                "无法以追加模式打开 journal {}: {e}",
+                path.display()
+            ))
+        })?;
+        let journal = Self {
+            // 装入已落盘条目的克隆，保持 len() 口径连续：恢复出的 journal 从
+            // 已落盘条数继续向后计数
+            events: entries.iter().map(|e| e.event.clone()).collect(),
+            states: entries.iter().map(|e| e.state.clone()).collect(),
+            file: Some(BufWriter::new(file)),
+        };
+        Ok((manifest, entries, journal))
+    }
+
+    /// 逐行解析：首行 [`RunManifest`] + 其余 `{"event":..,"state":..}` 包裹
+    ///
+    /// [`Journal::open`]（全量严格）与 [`Journal::resume`]（容忍尾半行）共用。
+    fn parse_parts(
+        content: &str,
+        path: &Path,
+    ) -> Result<(RunManifest, Vec<JournalEntry>), KernelError> {
         let mut lines = content.lines();
         let head = lines.next().ok_or_else(|| {
             KernelError::Journal(format!(
@@ -396,5 +456,67 @@ mod tests {
         let (manifest, entries) = Journal::open(&legacy).expect("v0 归档应能读回");
         assert_eq!(manifest.journal_format, 0, "缺字段读成 v0");
         assert!(entries.is_empty(), "文件只有首行 manifest");
+    }
+
+    #[test]
+    fn test_journal_resume_tolerates_partial_tail() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("crash.jsonl");
+
+        let mut journal = Journal::create(&path, &manifest()).expect("创建 journal");
+        journal.append(&heartbeat(), None).expect("写事件 1");
+        journal.append(&heartbeat(), None).expect("写事件 2");
+        drop(journal); // 模拟崩溃：写手停止
+
+        // 崩溃残留：writeln! 中途断电留下的、没有 '\n' 结尾的半行
+        let mut content = std::fs::read_to_string(&path).expect("读文件");
+        content.push_str("{\"event\": {\"System\"");
+        std::fs::write(&path, content).expect("写回带半行的文件");
+
+        let (head, entries, mut journal) = Journal::resume(&path).expect("半行应被截掉后恢复");
+        assert_eq!(head.config_hash, "cfg-abc", "manifest 原样读回");
+        assert_eq!(entries.len(), 2, "半行不重演，只返回完整前缀条目");
+
+        // 接管后续写：新事件必须落在半行截断点之后，不产生叉行
+        journal
+            .append(&heartbeat(), None)
+            .expect("恢复后续写事件 3");
+        drop(journal);
+
+        let (_, reopened) = Journal::open(&path).expect("续写后的文件应完整可读");
+        assert_eq!(reopened.len(), 3, "2 条历史 + 1 条续写");
+        assert_eq!(reopened[2].event, heartbeat(), "续写条目内容正确");
+    }
+
+    #[test]
+    fn test_journal_resume_rejects_corrupted_middle_line() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("corrupted.jsonl");
+
+        // 先用真实 append 写出两条合法条目，保证中部坏行的前后缀绝对合法
+        let mut journal = Journal::create(&path, &manifest()).expect("创建 journal");
+        journal.append(&heartbeat(), None).expect("写事件 1");
+        journal.append(&heartbeat(), None).expect("写事件 2");
+        drop(journal);
+
+        // 重排：manifest / 合法事件 / 坏行 / 合法事件 —— 坏行落在文件第 3 行
+        let lines: Vec<String> = std::fs::read_to_string(&path)
+            .expect("读回文件")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines.len(), 3, "manifest + 2 条事件");
+        let corrupted = format!("{}\n{}\n{{broken json\n{}\n", lines[0], lines[1], lines[2]);
+        std::fs::write(&path, &corrupted).expect("写回中部损坏文件");
+        let before = std::fs::read(&path).expect("读损坏文件字节");
+
+        let err = Journal::resume(&path).expect_err("中部坏行必须拒绝，不能静默跳过");
+        let msg = err.to_string();
+        assert!(msg.contains("第 3 行"), "错误信息应指出坏行行号: {msg}");
+        assert!(msg.contains("拒绝重演"), "错误信息应说明拒绝重演: {msg}");
+
+        // 解析失败不动文件：修复失败后崩溃现场必须原样保留，供人工排查
+        let after = std::fs::read(&path).expect("读恢复后字节");
+        assert_eq!(before, after, "resume 失败不得改动文件");
     }
 }

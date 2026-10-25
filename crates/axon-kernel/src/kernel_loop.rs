@@ -9,7 +9,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use axon_backtest::engine::RunResult;
-use axon_core::{Event, EventQueue, Instrument, MarketDataEvent, MarketDataPayload, Timestamp};
+use axon_core::{
+    Event, EventQueue, Instrument, MarketDataEvent, MarketDataPayload, SystemAction, SystemEvent,
+    Timestamp,
+};
 
 use crate::KernelError;
 use crate::core::{KernelConfig, KernelCore};
@@ -57,6 +60,8 @@ pub struct Kernel {
     ctx: HostCtx,
     started: Instant,
     next_seq: u64,
+    /// 重演进行中：`enqueue_external` / `drain_external` 由此抑制 journal 写入
+    replaying: bool,
 }
 
 impl Kernel {
@@ -80,6 +85,7 @@ impl Kernel {
             ctx: HostCtx::default(),
             started: Instant::now(),
             next_seq: 0,
+            replaying: false,
         }
     }
 
@@ -140,7 +146,11 @@ impl Kernel {
         ev: Event,
         state: Option<serde_json::Value>,
     ) -> Result<(), KernelError> {
-        self.journal.append(&ev, state)?;
+        // 重演期间输入本来就来自 journal，不能写回去：否则同一条输入在文件与
+        // 内存里翻倍，崩溃恢复接管的续写 journal 会记重复条目
+        if !self.replaying {
+            self.journal.append(&ev, state)?;
+        }
         self.queue.push(ev);
         Ok(())
     }
@@ -211,11 +221,17 @@ impl Kernel {
     /// `Paused` 模式下队列 `next()` 直接返回 `None`，本次调用立即返回且不消费
     /// 任何事件；`StepOnce` 模式下每轮只前进一个事件（天然的单步调试钩子）。
     pub fn run(&mut self) -> Result<KernelResult, KernelError> {
+        self.drain_queue()?;
+        Ok(self.finalize())
+    }
+
+    /// 排空主队列（`run` 的循环体，重演逐条驱动共用）
+    fn drain_queue(&mut self) -> Result<(), KernelError> {
         while let Some(ev) = self.queue.next() {
             self.dispatch(ev)?;
             self.drain_external()?;
         }
-        Ok(self.finalize())
+        Ok(())
     }
 
     /// 历史回测入口：灌帧 + 跑完 + 收尾
@@ -234,21 +250,76 @@ impl Kernel {
     ///   `frame_states`，带 state 决策的策略也能逐字复现；
     /// - 缺 `state` 键的旧格式 journal 由 [`Journal::open`] 直接报错，这里不做
     ///   二次兜底；
-    /// - 调用方应使用**未 attach 落盘 journal 的新内核**，否则重演的外部输入会
-    ///   被再写一遍到同一份文件里。
+    /// - 重演期间 `replaying` 标志抑制 journal 写入（输入本来就是从 journal 读出
+    ///   的，不能写回去）；调用方应使用**未跑过任何输入的内核**。
     pub fn replay_from(&mut self, path: &Path) -> Result<KernelResult, KernelError> {
         let (manifest, entries) = Journal::open(path)?;
-        if manifest != self.manifest {
+        self.ensure_manifest_match(&manifest)?;
+        self.restore_frame_metadata(&entries)?;
+        self.replay_entries(entries)?;
+        Ok(self.finalize())
+    }
+
+    /// 崩溃恢复：读回 journal（容忍尾半行）→ 重放到断点 → 接管续写
+    ///
+    /// 与 [`Self::replay_from`] 的差异：
+    /// - 用 [`Journal::resume`] 读回：崩溃时没收尾的尾半行被截掉，那条输入不重演
+    ///   （它是否已被交易所处理由上层三路对账兜底，这里不猜）；
+    /// - 恢复出的 journal **接管续写**：重演完成后内核照常收新输入，继续追加到
+    ///   同一文件，内存计数从已恢复条数连续增长；
+    /// - **不做 finalize**：恢复要停在「可继续跑」的状态，收尾由调用方续跑后统一做。
+    ///
+    /// 返回后调用方（live driver）的职责：对 sink 做三路对账（positions / fills /
+    /// cash 快照 vs 交易所），对账干净、恢复护栏通过后才允许继续下单——重演只是
+    /// 「把 journal 记过的输入再喂一遍」，交易所侧在崩溃窗口内可能已发生 journal
+    /// 之外的状态变化。
+    pub fn resume_replay(&mut self, path: &Path) -> Result<(), KernelError> {
+        let (manifest, entries, journal) = Journal::resume(path)?;
+        self.ensure_manifest_match(&manifest)?;
+        self.journal = journal;
+        self.restore_frame_metadata(&entries)?;
+        self.replay_entries(entries)
+    }
+
+    /// manifest 逐字段比对，任一字段不同直接拒绝
+    fn ensure_manifest_match(&self, manifest: &RunManifest) -> Result<(), KernelError> {
+        if *manifest != self.manifest {
             return Err(KernelError::Journal(format!(
                 "manifest 不一致，拒绝重演: journal={manifest:?} kernel={:?}",
                 self.manifest
             )));
         }
-        self.restore_frame_metadata(&entries)?;
-        for entry in entries {
-            self.enqueue_external(entry.event, entry.state)?;
+        Ok(())
+    }
+
+    /// 逐条重演 journal 条目（`replay_from` / `resume_replay` 共用的内层）
+    ///
+    /// 每条处理完立即排空一次队列再进下一条（`dispatch` 又会在每个事件后跑
+    /// [`Self::drain_external`]），与首跑 live 的「到达即驱动」节奏一致。分类：
+    /// - 行情条目：走 [`Self::enqueue_external`]，屏障攒帧 / state 回填照常发生，
+    ///   `replaying` 标志保证不再写 journal；
+    /// - live 回报条目（`state` 槽非空）：`event` 是落盘占位 Heartbeat，不使用；
+    ///   把记录的回报状态经 `sink.replay_external` 注回 sink 重建 OMS 状态；
+    /// - 非行情且无 `state` 槽：格式不可信，直接拒绝——正常 journal 只有前两种行。
+    ///
+    /// 重演中途出错不复位 `replaying`：实例已半新半旧，只能整体放弃。
+    fn replay_entries(&mut self, entries: Vec<JournalEntry>) -> Result<(), KernelError> {
+        self.replaying = true;
+        for JournalEntry { event, state } in entries {
+            if matches!(event, Event::MarketData(_)) {
+                self.enqueue_external(event, state)?;
+            } else if let Some(state) = state {
+                let out = self.sink.replay_external(&state)?;
+                self.queue.push_batch(out);
+            } else {
+                return Err(KernelError::Journal(
+                    "journal 含非行情条目且缺回报 state，格式不可信，拒绝重演".to_string(),
+                ));
+            }
+            self.drain_queue()?;
         }
-        self.run()
+        self.replaying = false;
+        Ok(())
     }
 
     /// 从 journal 重建网格屏障期望与逐 bar state
@@ -299,12 +370,33 @@ impl Kernel {
     /// 单步：处理一个事件后返回
     ///
     /// 内部用 `EventQueue::step()`，出队一个事件后队列自动转 `Paused`。
-    pub fn step(&mut self) -> Result<(), KernelError> {
+    /// 返回是否消费了事件：崩溃恢复编排用 `while step()? {}` 驱动到队列耗尽
+    /// （`run()` / `result()` 会做 EOD 强平，bar 间不能调）。
+    pub fn step(&mut self) -> Result<bool, KernelError> {
         if let Some(ev) = self.queue.step() {
             self.dispatch(ev)?;
             self.drain_external()?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// 读取执行出口（崩溃恢复对账用）
+    ///
+    /// 借用具体 sink 做本地快照（如 `LiveSink` 的 OMS 状态），主回路不转移
+    /// 所有权——journal 已由内核持有，sink 的生命周期归内核。
+    pub fn sink(&self) -> &dyn ExecutionSink {
+        self.sink.as_ref()
+    }
+
+    /// 主动拉取一次 sink 外部回报并回流主队列
+    ///
+    /// [`Self::step`] 只在队列有事件时才排空回报——live 驱动循环的节奏是
+    /// 「注入行情 → `while step` → 交易所回报陆续到达」，队列耗尽后到达的
+    /// 回报不会自己被 poll。调度间隔（bar 间等待）由调用方控制，这里只
+    /// 负责「拉一次 + 落 journal + 回流」，与 `drain_external` 同一套语义。
+    pub fn poll_external(&mut self) -> Result<(), KernelError> {
+        self.drain_external()
     }
 
     /// 收尾快照（幂等）
@@ -330,8 +422,25 @@ impl Kernel {
     }
 
     /// 排空 sink 的外部回报队列并回流主队列
+    ///
+    /// live 档 sink（`records_external_responses()`）的 poll 会消费交易所回报，
+    /// 回报是**外部输入**：不落 journal，崩溃后重演就少处理它们。回流之前把
+    /// sink 攒下的回报状态逐条落盘（sink trait 约定：poll 内每应用一条就攒一条，
+    /// 含被丢弃的）。journal 行的 event 槽是占位 Heartbeat——一条回报可能产出
+    /// 0 个内核事件（非法迁移 / 去重），行粒度跟回报走而不是跟事件走；重演由
+    /// `replay_entries` 调 `sink.replay_external` 注回。落盘失败向上抛。
     fn drain_external(&mut self) -> Result<(), KernelError> {
         let out = self.sink.poll()?;
+        if self.sink.records_external_responses() && !self.replaying {
+            let placeholder = Event::System(SystemEvent::new(
+                0,
+                Timestamp::from_nanos(0),
+                SystemAction::Heartbeat,
+            ));
+            for state in self.sink.take_update_states() {
+                self.journal.append(&placeholder, Some(state))?;
+            }
+        }
         self.queue.push_batch(out);
         Ok(())
     }
@@ -830,6 +939,10 @@ mod tests {
             out.push(self.derived());
             Ok(out)
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     fn run_manifest() -> RunManifest {
@@ -1161,5 +1274,91 @@ mod tests {
             replay_with(seed_changed).is_err(),
             "seed 不一致必须拒绝重演"
         );
+    }
+
+    /// `resume_replay` 与 `replay_from` 共用 manifest 校验，崩溃恢复路径同样
+    /// 必须逐字段拒绝：配置 / 种子变了，重演续跑出来的仓位与订单不可信
+    #[test]
+    fn test_resume_replay_rejects_manifest_mismatch() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("run.jsonl");
+        let manifest = run_manifest();
+        run_with_journal(&path, &manifest);
+
+        let resume_with = |changed: RunManifest| {
+            let config = KernelConfig {
+                initial_cash: 10_000.0,
+                ..KernelConfig::default()
+            };
+            let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+            kernel.set_manifest(changed);
+            kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+            kernel.resume_replay(&path)
+        };
+
+        // config_hash 改一个字节
+        let mut config_changed = manifest.clone();
+        config_changed.config_hash = "cfg-abd".to_string();
+        let err = resume_with(config_changed).expect_err("config_hash 不一致必须拒绝恢复");
+        assert!(
+            err.to_string().contains("manifest 不一致"),
+            "错误信息应说明 manifest 不一致: {err}"
+        );
+
+        // seed 改一个字节
+        let mut seed_changed = manifest.clone();
+        seed_changed.seed = 43;
+        assert!(
+            resume_with(seed_changed).is_err(),
+            "seed 不一致必须拒绝恢复"
+        );
+    }
+
+    /// 崩溃恢复全链路：首段跑 2 bar 即「崩溃」→ 新内核重放到断点 → 续跑第 3 根
+    ///
+    /// 分段（恢复续跑）与一次性跑完的 `RunResult` 必须逐字段一致，这是
+    /// 「恢复后行为与不间断运行等价」的直接证据。分段驱动不能调 `run()` /
+    /// `result()`——它们会做 EOD 收尾强平，bar 间只允许 `while step`。
+    #[test]
+    fn test_resume_replay_continues_and_matches_full_run() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let manifest = run_manifest();
+        let config = || KernelConfig {
+            initial_cash: 10_000.0,
+            ..KernelConfig::default()
+        };
+        let frames = frames_3bars();
+
+        // 对照组：不间断跑完 3 根的内核，全程无崩溃
+        let full = run_with_journal(&dir.path().join("full.jsonl"), &manifest);
+
+        // 崩溃组首段：只灌前 2 根，队列耗尽后立刻丢弃内核（模拟进程消失）
+        let crash_path = dir.path().join("crash.jsonl");
+        let mut kernel = Kernel::new(config(), Box::new(BacktestSink::new()));
+        kernel.set_manifest(manifest.clone());
+        kernel
+            .attach_journal(&crash_path)
+            .expect("打开落盘 journal");
+        kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+        kernel
+            .load_frames(frames[..2].to_vec())
+            .expect("灌入前两根 bar");
+        while kernel.step().expect("首段步进") {}
+        drop(kernel);
+
+        // 崩溃组恢复：新内核重放 journal 到断点（不 finalize），再续跑第 3 根
+        let mut recovered = Kernel::new(config(), Box::new(BacktestSink::new()));
+        recovered.set_manifest(manifest);
+        recovered.add_host(Box::new(TargetHost { ratio: 0.5 }));
+        recovered.resume_replay(&crash_path).expect("恢复应跑通");
+        recovered
+            .load_frames(frames[2..].to_vec())
+            .expect("续跑灌入第 3 根 bar");
+        while recovered.step().expect("续跑步进") {}
+        let resumed = recovered.result();
+
+        assert!(full.run.fills >= 1, "用例必须真的成交,否则比较没有力度");
+        assert_eq!(resumed.bars_processed, 3, "恢复续跑必须处理完整 3 根 bar");
+        assert_same_run("resume", &full, &resumed);
     }
 }
