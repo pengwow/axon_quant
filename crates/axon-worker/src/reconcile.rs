@@ -18,12 +18,16 @@
 //! testnet 阶段，与 [`crate::live_sink`] 的 gateway 桥接一起做。
 //!
 //! 崩溃恢复的用法：重放 journal 得到本地快照 → 拉交易所快照 → [`reconcile`] →
-//! [`resume_guard`] 决定能否继续跑。
+//! [`resume_guard`] 决定能否继续跑。本地侧快照可直接
+//! [`LocalSnapshot::from_sink`] 从 [`crate::live_sink::LiveSink`] 的影子账本提取。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
+
+use crate::live_sink::LiveSink;
 
 /// 内核 / OMS 侧快照
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -34,6 +38,42 @@ pub struct LocalSnapshot {
     pub cash: f64,
     /// 已记账的成交编号（交易所 `trade_id`）
     pub fill_ids: BTreeSet<String>,
+}
+
+impl LocalSnapshot {
+    /// 从 [`LiveSink`] 的 OMS 影子账本提取本地快照（崩溃恢复 / 冒烟测试共用）
+    ///
+    /// - 持仓：绝对值在 `f64::EPSILON` 内的近零仓不进快照，避免浮点残渣触发对账 break；
+    /// - 现金：OMS `Portfolio` 把计价币硬编码为 USDT；
+    /// - 成交：遍历全部订单历史取 `fill_id`，与交易所流水做差集。
+    pub fn from_sink(sink: &LiveSink) -> Self {
+        let balance = sink.oms().snapshot_balance();
+        let positions = sink
+            .oms()
+            .snapshot_positions()
+            .into_iter()
+            .filter_map(|position| {
+                let quantity = position.quantity.to_f64()?;
+                (quantity.abs() > f64::EPSILON).then_some((position.symbol, quantity))
+            })
+            .collect();
+        let fill_ids = sink
+            .oms()
+            .snapshot()
+            .order_history
+            .iter()
+            .flat_map(|record| record.fills.iter().map(|fill| fill.fill_id.clone()))
+            .collect();
+        Self {
+            positions,
+            cash: balance
+                .cash
+                .get("USDT")
+                .and_then(|v| v.to_f64())
+                .unwrap_or(0.0),
+            fill_ids,
+        }
+    }
 }
 
 /// 交易所侧快照

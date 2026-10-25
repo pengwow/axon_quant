@@ -35,6 +35,7 @@
 //! 猜。
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use axon_core::event::FillEvent;
 use axon_core::types::{Price, Quantity};
@@ -89,6 +90,143 @@ pub struct VenueUpdate {
     pub timestamp: Timestamp,
 }
 
+impl VenueUpdate {
+    /// 编码为 journal 状态行（重演时由 [`Self::from_journal_state`] 还原）
+    ///
+    /// Decimal 一律编码成字符串：JSON 数字只有 f64 / u64，会丢精度，数量与
+    /// 价格必须保住交易所口径的精确值。`status` 编码成 `{tag, detail}`——
+    /// `OmsOrderStatus` 各变体载荷形状不同。
+    pub fn to_journal_state(&self) -> serde_json::Value {
+        let (tag, detail) = match &self.status {
+            OmsOrderStatus::New => ("New", serde_json::json!({})),
+            OmsOrderStatus::Submitted => ("Submitted", serde_json::json!({})),
+            OmsOrderStatus::Acknowledged => ("Acknowledged", serde_json::json!({})),
+            OmsOrderStatus::PartiallyFilled {
+                filled_qty,
+                avg_price,
+            } => (
+                "PartiallyFilled",
+                serde_json::json!({
+                    "filled_qty": filled_qty.to_string(),
+                    "avg_price": avg_price.to_string(),
+                }),
+            ),
+            OmsOrderStatus::Filled {
+                filled_qty,
+                avg_price,
+            } => (
+                "Filled",
+                serde_json::json!({
+                    "filled_qty": filled_qty.to_string(),
+                    "avg_price": avg_price.to_string(),
+                }),
+            ),
+            OmsOrderStatus::Cancelled { filled_qty } => (
+                "Cancelled",
+                serde_json::json!({ "filled_qty": filled_qty.to_string() }),
+            ),
+            OmsOrderStatus::Rejected { reason } => {
+                ("Rejected", serde_json::json!({ "reason": reason }))
+            }
+        };
+        serde_json::json!({
+            "order_id": self.order_id.to_string(),
+            "status": { "tag": tag, "detail": detail },
+            "fill_quantity": self.fill_quantity.to_string(),
+            "fill_price": self.fill_price.to_string(),
+            "fee": self.fee.to_string(),
+            "trade_id": self.trade_id,
+            "timestamp": self.timestamp.nanos,
+        })
+    }
+
+    /// [`Self::to_journal_state`] 的逆操作
+    ///
+    /// 字段缺失 / 订单号非法一律报错：重演宁可恢复失败，也不能静默错记账目。
+    pub fn from_journal_state(state: &serde_json::Value) -> Result<Self, String> {
+        let get_str = |key: &str| -> Result<String, String> {
+            state
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("回报状态缺字段 {key}"))
+        };
+        let get_dec = |key: &str| -> Result<Decimal, String> {
+            get_str(key)?
+                .parse::<Decimal>()
+                .map_err(|e| format!("{key} 不是合法 Decimal: {e}"))
+        };
+        let order_id = OmsOrderId::from_str(&get_str("order_id")?)
+            .map_err(|e| format!("订单号不是合法 UUID: {e}"))?;
+        let status_obj = state
+            .get("status")
+            .ok_or_else(|| "回报状态缺字段 status".to_string())?;
+        let tag = status_obj
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "status 缺 tag".to_string())?;
+        let detail = status_obj
+            .get("detail")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+        let detail_dec = |key: &str| -> Result<Decimal, String> {
+            detail
+                .get(key)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("status.detail 缺字段 {key}"))
+                .and_then(|s| {
+                    s.parse::<Decimal>()
+                        .map_err(|e| format!("{key} 不是合法 Decimal: {e}"))
+                })
+        };
+        let status = match tag {
+            "New" => OmsOrderStatus::New,
+            "Submitted" => OmsOrderStatus::Submitted,
+            "Acknowledged" => OmsOrderStatus::Acknowledged,
+            "PartiallyFilled" => OmsOrderStatus::PartiallyFilled {
+                filled_qty: detail_dec("filled_qty")?,
+                avg_price: detail_dec("avg_price")?,
+            },
+            "Filled" => OmsOrderStatus::Filled {
+                filled_qty: detail_dec("filled_qty")?,
+                avg_price: detail_dec("avg_price")?,
+            },
+            "Cancelled" => OmsOrderStatus::Cancelled {
+                filled_qty: detail_dec("filled_qty")?,
+            },
+            "Rejected" => OmsOrderStatus::Rejected {
+                reason: detail
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "status.detail 缺字段 reason".to_string())?
+                    .to_string(),
+            },
+            other => return Err(format!("未知状态 tag: {other}")),
+        };
+        let trade_id = match state.get("trade_id") {
+            Some(v) if !v.is_null() => Some(
+                v.as_str()
+                    .ok_or_else(|| "trade_id 不是字符串".to_string())?
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        let timestamp = state
+            .get("timestamp")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "回报状态缺字段 timestamp".to_string())?;
+        Ok(Self {
+            order_id,
+            status,
+            fill_quantity: get_dec("fill_quantity")?,
+            fill_price: get_dec("fill_price")?,
+            fee: get_dec("fee")?,
+            trade_id,
+            timestamp: Timestamp::from_nanos(timestamp),
+        })
+    }
+}
+
 /// 同步下单网关
 ///
 /// 只暴露内核主回路需要的三件事：下单、撤单、非阻塞拉回报。具体是 REST +
@@ -103,6 +241,34 @@ pub trait LiveOrderGateway: Send {
     /// 关闭与交易所的连接（默认空实现；真实网关在此断开 WS / REST）
     fn disconnect(&mut self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// 崩溃恢复重演期的假网关
+///
+/// 重演时下沉意图会再次走到 `gateway.place`：首跑交易所同样受理了它们，影子
+/// 账本必须复现同样的初始 ack，否则 OMS 状态机在后续成交回报处对不上。回报
+/// 队列恒空——真实回报由 journal 经 `replay_external` 注回，不经过网关。
+struct ReplayGateway {
+    venue_seq: u64,
+}
+
+impl LiveOrderGateway for ReplayGateway {
+    fn place(&mut self, _order: &OmsOrder) -> Result<GatewayAck, String> {
+        self.venue_seq += 1;
+        let venue_seq = self.venue_seq;
+        Ok(GatewayAck {
+            venue_order_id: format!("replay-{venue_seq}"),
+            status: OmsOrderStatus::Acknowledged,
+        })
+    }
+
+    fn cancel(&mut self, _id: &OmsOrderId) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn poll_updates(&mut self) -> Result<Vec<VenueUpdate>, String> {
+        Ok(Vec::new())
     }
 }
 
@@ -151,6 +317,8 @@ pub struct LiveSink {
     next_order_id: u64,
     /// `BarClosed` 收盘价，仅作为市价单在 OMS 记录里的参考价
     last_price: HashMap<Instrument, f64>,
+    /// poll 内攒下的回报状态（内核 `drain_external` 落盘 journal 用）
+    pending_update_states: Vec<serde_json::Value>,
 }
 
 impl LiveSink {
@@ -174,7 +342,16 @@ impl LiveSink {
             kernel_index: HashMap::new(),
             next_order_id: 1,
             last_price: HashMap::new(),
+            pending_update_states: Vec::new(),
         }
+    }
+
+    /// 构造崩溃恢复重演期的 sink
+    ///
+    /// `shadow_cash` 必须与首跑一致：恢复后的对账拿它当基线抓差异，静默改
+    /// 初始资金只会把账目差异藏起来。
+    pub fn for_replay(shadow_cash: Decimal) -> Self {
+        Self::new(Box::new(ReplayGateway { venue_seq: 0 }), shadow_cash)
     }
 
     /// 设置 OMS 影子账本的账务模式（默认 [`AccountingMode::Cash`]）
@@ -331,6 +508,9 @@ impl LiveSink {
         let mut order = OmsOrder::new(symbol.clone(), side, order_type, quantity, price)
             .with_instrument(instrument.clone())
             .with_idempotency_key(idempotency_key);
+        // 覆盖随机 id 为内核序号派生的确定性 id：journal 里的回报按 OMS 订单号
+        // 匹配簿记，重演必须派生出与首跑相同的订单号才能对上回报序列。
+        order.id = OmsOrderId::deterministic(kernel_id);
         let ack = self.place_with_retry(&order)?;
         order
             .meta
@@ -581,8 +761,28 @@ impl ExecutionSink for LiveSink {
             .map_err(|e| KernelError::Sink(format!("gateway poll: {e}")))?;
         let mut out = Vec::new();
         for update in updates {
+            // 先攒状态再应用：被丢弃的回报（未知订单 / 非法迁移 / 去重）也照
+            // 攒——它们是外部输入，重演时交给 apply_update 重现同样的丢弃判定，
+            // journal 不替 sink 做决定。
+            self.pending_update_states.push(update.to_journal_state());
             self.apply_update(update, &mut out);
         }
+        Ok(out)
+    }
+
+    fn records_external_responses(&self) -> bool {
+        true
+    }
+
+    fn take_update_states(&mut self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.pending_update_states)
+    }
+
+    fn replay_external(&mut self, state: &serde_json::Value) -> Result<Vec<Event>, KernelError> {
+        let update = VenueUpdate::from_journal_state(state)
+            .map_err(|e| KernelError::Sink(format!("回报状态还原失败: {e}")))?;
+        let mut out = Vec::new();
+        self.apply_update(update, &mut out);
         Ok(out)
     }
 
@@ -590,6 +790,10 @@ impl ExecutionSink for LiveSink {
         // 目标调仓在 `submit` 里已经按差额落单；这里不能再走
         // `apply_effective_targets`，否则内核撮合引擎会再合成一次成交。
         Ok(Vec::new())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
