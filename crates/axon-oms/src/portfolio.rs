@@ -34,6 +34,24 @@ pub struct Position {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Portfolio 账务模式
+///
+/// 决定 [`Portfolio::apply_fill`] 如何把成交映射到 `cash`:
+///
+/// - [`AccountingMode::Cash`] —— **现货口径**,买入按全额名义价值扣现金;
+/// - [`AccountingMode::Wallet`] —— **合约钱包口径**,开仓不占现金(只扣手续费),
+///   平仓把已实现盈亏计入现金。
+///
+/// 默认 `Cash`,保持既有回测 / paper 行为不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AccountingMode {
+    /// 现货:买入扣全额名义价值(默认,保持既有行为)
+    #[default]
+    Cash,
+    /// 合约钱包:开仓只扣手续费,平仓把已实现盈亏计入现金
+    Wallet,
+}
+
 /// 多币种现金余额 + 多 symbol 持仓
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Portfolio {
@@ -41,6 +59,9 @@ pub struct Portfolio {
     pub cash: HashMap<String, Decimal>,
     /// 持仓:symbol -> Position
     pub positions: HashMap<String, Position>,
+    /// 账务模式(见 [`AccountingMode`]);老快照缺该字段时按默认现货口径恢复
+    #[serde(default)]
+    accounting_mode: AccountingMode,
 }
 
 /// Portfolio 快照(供 OmsSnapshot 嵌入 / 序列化)
@@ -62,7 +83,9 @@ pub enum PortfolioError {
     #[error("cost basis overflow: {context}")]
     CostBasisOverflow { context: String },
 
-    /// 现金不足(buy 时 cash < gross + fee)
+    /// 现金不足(买入时现金不足以覆盖所需现金)
+    ///
+    /// `Cash` 模式需要 `gross + fee`,`Wallet` 模式只需要 `fee`(开仓不占现金)。
     #[error("insufficient cash: need {need} {currency}, have {have}")]
     InsufficientCash {
         currency: String,
@@ -81,6 +104,25 @@ impl Portfolio {
     /// **增量 deposit**:对同一 currency 累加,非覆盖。
     pub fn deposit(&mut self, currency: &str, amount: Decimal) {
         *self.cash.entry(currency.into()).or_insert(Decimal::ZERO) += amount;
+    }
+
+    /// 以指定账务模式构造(链式;默认 [`AccountingMode::Cash`])
+    pub fn with_accounting_mode(mut self, mode: AccountingMode) -> Self {
+        self.accounting_mode = mode;
+        self
+    }
+
+    /// 切换账务模式
+    ///
+    /// 只改后续 `apply_fill` 的现金流口径,不回填已有 cash / 持仓;切换前后
+    /// 需要调用方自己与交易所对账。
+    pub fn set_accounting_mode(&mut self, mode: AccountingMode) {
+        self.accounting_mode = mode;
+    }
+
+    /// 当前账务模式
+    pub fn accounting_mode(&self) -> AccountingMode {
+        self.accounting_mode
     }
 
     /// 取出现金(出金)
@@ -120,6 +162,9 @@ impl Portfolio {
     }
 
     /// 从快照构造新 Portfolio
+    ///
+    /// 账务模式不在 [`PortfolioSnapshot`] 里,新实例总是默认 [`AccountingMode::Cash`];
+    /// 合约调用方恢复后必须再 `set_accounting_mode(Wallet)`。
     pub fn from_snapshot(snap: PortfolioSnapshot) -> Self {
         let mut p = Self::new();
         p.recover(snap);
@@ -128,9 +173,22 @@ impl Portfolio {
 
     /// 应用一个 fill:更新 cash + 持仓 + 实现盈亏
     ///
-    /// **side 由 fill.quantity 符号隐含**:
-    /// - buy → quantity > 0 → cash - price*qty - fee,qty 累加(平均成本)
-    /// - sell → quantity < 0 → cash + price*|qty| - fee,平多时 realized = (price - avg) * sold_qty
+    /// **side 由 fill.quantity 符号隐含**:正 = buy,负 = sell。
+    ///
+    /// 现金如何变化取决于 [`Self::accounting_mode`]:
+    ///
+    /// | 成交 | `Cash`(现货) | `Wallet`(合约钱包) |
+    /// |------|---------------|---------------------|
+    /// | 买入(开多 / 加多) | `cash -= price*qty + fee` | `cash -= fee` |
+    /// | 卖出(平多) | `cash += price*qty - fee` | `cash += realized_pnl - fee` |
+    /// | 卖空(开空) | `cash += price*qty - fee` | `cash -= fee` |
+    /// | 买平(平空) | `cash -= price*qty + fee` | `cash += realized_pnl - fee` |
+    ///
+    /// 两种模式的持仓与 `realized_pnl` 计算完全相同(加权平均成本法)。
+    ///
+    /// **`Wallet` 的 `cash` 语义是交易所钱包余额(`totalWalletBalance`)**:
+    /// 开仓占用的保证金与未实现盈亏都不在 `cash` 里,所以
+    /// `权益 = cash + 未实现盈亏 + 占用保证金` 必须由调用方另行计算。
     ///
     /// **quote currency 硬编码为 "USDT"**。
     pub fn apply_fill(&mut self, fill: &Fill) -> Result<(), PortfolioError> {
@@ -143,10 +201,14 @@ impl Portfolio {
         let quote = "USDT";
         let gross = fill.price * qty.abs();
         let fee = fill.fee;
+        let mode = self.accounting_mode;
 
-        // 0. 现金预检(buy 时)
+        // 0. 现金预检(仅买入会减少现金):现货要覆盖全额名义价值,合约钱包只需手续费
         if qty.is_sign_positive() {
-            let need = gross + fee;
+            let need = match mode {
+                AccountingMode::Cash => gross + fee,
+                AccountingMode::Wallet => fee,
+            };
             let have = self.cash.get(quote).copied().unwrap_or(Decimal::ZERO);
             if have < need {
                 return Err(PortfolioError::InsufficientCash {
@@ -157,14 +219,8 @@ impl Portfolio {
             }
         }
 
-        // 1. 更新 cash
-        if qty.is_sign_positive() {
-            *self.cash.entry(quote.into()).or_insert(Decimal::ZERO) -= gross + fee;
-        } else {
-            *self.cash.entry(quote.into()).or_insert(Decimal::ZERO) += gross - fee;
-        }
-
-        // 2. 更新持仓
+        // 1. 更新持仓,并算出本次 fill 中**平仓部分**的已实现盈亏
+        //    Wallet 模式的现金流要用它,所以先算再动 cash。
         let pos = self
             .positions
             .entry(fill.symbol.clone())
@@ -177,8 +233,22 @@ impl Portfolio {
             });
         let old_qty = pos.quantity;
         let new_qty = old_qty + qty;
+        // 从零开仓 / 同向加仓;反向则可能平仓或跨 0 反手
+        let same_direction =
+            old_qty.is_zero() || old_qty.is_sign_positive() == qty.is_sign_positive();
+        // 跨 0 时只结算旧仓位那部分,剩余数量按 fill.price 反向开仓
+        let closing_qty = qty.abs().min(old_qty.abs());
+        let realized_delta = if same_direction {
+            Decimal::ZERO
+        } else if old_qty.is_sign_positive() {
+            // 平多
+            (fill.price - pos.avg_price) * closing_qty
+        } else {
+            // 平空
+            (pos.avg_price - fill.price) * closing_qty
+        };
 
-        if old_qty.is_zero() || old_qty.is_sign_positive() == qty.is_sign_positive() {
+        if same_direction {
             // 从零开仓 / 同向加仓:更新 avg price
             let total_cost = old_qty.abs() * pos.avg_price + qty.abs() * fill.price;
             let total_qty = old_qty.abs() + qty.abs();
@@ -189,14 +259,7 @@ impl Portfolio {
             };
         } else {
             // 反向:平仓 / 反向开仓
-            let closing_qty = qty.abs().min(old_qty.abs());
-            if old_qty.is_sign_positive() {
-                // 平多
-                pos.realized_pnl += (fill.price - pos.avg_price) * closing_qty;
-            } else {
-                // 平空
-                pos.realized_pnl += (pos.avg_price - fill.price) * closing_qty;
-            }
+            pos.realized_pnl += realized_delta;
             // 反向后开仓:用 fill.price 重置 avg
             if new_qty != Decimal::ZERO && old_qty.is_sign_positive() != new_qty.is_sign_positive()
             {
@@ -207,6 +270,21 @@ impl Portfolio {
         }
         pos.quantity = new_qty;
         pos.updated_at = fill.timestamp;
+
+        // 2. 更新 cash:唯一随账务模式分叉的一步
+        let cash_delta = match mode {
+            // 现货:全额名义价值进出
+            AccountingMode::Cash => {
+                if qty.is_sign_positive() {
+                    -(gross + fee)
+                } else {
+                    gross - fee
+                }
+            }
+            // 合约钱包:只有手续费与已实现盈亏进出;开仓名义价值只占保证金
+            AccountingMode::Wallet => realized_delta - fee,
+        };
+        *self.cash.entry(quote.into()).or_insert(Decimal::ZERO) += cash_delta;
         Ok(())
     }
 }
@@ -392,6 +470,76 @@ mod tests {
         // cash = 100000 - 50000 - 1.00 = 49999.00
         p.apply_fill(&usdt_fill("f1", 1, 5000000, 100)).unwrap();
         assert_eq!(p.cash.get("USDT"), Some(&dec!(49999.00)));
+    }
+
+    #[test]
+    fn accounting_mode_defaults_to_cash() {
+        assert_eq!(Portfolio::new().accounting_mode(), AccountingMode::Cash);
+        let mut p = Portfolio::new();
+        p.set_accounting_mode(AccountingMode::Wallet);
+        assert_eq!(p.accounting_mode(), AccountingMode::Wallet);
+    }
+
+    /// Wallet 模式:买入只扣手续费,不扣名义价值(合约开仓只占保证金)
+    #[test]
+    fn wallet_mode_buy_only_deducts_fee() {
+        let mut p = Portfolio::new().with_accounting_mode(AccountingMode::Wallet);
+        p.deposit("USDT", dec!(1000));
+        p.apply_fill(&usdt_fill("f1", 1, 10000, 10)).unwrap(); // 1 @ 100,fee 0.10
+
+        let pos = p.positions.get("BTC-USDT").expect("position exists");
+        assert_eq!(pos.quantity, dec!(1));
+        assert_eq!(pos.avg_price, dec!(100));
+        assert_eq!(pos.realized_pnl, dec!(0));
+        // 现金只减手续费:1000 - 0.10
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(999.90)));
+    }
+
+    /// Wallet 模式:平多把 realized_pnl - fee 计入现金
+    #[test]
+    fn wallet_mode_close_long_credits_realized_pnl_minus_fee() {
+        let mut p = Portfolio::new().with_accounting_mode(AccountingMode::Wallet);
+        p.deposit("USDT", dec!(1000));
+        p.apply_fill(&usdt_fill("f1", 1, 10000, 10)).unwrap();
+        p.apply_fill(&usdt_fill("f2", -1, 11000, 11)).unwrap(); // 平 1 @ 110,fee 0.11
+
+        let pos = p.positions.get("BTC-USDT").expect("position exists");
+        assert_eq!(pos.quantity, dec!(0));
+        assert_eq!(pos.realized_pnl, dec!(10));
+        // 999.90 + (10 - 0.11) = 1009.79
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(1009.79)));
+    }
+
+    /// 回归:Cash 模式下的现金流保持现货全额口径不变
+    #[test]
+    fn cash_mode_cash_flow_unchanged() {
+        let mut p = Portfolio::new(); // 默认 Cash
+        p.deposit("USDT", dec!(1000));
+        p.apply_fill(&usdt_fill("f1", 1, 10000, 10)).unwrap();
+        // 1000 - 100 - 0.10
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(899.90)));
+
+        p.apply_fill(&usdt_fill("f2", -1, 11000, 11)).unwrap();
+        assert_eq!(p.positions.get("BTC-USDT").unwrap().realized_pnl, dec!(10));
+        // 899.90 + 110 - 0.11
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(1009.79)));
+    }
+
+    /// Wallet 模式空头一组:开空只扣 fee,买平按 realized - fee 入账
+    #[test]
+    fn wallet_mode_short_open_close() {
+        let mut p = Portfolio::new().with_accounting_mode(AccountingMode::Wallet);
+        p.deposit("USDT", dec!(1000));
+        p.apply_fill(&usdt_fill("f1", -1, 10000, 10)).unwrap(); // 开空 @ 100,fee 0.10
+        assert_eq!(p.positions.get("BTC-USDT").unwrap().quantity, dec!(-1));
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(999.90)));
+
+        p.apply_fill(&usdt_fill("f2", 1, 9000, 9)).unwrap(); // 买平 @ 90,fee 0.09
+        let pos = p.positions.get("BTC-USDT").expect("position exists");
+        assert_eq!(pos.quantity, dec!(0));
+        assert_eq!(pos.realized_pnl, dec!(10));
+        // 999.90 + (10 - 0.09) = 1009.81
+        assert_eq!(p.cash.get("USDT"), Some(&dec!(1009.81)));
     }
 
     #[test]

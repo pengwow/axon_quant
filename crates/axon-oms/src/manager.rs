@@ -32,6 +32,14 @@ impl OrderManager {
         self.portfolio.write().deposit(currency, amount);
     }
 
+    /// 切换账务模式(`Cash` 现货 / `Wallet` 合约钱包)
+    ///
+    /// 只影响后续 `add_fill` 的现金流口径;合约账户必须用 `Wallet`,
+    /// 否则现金会按全额名义价值被扣减,与交易所钱包余额对不上。
+    pub fn set_accounting_mode(&self, mode: crate::portfolio::AccountingMode) {
+        self.portfolio.write().set_accounting_mode(mode);
+    }
+
     /// 取出现金(出金),余额不足时返回错误
     pub fn withdraw(
         &self,
@@ -210,6 +218,10 @@ impl OrderManager {
         }
     }
 
+    /// 从快照恢复订单簿与 portfolio
+    ///
+    /// 快照不携带账务模式,恢复后 `Portfolio` 回到默认 `Cash`;合约调用方需要在
+    /// `recover` 之后重新调用 [`Self::set_accounting_mode`]。
     pub fn recover(&self, snapshot: OmsSnapshot) -> Result<(), OmsError> {
         *self.active_orders.write() = snapshot.active_orders;
         *self.order_history.write() = snapshot.order_history;
