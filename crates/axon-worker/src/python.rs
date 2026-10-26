@@ -47,6 +47,7 @@ use crate::backtest::{BacktestResult, BacktestRunner};
 use crate::kernel_host::BarContextSim;
 use crate::live_driver::LiveDriver;
 use crate::paper_driver::PaperDriver;
+use crate::python_logging::install_rust_logging;
 use crate::reconcile::{
     LocalSnapshot, ReconcileConfig, ReconcileReport, VenueSnapshot, reconcile as reconcile_impl,
     resume_guard as resume_guard_impl,
@@ -2095,5 +2096,7 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(reconcile_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(enforce_resume_guard, m)?)?;
+    // tracing→Python logging 桥：live 链路的 warn! 对 Python 侧可见
+    m.add_function(wrap_pyfunction!(install_rust_logging, m)?)?;
     Ok(())
 }

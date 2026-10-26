@@ -52,3 +52,7 @@ pub(crate) mod test_support;
 
 #[cfg(feature = "python")]
 pub mod python;
+
+/// tracing → Python logging 桥（python 绑定）：`install_rust_logging`
+#[cfg(feature = "python")]
+pub mod python_logging;

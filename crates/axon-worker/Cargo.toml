@@ -15,7 +15,7 @@ default = []
 # Python 绑定：axon-python 聚合时启用。
 # `axon-rl/python` 提供 `parse_action_space`（RL host 的动作空间解析），
 # 与 `PyTradingEnv` 共用同一份定义，避免两套口径。
-python = ["dep:pyo3", "axon-strategy/python", "axon-rl/python"]
+python = ["dep:pyo3", "dep:tracing-subscriber", "axon-strategy/python", "axon-rl/python", "axon-exchange/python"]
 
 [dependencies]
 axon-core     = { workspace = true }
@@ -38,6 +38,9 @@ serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
 tracing       = { workspace = true }
+# tracing→Python logging 桥的自定义 Layer（registry / LevelFilter / try_init），
+# 仅 python 绑定的 `install_rust_logging` 使用
+tracing-subscriber = { workspace = true, optional = true }
 tokio         = { workspace = true }
 pyo3          = { workspace = true, optional = true }
 
