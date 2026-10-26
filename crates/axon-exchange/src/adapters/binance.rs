@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use async_trait::async_trait;
 use futures_util::stream::SplitStream;
@@ -63,6 +64,10 @@ pub struct BinanceAdapter {
     // 监督任务记录的最近一次建立失败原因：connect 超时时带进错误信息。
     // tracing 无 subscriber 时（pyo3 .so 嵌入场景）warn 日志全部静默，没有它排查盲。
     user_stream_last_error: Arc<PkMutex<Option<String>>>,
+    // 本机时钟相对交易所的偏移（毫秒，= serverTime - local）。签名时间戳用
+    // 本机时间 + 偏移：本机漂移超出 recvWindow（默认 5s）会被 -1021 间歇拒单。
+    // connect 时校准一次，失败保持原值只告警，不阻断连接。
+    time_offset_ms: AtomicI64,
 }
 
 impl BinanceAdapter {
@@ -87,6 +92,7 @@ impl BinanceAdapter {
             user_stream_handle: Mutex::new(None),
             user_stream_ready: watch::Sender::new(false),
             user_stream_last_error: Arc::new(PkMutex::new(None)),
+            time_offset_ms: AtomicI64::new(0),
         }
     }
 
@@ -98,9 +104,53 @@ impl BinanceAdapter {
         Ok(hex::encode(mac.finalize().into_bytes()))
     }
 
+    /// 本机当前时间（毫秒）+ connect 时测得的交易所偏移
+    fn now_ms(&self) -> i64 {
+        chrono::Utc::now().timestamp_millis() + self.time_offset_ms.load(Ordering::Relaxed)
+    }
+
+    /// 从交易所 /time 端点校准时钟偏移（毫秒）
+    ///
+    /// 用往返前后两次本机时间的均值抵消传输时延。失败只告警不阻断连接：
+    /// 校准只是降低 -1021 概率的最佳手段，不是下单前置条件。
+    async fn calibrate_time_offset(&self) {
+        let path = if self.is_futures() {
+            "/fapi/v1/time"
+        } else {
+            "/api/v3/time"
+        };
+        let url = format!("{}{path}", self.trading_base_url());
+        let local_before = chrono::Utc::now().timestamp_millis();
+        let resp = match self.client.get(&url).send().await {
+            Ok(resp) => resp,
+            Err(_) => {
+                tracing::warn!("Binance 时间校准请求失败，签名时间戳继续用本机时钟");
+                return;
+            }
+        };
+        let local_after = chrono::Utc::now().timestamp_millis();
+        let body: serde_json::Value = match resp.json().await {
+            Ok(body) => body,
+            Err(_) => {
+                tracing::warn!("Binance 时间校准响应解析失败，签名时间戳继续用本机时钟");
+                return;
+            }
+        };
+        if let Some(server) = body["serverTime"].as_i64() {
+            let offset = server - (local_before + local_after) / 2;
+            self.time_offset_ms.store(offset, Ordering::Relaxed);
+            if offset.abs() > 1_000 {
+                tracing::warn!(
+                    offset_ms = offset,
+                    "Binance 本机时钟与交易所偏差超过 1s，已校准签名时间戳"
+                );
+            }
+        }
+    }
+
     /// 构造带签名的查询字符串
     fn signed_query(&self, params: &str) -> Result<String, ExchangeError> {
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = self.now_ms();
         let query = if params.is_empty() {
             format!("timestamp={timestamp}")
         } else {
@@ -119,9 +169,13 @@ impl BinanceAdapter {
             .get(&url)
             .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
-            .await?;
+            .await
+            .map_err(sanitize_network_err)?;
+        if resp.status().as_u16() == 429 {
+            return Err(rate_limited_from(&resp));
+        }
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await?;
+        let body: serde_json::Value = resp.json().await.map_err(sanitize_network_err)?;
         if !status.is_success() {
             let code = body["code"].as_i64().unwrap_or(-1);
             let msg = body["msg"].as_str().unwrap_or("unknown error");
@@ -150,9 +204,13 @@ impl BinanceAdapter {
             .post(&url)
             .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
-            .await?;
+            .await
+            .map_err(sanitize_network_err)?;
+        if resp.status().as_u16() == 429 {
+            return Err(rate_limited_from(&resp));
+        }
         let status = resp.status();
-        let resp_body: serde_json::Value = resp.json().await?;
+        let resp_body: serde_json::Value = resp.json().await.map_err(sanitize_network_err)?;
         if !status.is_success() {
             let code = resp_body["code"].as_i64().unwrap_or(-1);
             let msg = resp_body["msg"].as_str().unwrap_or("unknown error");
@@ -177,9 +235,13 @@ impl BinanceAdapter {
             .delete(&url)
             .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
-            .await?;
+            .await
+            .map_err(sanitize_network_err)?;
+        if resp.status().as_u16() == 429 {
+            return Err(rate_limited_from(&resp));
+        }
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await?;
+        let body: serde_json::Value = resp.json().await.map_err(sanitize_network_err)?;
         if !status.is_success() {
             let code = body["code"].as_i64().unwrap_or(-1);
             let msg = body["msg"].as_str().unwrap_or("unknown error");
@@ -699,6 +761,26 @@ fn user_stream_api_error(status: reqwest::StatusCode, body: &serde_json::Value) 
     }
 }
 
+/// reqwest 错误 → Network：清掉 URL 再透出
+///
+/// reqwest 错误的 Display 会带完整请求 URL，签名端点 URL 里含 signature，
+/// 直接透出会把签名泄露进日志 / 错误链路（WS 侧已脱敏，REST 同样要脱）。
+fn sanitize_network_err(e: reqwest::Error) -> ExchangeError {
+    ExchangeError::Network(e.without_url())
+}
+
+/// 429 限流响应 → RateLimited：带 Retry-After（缺失兜底 1s）
+fn rate_limited_from(resp: &reqwest::Response) -> ExchangeError {
+    let wait_ms = resp
+        .headers()
+        .get("Retry-After")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+        .map(|s: u64| s * 1000)
+        .unwrap_or(1000);
+    ExchangeError::RateLimited { wait_ms }
+}
+
 /// `POST /fapi/v1/listenKey`：只带 `X-MBX-APIKEY`，**没有签名参数**
 async fn create_listen_key(
     config: &ExchangeConfig,
@@ -822,6 +904,11 @@ async fn run_user_stream(
             Err(err) => {
                 attempt += 1;
                 *last_error.lock() = Some(err.to_string().replace(&key, "<listenKey>"));
+                // 握手失败必须作废旧 key，否则 key 服务端已过期（断网超 60min 且
+                // 没收到 ListenKeyExpired 事件）时，下一轮 ensure_listen_key 复用
+                // 同一个过期 key 握手、再失败，陷入无限循环、回报永久断流。
+                // 作废的代价只是重连时多一次 POST listenKey。
+                listen_key.lock().take();
                 if attempt <= 3 || attempt.is_multiple_of(10) {
                     // 握手错误可能把含 listenKey 的 URL 带进 message，先脱敏再打日志
                     let redacted = err.to_string().replace(&key, "<listenKey>");
@@ -1219,6 +1306,9 @@ impl ExchangeAdapter for BinanceAdapter {
             ));
         }
 
+        // 时间校准：签名时间戳带 offsets，降低本机时钟漂移导致的 -1021 拒单
+        self.calibrate_time_offset().await;
+
         // 启动 WebSocket（重连逻辑在内部 tokio 任务中循环）
         self.start_ws().await?;
         *self.connected.lock().await = true;
@@ -1336,7 +1426,9 @@ impl ExchangeAdapter for BinanceAdapter {
         // 自然重试（sink tick 单次异常只记日志继续）。ponytail: 暂不区分
         // 「网络失败」与「无此品种」，两者都拒绝，升级路径是让 lot_step_for
         // 返回结构化错误。
-        let symbol_key = order.symbol.to_string().to_uppercase();
+        // 缓存 key 与 parse_lot_steps 的 key 一致，都是连写大写（BTCUSDT），
+        // 必须经 binance_rest_symbol 归一，`BTC/USDT`（BASE/QUOTE 口径）直查必 miss。
+        let symbol_key = binance_rest_symbol(&order.symbol);
         let quantity = match self.lot_step_for(&symbol_key).await {
             Some(step) => quantize_to_step(order.quantity, step).ok_or_else(|| {
                 ExchangeError::OrderRejected {
@@ -1823,7 +1915,7 @@ impl BinanceAdapter {
 
     /// 签名 GET 请求到 fapi
     async fn fapi_get(&self, path: &str, params: &str) -> Result<serde_json::Value, ExchangeError> {
-        let ts = chrono::Utc::now().timestamp_millis();
+        let ts = self.now_ms();
         let query = if params.is_empty() {
             format!("timestamp={ts}")
         } else {
@@ -1837,19 +1929,14 @@ impl BinanceAdapter {
             .get(&url)
             .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
-            .await?;
+            .await
+            .map_err(sanitize_network_err)?;
         let status = resp.status();
         if status.as_u16() == 429 {
-            let wait_ms = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse().ok())
-                .map(|s: u64| s * 1000)
-                .unwrap_or(1000);
-            return Err(ExchangeError::RateLimited { wait_ms });
+            return Err(rate_limited_from(&resp));
         }
-        let body: serde_json::Value = resp.json().await?;
+        // json 解码错误同样会带 URL（含 signature），一并脱敏
+        let body: serde_json::Value = resp.json().await.map_err(sanitize_network_err)?;
         if !status.is_success() {
             let code = body["code"].as_i64().unwrap_or(-1);
             let msg = body["msg"].as_str().unwrap_or("unknown error");
@@ -1900,7 +1987,7 @@ impl BinanceAdapter {
         path: &str,
         params: &str,
     ) -> Result<serde_json::Value, ExchangeError> {
-        let ts = chrono::Utc::now().timestamp_millis();
+        let ts = self.now_ms();
         let query = if params.is_empty() {
             format!("timestamp={ts}")
         } else {
@@ -1915,19 +2002,14 @@ impl BinanceAdapter {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("X-MBX-APIKEY", self.config.api_key.as_str())
             .send()
-            .await?;
+            .await
+            .map_err(sanitize_network_err)?;
         let status = resp.status();
         if status.as_u16() == 429 {
-            let wait_ms = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse().ok())
-                .map(|s: u64| s * 1000)
-                .unwrap_or(1000);
-            return Err(ExchangeError::RateLimited { wait_ms });
+            return Err(rate_limited_from(&resp));
         }
-        let body: serde_json::Value = resp.json().await?;
+        // json 解码错误同样会带 URL（含 signature），一并脱敏
+        let body: serde_json::Value = resp.json().await.map_err(sanitize_network_err)?;
         if !status.is_success() {
             let code = body["code"].as_i64().unwrap_or(-1);
             let msg = body["msg"].as_str().unwrap_or("unknown error");
