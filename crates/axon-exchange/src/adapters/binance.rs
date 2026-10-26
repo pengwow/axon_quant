@@ -45,6 +45,9 @@ pub struct BinanceAdapter {
     subscribed_symbols: Arc<Mutex<Vec<Symbol>>>,
     // 客户端订单 ID -> 交易对，用于撤单时获取 symbol
     order_symbols: Mutex<HashMap<String, String>>,
+    // symbol(连写大写) -> LOT_SIZE stepSize。首次下单时公开端点 exchangeInfo
+    // 全量拉取一次，之后所有下单都走本地缓存。
+    lot_steps: Mutex<HashMap<String, Decimal>>,
     // WebSocket 写入端共享句柄，供 subscribe 使用
     ws_writer: Arc<Mutex<Option<Arc<Mutex<WsSink>>>>>,
     // 断连通知，触发自动重连
@@ -57,6 +60,9 @@ pub struct BinanceAdapter {
     user_stream_handle: Mutex<Option<JoinHandle<()>>>,
     // user data stream 是否已建立（connect 等它就绪后才算连上，避免头几秒丢回报）
     user_stream_ready: watch::Sender<bool>,
+    // 监督任务记录的最近一次建立失败原因：connect 超时时带进错误信息。
+    // tracing 无 subscriber 时（pyo3 .so 嵌入场景）warn 日志全部静默，没有它排查盲。
+    user_stream_last_error: Arc<PkMutex<Option<String>>>,
 }
 
 impl BinanceAdapter {
@@ -73,12 +79,14 @@ impl BinanceAdapter {
             connected: Arc::new(Mutex::new(false)),
             subscribed_symbols: Arc::new(Mutex::new(Vec::new())),
             order_symbols: Mutex::new(HashMap::new()),
+            lot_steps: Mutex::new(HashMap::new()),
             ws_writer: Arc::new(Mutex::new(None)),
             disconnect_notify: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
             listen_key: Arc::new(PkMutex::new(None)),
             user_stream_handle: Mutex::new(None),
             user_stream_ready: watch::Sender::new(false),
+            user_stream_last_error: Arc::new(PkMutex::new(None)),
         }
     }
 
@@ -272,7 +280,7 @@ impl BinanceAdapter {
 
     /// 建立 WebSocket 连接并拆分读写
     async fn open_ws(url: &str) -> Result<(WsSink, WsRead), ExchangeError> {
-        let (ws_stream, _) = tokio_tungstenite::connect_async(url)
+        let (ws_stream, _) = super::connect_wss(url)
             .await
             .map_err(|e| ExchangeError::WebSocket(e.to_string()))?;
         Ok(ws_stream.split())
@@ -303,12 +311,16 @@ impl BinanceAdapter {
         let connected = self.connected.clone();
         let shutdown = self.shutdown.clone();
         let ready = self.user_stream_ready.clone();
+        let last_error = self.user_stream_last_error.clone();
 
         // 先把 listenKey 拿到手：失败要让 connect() 直接报错，而不是静默地收不到回报。
         ensure_listen_key(&config, &client, &listen_key).await?;
 
         let handle = tokio::spawn(async move {
-            run_user_stream(config, client, listen_key, tx, connected, shutdown, ready).await;
+            run_user_stream(
+                config, client, listen_key, tx, connected, shutdown, ready, last_error,
+            )
+            .await;
         });
         *self.user_stream_handle.lock().await = Some(handle);
         Ok(())
@@ -412,7 +424,7 @@ impl BinanceAdapter {
         symbols
             .iter()
             .flat_map(|s| {
-                let lower = s.to_string().to_lowercase();
+                let lower = binance_stream_symbol(s);
                 vec![
                     format!("{lower}@depth@100ms"),
                     format!("{lower}@ticker"),
@@ -643,7 +655,11 @@ const KEEPALIVE_MAX_FAILURES: u32 = 3;
 /// 连接稳定超过该时长才把退避清零，避免「连上即断」时 1 秒一次地打交易所
 const USER_STREAM_STABLE_AFTER: Duration = Duration::from_secs(60);
 /// connect() 等 user data stream 建立的上限
-const USER_STREAM_READY_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// ready 链路 = POST listenKey（REST）+ WS 握手：testnet 慢时单次 REST 就可能
+/// 超过 15s，且监督任务自带指数退避重试。5s 的旧值在正常网络下刚好卡住，
+/// 慢网络下必然误报。30s 覆盖「一次退避重试 + 慢 REST + 慢握手」的最坏常规路径。
+const USER_STREAM_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// user data stream 事件
 enum UserStreamEvent {
@@ -755,6 +771,8 @@ async fn ensure_listen_key(
 }
 
 /// user data stream 监督任务：拿 key → 连 WS → 读回报 → 25 分钟续期 → 断线退避重连
+// 8 个参数均为监督任务需要的并行上下文，打包 struct 属于纯样板
+#[allow(clippy::too_many_arguments)]
 async fn run_user_stream(
     config: ExchangeConfig,
     client: Client,
@@ -763,9 +781,12 @@ async fn run_user_stream(
     connected: Arc<Mutex<bool>>,
     shutdown: Arc<Notify>,
     ready: watch::Sender<bool>,
+    last_error: Arc<PkMutex<Option<String>>>,
 ) {
     let mut backoff = USER_STREAM_INITIAL_BACKOFF;
     let mut attempt: u32 = 0;
+    // 只反映本轮监督任务的状态，不吃上一轮 connect 留下的历史值
+    *last_error.lock() = None;
 
     'supervisor: loop {
         if !*connected.lock().await {
@@ -785,6 +806,7 @@ async fn run_user_stream(
             Ok(key) => key,
             Err(err) => {
                 attempt += 1;
+                *last_error.lock() = Some(err.to_string());
                 // 长时间断网时不刷屏：前 3 次 + 每 10 次记一条
                 if attempt <= 3 || attempt.is_multiple_of(10) {
                     tracing::warn!(attempt, error = %err, "Binance user data stream: 获取 listenKey 失败");
@@ -799,6 +821,7 @@ async fn run_user_stream(
             Ok(pair) => pair,
             Err(err) => {
                 attempt += 1;
+                *last_error.lock() = Some(err.to_string().replace(&key, "<listenKey>"));
                 if attempt <= 3 || attempt.is_multiple_of(10) {
                     // 握手错误可能把含 listenKey 的 URL 带进 message，先脱敏再打日志
                     let redacted = err.to_string().replace(&key, "<listenKey>");
@@ -810,6 +833,7 @@ async fn run_user_stream(
         };
 
         tracing::info!("Binance 合约 user data stream 已连接");
+        *last_error.lock() = None;
         ready.send_replace(true);
         let connected_at = tokio::time::Instant::now();
         let mut keepalive = interval_at(
@@ -1012,6 +1036,24 @@ fn parse_user_stream_event(text: &str) -> Result<UserStreamEvent, serde_json::Er
     }
 }
 
+/// Binance REST 参数里的品种：连写大写（`BTCUSDT`）
+///
+/// 调用方契约允许 `BASE/QUOTE`（如 LiveDriver / 内核 InstrumentMode）与连写
+/// 两种形式；Binance REST 的 symbol 参数必须大写连写，带分隔符（-1121）或
+/// 小写都会被拒。所有拼 REST 参数的入口统一走本函数，不做裸 Display。
+fn binance_rest_symbol(symbol: &Symbol) -> String {
+    let upper = symbol.to_string().to_uppercase();
+    upper.replace(['/', '-'], "")
+}
+
+/// Binance WS stream 名：连写小写（`btcusdt`）
+///
+/// stream 名只认小写连写；带分隔符的订阅会被**静默忽略**（SUBSCRIBE 仍返回
+/// `{"result":null}`，行情零推送且无任何报错）——12.3 崩溃演练 predict 0 次根因。
+fn binance_stream_symbol(symbol: &Symbol) -> String {
+    binance_rest_symbol(symbol).to_lowercase()
+}
+
 /// Binance 合约成交归一编号：`binfut:{symbol}:{成交号}`
 ///
 /// user data stream 的 `o.t` 与 REST userTrades 的 `id` 是同一个撮合成交号，
@@ -1069,9 +1111,57 @@ fn order_path(is_futures: bool) -> &'static str {
     }
 }
 
+/// 把数量 floor 到 LOT_SIZE stepSize 的整数倍
+///
+/// 交易所要求下单数量既是步长倍数又 ≥ minQty（否则 -1111 / -1013）。
+/// 这里只做步长 floor：数量不足一个步长（量化后为 0）或步长非法时返回
+/// None，由调用方转成明确的拒绝错误而不是把垃圾参数发到交易所。
+/// minQty / minNotional 不在此检查——资金约束属策略层，交易所自然会拒。
+fn quantize_to_step(qty: Decimal, step: Decimal) -> Option<Decimal> {
+    if step <= Decimal::ZERO {
+        return None;
+    }
+    let units = (qty / step).floor();
+    if units <= Decimal::ZERO {
+        return None;
+    }
+    Some(units * step)
+}
+
+/// 从 exchangeInfo JSON 提取 symbol -> LOT_SIZE stepSize
+///
+/// 公开端点一次返回全部品种（现货与合约同构），所以全量解析入缓存，
+/// 之后任何品种下单都无需再发请求。
+fn parse_lot_steps(body: &serde_json::Value) -> HashMap<String, Decimal> {
+    let mut steps = HashMap::new();
+    if let Some(symbols) = body["symbols"].as_array() {
+        for s in symbols {
+            let Some(name) = s["symbol"].as_str() else {
+                continue;
+            };
+            let step = s["filters"]
+                .as_array()
+                .and_then(|filters| {
+                    filters
+                        .iter()
+                        .find(|f| f["filterType"] == "LOT_SIZE")
+                        .and_then(|f| f["stepSize"].as_str())
+                })
+                .and_then(|v| v.parse::<Decimal>().ok());
+            if let Some(step) = step {
+                steps.insert(name.to_string(), step);
+            }
+        }
+    }
+    steps
+}
+
 /// 将 axon Order 转换为 Binance REST 请求参数
-fn order_to_binance_params(order: &Order) -> String {
-    let symbol = order.symbol.to_string().to_uppercase();
+///
+/// quantity 由调用方按 LOT_SIZE 步长量化后传入，本函数不做数值处理，
+/// 保持纯函数且与交易所精度规则解耦。
+fn order_to_binance_params(order: &Order, quantity: Decimal) -> String {
+    let symbol = binance_rest_symbol(&order.symbol);
     let side = match order.side {
         crate::types::Side::Buy => "BUY",
         crate::types::Side::Sell => "SELL",
@@ -1088,10 +1178,7 @@ fn order_to_binance_params(order: &Order) -> String {
         crate::types::TimeInForce::Fok => "FOK",
     };
 
-    let mut params = format!(
-        "symbol={symbol}&side={side}&type={order_type}&quantity={}",
-        order.quantity
-    );
+    let mut params = format!("symbol={symbol}&side={side}&type={order_type}&quantity={quantity}");
 
     // 只有限价类订单要 timeInForce：Binance 对 MARKET 携带该参数会返回
     // -1106 `Parameter 'timeInForce' sent when not required.`
@@ -1155,10 +1242,20 @@ impl ExchangeAdapter for BinanceAdapter {
             let failure = match established {
                 Ok(Ok(())) => None,
                 Ok(Err(err)) => Some(format!("user data stream 任务提前退出: {err}")),
-                Err(_) => Some(format!(
-                    "user data stream {}s 内未建立",
-                    USER_STREAM_READY_TIMEOUT.as_secs()
-                )),
+                Err(_) => {
+                    // 超时原因从监督任务里带出来：wss 握手 / listenKey 的真实失败
+                    // 只在监督任务里，错误信息不带原因时排查全靠猜。
+                    let detail = self
+                        .user_stream_last_error
+                        .lock()
+                        .clone()
+                        .map(|e| format!("（最后失败: {e}）"))
+                        .unwrap_or_default();
+                    Some(format!(
+                        "user data stream {}s 内未建立{detail}",
+                        USER_STREAM_READY_TIMEOUT.as_secs()
+                    ))
+                }
             };
             if let Some(reason) = failure {
                 *self.connected.lock().await = false;
@@ -1232,7 +1329,35 @@ impl ExchangeAdapter for BinanceAdapter {
             .await
             .insert(order.client_order_id.to_string(), order.symbol.to_string());
 
-        let params = order_to_binance_params(&order);
+        // 数量按 LOT_SIZE stepSize floor 量化：策略权益换算的 f64 长尾数量
+        // （如 0.00489318...）未量化会被交易所 -1111 拒绝。拉不到 stepSize
+        //（exchangeInfo 抖动等）时本地拒绝而不裸发：12.3 恢复演练实测，
+        // 裸发长尾数量必然 -1111 还白烧 2 次重试，拒绝后下一根 bar 的 tick
+        // 自然重试（sink tick 单次异常只记日志继续）。ponytail: 暂不区分
+        // 「网络失败」与「无此品种」，两者都拒绝，升级路径是让 lot_step_for
+        // 返回结构化错误。
+        let symbol_key = order.symbol.to_string().to_uppercase();
+        let quantity = match self.lot_step_for(&symbol_key).await {
+            Some(step) => quantize_to_step(order.quantity, step).ok_or_else(|| {
+                ExchangeError::OrderRejected {
+                    reason: format!(
+                        "{symbol_key} quantity {} floor to stepSize {step} is zero (insufficient notional)",
+                        order.quantity
+                    ),
+                }
+            })?,
+            None => {
+                return Err(ExchangeError::OrderRejected {
+                    reason: format!(
+                        "{symbol_key} LOT_SIZE stepSize unavailable (exchangeInfo fetch failed or symbol unknown), \
+                         original quantity {} NOT sent to venue",
+                        order.quantity
+                    ),
+                });
+            }
+        };
+
+        let params = order_to_binance_params(&order, quantity);
         let resp = self
             .rest_post(order_path(self.is_futures()), &params)
             .await?;
@@ -1243,9 +1368,11 @@ impl ExchangeAdapter for BinanceAdapter {
             .to_string();
 
         tracing::info!(
-            "Order sent: client_id={}, exchange_id={}",
+            "Order sent: client_id={}, exchange_id={}, symbol={}, qty={}",
             order.client_order_id,
-            exchange_order_id
+            exchange_order_id,
+            symbol_key,
+            quantity
         );
 
         Ok(order.client_order_id)
@@ -1487,7 +1614,12 @@ impl ExchangeAdapter for BinanceAdapter {
             _ => PositionMode::Net,
         };
         Ok(AccountInfo {
-            total_balance: parse_dec("totalWalletBalance"),
+            // 契约：AccountInfo.total_balance 是"含未实现盈亏的总余额"（见 types.rs
+            // 字段注释，OKX 侧用 totalEq 兑现同一语义），因此这里必须映射
+            // totalMarginBalance(= wallet + upnl)。曾经误映射 totalWalletBalance，
+            // 导致对账链 fetch_venue_snapshot 的 cash = total - upnl 多减出一份
+            // 未实现盈亏，崩溃恢复的现金对账只要有持仓浮亏/浮盈必炸（cash_break）。
+            total_balance: parse_dec("totalMarginBalance"),
             available_balance: parse_dec("availableBalance"),
             unrealized_pnl: parse_dec("totalUnrealizedProfit"),
             margin_used: parse_dec("totalInitialMargin"),
@@ -1558,7 +1690,10 @@ impl ExchangeAdapter for BinanceAdapter {
         } else {
             (self.config.rest_base_url.as_str(), "/api/v3/klines")
         };
-        let url = format!("{base_url}{path}?symbol={symbol}&interval={interval}&limit={limit}");
+        let url = format!(
+            "{base_url}{path}?symbol={}&interval={interval}&limit={limit}",
+            binance_rest_symbol(symbol),
+        );
         let resp = self.client.get(&url).send().await?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await?;
@@ -1607,7 +1742,7 @@ impl ExchangeAdapter for BinanceAdapter {
                 message: "fetch_my_trades 仅支持合约(USDⓈ-M)适配器".into(),
             });
         }
-        let mut params = format!("symbol={symbol}&limit={limit}");
+        let mut params = format!("symbol={}&limit={limit}", binance_rest_symbol(symbol));
         if let Some(since) = since_ms {
             params.push_str(&format!("&startTime={since}"));
         }
@@ -1724,6 +1859,39 @@ impl BinanceAdapter {
             });
         }
         Ok(body)
+    }
+
+    /// 查 symbol 的 LOT_SIZE stepSize；本地缓存未命中时从 exchangeInfo 拉取
+    ///
+    /// exchangeInfo 是公开端点（无需签名，同 connect 的 ping），一次全量返回
+    /// 所有品种，解析结果全部入缓存。拉取 / 解析失败返回 None：调用方
+    /// （send_order）必须本地拒绝下单，绝不把未量化数量直发交易所——
+    /// 12.3 恢复演练实测该路径必然被 -1111 拒。
+    async fn lot_step_for(&self, symbol: &str) -> Option<Decimal> {
+        if let Some(step) = self.lot_steps.lock().await.get(symbol) {
+            return Some(*step);
+        }
+        let path = if self.is_futures() {
+            "/fapi/v1/exchangeInfo"
+        } else {
+            "/api/v3/exchangeInfo"
+        };
+        let url = format!("{}{path}", self.trading_base_url());
+        let resp = self.client.get(&url).send().await.ok()?;
+        let body: serde_json::Value = resp.json().await.ok()?;
+        let steps = parse_lot_steps(&body);
+        if steps.is_empty() {
+            return None;
+        }
+        let target = steps.get(symbol).copied();
+        {
+            let mut cached = self.lot_steps.lock().await;
+            // 合并而非覆盖：等待期可能有并发写入
+            for (k, v) in steps {
+                cached.entry(k).or_insert(v);
+            }
+        }
+        target
     }
 
     /// 签名 POST 请求到 fapi
@@ -1884,7 +2052,7 @@ mod tests {
             exchange: ExchangeId::Binance,
             meta: HashMap::new(),
         };
-        let params = order_to_binance_params(&order);
+        let params = order_to_binance_params(&order, order.quantity);
         assert!(params.contains("symbol=BTCUSDT"));
         assert!(params.contains("side=BUY"));
         assert!(params.contains("type=LIMIT"));
@@ -1907,13 +2075,52 @@ mod tests {
             exchange: ExchangeId::Binance,
             meta: HashMap::new(),
         };
-        let params = order_to_binance_params(&order);
+        let params = order_to_binance_params(&order, order.quantity);
         assert!(params.contains("type=MARKET"));
         assert!(
             !params.contains("timeInForce"),
             "MARKET 不得携带 timeInForce: {params}"
         );
         assert!(!params.contains("price="), "市价单不得携带 price: {params}");
+    }
+
+    /// 12.3 崩溃演练 -1111 防线：长尾数量必须 floor 到 stepSize 整数倍
+    #[test]
+    fn test_quantize_to_step() {
+        let step = Decimal::new(1, 4); // 0.0001，BTCUSDT 永续的实际 stepSize
+        // 0.00489318（f64 权益换算产物）→ 0.0048：floor(48.9318)=48，多余
+        // 的 0.00009318 舍去，保证数量不超出目标名义
+        let qty = Decimal::new(489318, 8);
+        assert_eq!(quantize_to_step(qty, step).unwrap(), Decimal::new(48, 4));
+        // 整倍数保持不变
+        assert_eq!(
+            quantize_to_step(Decimal::new(5, 2), step).unwrap(),
+            Decimal::new(5, 2)
+        );
+        // 不足一个步长（量化后为 0）→ None：发 0 必被 -1013 拒，不如明确报错
+        assert_eq!(quantize_to_step(Decimal::new(5, 8), step), None);
+        assert_eq!(quantize_to_step(Decimal::ZERO, step), None);
+        // 步长非法
+        assert_eq!(quantize_to_step(Decimal::ONE, Decimal::ZERO), None);
+    }
+
+    #[test]
+    fn test_parse_lot_steps() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"symbols":[
+                {"symbol":"BTCUSDT","filters":[
+                    {"filterType":"PRICE_FILTER","tickSize":"0.10"},
+                    {"filterType":"LOT_SIZE","stepSize":"0.001"}]},
+                {"symbol":"ETHUSDT","filters":[
+                    {"filterType":"LOT_SIZE","stepSize":"0.01"}]},
+                {"symbol":"BAD"}
+            ]}"#,
+        )
+        .unwrap();
+        let steps = parse_lot_steps(&body);
+        assert_eq!(steps.get("BTCUSDT"), Some(&Decimal::new(1, 3)));
+        assert_eq!(steps.get("ETHUSDT"), Some(&Decimal::new(1, 2)));
+        assert!(!steps.contains_key("BAD"), "无 LOT_SIZE 的品种不入缓存");
     }
 
     #[test]
@@ -2195,6 +2402,24 @@ mod tests {
         assert!(streams.contains(&"btcusdt@kline_1m".to_string()));
     }
 
+    /// BASE/QUOTE 形式必须归一成连写小写：带斜杠的 stream 名会被 Binance
+    /// 静默忽略（订阅成功、零推送），12.3 崩溃演练曾因此 predict 0 次超时
+    #[test]
+    fn test_build_streams_normalizes_slashed_symbol() {
+        let syms = [Symbol::new("BTC/USDT"), Symbol::new("ETHUSDT")];
+        let streams = BinanceAdapter::build_streams(&syms);
+        assert!(streams.contains(&"btcusdt@kline_1m".to_string()));
+        assert!(streams.contains(&"ethusdt@depth@100ms".to_string()));
+        // 任何流名都不得残留分隔符
+        assert!(
+            streams.iter().all(|s| !s.contains('/') && !s.contains('-')),
+            "无效流名混入: {streams:?}"
+        );
+        assert_eq!(binance_stream_symbol(&Symbol::new("ETH-BTC")), "ethbtc");
+        // REST 参数侧是同一契约的大写形式：symbol=btcusdt 也会被 -1121 拒
+        assert_eq!(binance_rest_symbol(&Symbol::new("BTC/USDT")), "BTCUSDT");
+    }
+
     #[test]
     fn test_next_backoff_grows_with_multiplier() {
         let cfg = ReconnectConfig {
@@ -2435,6 +2660,8 @@ mod tests {
                     "totalWalletBalance": "10000.50",
                     "availableBalance": "8000.25",
                     "totalUnrealizedProfit": "120.00",
+                    // total_balance 契约 = 含未实现盈亏 => totalMarginBalance(10000.50 + 120.00)
+                    "totalMarginBalance": "10120.50",
                     "totalInitialMargin": "2000.25",
                     "totalMaintMargin": "150.00",
                     "positionMode": "hedge"
@@ -2445,11 +2672,62 @@ mod tests {
 
             let adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
             let info = adapter.get_account_info().await.expect("get_account_info");
-            assert_eq!(info.total_balance, "10000.50".parse().unwrap());
+            assert_eq!(info.total_balance, "10120.50".parse().unwrap());
             assert_eq!(info.available_balance, "8000.25".parse().unwrap());
             assert_eq!(info.unrealized_pnl, "120.00".parse().unwrap());
             assert_eq!(info.position_mode, PositionMode::Hedge);
             assert!(info.as_of_ms > 0);
+        });
+    }
+
+    /// exchangeInfo 拉不到时 send_order 必须本地拒绝、不打下单端点——
+    /// 12.3 恢复演练实测：裸发未量化长尾数量必然被交易所 -1111 拒
+    #[test]
+    fn send_order_rejects_when_lot_step_unavailable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let rt = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let server = MockServer::start().await;
+            // exchangeInfo 返回 500：模拟 testnet 公开端点抖动
+            Mock::given(method("GET"))
+                .and(path("/fapi/v1/exchangeInfo"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(1)
+                .mount(&server)
+                .await;
+            // 数量未量化不许发到下单端点
+            Mock::given(method("POST"))
+                .and(path("/fapi/v1/order"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let mut adapter = BinanceAdapter::new(wiremock_config(&server.uri()));
+            *adapter.connected.lock().await = true;
+
+            let order = Order {
+                client_order_id: OrderId::new(),
+                symbol: Symbol::new("BTCUSDT"),
+                side: crate::types::Side::Buy,
+                order_type: crate::types::OrderType::Market,
+                price: None,
+                // 模拟权益换算的 f64 长尾数量（6 位小数 > quantityPrecision=4）
+                quantity: "0.00612345".parse().unwrap(),
+                time_in_force: TimeInForce::Gtc,
+                exchange: ExchangeId::Binance,
+                meta: HashMap::new(),
+            };
+            let err = adapter.send_order(order).await.expect_err("must reject");
+            assert!(
+                matches!(err, ExchangeError::OrderRejected { .. }),
+                "expect OrderRejected, got: {err:?}"
+            );
         });
     }
 
