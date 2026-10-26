@@ -23,6 +23,8 @@
 | **ensemble** | `axon-ensemble` | 模型集成：投票、加权、动态权重、堆叠 | `DynamicWeightedEnsemble`, `EnsembleManager`, `StackingEnsemble` |
 | **inference** | `axon-inference` | 模型推理引擎、热更新、多后端支持 | `InferenceEngine`, `ModelHotReloader`, `OnnxBackend`, `CandleBackend` |
 | **backtest** | `axon-backtest` | 事件驱动回测引擎、撮合、冲击模型 | `BacktestEngine`, `MatchingEngine`, `RunResult` |
+| **kernel** | `axon-kernel` | 统一交易内核：回测 / paper / live 共用唯一主回路（九步 per-bar 编排、事件溯源 journal） | `Kernel`, `KernelResult`, `KernelConfig`, `BarLifecycle`, `StrategyHost`, `ExecutionSink` |
+| **worker** | `axon-worker` | 回测 / 实盘编排层：数据泵、执行 sink、实时驱动、网关桥接与 Python 绑定 | `BacktestRunner`, `KernelPump`, `LiveDriver`, `PaperDriver`, `ExchangeGateway` |
 
 ---
 
@@ -453,7 +455,7 @@ config = ExchangeConfig(
 adapter = BinanceAdapter(config)
 await adapter.connect()
 
-# 订阅行情(0.6.0 Python 端仅接受字符串 symbol 列表,无 Symbol 类)
+# 订阅行情(Python 端仅接受字符串 symbol 列表,无 Symbol 类)
 await adapter.subscribe(["BTCUSDT", "ETHUSDT"])
 
 # 获取行情通道
@@ -466,7 +468,7 @@ while True:
         case "Trade":
             print(f"成交: {msg.data.price} x {msg.data.quantity}")
 
-# 下单(0.6.0 Python 端 place_order 仅接受 dict,非 Order 实例)
+# 下单(Python 端 place_order 仅接受 dict,非 Order 实例)
 order = {
     "symbol": "BTCUSDT",
     "side": "buy",
@@ -495,7 +497,18 @@ print(f"资金费率: {funding.rate}, 下次结算: {funding.next_funding_ms}")
 
 # 拉历史 K 线(0.16.0 新增,用于实盘因子注入填充 KlineBuffer)
 history = adapter.fetch_ohlcv("BTCUSDT", "1h", 500)   # list[dict],timestamp 为毫秒
+
+# 实时订单回报(0.22.0 新增 user-data stream):listenKey 自动续期 + 过期自动重建,
+# 回报归一为 OrderUpdate 并复用行情 WS 通道,不另开连接
+msg = await market_rx.recv()
+if msg.type == "OrderUpdate":
+    print(f"订单回报: {msg.data}")
+
+# 成交回查(0.22.0 合约新增):REST 独立数据源,用于成交对账 / 断线补齐
+trades = await adapter.fetch_my_trades("BTCUSDT", None, 1000)   # list[UserTrade]
 ```
+
+**三路对账（0.22.0，实盘链路）**：实盘 / paper 以 positions / fills / cash 三路与本地 OMS 簿记自动比对（含挂单 `open_order_ids`），由 `axon-worker` 的 `LiveDriver::resume` 与 Python 绑定 `LiveRecovery`（重演 + 对账 + 门禁）驱动；`resume_guard` 只报告不改账，超阈值品种冻结开仓。
 
 ---
 
@@ -639,7 +652,7 @@ OrderType.Market        # 市价单
 OrderType.StopLoss      # 止损单
 OrderType.StopLimit     # 限价止损单
 
-# 注:`tif`(time-in-force) 在 0.6.0 收口时统一为 `tif` 字段,
+# 注:`tif`(time-in-force) 统一为 `tif` 字段,
 # OMS `Order(symbol, ..., tif)` 接受 "GTC" / "IOC" / "FOK" 字符串字面量,
 # backtest OrderDict `tif` 字段同步。Rust 端无独立 `TimeInForce` 枚举类。
 
@@ -682,23 +695,32 @@ OrderType.StopLimit     # 限价止损单
 
 ## 6. 版本兼容性
 
-AXON 当前版本为 `0.6.0`，各 crate 版本统一：
+AXON 当前版本为 `0.22.1`，workspace 25 个 crate 版本统一（workspace `rust-version` 为 1.97.0）：
 
-| Crate | 版本 | 最低 Rust 版本 |
-|-------|------|---------------|
-| axon-core | 0.6.0 | 1.96.0 |
-| axon-rl | 0.6.0 | 1.96.0 |
-| axon-llm | 0.6.0 | 1.96.0 |
-| axon-inference | 0.6.0 | 1.96.0 |
-| axon-exchange | 0.6.0 | 1.96.0 |
-| axon-ensemble | 0.6.0 | 1.96.0 |
-| axon-explain | 0.6.0 | 1.96.0 |
-| axon-backtest | 0.6.0 | 1.96.0 |
-| axon-hpo | 0.6.0 | 1.96.0 |
-| axon-walk-forward | 0.6.0 | 1.96.0 |
-| axon-tracker | 0.6.0 | 1.96.0 |
-| axon-registry | 0.6.0 | 1.96.0 |
-| axon-distributed | 0.6.0 | 1.96.0 |
-| axon-monitor | 0.6.0 | 1.96.0 |
-| axon-risk | 0.6.0 | 1.96.0 |
-| axon-compliance | 0.6.0 | 1.96.0 |
+| Crate | 版本 | 说明 |
+|-------|------|------|
+| axon-core | 0.22.1 | 基础类型与公共数据结构（Bar / Order / Portfolio / EventQueue 等） |
+| axon-backtest | 0.22.1 | 事件驱动回测引擎、撮合、冲击模型 |
+| axon-strategy | 0.22.1 | 统一 Strategy trait 与内置实现（策略不感知回测 / 实盘） |
+| axon-kernel | 0.22.1 | 统一交易内核：回测 / paper / live 共用唯一主回路 |
+| axon-worker | 0.22.1 | 编排层：BacktestRunner / PyKernel / 数据泵 / 网关 / 实时驱动 |
+| axon-rl | 0.22.1 | Gymnasium 兼容交易环境、动作 / 观测空间、奖励函数 |
+| axon-hpo | 0.22.1 | 超参数优化（Optuna 集成）、Study / Trial 管理 |
+| axon-walk-forward | 0.22.1 | 滚动 / 扩展窗口交叉验证、稳定性分析 |
+| axon-distributed | 0.22.1 | Ray 分布式训练、参数服务器、Checkpoint |
+| axon-tracker | 0.22.1 | 实验追踪（MLflow / 内存后端）、指标记录 |
+| axon-registry | 0.22.1 | 模型注册与版本管理、阶段转换、回滚 |
+| axon-llm | 0.22.1 | LLM 后端抽象、ReAct Agent、工具调用 |
+| axon-explain | 0.22.1 | 可解释性：SHAP、反事实、报告生成 |
+| axon-ensemble | 0.22.1 | 模型集成：投票、加权、动态权重、堆叠 |
+| axon-data | 0.22.1 | 统一市场数据接入、特征计算与缓存 |
+| axon-inference | 0.22.1 | 模型推理引擎、热更新、多后端支持 |
+| axon-exchange | 0.22.1 | 交易所适配器、WebSocket、限流器 |
+| axon-oms | 0.22.1 | 订单生命周期管理：状态机、幂等、快照与恢复 |
+| axon-risk | 0.22.1 | 风控引擎：预交易检查、组合级风险监控、熔断器 |
+| axon-monitor | 0.22.1 | 监控告警：指标采集、延迟直方图、告警规则、健康检查 |
+| axon-compliance | 0.22.1 | 交易合规审计：不可变审计日志、报告生成、监管报送 |
+| axon-defi | 0.22.1 | EVM 链上交易：Uniswap V3、MEV-Share、LayerZero 跨链 |
+| axon-harness | 0.22.1 | Harness 治理编排 trait：熔断器、预算守卫、审计链 |
+| axon-cli | 0.22.1 | 命令行入口 |
+| axon-integration-tests | 0.22.1 | 跨 crate 端到端集成测试（internal） |

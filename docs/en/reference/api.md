@@ -79,6 +79,26 @@ Output is in the `target/doc/` directory.
 - `DynamicWeightedEnsemble` / `StackingEnsemble`
 - `HardVoteStrategy` / `SoftVoteStrategy`
 
+### axon-kernel (new in 0.22.0)
+
+- `Kernel` / `KernelResult` / `KernelConfig` (unified main loop: `run` / `run_history` / `replay_from` / `resume_replay`)
+- `KernelCore` / `BarLifecycle` (nine-step per-bar orchestration) / `BarAggregator`
+- `GridFrame` / `build_frames` / `BarGridBarrier` (multi-symbol frame barrier, `pump.rs`)
+- `StrategyHost` / `OrderIntent` / `OrderSpec` / `HostCtx` (strategy host contract, `host.rs`)
+- `ExecutionSink` / `NullSink` / `BacktestSink` / `PaperSink` (execution callbacks, `sink.rs`)
+- `Journal` / `JournalEntry` (event-sourced JSONL) / `RunManifest` / `ModelArtifact` (persistence, `persist.rs`)
+- `RLStrategyHost` / `InferenceBackend` (`rl.rs`) / `KernelError`
+
+### axon-worker (orchestration layer since 0.18.0, live chain added in 0.22.0)
+
+- `BacktestRunner` / `BacktestResult` (0.18.0, fully Rust-native backtest orchestration)
+- `KernelPump` / `KernelPumpBatch` / `Gap` (`pump.rs`, market data → event pump with gap tracking)
+- `LiveSink` / `RiskCheck` / `VenueUpdate` / `GatewayAck` / `LiveOrderGateway` (`live_sink.rs`, live execution side since 0.22.0)
+- `ExchangeGateway` (`exchange_gateway.rs`, async `ExchangeAdapter` → sync `LiveOrderGateway` bridge)
+- `LiveDriver` / `PaperDriver` (`live_driver.rs`, unified live/paper driver primitives)
+- `run_shadow` / `ShadowInput` / `ShadowReport` / `ShadowDiff` (`shadow.rs`, 0.22.0 Shadow oracle: parity diff between legacy and kernel orchestration paths)
+- Python bindings `axon_quant.worker`: `BacktestRunner` / `Kernel` / `LiveDriver` / `PaperDriver` / `LiveRecovery` / `BacktestResult` (`Kernel` and live chain since 0.22.0)
+
 ## Next Steps
 
 - [API Reference](api-reference.md) — Python API quick reference

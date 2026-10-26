@@ -145,6 +145,11 @@ let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Limit { price: P
 - **确定性**：单线程事件循环，无并发副作用；相同输入必产生相同输出
 - **冲击注入**：`ImpactedMatchingEngine` 包装基础撮合，按 `ImpactModel::compute_impact(quantity, ...)` 调整成交价
 - **流式回测**：策略实现 `StreamingStrategy::on_tick(&Instrument, f64) -> StrategyAction`，由 `StreamingEngine` 驱动循环；`ExchangeStreamSource` 走 `crossbeam::channel`，`ReplayStreamSource` 从 CSV / Vec 回放
+- **逐仓保证金引擎**（`0.21.0`）：
+  - `MarginTracker` + `MarginSpec` + `Bracket`：档位表对应币安 `/fapi/v1/leverageBracket`；维持保证金按分段名义分别乘各档 MMR 再累加，保证与交易所口径严格一致
+  - 账本：逐仓（`Isolated`）每个品种独立子账户；全仓（`Cross`）共享 NAV 作为权益口径，开仓时 cash 只扣手续费、名义由持仓承担，避免"开仓即爆仓"的口径误判
+  - 触发：`engine::check_margin` 每 bar 收市后对每品种跑一次 `MarginTracker::plan(&MarginSnapshot)`；逐档下降先部分强平（`LiquidateReason::Partial`），最低档仍不够再清零（`LiquidateReason::Depleted`）
+  - 结果：强平动作经撮合执行后，每笔减仓会回写 `settle_after_reduce` 把子账户压到"剩余名义所需保证金"，避免连锁误强平；`exit_fill_ids` 标记强平离场，`bar_balance_curve` 记录逐 bar 权益曲线
 
 ### 适用场景
 - 任何需要可重现回测的策略研究（用 `BacktestEngine` + `L2MatchingEngine` 起步）
@@ -211,11 +216,233 @@ println!("Sharpe = {}, MaxDD = {}", result.sharpe(), result.max_drawdown());
 
 ### 关键依赖
 - **依赖**：`axon-core`（类型基础）
-- **被依赖**：`axon-rl`（交易环境包装）、`axon-llm::trading`（回测工具）、各 `tests/` 集成测试
+- **被依赖**：`axon-kernel`（统一内核直接装成 `BacktestSink`）、`axon-rl`（交易环境包装）、`axon-llm::trading`（回测工具）、各 `tests/` 集成测试
 
 ---
 
-## 3. `axon-rl`
+## 3. `axon-kernel`
+
+### 核心职责
+**统一交易内核**：回测 / paper / live 三种模式跑同一条主回路（`Kernel::run`），模式差异只在装配时的数据泵与 `ExecutionSink` 实现，主回路本身没有任何 mode 分支。
+
+### 代码位置
+- `crates/axon-kernel/src/lib.rs` — 公开 API（`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`）
+- `crates/axon-kernel/src/kernel_loop.rs` — 主回路（`run` / `run_history` / `replay_from` / `resume_replay`）
+- `crates/axon-kernel/src/lifecycle.rs` — per-bar 九步编排（`BarLifecycle::on_bar_closed`）
+- `crates/axon-kernel/src/pump.rs` — 历史泵：`build_frames` 网格对齐 + `BarGridBarrier` 帧屏障
+- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
+- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
+- `crates/axon-kernel/src/journal.rs` — 事件溯源（`Journal::create` / `append` / `open` / `resume`）
+- `crates/axon-kernel/src/persist.rs` — `RunManifest`（重演所需的外部输入指纹）
+- `crates/axon-kernel/src/core.rs` — `KernelCore`（对 `BacktestEngine` 的内核侧代理）+ `KernelConfig`
+- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator`（tick / kline → 收市 `BarClosed` + 去重）
+- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` 借用视图 + 周期 → 纳秒 / 收市时刻推导
+- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost`（RL 推理接入主回路）
+
+### 核心机制
+- **唯一主回路**：`Kernel::run()` 从队列取事件 → `BarGridBarrier` 等齐同网格点所有品种 → `BarLifecycle::on_bar_closed` 九步编排 → 结果收集；`run_history` 灌 `GridFrame` 批次、`replay_from` 走 journal 重演、`resume_replay` 接在重演之后继续跑
+- **BarLifecycle 九步**（复刻 `axon-worker::BacktestRunner::run()` 语义，必须逐字段一致）：
+  1. 对齐时钟 + 前向填充 `last_price`（无 bar 品种沿用上次）
+  2. 强平快照（`snapshot_liquidated`）——必须在 rebalance 之前拍
+  3. `begin_bar_multi`：seed 流动性 + 自动 rebalance + funding 调度 + sample_bar_nav
+  4. 逐 `BarClosed` 逐 `StrategyHost` → `Vec<OrderIntent>`（Host 按 `instrument` 自行过滤）
+  5. budget 同比例缩减 `effective_targets`（仅未启用保证金时）
+  6. 目标交 `ExecutionSink::submit` 登记，一次 `finish_bar` 把目标压到引擎
+  7. `push_funding` + 排空引擎队列
+  8. `check_margin` 强平（逐档部分强平→最低档清零）
+  9. `sample_bar_nav`（第 3 步已做，不再重复）
+- **GridFrame / build_frames / BarGridBarrier**：多品种回测要求每 bar 网格对齐，`build_frames(bars, InstrumentMode, states)` 把按品种分开的 bar 序列逐列对齐成 `Vec<GridFrame>`；`BarGridBarrier` 在 paper / live 模式下边收 tick 边攒同时间戳帧，集齐后才触发一次 `on_bar_closed`
+- **StrategyHost / OrderIntent**：同步 trait，`on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`；`HostCtx` 在第 3 步结束后回填 `equity / positions / last_price`，Host 据此决策；返回空 `Vec` 是"维持上次生效目标"，**不是平仓**（平仓必须显式 `OrderIntent::SetTarget { target_ratio: 0.0 }`）
+- **ExecutionSink 三实现**：
+  - `NullSink`：空跑，单测 / 骨架用
+  - `BacktestSink`：直接把 `BacktestEngine` 包进 sink，per-bar 语义与 `BacktestRunner` 逐字一致（M1 回测闭环的一致性目标）
+  - `PaperSink`：L1 撮合 + 盘口报价，装配在 `axon-worker::PaperDriver`
+- **Journal + RunManifest 事件溯源**：
+  - `Journal::create(path, manifest)` 写文件头，`append(entry)` 追加，`open(path)` 读回，`resume(path)` 读回 + 持有续跑句柄
+  - `RunManifest` 记录重演所需的所有外部输入指纹（market bar、state、funding、sink 配置等），格式版本见 `persist::JOURNAL_FORMAT_VERSION`
+- **RLStrategyHost**：独立模块，训练/推理共用 `ObservationSpec` + `CostModel`；由 `axon-worker::PyKernel.add_rl_strategy` 注册
+
+### 适用场景
+- 想让回测 / paper / live 三种模式共享同一条 per-bar 编排（M1 回测闭环是最小可用路径，`BacktestSink` 跑出来的结果与 `BacktestRunner::run()` 逐字段一致）
+- 想在 Rust 侧直接驱动回测而不走 Python 绑定（内核本身就是纯 Rust 的 `Kernel`）
+- 需要 journal 事件溯源：崩溃恢复（`replay_from`）、契约测试构造 fixture、shadow oracle 新旧双跑比对（M3 落在 `axon-worker::shadow`）
+
+### 不适用场景
+- 直接连交易所下单（内核本身不做网络，live 接线在 `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`）
+- 回测框架层的参数配置与编排（那是 `axon-worker` 的领域，内核是装配好的跑器）
+- 独立的撮合 / 行情 / 风控（都拆成独立 crate：`axon-backtest` / `axon-exchange` / `axon-risk`）
+
+### 怎么用
+
+**Python 侧（不走内核；Python 用户通常直接用 `axon_worker.PyKernel` 或 `BacktestRunner`，内核是它们的 Rust 侧实现）：**
+
+```python
+from axon_quant.worker import Kernel  # PyKernel，内核的 Python 包装
+
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(my_rule_strategy)
+k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
+      journal_path="/tmp/run.journal")  # 录制，供 replay_from
+result = k.result()
+print(result.final_nav)
+```
+
+**Rust 侧（直接驱动内核做回测 / 重演）：**
+
+```rust
+use axon_kernel::{
+    Kernel, KernelConfig, KernelError, RunManifest, Journal,
+    StrategyHost, OrderIntent, GridFrame, build_frames,
+};
+use axon_kernel::sink::BacktestSink;
+use axon_core::market::Bar;
+
+// 1) 构造内核 + sink（回测路径用 BacktestSink）
+let cfg = KernelConfig::default();
+let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+
+// 2) 注册 Host（规则策略或 RL）
+kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+
+// 3) 历史回测：build_frames 对齐多品种网格，run_history 直接灌
+let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
+kernel.run_history(frames)?;
+let result = kernel.result();
+
+// 4) 重演：replay_from 直接读 journal
+let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+```
+
+### 关键依赖
+- **依赖**：`axon-core`（类型）、`axon-backtest`（`BacktestSink` 的撮合实现）、`axon-rl`（RL 观测规格 / 成本模型，与 `TradingEnv` 共用）
+- **被依赖**：`axon-worker`（`PyKernel` / `LiveDriver` / `PaperDriver` 的宿主）
+
+---
+
+## 4. `axon-worker`
+
+### 核心职责
+**编排层**：把内核装配成回测 / paper / live 三种驱动；承接 `axon-strategy` 的 `Strategy` → 内核的 `StrategyHost`（`kernel_host`）；承接 `axon-exchange` 的 WS → 内核的 per-bar 事件（`pump::KernelPump`）；承接 `axon-exchange` 订单回报 → 内核的执行出口（`live_sink` + `exchange_gateway`）；提供 `reconcile`（三路对账 + 崩溃恢复）和 `shadow`（新旧双跑 diff）。
+
+### 代码位置
+- `crates/axon-worker/src/lib.rs` — 入口 + pub re-export
+- `crates/axon-worker/src/backtest.rs` — legacy `BacktestRunner`（0.18.0 编排，冻结不再新增）
+- `crates/axon-worker/src/kernel_host.rs` — `Strategy` → `StrategyHost` 桥接（`BarContextSim`）
+- `crates/axon-worker/src/pump.rs` — `KernelPump` / `KernelPumpBatch` / `Gap`（行情 WS → 内核事件）
+- `crates/axon-worker/src/live_sink.rs` — `LiveSink` / `LiveOrderGateway` trait / `RiskCheck` / `VenueUpdate`
+- `crates/axon-worker/src/exchange_gateway.rs` — `ExchangeGateway`（async `ExchangeAdapter` → 同步 `LiveOrderGateway` 桥接）
+- `crates/axon-worker/src/live_driver.rs` — `LiveDriver`（Kernel + KernelPump + ExchangeGateway 装配状态机）
+- `crates/axon-worker/src/paper_driver.rs` — `PaperDriver`（Kernel + KernelPump + PaperSink 装配）
+- `crates/axon-worker/src/reconcile.rs` — `reconcile` / `resume_guard` + `LocalSnapshot` / `VenueSnapshot` / `ReconcileReport`（三路对账）
+- `crates/axon-worker/src/shadow.rs` — `run_shadow`（不是 `ShadowRunner`！）+ `ShadowInput` / `ShadowReport` / `ShadowDiff`
+- `crates/axon-worker/src/python.rs` — Python 绑定：`BacktestRunner`（legacy 0.18.0）/ `Kernel`（PyKernel 0.22.0）/ `LiveDriver` / `PaperDriver` / `LiveRecovery`
+- `crates/axon-worker/src/python_logging.rs` — `install_rust_logging`（tracing → Python logging 桥）
+
+### 核心机制
+- **三种装配链共用内核**：
+  - 回测：`PyKernel.run(bars_by_symbol, states_by_symbol, journal_path)` → 内核 `run_history` + `BacktestSink`
+  - paper：`PyPaperDriver.start()` → `PaperSink`（L1 撮合），行情走 `feed_bar` 手工灌；`add_strategy` / `add_rl_strategy` 注册宿主
+  - live：`PyLiveDriver.connect()` → `start(journal_path)` → 内核 `LiveDriver`（WS 行情泵 + ExchangeGateway + LiveSink）→ `shutdown()`；崩溃恢复走 `LiveRecovery.resume(journal_path)`
+- **KernelPump 事件泵**：把 WS `WsMessage::Ticker` / `WsMessage::Kline` 聚合为内核 `BarClosedEvent`，自动检测并报告 `Gap`（bar 序列不连续）
+- **LiveSink + ExchangeGateway**：`LiveSink` 持有 OMS 影子账本（`OrderManager`），订单回报转 `VenueUpdate` 喂给内核；`ExchangeGateway` 用 tokio `block_on` 把 async `ExchangeAdapter` 桥成同步 `LiveOrderGateway`，内核同步调用不感知 async
+- **Shadow Oracle（M3）**：`run_shadow(ShadowInput)` 用同一套 bars/states 同时跑 legacy `BacktestRunner`（旧路径）和内核 `PyKernel`（新路径），`ShadowReport` 把 `equity / positions / fills / nav` 按类别 diff 落盘；CI 阻断 diff（可接受容差内的漂移）
+- **三路对账**：崩溃恢复时 `LiveRecovery` 重放 journal 得本地 OMS 快照 → `LocalSnapshot::from_sink(LiveSink)` → 配合交易所拉回的 `VenueSnapshot`（`fetch_positions` / `fetch_my_trades`）→ `reconcile()` 对持仓、成交 `fill_ids`、现金三方做差集比对；差异超阈值的品种进 `frozen_instruments` 阻止开仓；`resume_guard` 决定能否放行继续跑，**只报告不改账**
+- **Python 绑定**：所有装配链的 Python 面都在 `python.rs` 的 `axon_worker` 模块里；`BacktestRunner` 是 legacy 冻结路径（QuantCell 侧 `engine_config['runner']='legacy'` 触发），`Kernel` 是新路径（默认），`LiveDriver` / `PaperDriver` / `LiveRecovery` 都是内核装配的直接包装
+
+### 适用场景
+- 想在 Rust 侧写一段脚本：直接用 `KernelPump` + `BarGridBarrier` + `PaperSink` 搭个最小化 paper 引擎
+- 想在 Python 侧同时支持回测 / paper / live 三种模式，且希望三种模式的 per-bar 语义严格一致
+- 想做 shadow oracle 让 legacy 路径与新内核并行跑一段时间再切流（M3 阶段的安全网）
+- 崩溃恢复：`LiveRecovery.resume(journal)` → 重演 journal → 三路对账 → `resume_guard` 放行判定
+
+### 不适用场景
+- 内核本身的 per-bar 编排逻辑改动（那是 `axon-kernel::BarLifecycle` 的领域，worker 只装配）
+- 撮合逻辑（那是 `axon-backtest`）
+- 交易所协议实现（那是 `axon-exchange`；worker 只做 gateway 桥接）
+
+### 怎么用
+
+**Python 侧（主用法，三种驱动一条 API）：**
+
+```python
+from axon_quant.worker import Kernel, BacktestRunner, LiveDriver, PaperDriver, LiveRecovery
+import axon_quant.strategy as strategy
+
+# ─── 回测（新路径 PyKernel）──────────────────────────
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+k.with_margin(specs={"BTC/USDT": {...}})          # 可选：注入保证金规格
+result = k.run(bars_by_symbol={"BTCUSDT": bars},
+               journal_path="/tmp/run.journal")  # 录制供重演
+print(result.final_nav, result.liquidations)
+
+# ─── 回测（legacy 0.18.0 BacktestRunner，冻结路径）───
+runner = BacktestRunner(initial_cash=100_000.0)
+runner.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+result = runner.run(bars={"BTCUSDT": bars}, state_by_symbol={})
+
+# ─── Live（接入交易所）───────────────────────────────
+driver = LiveDriver(
+    symbols=["BTC/USDT"],
+    exchange_id="binance",
+    api_key=os.environ["BINANCE_API_KEY"],
+    api_secret=os.environ["BINANCE_API_SECRET"],
+    testnet=True,
+)
+driver.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+driver.connect()                  # 内部会等 user-data stream ready
+driver.start(journal_path="/tmp/live.journal")  # 建内核 + 挂 journal
+driver.snapshot()                 # 取本地 OMS 快照 {positions, cash, fill_ids}
+driver.shutdown()                 # 优雅停止
+
+# ─── LiveRecovery（崩溃后恢复）───────────────────────
+rec = LiveRecovery(initial_cash=100_000.0)
+rec.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+rec.resume("/tmp/live.journal")   # 重演 journal → 三路对账 → resume_guard 放行判定
+
+# ─── Paper（模拟盘）──────────────────────────────────
+paper = PaperDriver(symbols=["BTC/USDT"], initial_cash=100_000.0)
+paper.add_strategy(strategy.RuleStrategyImpl("ma", "BTCUSDT"))
+paper.start()                     # 建内核 + PaperSink，等待灌 bar
+paper.feed_bar(timestamp_ns=..., symbol="BTC/USDT", open=..., high=..., low=..., close=..., volume=...)
+paper.tick()                      # 驱动一次 per-bar 编排
+print(paper.snapshot())
+paper.shutdown()
+```
+
+**Rust 侧（开发新装配链 / shadow oracle / 对账时使用）：**
+
+```rust
+use axon_worker::{
+    BacktestRunner, kernel_host::BarContextSim,
+    pump::{KernelPump, BarGridBarrier, Gap},
+    live_sink::LiveSink, exchange_gateway::ExchangeGateway,
+    live_driver::LiveDriver, paper_driver::PaperDriver,
+    reconcile::{reconcile, resume_guard, LocalSnapshot, VenueSnapshot},
+    shadow::{run_shadow, ShadowInput},
+};
+
+// shadow oracle：同一 bars 跑 legacy 与 kernel 双跑 + diff
+let input = ShadowInput { bars_by_symbol, states_by_symbol, capital_budget: None };
+let report = run_shadow(&input);
+for diff in &report.diffs {
+    println!("  {diff:?}");
+}
+
+// 三路对账：本地 OMS 快照 vs 交易所快照
+let local = LocalSnapshot::from_sink(&live_sink);
+let venue = VenueSnapshot { positions, cash, fill_ids, open_order_ids };
+let report = reconcile(&local, &venue, &ReconcileConfig::default());
+assert!(resume_guard(&report));  // 差异超阈值则放行失败
+```
+
+### 关键依赖
+- **依赖**：`axon-core`（类型）、`axon-kernel`（内核主回路 + `BarGridBarrier` + `PaperSink`）、`axon-backtest`（legacy `BacktestRunner` + `BacktestSink`）、`axon-exchange`（WS + 订单回报）、`axon-oms`（影子账本）、`axon-strategy`（`Strategy` → `StrategyHost` 桥接）、`axon-rl`（`add_rl_strategy` 入参类型）、`axon-llm::decision`（决策 feature）、`axon-harness`（编排组件）
+- **被依赖**：`axon-python`（`axon_worker` 子模块聚合）、QuantCell（`runner` 开关触发 legacy / kernel 路径）
+
+---
+
+## 5. `axon-rl`
 
 ### 核心职责
 Gymnasium 兼容的强化学习交易环境 + 多目标奖励 + 向量化并行 rollout。
@@ -303,7 +530,7 @@ let (obs, reward, term, trunc, info) = env.step(&vec![0.5]);
 
 ---
 
-## 4. `axon-hpo`
+## 6. `axon-hpo`
 
 ### 核心职责
 超参数优化工具链：搜索空间定义 + Optuna 集成（Python 端）+ 多目标 + Pareto 前沿 + 超体积。
@@ -412,7 +639,7 @@ let space = SearchSpaceDef::new()
 
 ---
 
-## 5. `axon-walk-forward`
+## 7. `axon-walk-forward`
 
 ### 核心职责
 时间序列专用的滚动 / 扩展窗口验证 + purge / embargo 防泄漏 + OOS 指标聚合 + Deflated Sharpe Ratio。
@@ -514,7 +741,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 
 ---
 
-## 6. `axon-cli`
+## 8. `axon-cli`
 
 ### 核心职责
 `axon` 命令行入口（Phase 0 仅打印 banner，后续阶段会接回测 / 训练 / 运行子命令）。
@@ -549,7 +776,7 @@ Rust 1.97.0 (aarch64-apple-darwin)
 
 ---
 
-## 7. `axon-distributed`
+## 9. `axon-distributed`
 
 ### 核心职责
 Ray / RLLib 分布式训练集群配置 + Actor / ParamServer / Checkpoint 容错。
@@ -633,7 +860,7 @@ let yaml = serde_yaml::to_string(&cfg)?;
 
 ---
 
-## 8. `axon-tracker`
+## 10. `axon-tracker`
 
 ### 核心职责
 统一 trait + 4 个后端的实验追踪：`Memory` / `Local` / `MLflow` / `WandB`。
@@ -718,7 +945,7 @@ tracker.end_run(run.id())?;
 
 ---
 
-## 9. `axon-registry`
+## 11. `axon-registry`
 
 ### 核心职责
 模型注册表：版本管理 + 阶段生命周期（`staging` → `production`）+ 多后端存储 + 元数据签名。
@@ -808,7 +1035,7 @@ registry.promote(&version, ModelStage::Staging)?;
 
 ---
 
-## 10. `axon-llm`
+## 12. `axon-llm`
 
 ### 核心职责
 LLM 智能体：ReAct 推理循环 + Tool Calling + 上下文窗口 + 三个内置工具（市场 / 组合 / 下单）+ 多 Agent Swarm。
@@ -950,7 +1177,7 @@ let response = agent.run("当前 BTC 行情如何？是否应该加仓？").awai
 
 ---
 
-## 11. `axon-explain`
+## 13. `axon-explain`
 
 ### 核心职责
 可解释性：SHAP 特征归因 + 反事实解释 + 决策报告生成。
@@ -1044,7 +1271,7 @@ let attributions = explainer.explain(&instance)?;
 
 ---
 
-## 12. `axon-ensemble`
+## 14. `axon-ensemble`
 
 ### 核心职责
 组合多个 RL / 规则策略，提高鲁棒性。提供投票 / 加权 / 堆叠三种策略。
@@ -1145,7 +1372,7 @@ let action = mgr.decide(&observation);
 
 ---
 
-## 13. `axon-data`
+## 15. `axon-data`
 
 ### 核心职责
 市场数据统一接入：Mock / CSV / Parquet / 缓存（mmap）+ 特征管道（归一化 / 滑窗）。
@@ -1252,7 +1479,7 @@ let dataset = src.fetch(&DataRequest::bars("BTC-USDT", Frequency::Min1, 1000))?;
 
 ---
 
-## 14. `axon-compliance`
+## 16. `axon-compliance`
 
 ### 核心职责
 金融交易合规审计：交易记录 + 区块链式审计日志（日志哈希链，防篡改）+ 报告生成 + 监管报送。
@@ -1370,7 +1597,7 @@ assert!(cm.verify_audit_integrity());
 
 ---
 
-## 15. `axon-risk`
+## 17. `axon-risk`
 
 ### 核心职责
 **预交易**风控：订单大小 / 仓位 / 杠杆 / 回撤检查 + 熔断器（连续亏损自动暂停）+ 组合监控 + VaR。
@@ -1483,7 +1710,7 @@ match engine.check_order(&order, &portfolio) {
 
 ---
 
-## 16. `axon-inference`
+## 18. `axon-inference`
 
 ### 核心职责
 推理引擎：ONNX / tch / Candle 三后端 + CPU/CUDA/Metal 多设备 + 批推理管线 + 模型热更新 + **CPU 亲和性绑定**。
@@ -1616,7 +1843,7 @@ let action = pipeline.submit(Observation { /* ... */ }).await?;
 
 ---
 
-## 17. `axon-exchange`
+## 19. `axon-exchange`
 
 ### 核心职责
 交易所对接：Binance / OKX 的 REST + WebSocket 适配器 + 指数退避重连 + 令牌桶限流 + 订单生命周期管理。
@@ -1638,6 +1865,12 @@ let action = pipeline.submit(Observation { /* ... */ }).await?;
 - **限流**：`TokenBucketRateLimiter { requests_per_second, orders_per_minute, ws_messages_per_second }` 各自独立
 - **签名**：`sign::binance::sign(query, secret)` → HMAC-SHA256；OKX 用 HMAC-SHA256 + Base64
 - **生命周期**：`OrderRecord { id, exchange_id, status, created_at, updated_at }`，`OrderLifecycleManager` 维护本地状态
+- **user-data stream**（`0.22.0`）：
+  - 合约专属；`connect` 里先 `POST /fapi/v1/listenKey` 拿 listenKey（无签名），再 WS 握手 `/ws/<listenKey>`，**只有 stream ready 之后 connect 才算连上**，避免头几秒丢回报
+  - 续期：25 分钟心跳（Binance 要求 60 分钟内续期），连续 3 次失败即重建 listenKey + 重连；退避 1s 起步、上限 30s，连接稳定 60s 后退避清零
+  - 回报：`ORDER_TRADE_UPDATE` / `ACCOUNT_UPDATE` / `MARGIN_CALL` 等统一送进已有的 `market_tx` 通道（`WsMessage::OrderUpdate`），`ExchangeGateway::poll_updates` 从通道里筛出订单回报交给 `LiveSink`
+  - 现货 user-data stream 明确不支持（执行回报字段不同，未经 testnet 验证）
+- **三路对账**（`0.22.0`，落在 `axon-worker::reconcile`）：崩溃恢复时，`LiveRecovery` 重放 journal 得本地 OMS 快照，配合交易所 `fetch_positions` / `fetch_my_trades` 拉回来的 VenueSnapshot，由 `reconcile()` 对持仓、成交 `fill_ids`、现金三方做差集比对，差异超阈值的品种进 `frozen_instruments`；`resume_guard` 负责放行判定，**只报告不改账**
 
 ### 适用场景
 - 实盘对接 Binance / OKX 合约（用 `BinanceAdapter` / `OkxAdapter`）
@@ -1749,7 +1982,7 @@ let order_id = adapter.place_limit("BTCUSDT", "BUY", 0.01, 50_000.0).await?;
 
 ---
 
-## 18. `axon-oms`
+## 20. `axon-oms`
 
 ### 核心职责
 订单管理系统：状态机（New → Submitted → Acknowledged → PartiallyFilled → Filled/Cancelled/Rejected）+ 幂等性 + 快照/恢复 + 批量操作。
@@ -1880,7 +2113,7 @@ oms.update_status(id, OrderStatus::Acknowledged)?;
 
 ---
 
-## 19. `axon-monitor`
+## 21. `axon-monitor`
 
 ### 核心职责
 生产监控：原子指标（Counter / Gauge / Histogram）+ 告警规则 + 健康检查 + Prometheus 导出。
@@ -2013,7 +2246,7 @@ let app = Router::new()
 
 ---
 
-## 20. `axon-defi`
+## 22. `axon-defi`
 
 ### 核心职责
 DeFi 链上交易：EVM RPC + 签名 + ERC-20 + Uniswap V3 路由/报价/池子 + LayerZero 跨链 + MEV-Share。
@@ -2130,7 +2363,7 @@ let balance = usdc.balance_of(my_addr).await?;
 
 ---
 
-## 21. `axon-harness`
+## 23. `axon-harness`
 
 ### 核心职责
 Harness 编排系统的 **trait 接口 + 安全组件**：熔断器、审计链、仓位守卫 + 默认裁决策略 + RBAC 工具门控 + Token 预算守卫 + 可观测性。
@@ -2251,7 +2484,7 @@ let result = bridge.invoke("place_order", args)?;
 
 ---
 
-## 22. `axon-integration-tests`
+## 24. `axon-integration-tests`
 
 ### 核心职责
 跨 crate 端到端测试 + 属性测试 + 契约测试。仅测试时编译，不进 release。
@@ -2323,7 +2556,7 @@ fn my_new_flow() {
 
 ---
 
-## 23. `axon-python`
+## 25. `axon-python`
 
 ### 核心职责
 Python 统一入口 `axon_quant._native`：把各 crate 的 PyO3 绑定 + 共享异常基类聚合到一个模块。
@@ -2368,22 +2601,24 @@ risk = axon_quant.risk.DefaultRiskEngine(...)
 ## 模块依赖速查
 
 ```text
-axon-core ◄── axon-backtest ◄── axon-rl
-        ▲                ▲           │
-        │                │           ├── axon-hpo
-        │                │           ├── axon-walk-forward
-        │                │           ├── axon-distributed
-        │                │           └── axon-tracker
-        │                │           │
-        │                │           └── axon-registry
-        │                │
-        │                ├── axon-data
-        │                ├── axon-llm ───► axon-explain
-        │                │       │
-        │                │       └──► axon-oms ◄── axon-risk
-        │                │                  ▲
-        │                │                  │
-        │                └──► axon-exchange ┘
+axon-core ◄── axon-backtest ◄── axon-kernel ◄── axon-worker
+        ▲          ▲              ▲              ▲
+        │          │              │              │
+        │          │              ├── axon-rl (观测规格共用)
+        │          │              │              │
+        │          │              │              ├── axon-exchange (WS + 订单回报)
+        │          │              │              ├── axon-oms (影子账本 + 三路对账)
+        │          │              │              ├── axon-strategy (Strategy→Host 桥接)
+        │          │              │              └── axon-harness / axon-llm (编排组件)
+        │          │              │
+        │          │              └── axon-worker 的 BacktestSink 同一条主回路
+        │          │
+        │          ├── axon-data
+        │          ├── axon-llm ───► axon-explain
+        │          │       │
+        │          │       └──► axon-oms ◄── axon-risk
+        │          │                  ▲
+        │          └──► axon-exchange ┘
         │
         ├── axon-compliance
         ├── axon-monitor
@@ -2402,7 +2637,9 @@ axon-core ◄── axon-backtest ◄── axon-rl
 
 | 你想做的事 | 用哪个模块 |
 |-----------|-----------|
-| 实现可重现的回测 | `axon-backtest::BacktestEngine` |
+| 想让回测 / paper / live 三种模式共用同一主回路 | `axon-kernel::Kernel`（统一内核） |
+| 想把内核装成三种驱动 / shadow oracle / 三路对账 | `axon-worker` |
+| 实现可重现的回测 | `axon-backtest::BacktestEngine`（legacy 直接用，或走内核 `Kernel::run_history`） |
 | 训练 RL 策略 | `axon-rl::TradingEnv` + `axon-tracker` |
 | 跑超参搜索 | `axon-hpo` + `axon-tracker` |
 | 滚动前向验证 | `axon-walk-forward` |
@@ -2416,10 +2653,12 @@ axon-core ◄── axon-backtest ◄── axon-rl
 | 合规留痕 | `axon-compliance` |
 | 预交易风控 | `axon-risk` |
 | 推理服务 | `axon-inference` |
-| 实盘下单 | `axon-exchange` + `axon-oms` + `axon-risk` |
+| 实盘下单 | `axon-exchange` + `axon-oms` + `axon-risk`（装配链见 `axon-worker::LiveDriver`） |
 | 订单生命周期 | `axon-oms` |
 | 生产监控告警 | `axon-monitor` |
 | 链上交易 | `axon-defi` |
 | Agent 安全门控 | `axon-harness` |
 | Python 入口 | `axon-python` |
+| 崩溃恢复 / 三路对账 | `axon-worker::LiveRecovery` + `reconcile()` |
+| 新旧双跑比对 | `axon-worker::shadow::run_shadow` |
 | 跨模块端到端测试 | `axon-integration-tests` |

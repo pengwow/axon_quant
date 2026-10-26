@@ -299,11 +299,59 @@ else:
     print("Order rejected by risk engine")
 ```
 
+### 5.3 Crash Recovery and Data Consistency (v0.22.0+)
+
+The most lethal production risk is a process crash or host reboot that leaves in-kernel OMS state unpersisted. AXON v0.22.0 ships an append-only journal + replay-gate crash-recovery chain. Key components (each name is a real symbol from the Rust source):
+
+| Component | Responsibility | Source Location |
+|-----------|----------------|-----------------|
+| `axon_kernel::journal::Journal` | Append-only JSONL persistence; first line is a `RunManifest` (replay fingerprint: code version, initial cash, symbols, contract sizes); every subsequent line is `JournalEntry { event, state }` | `crates/axon-kernel/src/journal.rs` |
+| `RunManifest` | Replay fingerprint — any field mismatch aborts replay immediately; always the first line of the journal | `crates/axon-kernel/src/persist.rs` |
+| `LiveDriver.start(journal_path)` | On first run calls `Journal::create(path, manifest)` and appends every input event that enters the kernel | `crates/axon-worker/src/python.rs` |
+| `LiveRecovery.new(journal_path)` + `.replay(...)` | Recovery entry point: internally calls `Journal::resume(path)` (tolerates trailing half-line, rejects any damaged line in the middle), replays every recorded `JournalEntry` back into the kernel, then runs 3-way reconciliation and gates the chain with `resume_guard` | `crates/axon-worker/src/python.rs` |
+| `KernelPump` gap backfill | After WS reconnect, `KernelPump::replay_bars` pulls historical K-lines from the exchange to fill the missing bar window so the replayed bar sequence stays aligned with what was recorded in the journal | `crates/axon-worker/src/pump.rs` |
+
+Recovery sequence (pseudo-code):
+
+```python
+import axon_worker
+
+# 1) Read the RunManifest header, verify code version / config match
+manifest = axon_worker.read_manifest(journal_path)
+
+# 2) Replay all recorded JournalEntry events back into the kernel
+rec = axon_worker.LiveRecovery(initial_cash=1_000_000.0)
+report = rec.replay(journal_path, reconcile_with_exchange=True)
+
+# 3) resume_guard: any break raises, blocking the live chain; all-green only
+axon_worker.resume_guard(report)
+
+# 4) Reconnect the WS + KernelPump, keep appending to the same journal
+live = axon_worker.LiveDriver(...)
+live.start(journal_path)
+```
+
+Design constraints worth knowing before relying on this in production:
+
+- The journal is append-only with **strict** integrity checks: any mid-file line that fails `serde_json` parsing, misses the required `event` / `state` keys, or is written by a newer version than `JOURNAL_FORMAT_VERSION` gets rejected — no silent skipping;
+- `RunManifest.code_version` must equal the currently running `axon_quant.__version__`, otherwise `LiveRecovery.replay` aborts (kernel state-machine semantics can drift across versions);
+- After replay, kernel state ≈ state after the **last complete `JournalEntry`** before the crash — any half-written trailing line is truncated and discarded, intentionally preventing replay from driving the OMS into an undefined half-applied intermediate state.
+
+## 6. Three-Way Reconciliation (v0.22.0+)
+
+On restart or WS reconnect, the OMS ledger can drift away from the exchange's real state. AXON v0.22.0 wires a 3-way check inside `LiveSink`: **positions / fills / cash**, with the following guarantees:
+
+- Per-symbol position diff larger than threshold → **frozen for opening** on that symbol; closing existing positions is still allowed
+- `fetch_my_trades` + the latest dedup `ORDER_TRADE_UPDATE` stream must line up with locally recorded fills; unknown external fills (manual orders, history that never arrived as a push) are reported as reconcile breaks
+- Cash baseline uses the wallet total + available balance returned by the exchange (mode `AccountingMode::Cash` vs. `Wallet` is declared when constructing `LiveSink`)
+- `resume_guard` **reports but does not auto-fix**: any break aborts the live chain. The engine never silently rewrites OMS state to "match the exchange" — if reconciliation fails, a human must intervene
+- Open-order reconciliation (fixed in v0.22.0): on recovery the engine pulls `open_orders` from the exchange and backfills the OMS; unknown open orders or manual orders are surfaced as breaks (no more false "phantom diff" reports)
+
 ---
 
-## 6. Monitoring and Alerting
+## 7. Monitoring and Alerting
 
-### 6.1 Metrics Collection
+### 7.1 Metrics Collection
 
 ```python
 from axon_quant.metrics import MetricsCollector
@@ -319,7 +367,7 @@ collector.record_pnl(pnl=150.0, symbol="BTCUSDT")
 collector.export_prometheus(port=9100)
 ```
 
-### 6.2 Alert Rules
+### 7.2 Alert Rules
 
 ```yaml
 # Example Prometheus alert rules
@@ -345,17 +393,18 @@ groups:
 
 ---
 
-## 7. Deployment Checklist
+## 8. Deployment Checklist
 
-### Pre-Deployment
+### 8.1 Pre-Deployment
 
 - [ ] Run full test suite: `cargo test --workspace`
 - [ ] Verify configuration: `axon validate-config -c production.toml`
 - [ ] Load test with simulated traffic
 - [ ] Set up monitoring and alerting
 - [ ] Configure backup and rollback procedures
+- [ ] Run crash-recovery rehearsal: `Journal.resume` + `LiveRecovery.replay` against journal captured on testnet, confirm OMS state matches the exchange after replay
 
-### Deployment
+### 8.2 Deployment
 
 - [ ] Deploy to staging environment first
 - [ ] Run integration tests against staging

@@ -13,7 +13,7 @@ AXON 采用 Rust + Python 双语言架构，需要以下环境：
 
 | 组件 | 最低版本 | 说明 |
 |------|---------|------|
-| Python | 3.12 | 支持 3.12 / 3.13 / 3.14（`pyproject.toml` 限定 `<3.15`） |
+| Python | 3.13 | 支持 3.13 / 3.14（`pyproject.toml` 限定 `>=3.13,<3.15`） |
 | Rust | 1.97.0 | 通过 `rustup` 安装，详见 [rustup.rs](https://rustup.rs) |
 | maturin | 1.0+ | Python Wheel 构建工具（`pip install maturin`） |
 

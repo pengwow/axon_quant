@@ -108,25 +108,45 @@ Python bindings of `axon-strategy`, unifying strategies behind a `decide(bar) ->
 |-------|-------------|
 | `RuleStrategyImpl(name, symbol)` | Built-in dual-MA rule strategy (reads `sma5_vs_sma20` / `ret_1` from `state["features"]`) |
 
-Custom Python strategies **need no base class**: just implement `decide(bar_dict)` or `on_bar(bar_dict)` returning a dict (or object) with `action_type` (`"buy"` / `"sell"` / `"hold"`) / `confidence` / `target_position`, then register it on a `BacktestRunner`.
+Custom Python strategies **need no base class**: just implement `decide(bar_dict)` or `on_bar(bar_dict)` returning a dict (or object) with `action_type` (`"buy"` / `"sell"` / `"hold"`) / `confidence` / `target_position`, then register it on a `BacktestRunner` (legacy) or `worker.Kernel` (unified kernel, since `0.22.0`).
 
-### axon_quant.worker (new in `0.18.0`) — All-Rust Backtest Orchestration
+#### Multi-symbol `run` semantics (since `0.21.0`)
 
-Python bindings of `axon-worker`: per-bar strategy orchestration into `BacktestEngine` real matching, producing a result contract aligned with `axon_quant.backtest.RunResult`.
+`run_multi` (introduced in `0.19.0`) was merged into a single `run` in `0.21.0` (same signature on `BacktestRunner` and `Kernel`; `run` stays compatible): symbols are expressed via `bars_by_symbol` and share one cash pool; `run_multi` no longer exists.
+
+```python
+result = kernel.run(
+    bars_by_symbol={
+        "BTC/USDT": bars_btc,   # same length as ETH
+        "ETH/USDT": bars_eth,   # `None` marks a grid slot without a real bar (forward-filled for marking, no strategy decision)
+    },
+)
+```
+
+### axon_quant.worker (new in `0.18.0`, extended in `0.22.0`) — Backtest Orchestration / Unified Kernel
+
+Python bindings of `axon-worker`, in four parts: `BacktestRunner` (0.18.0, legacy backtest orchestration, frozen since 0.22.0), `Kernel` (0.22.0, thin Python wrapper of the unified trading kernel), `LiveDriver` / `PaperDriver` (0.22.0, live / paper trading drivers) and `LiveRecovery` (0.22.0, crash-recovery replay).
+
+#### `BacktestRunner` (legacy, new in `0.18.0`)
+
+> Introduced in `0.18.0` as the all-Rust backtest orchestration; **frozen as a fallback path since `0.22.0`** (prefer migrating to `worker.Kernel` when the unified kernel is available). Since `0.21.0`, `run_multi` is merged into a single `run` (multi-symbol via `bars_by_symbol`, see the strategy section above).
 
 | Class / method | Description |
 |----------------|-------------|
 | `BacktestRunner(initial_cash=100000.0, futures=False, force_liquidate=False, settle=None, contract_size=1.0)` | Backtest orchestrator (owns a dedicated tokio runtime). `futures=True` uses a perpetual-swap instrument and enables funding settlement; `settle` is `"usd_margin"` (default) or `"coin_margin"`, `contract_size` defaults to 1.0; `force_liquidate=True` force-liquidates at EOD |
 | `runner.add_strategy(strategy, name=None, symbol=None)` | Register a strategy: a `strategy.RuleStrategyImpl` instance, or any Python object implementing `decide(bar)` / `on_bar(bar)` |
-| `runner.run(bars, states_by_symbol=None, funding_by_symbol=None)` | Run the backtest synchronously, returns `BacktestResult` |
+| `runner.with_margin(specs)` (new in `0.21.0`) | Inject per-symbol margin specs (empty dict = margin simulation disabled), e.g. `{"BTC/USDT": {"leverage": 10.0, "mode": "cross", "brackets": [...]}}` |
+| `runner.run(bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None)` | Run the backtest synchronously, returns `BacktestResult` (since `0.21.0` single/multi-symbol share this signature; `run_multi` no longer exists) |
 | `BacktestResult` | Result DTO (returned by `run()` only; not directly instantiable) |
 
 `run()` parameters:
 
 | Parameter | Description |
 |-----------|-------------|
-| `states_by_symbol` | `dict[str, dict \| list[dict]]`: a **list** is injected **per bar** (item i for bar i); a single object expands to "same value every bar". Rust passes it through to Python strategies as `bar["state"]` |
+| `bars_by_symbol` | `dict[str, list[dict \| None]]`: per-symbol **equal-length** bar lists over the grid; `None` marks a grid slot without a real bar (price is forward-filled on the Rust side for marking, but triggers no strategy decision) |
+| `states_by_symbol` | `dict[str, dict \| list[dict]]`: a **list** is injected **per bar** (item i for grid slot i); a single object expands to "same value every bar". Rust passes it through to Python strategies as `bar["state"]` |
 | `funding_by_symbol` | `dict[str, dict[int, tuple(rate, mark_price)]]`: funding lookup keyed by bar nanosecond timestamp; a hit enqueues settlement (pass `None` for spot) |
+| `capital_budget` | `float \| None`: capital budget constraint (`initial_cash × leverage`); `None` disables it. Pass `None` for single-symbol backtests |
 
 `BacktestResult` fields (aligned with `RunResult`):
 
@@ -142,7 +162,7 @@ Python bindings of `axon-worker`: per-bar strategy orchestration into `BacktestE
 | `final_positions` | Final positions, `dict[tuple, float]` |
 | `duration_secs` / `final_time_ns` / `n_bars` / `n_strategies` / `rebalances_triggered` | Metadata |
 
-#### Example: All-Rust backtest
+#### Example: All-Rust backtest (legacy)
 
 ```python
 from axon_quant import strategy, worker
@@ -159,14 +179,14 @@ bars = [
 runner = worker.BacktestRunner(initial_cash=100_000.0)
 runner.add_strategy(strategy.RuleStrategyImpl("dual_ma", "BTC/USDT"))
 result = runner.run(
-    bars=bars,
+    bars_by_symbol={"BTC/USDT": bars},
     states_by_symbol={"BTC/USDT": {"features": {"sma5_vs_sma20": 0.02, "ret_1": 0.01}}},
 )
 print(result.fills, result.final_nav, result.total_pnl)
 
 # 3) Or register any Python strategy (implement decide(bar) or on_bar(bar))
 runner.add_strategy(MyPythonStrategy(), name="my_py", symbol="BTC/USDT")
-result = runner.run(bars=bars)
+result = runner.run(bars_by_symbol={"BTC/USDT": bars})
 ```
 
 > `symbol` must be in `BASE/QUOTE` form (Rust `Instrument::from_symbol` splits on `/`); a separator-less symbol (e.g. `"BTCUSDT"`) degrades to an empty base/quote.

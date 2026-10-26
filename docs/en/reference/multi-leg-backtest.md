@@ -125,6 +125,45 @@ sharpe = log_r.mean() / log_r.std(ddof=1) * np.sqrt(bar_per_year)
 
 Same-`ts` de-dup: if you call `begin_bar` multiple times with the same `clock.now()` (e.g. across multiple legs), the last frame overwrites the previous one — no duplicate points pollute the Sharpe series.
 
+### `bar_balance_curve` per-bar account balance curve (0.21.0+)
+
+Since 0.21.0, every `begin_bar` / `begin_bar_multi` call also appends a frame to
+`bar_balance_curve: list[tuple[ts_ns, balance]]`. `balance` is the ledger-level
+figure: **cash + per-instrument margin occupation + realised PnL + fees** — it
+intentionally **excludes unrealised PnL**; by contrast `bar_nav_curve = balance +
+unrealised PnL`. So `bar_nav_curve[i].1 - bar_balance_curve[i].1` is exactly the
+unrealised PnL at that frame — the difference is documented in the doc-comment of
+`bar_balance_curve` at `crates/axon-backtest/src/python/engine.rs`.
+
+In multi-leg backtests `bar_balance_curve`, like `bar_nav_curve`, is a **single
+aggregated curve**, not split per symbol. If you need per-symbol accounting, read
+each instrument's position + cash ledger separately.
+
+Field origin: `BacktestResult::bar_balance_curve` is defined at
+`crates/axon-backtest/src/engine.rs`, the worker DTO
+(`crates/axon-worker/src/backtest.rs`) and the pyo3 binding
+(`crates/axon-worker/src/python.rs`) forward it unchanged. Access from Python as
+`result.bar_balance_curve`.
+
+```python
+result = bt.run()
+import numpy as np
+balance = np.asarray(result.bar_balance_curve, dtype=np.float64)
+nav     = np.asarray(result.bar_nav_curve,    dtype=np.float64)
+# Unrealised PnL per frame = nav - balance (should reconcile with per-frame mark valuation)
+unrealised = nav[:, 1] - balance[:, 1]
+```
+
+One more difference from `bar_nav_curve`:
+
+- `bar_nav_curve` calls `compute_nav(clock.now(), mark_fallback)` and requires mark
+  prices to value positions into NAV;
+- `bar_balance_curve` simply reads `self.bt_state.balance` (engine's internal cash
+  ledger + margin occupation) — it produces frames even when no mark price has been
+  pushed yet. That's the behaviour covered by the 0.21.0 test case
+  `bar_balance_curve_empty_without_begin_bar` in
+  `crates/axon-backtest/src/engine.rs`.
+
 ## End-to-End Example: Delta-Neutral Entry (Funding > 0)
 
 **Strategy logic**: when `funding > 0`, perp shorts receive funding (funding rate paid from longs to shorts), so the strategy simultaneously holds spot long + perp short, eating funding.
