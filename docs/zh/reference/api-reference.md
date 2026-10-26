@@ -695,7 +695,7 @@ OrderType.StopLimit     # 限价止损单
 
 ## 6. 版本兼容性
 
-AXON 当前版本为 `0.22.1`，workspace 25 个 crate 版本统一（workspace `rust-version` 为 1.97.0）：
+AXON 当前版本为 `0.22.1`，workspace 26 个 crate 版本统一（workspace `rust-version` 为 1.97.0）：
 
 | Crate | 版本 | 说明 |
 |-------|------|------|

@@ -31,7 +31,7 @@ AXON（**A**I-driven e**X**ecution and **O**rder e**N**gine）是面向量化交
 
     回测、训练、超参优化、滚动验证、实验追踪、模型注册共用一套 `MarketBar` / `PortfolioState` 数据结构，彻底消除"回测可用、上实盘崩"的隐患。
 
--   :material-package-variant-closed: **23 个独立 Crate**
+-   :material-package-variant-closed: **26 个独立 Crate**
 
     ---
 
@@ -80,49 +80,49 @@ AXON（**A**I-driven e**X**ecution and **O**rder e**N**gine）是面向量化交
 
 ## 架构总览
 
-AXON 采用 Cargo Workspace 管理 23 个 crate，按依赖层级自下而上分为 9 层：
+AXON 采用 Cargo Workspace 管理 **26 个 crate**，按职责与依赖拓扑自下而上分为 **7 层**（metadata 实际拓扑，cargo metadata 验证过）：
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 9: 应用入口                                             │
-│  ├─ axon-cli        CLI 工具                                  │
-│  └─ axon-python     PyO3 统一入口（axon_quant 包）              │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 8: AI 智能体                                            │
-│  ├─ axon-llm        ReAct 智能体 + Tool Calling               │
-│  └─ axon-explain    SHAP / 反事实 / 决策报告                   │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 7: 模型服务                                             │
-│  ├─ axon-inference  ONNX / Candle / tch 推理引擎              │
-│  └─ axon-ensemble   模型集成（投票 / Stacking / 动态加权）      │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 6: 训练管线                                             │
-│  ├─ axon-rl         Gymnasium 环境 + VecEnv + 奖励函数         │
-│  ├─ axon-hpo        Optuna 超参优化（单目标 / 多目标）          │
-│  ├─ axon-distributed Ray Actor 分布式训练                     │
-│  └─ axon-walk-forward 滚动前向验证（Purged + Embargo）         │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 5: 实验治理                                             │
-│  ├─ axon-tracker    MLflow / WandB / Local / Memory 追踪      │
-│  └─ axon-registry   模型注册表（SemVer + 生命周期 + 回滚）      │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 4: 生产执行                                             │
-│  ├─ axon-exchange   Binance / OKX 适配器（REST + WebSocket）   │
-│  ├─ axon-risk       风控引擎（仓位 / 回撤 / VaR / 熔断）        │
-│  ├─ axon-oms        订单管理系统                               │
-│  └─ axon-monitor    监控告警 + 健康检查                        │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 3: 回测引擎                                             │
-│  ├─ axon-backtest   L1/L2/L3 撮合 + Almgren-Chriss 冲击模型    │
-│  └─ axon-compliance 合规审计 + 日报 / 月报 / 年报               │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 2: 数据服务                                             │
-│  └─ axon-data       Arrow 列式存储 + CSV/Parquet 源 + 特征管道  │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 1: 核心类型                                             │
-│  └─ axon-core       时间戳 / 价格 / 数量 / 订单 / 事件 / 队列   │
-│                     / 组合 / 波动率 / 延迟 / 费用 / SIMD        │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Layer 6 应用入口（最顶层，依赖一切）                      │
+│  ├─ axon-python         PyO3 统一入口（axon_quant 包）       │
+│  └─ axon-integration-tests 端到端集成门禁                    │
+├──────────────────────────────────────────────────────────┤
+│  Layer 5 策略 & 编排                                      │
+│  ├─ axon-worker         编排层：PyKernel / LiveDriver /      │
+│  │                       PaperDriver / 数据泵 / 网关         │
+│  └─ axon-strategy       策略决策编排 / 注册 / 调度          │
+├──────────────────────────────────────────────────────────┤
+│  Layer 4 LLM 智能体                                       │
+│  └─ axon-llm            ReAct 智能体 + Tool Calling          │
+├──────────────────────────────────────────────────────────┤
+│  Layer 3 统一交易内核（0.22.0 新增，回测/paper/live 共用）    │
+│  └─ axon-kernel         Kernel 主回路 + BarLifecycle 九步     │
+│                         + ExecutionSink + Journal 事件溯源   │
+├──────────────────────────────────────────────────────────┤
+│  Layer 2 管线 & 治理                                      │
+│  ├─ axon-rl / axon-hpo / axon-walk-forward  训练管线          │
+│  ├─ axon-tracker / axon-registry  实验治理                    │
+│  ├─ axon-distributed / axon-cli  分布式 & CLI                 │
+│  ├─ axon-defi            DeFi 链上交互                        │
+│  ├─ axon-risk / axon-monitor  风控 & 监控                     │
+├──────────────────────────────────────────────────────────┤
+│  Layer 1 引擎层（直接建在 axon-core 之上）                  │
+│  ├─ axon-backtest       L1/L2/L3 撮合 + 逐仓保证金引擎        │
+│  ├─ axon-exchange       Binance / OKX 适配器（user-data stream│
+│  │                       + 三路对账）                         │
+│  ├─ axon-oms            订单管理系统                          │
+│  ├─ axon-data           Arrow 列式存储 + 特征管道              │
+│  ├─ axon-inference      ONNX / Candle / tch 推理引擎          │
+│  ├─ axon-explain        SHAP 可解释性                         │
+│  ├─ axon-ensemble       HardVote / SoftVote / Stacking       │
+│  ├─ axon-compliance     合规审计 + 日报 / 月报                │
+│  └─ axon-harness        统一 benchmark / conformance           │
+├──────────────────────────────────────────────────────────┤
+│  Layer 0 核心类型（最底层，被一切依赖）                      │
+│  └─ axon-core           时间戳 / 价格 / 订单 / Instrument       │
+│                         / 事件 / 队列 / 费用 / SIMD             │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -165,7 +165,7 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [LLM 智能体驱动交易](user-guide/llm-trading/oader.md)
 - [生产部署与监控](user-guide/production.md)
 - [传统策略迁移](user-guide/traditional-strategy.md)
-- [模块参考（23 个 crate 详解）](user-guide/modules.md)
+- [模块参考（26 个 crate 详解）](user-guide/modules.md)
 - [API 参考](reference/api-reference.md)
 - [常见问题](about/faq.md)
 
