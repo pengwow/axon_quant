@@ -6,6 +6,81 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1] - 2026-10-26
+
+### Fixed
+
+- **CI wheel 发布矩阵与重试链**（`publish.yml` / `publish-test.yml`）
+  - 构建矩阵保持 CPython 3.14（3 OS 并行 job；`requires-python = ">=3.13,<3.15"`，3.13 用户经 sdist 源码安装）。不走 abi3：pyo3-arrow 0.16 的零拷贝桥依赖 buffer protocol（`pyo3::buffer`），pyo3 在 abi3 模式下禁用该模块，两者互斥（`Cargo.toml` 留有警示注释）。
+  - 修复三步重试链失效：原 `if: failure()` 方案在任一步失败后 job conclusion 已锁死为 failure，后续重试成功也无法救回；改为首两步 `continue-on-error: true` + 末步按 `outcome` 裁决。
+
+## [0.22.0] - 2026-10-26
+
+### Added
+
+- **统一交易内核 `axon-kernel`**（回测 / paper / live 共用唯一主回路）
+  - `Kernel` 主回路：EventQueue → journal → on_market → 帧屏障 → 决策 → sink 事件回流；九步 per-bar 编排复刻 `BacktestRunner` 语义（Hold / 强平归零 / 预算缩放 / 资金费 / 强平）
+  - `BarGridBarrier` 按网格时间戳攒齐多品种后只触发一次生命周期；`StrategyHost` / `OrderIntent`（SetTarget 权益占比）/ `ExecutionSink` 三个核心契约
+  - 事件溯源：append-only JSONL journal + RunManifest + 格式版本 + 带 state 重演；`BacktestEngine::nav` 只读入口
+- **`axon-worker` 编排层**（Python 绑定 `axon_quant.worker`）
+  - `PyKernel`：薄包装复用 `BacktestRunner` 参数解析，`run` 走 `Kernel::run_history`；`add_rl_strategy` 以 SB3 predict 回调产出 target_ratio；结果 schema 与 `BacktestResult` 一致
+  - `ShadowRunner`：新旧编排路径按 nav/balance 曲线、fill/trade、持仓、totals 分类 diff，保障 Kernel 与 legacy 路径 parity
+  - `KernelPump` + `LiveSink`：WS 行情 → tick/kline/depth 事件（按 instrument/interval/ts 去重并记录缺口）；OMS 簿记 + 幂等键 + trade_id 去重；SetTarget 只下差额单
+  - `ExchangeGateway`：async `ExchangeAdapter` → sync `LiveOrderGateway` 桥接，累计成交量转增量；`LiveDriver` / `PaperDriver` 统一实时/纸面驱动原语（connect / start / tick / resume / shutdown）
+- **testnet 合约实盘链路**
+  - Binance 合约 user-data stream：listenKey 三端点 + 25min 续期 + 过期自动重建，`ORDER_TRADE_UPDATE` → OrderUpdate
+  - 合约钱包账务 `AccountingMode`（Cash / Wallet）+ 手续费透传 + `fetch_my_trades` 成交明细拉取
+  - 三路对账（positions / fills / cash）+ resume_guard：只报告不改账，超阈值品种冻结开仓；testnet 真网冒烟通过
+- **崩溃恢复链**
+  - 内核 journal resume：manifest 校验、中间坏行拒绝重演、尾部半行容差；`resume_replay` 重演后与整跑逐字段相等
+  - Python 绑定 `LiveRecovery`（重演 + 对账 + 门禁）与 `read_manifest` / `reconcile` / `resume_guard`；`run(journal_path=...)` 首跑录制
+  - 断线缺口补灌闭环（`KernelPump` replay_bars + `PaperDriver` backfill_gap）
+- **RL 观测链路**：训练期累积归一化统计量并支持导出/灌回（Python 绑定同步暴露）；观测/成本/动作解码收敛为单一实现；`MarketDataPayload.BarClosed` 收市事件；手续费率可配置并透传到引擎
+
+### Fixed
+
+- **推理不可用显式 Hold**：`InferenceBackend.infer` 改返回 `Option<Action>`，后端异常 / 非有限值不再被 0.0 目标放大成清仓动作
+- **对账扩展到挂单比对**：Local/VenueSnapshot 新增 open_order_ids，交易所外订单（未知挂单 / 手动单）暴露为 reconcile break；恢复时从交易所重放 last_filled 回填 OMS，不再虚报幽灵差异
+- **回报两段式落盘**：`ExecutionSink` 新增 `poll_staged` / `apply_staged`，已应用的回报必然已落盘，崩溃重演不丢外部输入；OMS `add_fill` 卖出符号状态机修复 + 成交量钳制
+- **tracing→Python logging 桥**：Rust 侧 WARN+ 日志转发到 `axon_quant.rust` logger（幂等安装 + 重入保护），实时链路告警不再沉默在 Rust 世界
+- exchange 健壮性：签名参数与 api_key 不再进入 Debug / 日志；429 限速退避 + 时间偏差校准后发单；listenKey 失效作废本地流；零价成交回报校验告警
+- WSS 显式指定 ring CryptoProvider（修复 pyo3 .so 首次真网连接 panic）；市价单不再携带 timeInForce；testnet 恢复演练实锤的合约订单链四处修复
+- RL 观测窗口取最旧 bar 的顺序错误修复，窗口深度按聚合需求保留；冷启动历史不足显式报错（`InsufficientHistory`）而非静默降级；离散动作非法 index 记 warn 后按 Hold 处理
+- 官方 `Action` 对象路径下静默零成交的双缺陷修复；paper / run_history 双路径 NAV 逐点一致性集成测试锁定
+
+## [0.21.0] - 2026-10-22
+
+### Added
+
+- **保证金交易引擎**（逐仓）
+  - 币安分档维持保证金计算、逐仓分账账本、逐 bar 保证金检查与强平事件
+  - 逐档部分强平与全仓连锁；绕过 bar 分摊 guard 的强平减仓 API
+  - `BacktestRunner` 绑定透出保证金配置与强平事件；结果暴露生效杠杆、档位来源与强平统计
+- **fill 关联链路**：`TradeRecord` 新增 fill 关联字段（entry / exit → fill_ids），`apply_fill` 维护并写入 trade，pyo3 绑定透出；`exit_fill_id` 重构为 `exit_fill_ids: Vec<u32>`（同 bar 多次减仓）；6 状态机补齐 `FLAT_TO_FLAT` 聚合
+- **`bar_balance_curve` 存款曲线**：引擎逐 bar 记录账户余额，worker DTO 与 pyo3 绑定透出
+
+### Fixed
+
+- **保证金账务口径一组修复**：全仓权益改用 NAV 估值（修复开仓即爆仓、浮盈亏估值）、成交不再搬动全额名义、逐仓开仓划转保证金、穿仓兜底改为每 bar 执行、强平后同 bar 禁止按旧目标重开
+
+### Build
+
+- uv cache-keys 感知 Cargo 源码变化（消除 maturin path 依赖的重建盲区）
+
+### Note
+
+- 0.20.0 未单独发 tag，其变更（`run` / `run_multi` 合并为单一 `run` 入口，多品种由 `bars_by_symbol` 表达）随 0.21.0 出货
+
+## [0.19.0] - 2026-10-19
+
+### Added
+
+- `BacktestRunner::run_multi`：共享资金池的多品种回测编排；trades 暴露 instrument 字段（PyO3 绑定同步）
+
+### Fixed
+
+- `compute_nav` 在单品种 mark 价格缺失时的 fallback 修复
+
 ## [0.18.0] - 2026-10-17
 
 ### Added

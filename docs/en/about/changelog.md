@@ -4,9 +4,9 @@ AXON's complete changelog is maintained in the repository root's [`CHANGELOG.md`
 
 ## Current Version
 
-- **Latest stable:** [`v0.16.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0160---2026-10-10) — Live factor injection infrastructure (`fetch_ohlcv` + `KlineBuffer` + `on_bar` feature injection)
-- **Previous:** [`v0.15.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0150---2026-10-09) — SDM structured decision layer (`DecisionBackend` + confidence-gated cascade + LLM fallback)
-- **Earlier:** [`v0.11.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0110---2026-08-01) — Multi-Agent voting consensus + LLM infrastructure wrap-up (E7-E12)
+- **Latest stable:** [`v0.22.1`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0221---2026-10-26) — CI wheel publish matrix for py3.13/3.14 + fixed retry chain
+- **Previous:** [`v0.22.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0220---2026-10-26) — Unified trading kernel (`axon-kernel`/`axon-worker`) + testnet futures live pipeline + crash recovery
+- **Earlier:** [`v0.21.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0210---2026-10-22) — Margin trading engine (isolated margin) + fill linkage + bar_balance_curve
 
 ## Versioning
 
