@@ -6,7 +6,7 @@
 //!
 //! # tick 节奏
 //!
-//! 外层（QuantCell 的 Python 线程）按固定周期（建议 1s）调 [`Self::tick`]。
+//! 外层（QuantCell 的 Python 线程）按固定周期（建议 1s）调 [`LiveDriver::tick`]。
 //! 注意回报有「落定落后一拍」的语义：WS 消息在 tick 尾部 `poll_external`
 //! 时才被拉取处理，其产生的回流事件要等下一 tick 的 `step()` 才被内核消化。
 //!

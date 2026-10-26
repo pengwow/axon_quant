@@ -1,6 +1,6 @@
 //! M5 对账：内核 / OMS 侧快照 vs 交易所侧快照（设计文档 4.10 三路对账）
 //!
-//! [`reconcile`] 只做**比对与报告**，不修改任何一侧账务：
+//! [`reconcile()`] 只做**比对与报告**，不修改任何一侧账务：
 //!
 //! - 持仓：双向差异都算 break。本地有、交易所有，或交易所有、本地无，都要报；
 //! - 成交：`missing_fills`（交易所有、本地漏记）与 `extra_fills`（本地多记、
@@ -17,7 +17,7 @@
 //! 都由调用方填入。真实接线（`axon_exchange::ExchangeAdapter` → 快照）留到
 //! testnet 阶段，与 [`crate::live_sink`] 的 gateway 桥接一起做。
 //!
-//! 崩溃恢复的用法：重放 journal 得到本地快照 → 拉交易所快照 → [`reconcile`] →
+//! 崩溃恢复的用法：重放 journal 得到本地快照 → 拉交易所快照 → [`reconcile()`] →
 //! [`resume_guard`] 决定能否继续跑。本地侧快照可直接
 //! [`LocalSnapshot::from_sink`] 从 [`crate::live_sink::LiveSink`] 的影子账本提取。
 

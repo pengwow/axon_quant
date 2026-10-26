@@ -23,13 +23,13 @@
 //! - `axon_exchange::OrderUpdate` 的手续费来自合约回报的 `n` 字段（本笔增量），
 //!   [`VenueUpdate::fee`] 直接透传；现货 `executionReport` 因返佣币可能是 BNB，
 //!   adapter 填 0，现货影子账本仍会少记手续费；
-//! - 「网关独占行情通道」已由 [`Self::with_market_data_fanout`] 解决：live 主
+//! - 「网关独占行情通道」已由 [`ExchangeGateway::with_market_data_fanout`] 解决：live 主
 //!   回路接上 fan-out 通道后，`poll_updates` 把行情类消息转发给 [`crate::KernelPump`]，
 //!   网关只留下回报；未接 fan-out（paper 等独立使用）时行情直接丢弃。
 //!
 //! 崩溃恢复编排（[`crate::live_driver`]）还需要拿 REST 快照对账，本模块把
 //! `get_positions` / `get_account_info` / `fetch_my_trades` 包成了同步方法；
-//! REST 快照与 WS 回报流共享同一个 adapter（[`Self::shared`]），不会多建连接。
+//! REST 快照与 WS 回报流共享同一个 adapter（[`ExchangeGateway::shared`]），不会多建连接。
 //!
 //! Binance 合约的 user data stream（`ORDER_TRADE_UPDATE`）已在 adapter 内实现，
 //! 回报与行情共用同一条通道，因此上面的「单消费者」约束仍然成立。

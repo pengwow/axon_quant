@@ -1,6 +1,6 @@
 //! Live 执行出口：策略意图 → 同步网关 → 交易所回报
 //!
-//! [`ExecutionSink`] 的方法是**同步**的，而 `axon_exchange::ExchangeAdapter` 是
+//! `axon-kernel` 中 `ExecutionSink` 的方法是**同步**的，而 `axon_exchange::ExchangeAdapter` 是
 //! async 的。内核不允许反过来依赖 exchange / tokio，所以这里只定义一个**最小
 //! 同步网关** [`LiveOrderGateway`]：真实交易所接线（把 async adapter 桥成同步
 //! gateway、WS 回报转 [`VenueUpdate`]）留到有 testnet 时再做。

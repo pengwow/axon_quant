@@ -20,7 +20,7 @@
 //! | [`persist`] | `RunManifest`（重演所需的外部输入指纹） |
 //! | [`lifecycle`] | per-bar 九步编排（复刻 `BacktestRunner::run()`） |
 //! | [`kernel_loop`] | 主回路 `Kernel`（事件调度 + 决策 + 收尾） |
-//! | [`rl`] | [`RLStrategyHost`](rl::RLStrategyHost)：RL 推理接入主回路 |
+//! | [`rl`] | [`RLStrategyHost`]：RL 推理接入主回路 |
 //!
 //! # 当前阶段
 //!

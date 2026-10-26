@@ -1,11 +1,11 @@
 //! 实时数据泵：交易所 WS 消息 → 内核事件
 //!
 //! 回测路径由 `axon_kernel::build_frames` 直接灌 `BarClosed`，paper / live 则
-//! 把 [`WsMessage`] 泵成同一套事件（设计文档 5 章的装配矩阵）。本模块负责三件事：
+//! 把 `WsMessage` 泵成同一套事件（设计文档 5 章的装配矩阵）。本模块负责三件事：
 //!
 //! 1. **格式转换**：`Kline` → 收市 `BarClosed`（未收市只更新进行中 bar），
 //!    `Trade` → `Tick`，`Depth` → `OrderBookSnapshot`，`OrderUpdate` → 系统事件；
-//! 2. **去重**：沿用 [`BarAggregator`] 的 `(instrument, interval, bar.timestamp)` 去重；
+//! 2. **去重**：沿用 `axon-kernel` `BarAggregator` 的 `(instrument, interval, bar.timestamp)` 去重；
 //! 3. **缺口检测**：同一 `(instrument, interval)` 的 bar 起始时间跳过一个整周期
 //!    以上时记一条 [`Gap`]，供上层断线后调 `fetch_ohlcv` 补齐。
 //!
