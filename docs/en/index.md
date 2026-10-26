@@ -5,7 +5,7 @@
 AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven trading engine designed for quantitative trading and reinforcement learning. It was built from the ground up with AI at its core, rather than "bolting on" machine learning modules to a traditional quant system.
 
 !!! note "Version Info"
-    This documentation is based on AXON `v0.16.0`, targeting Rust version `1.97.0+`.
+    This documentation is based on AXON `v0.22.1`, targeting Rust version `1.97.0+`.
 
 ---
 

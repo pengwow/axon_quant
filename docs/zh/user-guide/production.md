@@ -793,6 +793,44 @@ backoff = manager.calculate_backoff(attempt=3)
 print(f"第 3 次重连退避: {backoff:.1f}s")
 ```
 
+### 5.6 崩溃恢复与数据一致性（v0.22.0+）
+
+生产实盘最致命的隐患是进程崩溃 / 宿主机重启后，内核里还未持久化的 OMS 状态丢失。AXON v0.22.0 起提供一套 append-only journal + 重演门禁的崩溃恢复链路，核心构件：
+
+| 构件 | 职责 | 源码位置 |
+|------|------|----------|
+| `axon_kernel::journal::Journal` | append-only JSONL 落盘；首行 `RunManifest`（重演凭证，含代码版本 / 初始现金 / 品种列表 / 合约乘数），后续每行 `JournalEntry { event, state }` | `crates/axon-kernel/src/journal.rs` |
+| `RunManifest` | 重演指纹，任一字段变化重演即报错；journal 首行 | `crates/axon-kernel/src/persist.rs` |
+| `LiveDriver.start(journal_path)` | 首跑时调 `Journal::create(path, manifest)` 开始录制；内核每收一条输入事件即 `Journal::append` | `crates/axon-worker/src/python.rs` |
+| `LiveRecovery.new(journal_path)` + `.replay(...)` | 崩溃后重放：内部先 `Journal::resume(path)`（尾部半行截断、中间坏行拒绝），把记录的 `JournalEntry` 逐条灌回内核，恢复到"崩溃前最后一个完整 journal entry"对应的状态，再做三路对账 + `resume_guard` 门禁放行 | `crates/axon-worker/src/python.rs` |
+| `KernelPump` 断线缺口补灌 | WS 重连后，`KernelPump::replay_bars` 按交易所历史 K 线回补缺口，让重放的 bar 序列与 journal 记录保持对齐 | `crates/axon-worker/src/pump.rs` |
+
+恢复时序（伪代码）：
+
+```python
+import axon_worker
+
+# 1) 读 journal 首行 RunManifest，确认与当前进程版本 / 配置匹配
+manifest = axon_worker.read_manifest(journal_path)
+
+# 2) LiveRecovery 把已记录的 JournalEntry 逐条重演进内核
+rec = axon_worker.LiveRecovery(initial_cash=1_000_000.0)
+report = rec.replay(journal_path, reconcile_with_exchange=True)
+
+# 3) resume_guard：有 break 就 raise，恢复终止；全绿才允许重新接实盘
+axon_worker.resume_guard(report)
+
+# 4) 接 WS 重连 KernelPump，让后续 bar 从缺口点继续
+live = axon_worker.LiveDriver(...)
+live.start(journal_path)   # 后续事件继续 append 到同一份 journal
+```
+
+几点约束：
+
+- journal 是 append-only，中途任何损坏行（`serde_json` 解析失败、缺 `event` / `state` 键、版本号超前）都会被严格拒绝，不会静默跳过——恢复安全优先；
+- `RunManifest` 里的 `code_version` 必须与当前运行的 `axon_quant.__version__` 一致，否则 `LiveRecovery.replay` 直接报错（不同版本内核状态机语义可能漂移）；
+- 恢复后内核状态 ≈ 崩溃前最后一条完整 `JournalEntry` 对应的状态，**那条没收尾的半 journal entry 会被截断丢弃**，避免重演半事件把 OMS 推进到未定义中间态。
+
 ---
 
 ## 6. 生产环境检查清单
@@ -850,6 +888,17 @@ print(f"第 3 次重连退避: {backoff:.1f}s")
 - [ ] **Checkpoint**：分布式训练 checkpoint 定期保存
 - [ ] **数据库备份**：交易记录、审计日志每日备份
 - [ ] **应急预案**：交易所 API 故障、模型失效、网络中断的 SOP
+- [ ] **崩溃恢复演练**：用 `Journal.resume` + `LiveRecovery.replay` 在测试网走通完整崩溃恢复链路（重演 → 三路对账 → `resume_guard` 门禁放行），确认恢复后 OMS / 交易所状态一致
+
+### 6.8 三路对账（v0.22.0+）
+
+生产实盘进程重启 / WS 重连时，OMS 本地簿记可能与交易所真实状态漂离。AXON v0.22.0 在 `LiveSink` 里内建"交易所快照 ↔ OMS 本地快照"的三路对账（positions / fills / cash）：
+
+- [ ] **positions 对账**：`LiveSink` 本地 OMS 持仓 vs 交易所 `fetch_positions` 实仓，逐个 symbol 比对数量；差量超过阈值 → 该 symbol **冻结开仓**，只能平现有仓位
+- [ ] **fills 对账**：OMS 记录的成交 vs `fetch_my_trades` + 最新 `ORDER_TRADE_UPDATE` 推送去重后的增量；未知外部成交（手动单、历史未拉）会被打 reconcile break
+- [ ] **cash 对账**：OMS 现金余额 vs 交易所钱包总余额 + 可用余额（`AccountingMode::Cash` / `Wallet` 口径由 `LiveSink` 构造时声明）
+- [ ] **resume_guard 只报告不改账**：三路对账发现 break 时，`LiveRecovery.resume` 抛异常并阻断实盘链路；**不会**自动把 OMS 回写成交易所的状态（对账发现问题就需要人工介入，避免引擎偷偷改账掩盖上游错误）
+- [ ] **挂单对账**（v0.22.0 修复项）：恢复时拉交易所 `open_orders` 回填 OMS，未知挂单 / 手动单会被暴露为 break，不再虚报幽灵差异
 
 ---
 

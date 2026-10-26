@@ -126,6 +126,42 @@ sharpe = log_r.mean() / log_r.std(ddof=1) * np.sqrt(bar_per_year)
 
 同 `ts` 去重:同 `clock.now()` 多次 `begin_bar`(如多 leg 末帧)时,新帧覆盖旧帧而非追加,避免重复点污染 Sharpe 序列。
 
+### `bar_balance_curve` 每 bar 末账户余额曲线(0.21.0+)
+
+0.21.0 起,每次 `begin_bar` / `begin_bar_multi` 收尾时,引擎额外记录一帧到
+`bar_balance_curve: list[tuple[ts_ns, balance]]`。`balance` 反映账本层面的现金 +
+逐仓保证金占用 + 已实现 PnL + 手续费累计,**不含未实现 PnL**;而
+`bar_nav_curve = balance + 未实现 PnL`——所以
+`bar_nav_curve[i].1 - bar_balance_curve[i].1` 就是该帧的浮盈(未实现盈亏),
+这个差量在 `crates/axon-backtest/src/python/engine.rs` 的 `bar_balance_curve`
+doc 注释里明确写了。
+
+多品种回测下 `bar_balance_curve` 与 `bar_nav_curve` 一样是**整条聚合曲线**,
+不会按 symbol 拆分;如果需要单品种账务明细,请查各 symbol 的持仓 + 现金账本。
+
+来源:`bar_balance_curve` 字段定义在
+`crates/axon-backtest/src/engine.rs::BacktestResult::bar_balance_curve`,worker DTO
+(`crates/axon-worker/src/backtest.rs`) 与 pyo3 绑定
+(`crates/axon-worker/src/python.rs`) 直接透传,Python 侧通过
+`result.bar_balance_curve` 访问。
+
+```python
+result = bt.run()
+import numpy as np
+balance = np.asarray(result.bar_balance_curve, dtype=np.float64)
+nav     = np.asarray(result.bar_nav_curve,    dtype=np.float64)
+# 每一帧的未实现 PnL = nav - balance(应与逐 frame mark 估值一致)
+unrealized = nav[:, 1] - balance[:, 1]
+```
+
+与 `bar_nav_curve` 的另一个区别:
+- `bar_nav_curve` 走 `compute_nav(clock.now(), mark_fallback)`,需要 mark 价才能
+  把持仓估值算进 nav;
+- `bar_balance_curve` 直接取 `self.bt_state.balance`(引擎内部现金账本 + 保证金占用),
+  没有 mark 价也能出帧,所以在"无 mark 价的纯现金操作"测试里也能看到连续曲线,
+  这是 `bar_balance_curve_empty_without_begin_bar` 单测
+  (`crates/axon-backtest/src/engine.rs` 0.21.0 新增)的覆盖点。
+
 ## 端到端示例:Delta-Neutral 入场(Funding > 0)
 
 **策略逻辑**:`funding > 0` 时,perp 空头收 funding(资金费率由多头付给空头),

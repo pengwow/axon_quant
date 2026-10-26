@@ -993,25 +993,45 @@ print(d["action"], d["source"], d["confidence"])
 |----|------|
 | `RuleStrategyImpl(name, symbol)` | 内置双均线规则策略(读 `state["features"]` 的 `sma5_vs_sma20` / `ret_1`) |
 
-自定义 Python 策略**无需继承基类**:只需实现 `decide(bar_dict)` 或 `on_bar(bar_dict)`,返回含 `action_type`(`"buy"` / `"sell"` / `"hold"`)/ `confidence` / `target_position` 的 dict 或对象,即可注册到 `BacktestRunner`。
+自定义 Python 策略**无需继承基类**:只需实现 `decide(bar_dict)` 或 `on_bar(bar_dict)`,返回含 `action_type`(`"buy"` / `"sell"` / `"hold"`)/ `confidence` / `target_position` 的 dict 或对象,即可注册到 `BacktestRunner`(legacy)或 `worker.Kernel`(统一内核,`0.22.0` 起)。
 
-### `axon_quant.worker`(`0.18.0` 新增)—— 全 Rust 原生回测编排
+#### run 多品种口径(`0.21.0` 起)
 
-`axon-worker` 的 Python 绑定:逐 bar 编排策略 → `BacktestEngine` 真撮合,产出与 `axon_quant.backtest.RunResult` 对齐的结果契约。
+`0.19.0` 引入的多品种接口 `run_multi` 已于 `0.21.0` 并入单一 `run`(`BacktestRunner` 与 `Kernel` 同口径,`run` 签名保持兼容):多品种经 `bars_by_symbol` 表达,共享同一资金池;`run_multi` 不再保留。
+
+```python
+result = kernel.run(
+    bars_by_symbol={
+        "BTC/USDT": bars_btc,   # 与 ETH 等长
+        "ETH/USDT": bars_eth,   # 某网格点无真实 bar 用 None 占位(前向填充盯市,不触发决策)
+    },
+)
+```
+
+### `axon_quant.worker`(`0.18.0` 新增,`0.22.0` 扩展)—— 回测编排 / 统一交易内核
+
+`axon-worker` 的 Python 绑定,四部分:`BacktestRunner`(0.18.0,legacy 回测编排,0.22.0 起冻结)、`Kernel`(0.22.0,统一交易内核的 Python 薄包装)、`LiveDriver` / `PaperDriver`(0.22.0,实盘 / 模拟盘驱动)、`LiveRecovery`(0.22.0,崩溃恢复重演)。
+
+#### `BacktestRunner`(legacy,`0.18.0` 新增)
+
+> `0.18.0` 引入的 legacy 全 Rust 原生回测编排;**`0.22.0` 起冻结为回退路径**(统一内核可用时建议迁移到 `worker.Kernel`)。`0.21.0` 起 `run_multi` 并入单一 `run`(多品种经 `bars_by_symbol` 表达,见上文 strategy 章节)。
 
 | 类 / 方法 | 说明 |
 |-----------|------|
 | `BacktestRunner(initial_cash=100000.0, futures=False, force_liquidate=False, settle=None, contract_size=1.0)` | 回测编排器(内部独占 tokio runtime)。`futures=True` 用永续合约品种并支持资金费结算,`settle` 取 `"usd_margin"`(默认)/`"coin_margin"`,`contract_size` 默认 1.0;`force_liquidate=True` 回测结束 EOD 强制市价平仓 |
 | `runner.add_strategy(strategy, name=None, symbol=None)` | 注册策略:支持 `strategy.RuleStrategyImpl` 实例,或任意实现 `decide(bar)` / `on_bar(bar)` 的 Python 对象 |
-| `runner.run(bars, states_by_symbol=None, funding_by_symbol=None)` | 同步执行回测,返回 `BacktestResult` |
+| `runner.with_margin(specs)`(`0.21.0` 新增) | 注入每品种保证金规格(空 dict = 不启用保证金模拟),如 `{"BTC/USDT": {"leverage": 10.0, "mode": "cross", "brackets": [...]}}` |
+| `runner.run(bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None)` | 同步执行回测,返回 `BacktestResult`(`0.21.0` 起单/多品种共用本签名,`run_multi` 不再保留) |
 | `BacktestResult` | 回测结果 DTO(只由 `run()` 返回,不可直接实例化) |
 
 `run()` 参数:
 
 | 参数 | 说明 |
 |------|------|
-| `states_by_symbol` | `dict[str, dict \| list[dict]]`:值为 **list** 时按**逐 bar** 注入(第 i 项对应第 i 根 bar);值为单对象时展开为「每 bar 同值」。Rust 侧会以 `bar["state"]` 透传给 Python 策略 |
+| `bars_by_symbol` | `dict[str, list[dict \| None]]`:各 symbol 的**等长**逐网格点 bar 列表;`None` 表示该网格点无真实 bar(价格由 Rust 侧前向填充参与盯市,但不触发策略决策) |
+| `states_by_symbol` | `dict[str, dict \| list[dict]]`:值为 **list** 时按**逐 bar** 注入(第 i 项对应第 i 个网格点);值为单对象时展开为「每 bar 同值」。Rust 侧会以 `bar["state"]` 透传给 Python 策略 |
 | `funding_by_symbol` | `dict[str, dict[int, tuple(rate, mark_price)]]`:资金费查找表,键为 bar 纳秒时间戳,命中即入队结算(现货传 `None`) |
+| `capital_budget` | `float \| None`:资金约束预算(`initial_cash × leverage`),`None` 表示不启用约束;单品种回测传 `None` |
 
 `BacktestResult` 字段(与 `RunResult` 对齐):
 
@@ -1027,7 +1047,7 @@ print(d["action"], d["source"], d["confidence"])
 | `final_positions` | 终态持仓 `dict[tuple, float]` |
 | `duration_secs` / `final_time_ns` / `n_bars` / `n_strategies` / `rebalances_triggered` | 元信息 |
 
-#### 示例:Rust 原生回测
+#### 示例:Rust 原生回测(legacy)
 
 ```python
 from axon_quant import strategy, worker
@@ -1044,17 +1064,105 @@ bars = [
 runner = worker.BacktestRunner(initial_cash=100_000.0)
 runner.add_strategy(strategy.RuleStrategyImpl("dual_ma", "BTC/USDT"))
 result = runner.run(
-    bars=bars,
+    bars_by_symbol={"BTC/USDT": bars},
     states_by_symbol={"BTC/USDT": {"features": {"sma5_vs_sma20": 0.02, "ret_1": 0.01}}},
 )
 print(result.fills, result.final_nav, result.total_pnl)
 
 # 3) 或注册任意 Python 策略(实现 decide(bar) 或 on_bar(bar) 即可)
 runner.add_strategy(MyPythonStrategy(), name="my_py", symbol="BTC/USDT")
-result = runner.run(bars=bars)
+result = runner.run(bars_by_symbol={"BTC/USDT": bars})
 ```
 
 > `symbol` 需为 `BASE/QUOTE` 格式(Rust `Instrument::from_symbol` 按 `/` 切分);无分隔符(如 `"BTCUSDT"`)会退化为空 base/quote。
+
+#### `worker.Kernel`(`0.22.0` 新增)—— 统一交易内核
+
+Rust `axon-kernel::Kernel`(回测 / paper / live 共用唯一主回路)的 Python 薄包装:只做类型转换与转发,编排语义全在内核。参数解析复用 `BacktestRunner` 同一组辅助函数,结果 schema 与 `BacktestResult` 一致;`run(journal_path=...)` 首跑可把本次全部外部输入(含逐 bar state)落 journal,供 `LiveRecovery` 崩溃恢复重演。
+
+| 类 / 方法 | 说明 |
+|-----------|------|
+| `Kernel(initial_cash=100000.0, futures=False, force_liquidate=False, settle=None, contract_size=1.0, interval="1m", fee_rate=None)` | 统一交易内核。前五个参数与 `BacktestRunner` 同规则;`interval` 为 bar 周期(默认 `"1m"`);`fee_rate=None` 取引擎默认费率(0.001),非有限/负值在构造期报错 |
+| `kernel.add_strategy(strategy, name=None, symbol=None)` | 注册策略,包装规则与 `BacktestRunner.add_strategy` 完全一致 |
+| `kernel.add_rl_strategy(predict, model_id, spec_version, window_size, features, action_space=None, symbol="BTC/USDT", stats=None)` | 注册 RL 策略:`predict(obs: list[float]) -> float` 返回目标权益占比(内核原样作为 `SetTarget.target_ratio`);`features` 为 `ObservationSpec` 特征配置(与训练侧同一份实现);`action_space` 必须是覆盖 `[-1, 1]` 的连续空间(默认 `{"type": "continuous", "min": -1.0, "max": 1.0}`,离散/更窄空间注册期直接拒绝);`stats` 为训练期归一化统计量,条数必须等于特征数;`symbol` 必须带分隔符(`BTC/USDT` / `BTC-USDT`) |
+| `kernel.with_margin(specs)` | 注入每品种保证金规格(解析逻辑与 `BacktestRunner.with_margin` 共用) |
+| `kernel.set_manifest(config_hash=None, data_hash=None, seed=0)` | 设置重演凭证(透传 `RunManifest`,默认 `code_version` 取 crate 版本) |
+| `kernel.run(bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None, journal_path=None)` | 同步执行回测,参数语义与 `BacktestRunner.run` 一致;`journal_path` 传入则录制本次外部输入 |
+| `kernel.result()` | 最近一次运行的结果(未跑过返回 `None`) |
+
+#### 示例:统一内核回测(`0.22.0`)
+
+```python
+from axon_quant import strategy, worker
+
+# bars 构造同上(legacy 示例)
+
+kernel = worker.Kernel(initial_cash=100_000.0)
+kernel.add_strategy(strategy.RuleStrategyImpl("dual_ma", "BTC/USDT"))
+result = kernel.run(
+    bars_by_symbol={"BTC/USDT": bars},
+    states_by_symbol={"BTC/USDT": {"features": {"sma5_vs_sma20": 0.02, "ret_1": 0.01}}},
+)
+print(result.fills, result.final_nav, result.total_pnl)
+
+# 首跑录制:journal 供崩溃恢复重演(LiveRecovery 构造参数必须与本次一致)
+result = kernel.run(bars_by_symbol={"BTC/USDT": bars}, journal_path="/path/live.journal")
+```
+
+#### 实盘 / 模拟盘驱动(`0.22.0` 新增)
+
+统一内核实时原语的 Python 面。装配链:WS 行情 fan-out → `KernelPump` → `Kernel`(实时步进)→ 执行 sink。数据是拉取式:每次 `tick()` 尾部拉一次 WS 消息,回报账面落定落后一拍(two-tick 语义)。
+
+| 类 / 方法 | 说明 |
+|-----------|------|
+| `LiveDriver(config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet", futures=True, settle=None, contract_size=1.0, interval="1m", fee_rate=None)` | 实盘驱动器。`config` 为 `axon_quant.exchange.ExchangeConfig`(adapter 由内部自建);`shadow_cash` 缺省取 `initial_cash`(对账现金基线)。v1 边界:仅永续合约(Swap)+ 钱包账务,构造期强制校验 |
+| `driver.add_strategy(strategy, name=None, symbol=None)` / `driver.add_rl_strategy(...)` | 注册宿主策略,签名与 `Kernel` 同口径(`add_rl_strategy` 校验链一致) |
+| `driver.connect()` / `driver.start(journal_path)` | 连接交易所 → 全新起跑(建内核、挂 journal、注册 hosts)。journal 为事件溯源落盘,崩溃恢复的根基,路径必须是文件(目录 fail-fast) |
+| `driver.tick()` | 推进一拍:泵行情 → 步进内核 → 尾部拉 WS 回报(下一拍消化) |
+| `driver.snapshot()` | 本地账面快照 `{positions, cash, fill_ids}`(需已 start/resume) |
+| `driver.resume(journal_path)` | 崩溃恢复:journal 重演 → 本地快照 → 交易所对账 → 守卫放行;返回 ReconcileReport dict,守卫拒绝时整体可重试 |
+| `driver.shutdown()` | 收尾,请求 sink 终止 |
+| `PaperDriver(symbols, initial_cash=100000.0, futures=True, settle=None, contract_size=1.0, interval="1m", fee_rate=None)` | 模拟盘驱动器:`PaperSink` 虚拟撮合,不下真实单、无 journal / resume,账面重启即重置;默认内置模拟盘口(半点差 0.0005)保证市价单有对手价 |
+| `paper.start()` / `paper.feed_bar(symbol, timestamp, open, high, low, close, volume)` / `paper.tick()` / `paper.snapshot()` / `paper.shutdown()` | 起跑(无外部连接)→ 手工灌收市 bar(`timestamp` 为 bar 开市时刻纳秒,事件时间戳取收市时刻防前视;`symbol` 必须是 `new` 时声明过的品种)→ 步进消化 → 运行中快照 `{equity, positions}` → 收尾(纯内存,幂等 no-op) |
+| `LiveRecovery(initial_cash=100000.0, shadow_cash=None, accounting="cash", futures=False, settle=None, contract_size=1.0, interval="1m", fee_rate=None)` | 崩溃恢复重演器(无交易所连接的纯重演子集):从 journal 重建 OMS 影子账本并抽取本地快照。构造参数必须与首跑内核一致;`shadow_cash` 缺省取 `initial_cash`,须与首跑入金一致;合约必须 `accounting="wallet"` |
+| `rec.add_strategy(strategy, name=None, symbol=None)` | 注册宿主策略(`resume` 前至少一个:journal 行情条目必须经宿主重决策才能恢复 OMS 状态,且决策必须确定) |
+| `rec.resume(journal_path)` | 重演 journal,返回 `{positions, cash, fill_ids, manifest}`(前三者为对账 local 槽,可直传 `reconcile`;`manifest` 内含 `entries` = 重演条目数) |
+
+#### 示例:实盘驱动与崩溃恢复(`0.22.0`)
+
+```python
+from axon_quant import worker
+
+# 1) 实盘:connect → start(journal) → tick 循环 → shutdown
+driver = worker.LiveDriver(exchange_config, symbols=["BTC/USDT"])
+driver.add_strategy(MyPythonStrategy(), name="main", symbol="BTC/USDT")
+driver.connect()
+driver.start("/path/live.journal")       # journal 事件溯源落盘
+while running:
+    driver.tick()                        # 泵行情 → 步进内核 → 拉 WS 回报
+snap = driver.snapshot()                 # {positions, cash, fill_ids}
+driver.shutdown()
+
+# 2) 崩溃恢复:journal 重演 → 三路对账 → 门禁放行(构造参数须与首跑一致)
+rec = worker.LiveRecovery(initial_cash=100_000.0)
+rec.add_strategy(MyPythonStrategy(), name="main", symbol="BTC/USDT")
+snap = rec.resume("/path/live.journal")
+report = worker.reconcile(snap, venue_snapshot)   # venue 快照由交易所流水组装
+worker.resume_guard(report)              # 持仓/现金 break → ValueError,禁止自动续跑
+
+# 3) 模拟盘:start → feed_bar → tick → shutdown
+paper = worker.PaperDriver(symbols=["BTC/USDT"], initial_cash=100_000.0)
+paper.add_strategy(MyPythonStrategy(), name="main", symbol="BTC/USDT")
+paper.start()
+for bar in closed_bars:
+    paper.feed_bar("BTC/USDT", bar["timestamp"], bar["open"], bar["high"],
+                   bar["low"], bar["close"], bar["volume"])
+    paper.tick()
+print(paper.snapshot())                  # {equity, positions}
+paper.shutdown()
+```
+
+> 恢复前可用 `worker.read_manifest(path)` 只读探查 journal 头 manifest(不接管文件、不重演);`worker.reconcile(local, venue, position_tolerance=None, cash_tolerance=None)` 只报告不修账(持仓/现金容差缺省 `1e-8` / `1e-6`)。
 
 ## 示例:LLM 交易 Mock 端到端
 
