@@ -36,6 +36,8 @@ pub(crate) struct MockState {
     pub trades: Vec<UserTrade>,
     /// 已受理订单（`send_order` 记录，供断言）
     pub sent_orders: Vec<Order>,
+    /// REST 历史 K 线（`fetch_ohlcv` 返回；缺口补灌演练用）
+    pub ohlcv: Vec<Bar>,
     /// 测试注入「交易所侧」消息的发送端
     message_tx: mpsc::Sender<WsMessage>,
 }
@@ -85,6 +87,7 @@ pub(crate) fn mock_exchange(
         },
         trades: Vec::new(),
         sent_orders: Vec::new(),
+        ohlcv: Vec::new(),
         message_tx,
     }));
     let adapter = MockAdapter {
@@ -228,7 +231,7 @@ impl ExchangeAdapter for MockAdapter {
         _interval: &str,
         _limit: usize,
     ) -> Result<Vec<Bar>, ExchangeError> {
-        Ok(Vec::new())
+        Ok(self.state.lock().unwrap().ohlcv.clone())
     }
 
     /// REST 逐笔成交：全量返回（`since` 过滤需要时测试侧再补）

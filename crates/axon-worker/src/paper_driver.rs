@@ -34,14 +34,19 @@ use axon_exchange::ExchangeAdapter;
 use axon_exchange::types::Symbol as ExchangeSymbol;
 use axon_kernel::{
     Kernel, KernelConfig, KernelError, PaperSink, RunManifest, StrategyHost, close_time,
+    interval_to_nanos,
 };
 
 use crate::backtest::instrument_key_for;
 use crate::exchange_gateway::ExchangeGateway;
-use crate::pump::KernelPump;
+use crate::live_sink::LiveOrderGateway;
+use crate::pump::{Gap, KernelPump};
 
 /// 行情 fan-out 通道容量（与 `live_driver` 同值：tick 节奏下不会触顶）
 const FANOUT_CHANNEL_CAPACITY: usize = 4096;
+
+/// 单次缺口补灌的最大拉取根数（`fetch_ohlcv` 无 since 参数、只能取最近 N 根）
+const MAX_GAP_FETCH: usize = 1000;
 
 /// paper 账面快照（全部虚拟，无需交易所对账）
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +65,8 @@ pub struct PaperDriver {
     config: KernelConfig,
     /// 品种口径表（key = `"BASE/QUOTE"`），`feed_bar` 归一化后回指
     instruments: BTreeMap<String, Instrument>,
+    /// instrument → 交易所 symbol 反查表，缺口补灌按 `gap.instrument` 找 fetch 入参
+    by_instrument: Vec<(Instrument, ExchangeSymbol)>,
     /// 订阅品种（gateway 模式 connect 用）
     symbols: Vec<ExchangeSymbol>,
     /// 交易所网关；PaperSink 不下单，无需 move 进 sink，常驻 self 即可
@@ -88,10 +95,12 @@ impl PaperDriver {
         let mut instruments = BTreeMap::new();
         let mut expected = HashSet::new();
         let mut exchange_symbols = Vec::with_capacity(symbols.len());
+        let mut by_instrument = Vec::with_capacity(symbols.len());
         for sym in &symbols {
             let key = instrument_key_for(sym);
             let instrument = config.instrument_mode.instrument(&key);
             expected.insert(instrument.clone());
+            by_instrument.push((instrument.clone(), ExchangeSymbol(sym.clone())));
             instruments.insert(key, instrument);
             exchange_symbols.push(ExchangeSymbol(sym.clone()));
         }
@@ -110,6 +119,7 @@ impl PaperDriver {
         Ok(Self {
             config,
             instruments,
+            by_instrument,
             symbols: exchange_symbols,
             gateway,
             pump,
@@ -195,21 +205,33 @@ impl PaperDriver {
         kernel.enqueue_external(event, None).map_err(kerr)
     }
 
-    /// 推进一拍：泵行情（gateway 模式）→ 步进消化（含 feed_bar 已灌事件）
+    /// 推进一拍：排空交易所回报 → 泵行情 → 断线补齐 → 步进消化
     pub fn tick(&mut self) -> Result<(), String> {
         let kernel = self
             .kernel
             .as_mut()
             .ok_or_else(|| "内核未启动，请先 start".to_string())?;
-        // 1. 泵走 fanout 里攒的行情（feed_bar 模式无 pump，事件已直接入队）
+        // 1. 排空交易所回报；poll_updates 同时负责把行情搬进 fan-out 通道
+        //    （行情 → pump 只从这里驱动，不排它 gateway 模式行情就断流）
+        if let Some(gateway) = self.gateway.as_mut() {
+            gateway.poll_updates()?;
+        }
+        // 2. 泵走 fanout 里攒的行情（feed_bar 模式无 pump，事件已直接入队）
         if let Some(pump) = self.pump.as_mut() {
             for event in pump.drain().events {
                 kernel.enqueue_external(event, None).map_err(kerr)?;
             }
         }
-        // 2. 步进消化（多品种时栅栏未齐则本轮空转，等待后续 bar）
+        // 3. 断线补齐：缺口快照 → 反查品种 → fetch 历史 bar → 灌回同一条管道
+        if let (Some(pump), Some(gateway)) = (self.pump.as_mut(), self.gateway.as_ref()) {
+            for gap in pump.gaps().to_vec() {
+                backfill_gap(pump, gateway, kernel, &self.by_instrument, &gap)?;
+            }
+        }
+        // 4. 步进消化（补灌事件按收市时刻入队，EventQueue 天然把它们插到正确
+        //    历史位置；多品种时栅栏未齐则本轮空转，等待后续 bar）
         while kernel.step().map_err(kerr)? {}
-        // 3. PaperSink::poll 恒空，但保持与 LiveDriver 相同的 tick 三步节奏
+        // 5. PaperSink::poll 恒空，保持与 LiveDriver 相同的 tick 收尾节奏
         kernel.poll_external().map_err(kerr)
     }
 
@@ -234,6 +256,45 @@ impl PaperDriver {
 /// `KernelError` → `String` 的统一映射（与 `live_driver` 同款）
 fn kerr(e: KernelError) -> String {
     e.to_string()
+}
+
+/// 把一个缺口的最新历史 bar 拉回来灌进内核（`tick` 第 3 步的落点）
+///
+/// 自由函数而非 `PaperDriver` 方法：调用点同时借出 kernel / pump / gateway /
+/// by_instrument 四个字段，self 方法会立刻撞借用检查。品种不在反查表里只告警
+/// 跳过——缺口理论不该来自未声明品种，兜底不炸 tick。
+fn backfill_gap(
+    pump: &mut KernelPump,
+    gateway: &ExchangeGateway,
+    kernel: &mut Kernel,
+    by_instrument: &[(Instrument, ExchangeSymbol)],
+    gap: &Gap,
+) -> Result<(), String> {
+    let Some((_, symbol)) = by_instrument
+        .iter()
+        .find(|(instrument, _)| *instrument == gap.instrument)
+    else {
+        tracing::warn!(instrument = ?gap.instrument, "kernel paper: 缺口品种不在声明表里，跳过补灌");
+        return Ok(());
+    };
+    let Some(interval_ns) = interval_to_nanos(&gap.interval) else {
+        return Ok(());
+    };
+    // ponytail: naive heuristic — fetch_ohlcv 只能拉「最近 N 根」（无 since 参数），
+    // limit 按缺失根数 +2 根余量；缺口跨度超 MAX_GAP_FETCH 时只覆盖最近一段，
+    // 剩余缺口保留待后续 tick 继续补。升级路径 = fetch_ohlcv 加 since 按区间拉
+    let missing = (((gap.end.nanos - gap.start.nanos) / interval_ns).clamp(1, MAX_GAP_FETCH as i64)
+        as usize)
+        + 2;
+    let bars = gateway.fetch_ohlcv(symbol, &gap.interval, missing)?;
+    if bars.is_empty() {
+        return Ok(());
+    }
+    let batch = pump.replay_bars(symbol, &gap.interval, &bars);
+    for event in batch.events {
+        kernel.enqueue_external(event, None).map_err(kerr)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -423,6 +484,119 @@ mod tests {
         assert!(
             matches!(instrument, Instrument::Swap(_)),
             "Swap 模式必须解析为 Swap instrument: {instrument:?}"
+        );
+    }
+
+    /// T4：断线重连补齐——WS 漏推中间一根 bar，tick 的缺口补灌从 REST 拉回重放
+    /// （决策次数不变）；重推同一根 bar 被去重。账面语义与 T1 同源：
+    /// equity = 10000 − half_spread × Σ|调仓量|
+    #[test]
+    fn gateway_gap_backfill_replays_missing_bars() {
+        use axon_exchange::types::{ExchangeId, Kline, WsMessage};
+        use rust_decimal::Decimal;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // 按到达序计数 + 记录见过的 bar 起点：决策 4 次（不因补灌翻倍）、
+        // 补灌 bar 插到正确历史位置
+        #[derive(Default)]
+        struct CountHost {
+            calls: Arc<AtomicUsize>,
+            seen: Arc<Mutex<Vec<i64>>>,
+        }
+
+        impl StrategyHost for CountHost {
+            fn name(&self) -> &str {
+                "count"
+            }
+
+            fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
+                let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+                if let Ok(mut seen) = self.seen.lock() {
+                    seen.push(ev.bar.timestamp.nanos);
+                }
+                // 首根建仓 0.3、随后全平：固定数字让滑点损耗可手算
+                let ratios = [0.3, 0.0, 0.0, 0.0];
+                vec![OrderIntent::SetTarget {
+                    instrument: ev.instrument.clone(),
+                    target_ratio: ratios[idx.min(ratios.len() - 1)],
+                }]
+            }
+        }
+
+        // 收市 bar 形状的 WS kline（OHLC 同价 100）
+        fn ws_kline(start_ns: i64) -> WsMessage {
+            WsMessage::Kline(Kline {
+                symbol: ExchangeSymbol("BTCUSDT".to_string()),
+                interval: "1m".to_string(),
+                open: Decimal::from(100),
+                high: Decimal::from(100),
+                low: Decimal::from(100),
+                close: Decimal::from(100),
+                volume: Decimal::from(10),
+                timestamp: chrono::DateTime::from_timestamp_nanos(start_ns),
+                is_closed: true,
+            })
+        }
+
+        let (adapter, handle) = crate::test_support::mock_exchange(ExchangeId::Binance);
+        let mut driver = PaperDriver::new(Some(adapter), paper_config(), vec!["BTCUSDT".into()])
+            .expect("构造成功");
+        driver.connect().expect("mock connect 成功");
+        let host = CountHost::default();
+        let calls = Arc::clone(&host.calls);
+        let seen = Arc::clone(&host.seen);
+        driver.start(vec![Box::new(host)]).expect("start 成功");
+
+        // WS 推 t0/t1/t3（漏 t2），REST 历史里备好 t2
+        for offset in [0, ONE_MIN, 3 * ONE_MIN] {
+            handle.push_message(ws_kline(START + offset));
+        }
+        handle.state().ohlcv = vec![Bar {
+            timestamp: Timestamp::from_nanos(START + 2 * ONE_MIN),
+            open: Price::from_f64(100.0),
+            high: Price::from_f64(100.0),
+            low: Price::from_f64(100.0),
+            close: Price::from_f64(100.0),
+            volume: Quantity::from_f64(10.0),
+        }];
+        driver.tick().expect("tick 应成功");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 4, "4 根 bar 各决策一次");
+        let mut seen_sorted = seen.lock().unwrap().clone();
+        seen_sorted.sort();
+        seen_sorted.dedup();
+        assert_eq!(
+            seen_sorted,
+            vec![
+                START,
+                START + ONE_MIN,
+                START + 2 * ONE_MIN,
+                START + 3 * ONE_MIN
+            ],
+            "补灌的 t2 必须插到正确历史位置: {seen_sorted:?}"
+        );
+
+        // 全平后账面 = 10000 − 0.05 × (30 + 30)
+        let snap = driver.snapshot().expect("snapshot 成功");
+        assert!(
+            snap.positions.is_empty(),
+            "全平后持仓应为空: {:?}",
+            snap.positions
+        );
+        assert!(
+            (snap.equity - 9_997.0).abs() < 1e-6,
+            "权益 = 10000 − 3.0 价差损耗: {}",
+            snap.equity
+        );
+
+        // 重推 t2（模拟交易所乱序补发）：必须被去重，不再触发决策 / 补灌
+        handle.push_message(ws_kline(START + 2 * ONE_MIN));
+        driver.tick().expect("tick 应成功");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "重复 bar 不得触发第二次决策"
         );
     }
 }

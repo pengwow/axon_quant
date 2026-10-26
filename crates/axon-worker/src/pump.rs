@@ -22,13 +22,13 @@
 //! - 品种解析口径由构造参数决定：缺省现货（`BTCUSDT` → `BTC/USDT`），
 //!   live 跑永续时用 `with_instrument_mode` 传 `InstrumentMode::Swap`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axon_core::{
     Bar, Event, Instrument, MarketDataEvent, MarketDataPayload, OrderBookLevel, OrderBookSnapshot,
     Price, Quantity, Side, SystemAction, SystemEvent, Tick, Timestamp,
 };
-use axon_exchange::types::{Kline, Side as WsSide, WsMessage};
+use axon_exchange::types::{Kline, Side as WsSide, Symbol as ExchangeSymbol, WsMessage};
 use axon_kernel::{BarAggregator, InstrumentMode, interval_to_nanos};
 use tokio::sync::mpsc;
 
@@ -67,6 +67,10 @@ pub struct KernelPump {
     instrument_mode: InstrumentMode,
     /// 每个 `(instrument, interval)` 已见到的最新 bar 起始时间（缺口检测用）
     last_bar_start: HashMap<(Instrument, String), i64>,
+    /// 缺口补灌时回灌 bar 的起始时间记录（按 `(instrument, interval)` 分组）。
+    /// 判缺口覆盖不用聚合器的 seen：它每 key 只保留最近 16 根，长缺口会丢记录；
+    /// 这里自建全集，settle 后按剩余缺口窗口剪枝
+    replayed: HashMap<(Instrument, String), HashSet<i64>>,
     gaps: Vec<Gap>,
     next_seq: u64,
 }
@@ -88,6 +92,7 @@ impl KernelPump {
             aggregator: BarAggregator::new(),
             instrument_mode,
             last_bar_start: HashMap::new(),
+            replayed: HashMap::new(),
             gaps: Vec::new(),
             next_seq: 0,
         }
@@ -142,7 +147,18 @@ impl KernelPump {
             batch.events.extend(events);
         }
 
-        for event in &mut batch.events {
+        self.renumber(&mut batch.events);
+        batch
+    }
+
+    /// 断线补齐所需的缺口区间（按发现顺序累积）
+    pub fn gaps(&self) -> &[Gap] {
+        &self.gaps
+    }
+
+    /// 按到达顺序重编号事件的 seq（`drain` 与 `replay_bars` 共用）
+    fn renumber(&mut self, events: &mut [Event]) {
+        for event in events {
             match event {
                 Event::MarketData(md) => {
                     md.seq = self.next_seq;
@@ -155,12 +171,101 @@ impl KernelPump {
                 _ => {}
             }
         }
+    }
+
+    /// 断线补齐：把 `fetch_ohlcv` 拉回的历史 bar 灌回同一条事件管道
+    ///
+    /// 走与实时 kline 相同的聚合 / 去重路径（重复 bar 只计数不重放）；事件按
+    /// 补灌到达顺序重编号，随缺口一并清除后由调用方 `enqueue_external` 进内核
+    /// （与 `drain` 的下游约定一致）。事件时间戳是收市时刻，EventQueue 会把它们
+    /// 排到正确的历史位置，调用方无需关心补灌顺序与实时 bar 的交错。
+    pub fn replay_bars(
+        &mut self,
+        symbol: &ExchangeSymbol,
+        interval: &str,
+        bars: &[Bar],
+    ) -> KernelPumpBatch {
+        let mut batch = KernelPumpBatch::default();
+        let instrument = self
+            .instrument_mode
+            .instrument(&instrument_key_for(&symbol.0));
+        if instrument.base().as_str().is_empty() || instrument.quote().as_str().is_empty() {
+            tracing::warn!(symbol = %symbol.0, "kernel pump: 无法解析交易对，丢弃补灌 bar");
+            return batch;
+        }
+        let key = (instrument.clone(), interval.to_string());
+        {
+            // 先记录全量「回灌存在」（含将被去重的重复 bar）：重复 = 此前已处理
+            // = 不缺，settle 靠这份完整集合判定缺口覆盖。块作用域结束借用，
+            // 后面才能调 track_closed 等 &mut self 方法
+            let seen = self.replayed.entry(key).or_default();
+            seen.extend(bars.iter().map(|bar| bar.timestamp.nanos));
+        }
+        let mut events = Vec::with_capacity(bars.len());
+        for bar in bars {
+            // 与实时路径同一判重来源（BarAggregator），重复补灌只计数
+            if self.aggregator.is_duplicate(&(
+                instrument.clone(),
+                interval.to_string(),
+                bar.timestamp.nanos,
+            )) {
+                batch.skipped_duplicates += 1;
+                continue;
+            }
+            let bar_events =
+                self.aggregator
+                    .observe_kline(&instrument, interval, *bar, true, bar.timestamp);
+            self.track_closed(&bar_events);
+            events.extend(bar_events);
+        }
+        self.renumber(&mut events);
+        batch.events = events;
+        self.settle_gaps(&instrument, interval);
         batch
     }
 
-    /// 断线补齐所需的缺口区间（按发现顺序累积）
-    pub fn gaps(&self) -> &[Gap] {
-        &self.gaps
+    /// 结算缺口：按补灌记录清掉已完全覆盖的缺口，并剪枝补灌时间戳集合
+    ///
+    /// 覆盖判定 = 缺口区间 `[start, end)` 内每个整周期时间戳都出现在补灌记录里；
+    /// 空区间（`end <= start`）显式拒绝——`Range::step_by` 对空区间恒返回 true，
+    /// 会把病态缺口误判成已补齐。
+    fn settle_gaps(&mut self, instrument: &Instrument, interval: &str) {
+        let Some(interval_ns) = interval_to_nanos(interval) else {
+            return;
+        };
+        let key = (instrument.clone(), interval.to_string());
+        let old_gaps = std::mem::take(&mut self.gaps);
+        let mut kept = Vec::with_capacity(old_gaps.len());
+        {
+            let seen = self.replayed.get(&key);
+            for gap in old_gaps {
+                let covered = gap.instrument == *instrument
+                    && gap.interval == interval
+                    && seen.is_some_and(|set| {
+                        gap.end.nanos > gap.start.nanos
+                            && (gap.start.nanos..gap.end.nanos)
+                                .step_by(interval_ns as usize)
+                                .all(|ts| set.contains(&ts))
+                    });
+                if !covered {
+                    kept.push(gap);
+                }
+            }
+        }
+        self.gaps = kept;
+        // 剪枝：补灌记录只保留仍落在剩余缺口窗口内的时间戳，防无界增长
+        let windows: Vec<(i64, i64)> = self
+            .gaps
+            .iter()
+            .filter(|gap| gap.instrument == *instrument && gap.interval == interval)
+            .map(|gap| (gap.start.nanos, gap.end.nanos))
+            .collect();
+        if let Some(seen) = self.replayed.get_mut(&key) {
+            seen.retain(|ts| windows.iter().any(|&(lo, hi)| lo <= *ts && *ts < hi));
+        }
+        if self.replayed.get(&key).is_some_and(|set| set.is_empty()) {
+            self.replayed.remove(&key);
+        }
     }
 
     /// 单条 kline：未收市只更新聚合器，收市产出 `BarClosed` 并做缺口检测
@@ -375,6 +480,67 @@ mod tests {
             }],
             "缺一根 1m bar 必须记一条缺口"
         );
+    }
+
+    /// 构造内核 Bar（`replay_bars` 入参形状，非 WS JSON；价格主体随意，去重 /
+    /// 缺口检测只用时间戳）
+    fn bar(start_ns: i64, close: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(start_ns),
+            open: Price::from_f64(100.0),
+            high: Price::from_f64(101.0),
+            low: Price::from_f64(99.0),
+            close: Price::from_f64(close),
+            volume: Quantity::from_f64(10.0),
+        }
+    }
+
+    fn replay_btc(pump: &mut KernelPump, bars: &[Bar]) -> KernelPumpBatch {
+        pump.replay_bars(&ExchangeSymbol("BTCUSDT".to_string()), "1m", bars)
+    }
+
+    #[test]
+    fn test_replay_backfills_gap_once_and_dedups_on_repeat() {
+        let (tx, mut pump) = pump_channel();
+        tx.try_send(kline(0, true)).expect("channel 容量足够");
+        tx.try_send(kline(2 * MIN_MS, true))
+            .expect("channel 容量足够");
+        pump.drain();
+        assert_eq!(pump.gaps().len(), 1, "铺垫：缺 00:01 应记一条缺口");
+
+        // 补灌缺失的 00:01：缺口收敛
+        let batch = replay_btc(&mut pump, &[bar(MIN_NS, 100.5)]);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.skipped_duplicates, 0);
+        assert!(pump.gaps().is_empty(), "补齐后缺口必须清除");
+
+        // 同一根 bar 二次回灌：去重丢弃、不产事件、也不重开缺口
+        let batch = replay_btc(&mut pump, &[bar(MIN_NS, 100.5)]);
+        assert!(batch.events.is_empty(), "重复补灌只应记 skipped: {batch:?}");
+        assert_eq!(batch.skipped_duplicates, 1);
+        assert!(pump.gaps().is_empty());
+    }
+
+    #[test]
+    fn test_gap_survives_until_fully_covered() {
+        let (tx, mut pump) = pump_channel();
+        tx.try_send(kline(0, true)).expect("channel 容量足够");
+        // 缺 00:01、00:02 两根，直接到 00:03
+        tx.try_send(kline(3 * MIN_MS, true))
+            .expect("channel 容量足够");
+        pump.drain();
+        assert_eq!(pump.gaps().len(), 1);
+
+        // 只补 00:01：区间 [00:01, 00:03) 未全覆盖，缺口必须保留（防漏灌误清）
+        let batch = replay_btc(&mut pump, &[bar(MIN_NS, 100.5)]);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(pump.gaps().len(), 1, "缺口未补齐不能清除");
+
+        // 补 00:02：全覆盖，缺口清除（00:01 已注册进聚合器，本次只产 1 事件）
+        let batch = replay_btc(&mut pump, &[bar(2 * MIN_NS, 100.5)]);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.skipped_duplicates, 0);
+        assert!(pump.gaps().is_empty());
     }
 
     #[test]
