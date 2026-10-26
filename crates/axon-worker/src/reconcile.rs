@@ -13,9 +13,10 @@
 //!
 //! # 尚未接真实交易所
 //!
-//! 本模块没有 `fetch_positions` / `fetch_my_trades` / 余额查询的实现，两侧快照
-//! 都由调用方填入。真实接线（`axon_exchange::ExchangeAdapter` → 快照）留到
-//! testnet 阶段，与 [`crate::live_sink`] 的 gateway 桥接一起做。
+//! 本模块没有 `fetch_positions` / `fetch_my_trades` / `fetch_open_orders` /
+//! 余额查询的实现，两侧快照都由调用方填入。真实接线（
+//! `axon_exchange::ExchangeAdapter` → 快照）留到 testnet 阶段，与
+//! [`crate::live_sink`] 的 gateway 桥接一起做。
 //!
 //! 崩溃恢复的用法：重放 journal 得到本地快照 → 拉交易所快照 → [`reconcile()`] →
 //! [`resume_guard`] 决定能否继续跑。本地侧快照可直接
@@ -24,10 +25,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use axon_oms::OrderStatus;
 use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 use crate::live_sink::LiveSink;
+
+/// 订单是否在挂（非终态）
+///
+/// OMS `active_orders` 在 Stage B-MVP 后不再移除已终态订单（Filled/Cancelled/
+/// Rejected 仍留在表内），提取在挂单必须按状态过滤，不能直接把 key 集合当挂单。
+fn is_open_order(status: &OrderStatus) -> bool {
+    !matches!(
+        status,
+        OrderStatus::Filled { .. } | OrderStatus::Cancelled { .. } | OrderStatus::Rejected { .. }
+    )
+}
 
 /// 内核 / OMS 侧快照
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,6 +51,8 @@ pub struct LocalSnapshot {
     pub cash: f64,
     /// 已记账的成交编号（交易所 `trade_id`）
     pub fill_ids: BTreeSet<String>,
+    /// 本地在挂（未终态）订单编号
+    pub open_order_ids: BTreeSet<String>,
 }
 
 impl LocalSnapshot {
@@ -45,7 +60,8 @@ impl LocalSnapshot {
     ///
     /// - 持仓：绝对值在 `f64::EPSILON` 内的近零仓不进快照，避免浮点残渣触发对账 break；
     /// - 现金：OMS `Portfolio` 把计价币硬编码为 USDT；
-    /// - 成交：遍历全部订单历史取 `fill_id`，与交易所流水做差集。
+    /// - 成交：遍历全部订单历史取 `fill_id`，与交易所流水做差集；
+    /// - 在挂单：`active_orders` 按 `is_open_order` 过滤非终态。
     pub fn from_sink(sink: &LiveSink) -> Self {
         let balance = sink.oms().snapshot_balance();
         let positions = sink
@@ -57,12 +73,17 @@ impl LocalSnapshot {
                 (quantity.abs() > f64::EPSILON).then_some((position.symbol, quantity))
             })
             .collect();
-        let fill_ids = sink
-            .oms()
-            .snapshot()
+        let oms = sink.oms().snapshot();
+        let fill_ids = oms
             .order_history
             .iter()
             .flat_map(|record| record.fills.iter().map(|fill| fill.fill_id.clone()))
+            .collect();
+        let open_order_ids = oms
+            .active_orders
+            .iter()
+            .filter(|(_, order)| is_open_order(&order.status))
+            .map(|(id, _)| id.to_string())
             .collect();
         Self {
             positions,
@@ -72,6 +93,7 @@ impl LocalSnapshot {
                 .and_then(|v| v.to_f64())
                 .unwrap_or(0.0),
             fill_ids,
+            open_order_ids,
         }
     }
 }
@@ -85,6 +107,8 @@ pub struct VenueSnapshot {
     pub cash: f64,
     /// 交易所成交流水里的成交编号
     pub fill_ids: BTreeSet<String>,
+    /// 交易所当前在挂订单编号（如 `fetch_open_orders`），由调用方填入
+    pub open_order_ids: BTreeSet<String>,
 }
 
 /// 对账阈值
@@ -136,6 +160,14 @@ pub struct ReconcileReport {
     pub missing_fills: Vec<String>,
     /// 本地有、交易所没有的成交编号（多记）
     pub extra_fills: Vec<String>,
+    /// 交易所在挂、本地无记录的订单（幽灵单）。恢复窗口内可能成交而本地毫无
+    /// 感知，属危险差异
+    #[serde(default)]
+    pub ghost_orders: Vec<String>,
+    /// 本地在挂、交易所不存在的订单（本地状态陈旧，如撤销回报丢失或下单未达）。
+    /// 只报告不阻断——它不会凭空产生交易，处置由调用方决定
+    #[serde(default)]
+    pub orphan_local_orders: Vec<String>,
     /// 现金差异；在容差内时为 `None`
     pub cash_break: Option<CashBreak>,
     /// 冻结开仓的品种（`position_breaks` 的品种集合，升序）
@@ -143,11 +175,13 @@ pub struct ReconcileReport {
 }
 
 impl ReconcileReport {
-    /// 是否完全一致（无持仓 break、无成交差异、无现金 break）
+    /// 是否完全一致（无持仓 break、无成交/在挂单差异、无现金 break）
     pub fn is_clean(&self) -> bool {
         self.position_breaks.is_empty()
             && self.missing_fills.is_empty()
             && self.extra_fills.is_empty()
+            && self.ghost_orders.is_empty()
+            && self.orphan_local_orders.is_empty()
             && self.cash_break.is_none()
     }
 
@@ -204,6 +238,18 @@ pub fn reconcile(
         .cloned()
         .collect();
 
+    // 在挂单双向差集：venue 有本地无 = 幽灵单；本地有 venue 无 = 孤儿本地单。
+    let ghost_orders = venue
+        .open_order_ids
+        .difference(&local.open_order_ids)
+        .cloned()
+        .collect();
+    let orphan_local_orders = local
+        .open_order_ids
+        .difference(&venue.open_order_ids)
+        .cloned()
+        .collect();
+
     let cash_diff = venue.cash - local.cash;
     // 超出容差即 break：不按手续费 / 资金费自动归因抵扣。
     let cash_break = (cash_diff.abs() > cfg.cash_tolerance).then_some(CashBreak {
@@ -216,6 +262,8 @@ pub fn reconcile(
         position_breaks,
         missing_fills,
         extra_fills,
+        ghost_orders,
+        orphan_local_orders,
         cash_break,
         frozen_instruments,
     }
@@ -223,9 +271,11 @@ pub fn reconcile(
 
 /// 崩溃恢复守门：重放 journal 后，用对账报告决定是否允许继续
 ///
-/// - 有持仓 break 或现金 break → `Err`，账务不一致，必须人工介入；
-/// - 只有成交差异（漏记 / 多记）→ `Ok`，但调用方必须告警并人工核对成交
-///   （漏记可能是回报丢失，多记可能是重复记账的残余）。
+/// - 有持仓 break、现金 break 或幽灵单 → `Err`，账务不一致 / 交易所有未知动作，
+///   必须人工介入（幽灵单在恢复窗口内可能成交，继续跑会基于错误状态决策）；
+/// - 只有成交差异（漏记 / 多记）或孤儿本地单 → `Ok`，但调用方必须告警并人工核对
+///   （漏记可能是回报丢失，多记可能是重复记账的残余；孤儿单是本地状态陈旧，不会
+///   凭空产生交易）。
 pub fn resume_guard(report: &ReconcileReport) -> Result<(), String> {
     let mut reasons = Vec::new();
     if !report.position_breaks.is_empty() {
@@ -233,6 +283,12 @@ pub fn resume_guard(report: &ReconcileReport) -> Result<(), String> {
     }
     if report.cash_break.is_some() {
         reasons.push("现金差异".to_string());
+    }
+    if !report.ghost_orders.is_empty() {
+        reasons.push(format!(
+            "幽灵单 {} 个（交易所在挂、本地无记录）",
+            report.ghost_orders.len()
+        ));
     }
     if reasons.is_empty() {
         return Ok(());

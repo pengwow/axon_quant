@@ -319,6 +319,8 @@ pub struct LiveSink {
     last_price: HashMap<Instrument, f64>,
     /// poll 内攒下的回报状态（内核 `drain_external` 落盘 journal 用）
     pending_update_states: Vec<serde_json::Value>,
+    /// poll 拉到、**尚未应用**的回报（两段式落盘后再应用，见 `poll_staged`）
+    pending_applies: Vec<VenueUpdate>,
 }
 
 impl LiveSink {
@@ -343,6 +345,7 @@ impl LiveSink {
             next_order_id: 1,
             last_price: HashMap::new(),
             pending_update_states: Vec::new(),
+            pending_applies: Vec::new(),
         }
     }
 
@@ -677,6 +680,16 @@ impl LiveSink {
             );
             return;
         }
+        if update.fill_quantity > Decimal::ZERO && update.fill_price == Decimal::ZERO {
+            // 零价成交会把现金/权益账记歪（卖出无进账、买入白拿仓位）。仍按
+            // 通道语义记账保持与交易所数量一致，靠 reconcile 纠正偏差，但必须告警。
+            tracing::warn!(
+                order_id = %update.order_id,
+                trade_id = %trade_id,
+                fill_quantity = %update.fill_quantity,
+                "live sink: 成交价格为零（有成交量），本次按 0 记账"
+            );
+        }
 
         let signed_quantity = match side {
             OmsSide::Buy => update.fill_quantity,
@@ -764,16 +777,36 @@ impl ExecutionSink for LiveSink {
     }
 
     fn poll(&mut self) -> Result<Vec<Event>, KernelError> {
+        // 组合式：拉取入队 + 应用，两步连做。仅重演 / 非记录路径走这里；
+        // 首跑 live 的记录路径走拆分的 poll_staged / apply_staged——journal
+        // 写入插在两段之间，保证「已应用」的回报必然「已落盘」。
+        self.poll_staged()?;
+        self.apply_staged()
+    }
+
+    /// 两段式第一段：从网关拉回报，只解析入队、**不应用**，返回恒空。
+    ///
+    /// 被丢弃的回报（未知订单 / 非法迁移 / 去重）也照攒状态——它们是外部输入，
+    /// 重演时交给 apply_update 重现同样的丢弃判定，journal 不替 sink 做决定。
+    fn poll_staged(&mut self) -> Result<Vec<Event>, KernelError> {
         let updates = self
             .gateway
             .poll_updates()
             .map_err(|e| KernelError::Sink(format!("gateway poll: {e}")))?;
-        let mut out = Vec::new();
         for update in updates {
-            // 先攒状态再应用：被丢弃的回报（未知订单 / 非法迁移 / 去重）也照
-            // 攒——它们是外部输入，重演时交给 apply_update 重现同样的丢弃判定，
-            // journal 不替 sink 做决定。
             self.pending_update_states.push(update.to_journal_state());
+            self.pending_applies.push(update);
+        }
+        Ok(Vec::new())
+    }
+
+    /// 两段式第二段：应用已落盘的暂存回报并产出事件。
+    ///
+    /// 主回路先调 [`Self::take_update_states`]+journal 落盘，再调本方法：
+    /// 中间崩溃时 journal 里至少有回报记录，重演不丢外部输入。
+    fn apply_staged(&mut self) -> Result<Vec<Event>, KernelError> {
+        let mut out = Vec::new();
+        for update in std::mem::take(&mut self.pending_applies) {
             self.apply_update(update, &mut out);
         }
         Ok(out)

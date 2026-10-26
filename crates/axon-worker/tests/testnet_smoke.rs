@@ -823,6 +823,8 @@ fn local_snapshot(sink: &LiveSink) -> LocalSnapshot {
             .and_then(|v| v.to_f64())
             .unwrap_or(0.0),
         fill_ids,
+        // smoke 场景不做在挂单比对，填空集合（venue 侧同样为空）
+        open_order_ids: BTreeSet::new(),
     }
 }
 
@@ -861,6 +863,8 @@ fn venue_snapshot(
         // 合约钱包口径：与 OMS `AccountingMode::Wallet` 的 cash 对齐
         cash: balances.wallet.to_f64().unwrap_or(0.0),
         fill_ids,
+        // 网关暂无 fetch_open_orders 接口，与 venue 快照主路径同语义：空集合
+        open_order_ids: BTreeSet::new(),
     }
 }
 

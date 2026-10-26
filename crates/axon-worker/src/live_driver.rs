@@ -9,6 +9,8 @@
 //! 外层（QuantCell 的 Python 线程）按固定周期（建议 1s）调 [`LiveDriver::tick`]。
 //! 注意回报有「落定落后一拍」的语义：WS 消息在 tick 尾部 `poll_external`
 //! 时才被拉取处理，其产生的回流事件要等下一 tick 的 `step()` 才被内核消化。
+//! 行情断流期间的缺口由泵记录，tick 中段用 REST 网关拉历史 bar 补灌
+//! （见 `backfill_gap`，与 `paper_driver` 同构）。
 //!
 //! # 实时数据通路（v1 无后台任务）
 //!
@@ -35,17 +37,19 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use tokio::sync::mpsc;
 
+use axon_core::Instrument;
 use axon_exchange::ExchangeAdapter;
 use axon_exchange::types::{Side as ExchangeSide, Symbol as ExchangeSymbol};
 use axon_kernel::{
     InstrumentMode, Journal, Kernel, KernelConfig, KernelError, RunManifest, StrategyHost,
+    interval_to_nanos,
 };
 use axon_oms::AccountingMode;
 
 use crate::backtest::instrument_key_for;
 use crate::exchange_gateway::ExchangeGateway;
 use crate::live_sink::LiveSink;
-use crate::pump::KernelPump;
+use crate::pump::{Gap, KernelPump};
 use crate::reconcile::{
     LocalSnapshot, ReconcileConfig, ReconcileReport, VenueSnapshot, reconcile, resume_guard,
 };
@@ -54,6 +58,8 @@ use crate::reconcile::{
 const FANOUT_CHANNEL_CAPACITY: usize = 4096;
 /// ponytail: 精确审计需游标全量拉取，v1 只翻最近 1000 笔，超长停机靠 resume_guard 告警兜底
 const TRADES_PAGE_LIMIT: u32 = 1000;
+/// 单次缺口补灌的最大拉取根数（`fetch_ohlcv` 无 since 参数、只能取最近 N 根）
+const MAX_GAP_FETCH: usize = 1000;
 
 /// 统一内核的实盘驱动器
 ///
@@ -73,6 +79,11 @@ pub struct LiveDriver {
     gateway: Option<ExchangeGateway>,
     /// 行情泵（fanout 接收端在构造时接好）
     pump: KernelPump,
+    /// instrument → 交易所 symbol 反查表，缺口补灌按 `gap.instrument` 找 fetch 入参
+    by_instrument: Vec<(Instrument, ExchangeSymbol)>,
+    /// REST 专用网关（断线缺口补灌）：与 sink 内主网关共享 adapter，但不取
+    /// `market_data_rx` 单消费者通道，也从不 poll
+    rest_gateway: ExchangeGateway,
     /// 统一内核；`tick` / `snapshot` / `shutdown` 要求已启动
     kernel: Option<Kernel>,
 }
@@ -101,18 +112,30 @@ impl LiveDriver {
         }
         let shadow_cash = Decimal::from_f64(shadow_cash)
             .ok_or_else(|| format!("影子保证金不是有效数字: {shadow_cash}"))?;
+        // instrument → 交易所 symbol 反查表（缺口补灌按 gap.instrument 反查）
+        let by_instrument = symbols
+            .iter()
+            .map(|sym| {
+                let instrument = config.instrument_mode.instrument(&instrument_key_for(sym));
+                (instrument, ExchangeSymbol(sym.clone()))
+            })
+            .collect();
         let symbols = symbols.into_iter().map(ExchangeSymbol).collect();
 
-        // fan-out 接收端交给 pump（按构造口径解析品种），发送端交给网关
+        // fan-out 接收端交给 pump（按构造口径解析品种），发送端交给网关；
+        // 另备一个 REST 专用网关，只做断线缺口的历史 bar 补拉
         let (fanout_tx, fanout_rx) = mpsc::channel(FANOUT_CHANNEL_CAPACITY);
-        let gateway = ExchangeGateway::shared(adapter)?.with_market_data_fanout(fanout_tx);
+        let gateway = ExchangeGateway::shared(adapter.clone())?.with_market_data_fanout(fanout_tx);
+        let rest_gateway = ExchangeGateway::shared_rest_only(adapter)?;
         let pump = KernelPump::with_instrument_mode(fanout_rx, config.instrument_mode);
         Ok(Self {
             config,
             shadow_cash,
             accounting,
             symbols,
+            by_instrument,
             gateway: Some(gateway),
+            rest_gateway,
             pump,
             kernel: None,
         })
@@ -242,6 +265,15 @@ impl LiveDriver {
             .map_err(|e| format!("journal 重演失败: {e}"))?;
         // ④ 本地快照（重演后 sink 内的账面）
         let local = Self::local_snapshot(&kernel)?;
+        // ④' 从重演出的 OMS 历史重建网关「累计→增量」状态：last_filled 只在
+        //     内存里，重启即空；不从重演恢复的话，恢复后同一订单的下一笔
+        //     回报会以 0 为基准算出虚增的增量，把已恢复的成交重复记账。
+        let replayed = kernel
+            .sink()
+            .as_any()
+            .downcast_ref::<LiveSink>()
+            .expect("LiveDriver 的 sink 必为 LiveSink");
+        gateway.restore_last_filled(&replayed.oms().snapshot().order_history);
         // ⑤ 交易所体检（此时 gateway 未 move，失败可整体重试）
         let venue = fetch_venue_snapshot(gateway, symbols)?;
         // ⑥⑦ 对账 + 守卫
@@ -251,7 +283,7 @@ impl LiveDriver {
         Ok((kernel, report))
     }
 
-    /// 推进一拍：泵行情 → 入队 → 步进 → 尾部拉 WS 消息
+    /// 推进一拍：泵行情 → 断线补齐 → 步进 → 尾部拉 WS 消息
     ///
     /// 顺序依据数据通路：WS 消息只在尾部 `poll_external` 被拉取
     /// （行情转 fanout 供下一 tick、回报即时簿记并回流），
@@ -266,9 +298,20 @@ impl LiveDriver {
         for event in batch.events {
             kernel.enqueue_external(event, None).map_err(kerr)?;
         }
-        // 2. 步进消化（含上一 tick 回流的回报事件）
+        // 2. 断线补齐：行情断流期间的缺口由泵记录，REST 拉回历史 bar 灌进
+        //    同一条管道（EventQueue 按收市时刻插到正确历史位置）
+        for gap in self.pump.gaps().to_vec() {
+            backfill_gap(
+                &mut self.pump,
+                &self.rest_gateway,
+                kernel,
+                &self.by_instrument,
+                &gap,
+            )?;
+        }
+        // 3. 步进消化（含上一 tick 回流的回报事件）
         while kernel.step().map_err(kerr)? {}
-        // 3. 尾部拉取：WS 回报入 OMS 簿记 + 行情转 fanout
+        // 4. 尾部拉取：WS 回报入 OMS 簿记 + 行情转 fanout
         kernel.poll_external().map_err(kerr)
     }
 
@@ -310,6 +353,47 @@ fn kerr(e: KernelError) -> String {
     e.to_string()
 }
 
+/// 把一个缺口的最新历史 bar 拉回来灌进内核（`tick` 第 2 步的落点）
+///
+/// 自由函数而非 `LiveDriver` 方法：调用点同时借出 kernel / pump /
+/// rest_gateway / by_instrument 四个字段，self 方法会立刻撞借用检查。
+/// 与 `paper_driver::backfill_gap` 同构，差别只在 REST 走专用网关
+/// （下单主网关已 move 进 sink，无法从此处借出）。品种不在反查表里
+/// 只告警跳过——缺口理论不该来自未声明品种，兜底不炸 tick。
+fn backfill_gap(
+    pump: &mut KernelPump,
+    gateway: &ExchangeGateway,
+    kernel: &mut Kernel,
+    by_instrument: &[(Instrument, ExchangeSymbol)],
+    gap: &Gap,
+) -> Result<(), String> {
+    let Some((_, symbol)) = by_instrument
+        .iter()
+        .find(|(instrument, _)| *instrument == gap.instrument)
+    else {
+        tracing::warn!(instrument = ?gap.instrument, "kernel live: 缺口品种不在声明表里，跳过补灌");
+        return Ok(());
+    };
+    let Some(interval_ns) = interval_to_nanos(&gap.interval) else {
+        return Ok(());
+    };
+    // ponytail: naive heuristic — fetch_ohlcv 只能拉「最近 N 根」（无 since 参数），
+    // limit 按缺失根数 +2 根余量；缺口跨度超 MAX_GAP_FETCH 时只覆盖最近一段，
+    // 剩余缺口保留待后续 tick 继续补。升级路径 = fetch_ohlcv 加 since 按区间拉
+    let missing = (((gap.end.nanos - gap.start.nanos) / interval_ns).clamp(1, MAX_GAP_FETCH as i64)
+        as usize)
+        + 2;
+    let bars = gateway.fetch_ohlcv(symbol, &gap.interval, missing)?;
+    if bars.is_empty() {
+        return Ok(());
+    }
+    let batch = pump.replay_bars(symbol, &gap.interval, &bars);
+    for event in batch.events {
+        kernel.enqueue_external(event, None).map_err(kerr)?;
+    }
+    Ok(())
+}
+
 /// 拉取交易所侧快照：带符号持仓 + 钱包现金 + 成交流水 id 集合
 ///
 /// 口径与 `LocalSnapshot::from_sink` 严格对齐（|q| 过滤、BASE/QUOTE 键、
@@ -348,6 +432,10 @@ fn fetch_venue_snapshot(
         positions,
         cash,
         fill_ids,
+        // 交易所网关暂无 fetch_open_orders 接口，venue 侧在挂单填空集合：
+        // 空集合不会产生幽灵单误报（resume_guard 只拦 ghost），本地在挂单会以
+        // 孤儿单身份进报告供人工核对（与 python 侧 snapshot_from_dict 缺省语义一致）
+        open_order_ids: BTreeSet::new(),
     })
 }
 
@@ -542,6 +630,7 @@ mod tests {
                 .to_f64()
                 .unwrap_or(0.0),
             fill_ids: state.trades.iter().map(|t| t.trade_id.clone()).collect(),
+            open_order_ids: BTreeSet::new(),
         }
     }
 

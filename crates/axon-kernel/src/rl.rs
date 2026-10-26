@@ -30,7 +30,11 @@ use crate::host::{HostCtx, OrderIntent, StrategyHost};
 /// 变体，而不是把 `on_event` 改成 async。
 pub trait InferenceBackend: Send {
     /// 用观测向量推理出一个动作
-    fn infer(&mut self, obs: &[f64]) -> Action;
+    ///
+    /// 返回 `None` 表示本次推理不可用（后端异常、结果非有限等）。Host 会走与
+    /// 坏观测相同的降级通道：显式 Hold，不产出 `SetTarget`——避免后端把
+    /// 「不可用」误编码成 0.0 目标仓位，把一次模型异常放大成清仓动作。
+    fn infer(&mut self, obs: &[f64]) -> Option<Action>;
     /// 模型标识（写入日志 / journal 的产物三元组之一）
     fn model_id(&self) -> &str;
 }
@@ -163,8 +167,19 @@ impl StrategyHost for RLStrategyHost {
             }
         };
 
-        // 4) 推理 + 动作解码为权益占比（内核侧唯一解码入口）
-        let action = self.backend.infer(&obs);
+        // 4) 推理 + 动作解码为权益占比（内核侧唯一解码入口）；
+        //    后端不可用（None）与坏观测同通道：显式 Hold，不碰仓位
+        let action = match self.backend.infer(&obs) {
+            Some(action) => action,
+            None => {
+                tracing::warn!(
+                    model = self.backend.model_id(),
+                    instrument = %self.symbol,
+                    "rl host: inference unavailable, holding"
+                );
+                return Vec::new();
+            }
+        };
         vec![OrderIntent::SetTarget {
             instrument: self.symbol.clone(),
             target_ratio: self.decoder.decode_target_ratio(&action),
@@ -223,9 +238,9 @@ mod tests {
     }
 
     impl InferenceBackend for FixedBackend {
-        fn infer(&mut self, obs: &[f64]) -> Action {
+        fn infer(&mut self, obs: &[f64]) -> Option<Action> {
             self.lens.lock().unwrap().push(obs.len());
-            Action::continuous(vec![self.value])
+            Some(Action::continuous(vec![self.value]))
         }
 
         fn model_id(&self) -> &str {
@@ -336,9 +351,9 @@ mod tests {
     }
 
     impl InferenceBackend for RecordingBackend {
-        fn infer(&mut self, obs: &[f64]) -> Action {
+        fn infer(&mut self, obs: &[f64]) -> Option<Action> {
             self.observations.lock().unwrap().push(obs.to_vec());
-            Action::continuous(vec![0.3])
+            Some(Action::continuous(vec![0.3]))
         }
 
         fn model_id(&self) -> &str {
@@ -351,8 +366,10 @@ mod tests {
         let mut h = host(2, 0.5);
         let c = ctx(10_000.0, 0.0, 100.0);
 
-        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), Some(0.5));
+        // 预热期：window=2 第一根 bar 历史不足，观测构建报 InsufficientData → Hold
+        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), None);
         assert_eq!(h.history().len(), 1);
+        // 第 2 根起窗口凑满，恢复正常推理
         assert_eq!(run_bar(&mut h, bar(MIN, 101.0), &c), Some(0.5));
         assert_eq!(run_bar(&mut h, bar(2 * MIN, 102.0), &c), Some(0.5));
 
@@ -434,7 +451,8 @@ mod tests {
     fn test_backend_replacement_takes_effect_at_bar_boundary() {
         let mut h = host(2, 0.5);
         let c = ctx(10_000.0, 0.0, 100.0);
-        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), Some(0.5));
+        // 第 1 根 bar 历史不足 → 预热 Hold；第 2 根起窗口凑满
+        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), None);
         assert_eq!(run_bar(&mut h, bar(MIN, 100.0), &c), Some(0.5));
 
         // bar 边界替换后端：下一次 on_event 必须用新模型

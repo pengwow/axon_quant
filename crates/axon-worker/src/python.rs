@@ -644,11 +644,12 @@ fn build_rl_spec(
 struct PyRatioBackend {
     predict: Py<PyAny>,
     model_id: String,
-    /// 最近一次成功推理的目标占比
+    /// 最近一次成功推理的目标占比；`None` = 从未成功过
     ///
     /// 推理抛异常 / 返回非有限值时沿用上次结果：`SetTarget` 契约没有「Hold」，
-    /// 退回 0.0 会强制平仓，把一次模型异常放大成清仓动作。
-    last_ratio: f64,
+    /// 退回 0.0 会强制平仓，把一次模型异常放大成清仓动作。从未成功时同样按
+    /// 不可用处理（返回 `None` → Host 显式 Hold），冷启动首败不至于清仓。
+    last_ratio: Option<f64>,
 }
 
 impl PyRatioBackend {
@@ -656,20 +657,20 @@ impl PyRatioBackend {
         Self {
             predict,
             model_id,
-            last_ratio: 0.0,
+            last_ratio: None,
         }
     }
 }
 
 impl InferenceBackend for PyRatioBackend {
-    fn infer(&mut self, obs: &[f64]) -> Action {
+    fn infer(&mut self, obs: &[f64]) -> Option<Action> {
         let ratio = Python::attach(|py| {
             self.predict
                 .call1(py, (obs,))
                 .and_then(|result| result.extract::<f64>(py))
         });
         match ratio {
-            Ok(value) if value.is_finite() => self.last_ratio = value.clamp(-1.0, 1.0),
+            Ok(value) if value.is_finite() => self.last_ratio = Some(value.clamp(-1.0, 1.0)),
             Ok(value) => tracing::warn!(
                 model = %self.model_id,
                 value,
@@ -681,7 +682,8 @@ impl InferenceBackend for PyRatioBackend {
                 "rl backend: predict 调用失败，沿用上次目标"
             ),
         }
-        Action::continuous(vec![self.last_ratio])
+        // 从未成功过 → None：交由 Host 显式 Hold，而不是把 0.0 当目标清仓
+        self.last_ratio.map(|ratio| Action::continuous(vec![ratio]))
     }
 
     fn model_id(&self) -> &str {
@@ -1029,13 +1031,20 @@ fn manifest_dict<'py>(
     Ok(d)
 }
 
-/// 快照 dict 三字段 → (positions, cash, fill_ids)
+/// 快照 tuple 物化类型：(positions, cash, fill_ids, open_order_ids)
+type SnapshotTuple = (
+    BTreeMap<String, f64>,
+    f64,
+    BTreeSet<String>,
+    BTreeSet<String>,
+);
+
+/// 快照 dict 四字段 → (positions, cash, fill_ids, open_order_ids)
 ///
 /// `positions` / `cash` / `fill_ids` 缺省取空值：venue 初始无仓、无成交是常态；
+/// `open_order_ids` 缺省为空（调用方未接 `fetch_open_orders` 时不参与比对）；
 /// `LocalSnapshot` 与 `VenueSnapshot` 字段同构，共用本函数。
-fn snapshot_from_dict(
-    d: &Bound<'_, PyDict>,
-) -> PyResult<(BTreeMap<String, f64>, f64, BTreeSet<String>)> {
+fn snapshot_from_dict(d: &Bound<'_, PyDict>) -> PyResult<SnapshotTuple> {
     let positions: BTreeMap<String, f64> = d
         .get_item("positions")?
         .map(|v| v.extract())
@@ -1053,7 +1062,14 @@ fn snapshot_from_dict(
         .unwrap_or_default()
         .into_iter()
         .collect();
-    Ok((positions, cash, fill_ids))
+    let open_order_ids: BTreeSet<String> = d
+        .get_item("open_order_ids")?
+        .map(|v| v.extract::<Vec<String>>())
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    Ok((positions, cash, fill_ids, open_order_ids))
 }
 
 /// 崩溃恢复重演器：从 journal 重建 OMS 影子账本并抽取本地快照
@@ -1242,9 +1258,10 @@ impl PyLiveRecovery {
 
 // ── 实盘驱动器绑定（统一内核实时原语的 Python 面） ─────────────────────
 
-/// `LocalSnapshot` → Python dict `{positions, cash, fill_ids}`
+/// `LocalSnapshot` → Python dict `{positions, cash, fill_ids, open_order_ids}`
 ///
-/// `positions` / `fill_ids` 键序固定（BTreeMap / BTreeSet），对账两侧可逐键比对。
+/// `positions` / `fill_ids` / `open_order_ids` 键序固定（BTreeMap / BTreeSet），
+/// 对账两侧可逐键比对。
 fn local_snapshot_dict<'py>(
     py: Python<'py>,
     local: &LocalSnapshot,
@@ -1257,6 +1274,10 @@ fn local_snapshot_dict<'py>(
     d.set_item("positions", positions)?;
     d.set_item("cash", local.cash)?;
     d.set_item("fill_ids", local.fill_ids.iter().collect::<Vec<_>>())?;
+    d.set_item(
+        "open_order_ids",
+        local.open_order_ids.iter().collect::<Vec<_>>(),
+    )?;
     Ok(d)
 }
 
@@ -1752,17 +1773,19 @@ fn reconcile_snapshots<'py>(
         }
         *target = t;
     }
-    let (positions, cash, fill_ids) = snapshot_from_dict(local.cast::<PyDict>()?)?;
+    let (positions, cash, fill_ids, open_order_ids) = snapshot_from_dict(local.cast::<PyDict>()?)?;
     let local = LocalSnapshot {
         positions,
         cash,
         fill_ids,
+        open_order_ids,
     };
-    let (positions, cash, fill_ids) = snapshot_from_dict(venue.cast::<PyDict>()?)?;
+    let (positions, cash, fill_ids, open_order_ids) = snapshot_from_dict(venue.cast::<PyDict>()?)?;
     let venue = VenueSnapshot {
         positions,
         cash,
         fill_ids,
+        open_order_ids,
     };
     let report = reconcile_impl(&local, &venue, &config);
     let json_mod = py.import("json")?;

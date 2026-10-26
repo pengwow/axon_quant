@@ -24,6 +24,7 @@ fn snapshot(entries: &[(&str, f64)], cash: f64, fill_ids: &[&str]) -> LocalSnaps
         positions: positions(entries),
         cash,
         fill_ids: fills(fill_ids),
+        open_order_ids: BTreeSet::new(),
     }
 }
 
@@ -32,6 +33,7 @@ fn venue_snapshot(entries: &[(&str, f64)], cash: f64, fill_ids: &[&str]) -> Venu
         positions: positions(entries),
         cash,
         fill_ids: fills(fill_ids),
+        open_order_ids: BTreeSet::new(),
     }
 }
 
@@ -116,7 +118,43 @@ fn test_cash_break_blocks_resume() {
     assert!(err.contains("现金差异"), "错误信息应说明现金差异: {err}");
 }
 
-/// 5) 持仓差异在容差内 → 不算 break，也不冻结
+/// 5) 交易所在挂、本地无记录 → 幽灵单进报告，续跑守卫 Err
+#[test]
+fn test_ghost_order_blocks_resume() {
+    let mut local = snapshot(&[], 10_000.0, &[]);
+    let mut venue = venue_snapshot(&[], 10_000.0, &[]);
+    venue.open_order_ids = fills(&["ghost-1", "ghost-2"]);
+    // 只有 ghost-2 是幽灵单：ghost-1 两侧都有（本地也有该单）
+    local.open_order_ids.insert("ghost-1".to_string());
+
+    let report = reconcile(&local, &venue, &ReconcileConfig::default());
+
+    assert_eq!(report.ghost_orders, vec!["ghost-2".to_string()]);
+    assert!(report.orphan_local_orders.is_empty());
+    assert!(!report.is_clean(), "幽灵单不算干净（恢复窗口内可能成交）");
+    let err = resume_guard(&report).expect_err("幽灵单必须阻断续跑");
+    assert!(err.contains("幽灵单"), "错误信息应说明幽灵单: {err}");
+}
+
+/// 6) 本地在挂、交易所没有 → 孤儿单只进报告，不阻断续跑
+#[test]
+fn test_orphan_local_order_reported_without_blocking_resume() {
+    let mut local = snapshot(&[], 10_000.0, &[]);
+    local.open_order_ids = fills(&["local-1"]);
+    let venue = venue_snapshot(&[], 10_000.0, &[]);
+
+    let report = reconcile(&local, &venue, &ReconcileConfig::default());
+
+    assert_eq!(report.orphan_local_orders, vec!["local-1".to_string()]);
+    assert!(report.ghost_orders.is_empty());
+    assert!(!report.is_clean());
+    assert!(
+        resume_guard(&report).is_ok(),
+        "孤儿单是本地状态陈旧，不会凭空产生交易，不阻断续跑"
+    );
+}
+
+/// 7) 持仓差异在容差内 → 不算 break，也不冻结
 #[test]
 fn test_position_within_tolerance_is_clean() {
     let local = snapshot(&[("BTC/USDT", 1.0)], 1_000.0, &[]);
@@ -133,7 +171,7 @@ fn test_position_within_tolerance_is_clean() {
     assert!(report.is_clean());
 }
 
-/// 6) 报告 JSON 落盘后可解析回读（语义不丢字段）
+/// 8) 报告 JSON 落盘后可解析回读（语义不丢字段）
 #[test]
 fn test_report_json_roundtrip() {
     let local = snapshot(&[("BTC/USDT", 1.0)], 1_000.0, &["t1"]);

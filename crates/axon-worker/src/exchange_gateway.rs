@@ -45,8 +45,8 @@ use axon_exchange::types::{
     Side as ExchangeSide, Symbol as ExchangeSymbol, Ticker, TimeInForce, UserTrade, WsMessage,
 };
 use axon_oms::{
-    Order as OmsOrder, OrderId as OmsOrderId, OrderStatus as OmsOrderStatus,
-    OrderType as OmsOrderType, Side as OmsSide,
+    Order as OmsOrder, OrderId as OmsOrderId, OrderRecord as OmsOrderRecord,
+    OrderStatus as OmsOrderStatus, OrderType as OmsOrderType, Side as OmsSide,
 };
 use rust_decimal::Decimal;
 use tokio::runtime::Runtime;
@@ -81,20 +81,43 @@ impl ExchangeGateway {
     /// （对账），两者必须共享同一个 adapter，所以支持从外部传入 Arc。
     /// 同样必须在 runtime 之外调用（`blocking_lock` + 创建 Runtime）。
     pub fn shared(adapter: Arc<Mutex<Box<dyn ExchangeAdapter>>>) -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| format!("构建 tokio 运行时失败: {e}"))?;
+        let runtime = Self::build_runtime()?;
         // 同步上下文取通道：adapter 的 `market_data_rx` 用 `blocking_lock`，
         // 在 async 任务里调用会 panic，所以只能在这里取一次。
         let updates = adapter.blocking_lock().market_data_rx();
-        Ok(Self {
+        Ok(Self::assemble(adapter, runtime, Some(updates)))
+    }
+
+    /// 从已有 adapter Arc 创建仅 REST 的网关（断线缺口补灌专用）
+    ///
+    /// 与 [`Self::shared`] 的差别：不取 adapter 的 `market_data_rx`
+    /// 单消费者通道（主网关已持有它，第二个 `shared` 实例会在此 panic）。
+    /// 本网关只出 REST 请求（如 live_driver 的历史 bar 补拉），
+    /// 从不 `poll_updates`。同样必须在 runtime 之外调用（创建 Runtime）。
+    pub fn shared_rest_only(adapter: Arc<Mutex<Box<dyn ExchangeAdapter>>>) -> Result<Self, String> {
+        let runtime = Self::build_runtime()?;
+        Ok(Self::assemble(adapter, runtime, None))
+    }
+
+    fn build_runtime() -> Result<Runtime, String> {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("构建 tokio 运行时失败: {e}"))
+    }
+
+    fn assemble(
+        adapter: Arc<Mutex<Box<dyn ExchangeAdapter>>>,
+        runtime: Runtime,
+        updates: Option<mpsc::Receiver<WsMessage>>,
+    ) -> Self {
+        Self {
             adapter,
             runtime,
-            updates: Some(updates),
+            updates,
             market_data_tx: None,
             last_filled: HashMap::new(),
-        })
+        }
     }
 
     /// 接上行情 fan-out 通道（live 主回路必用）
@@ -105,6 +128,22 @@ impl ExchangeGateway {
     pub fn with_market_data_fanout(mut self, tx: mpsc::Sender<WsMessage>) -> Self {
         self.market_data_tx = Some(tx);
         self
+    }
+
+    /// 崩溃恢复时，从 journal 重演出的 OMS 订单历史重建累计→增量转换状态
+    ///
+    /// `last_filled` 只在内存里，重启即空；不重建的话，恢复后同一订单的
+    /// 下一笔回报会把「交易所累计 − 0」当增量，把重演已恢复的成交重复记账
+    /// （部分成交订单的超量部分还会被 OMS 超量钳制截走，账面悄悄多记）。
+    /// OMS 每笔 fill 的 quantity 是单次增量（全仓带符号），绝对值累加即
+    /// 交易所侧已回报的累计成交量。
+    pub fn restore_last_filled(&mut self, history: &[OmsOrderRecord]) {
+        for record in history {
+            let total: Decimal = record.fills.iter().map(|f| f.quantity.abs()).sum();
+            if !total.is_zero() {
+                self.last_filled.insert(record.order.id.to_string(), total);
+            }
+        }
     }
 
     /// 建立交易所连接（REST 探活 + 启动 WS 监督任务）
@@ -293,12 +332,22 @@ fn convert(
             .clone()
             .unwrap_or_else(|| format!("{order_id}:{}:{fill_quantity}", timestamp.nanos))
     });
+    let fill_price = update.avg_price.unwrap_or(Decimal::ZERO);
+    if fill_quantity > Decimal::ZERO && fill_price == Decimal::ZERO {
+        // 有成交量却缺均价：正常 Binance/OKX 成交回报必带价格，走到这说明
+        // adapter 解析出问题（比如字段改名），按 0 记账会污染盈亏，先告警暴露。
+        tracing::warn!(
+            order_id = %order_id,
+            fill_quantity = %fill_quantity,
+            "exchange gateway: 成交回报缺 avg_price，fill_price 落 0（需排查 adapter）"
+        );
+    }
     Some(VenueUpdate {
         order_id,
         status: map_status(update.status),
         fill_quantity,
         // 交易所只给累计均价；单订单内价格差异通常极小，按均价记本次成交。
-        fill_price: update.avg_price.unwrap_or(Decimal::ZERO),
+        fill_price,
         // `n` 已由 adapter 归一成「本笔增量」的手续费，可直接进钱包口径账本。
         fee: update.fee,
         trade_id,
@@ -481,5 +530,48 @@ mod tests {
         let trades = gateway.fetch_my_trades(&symbol, None, 1000).unwrap();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].trade_id, "binfut:BTCUSDT:373270969");
+    }
+
+    #[test]
+    fn restored_last_filled_prevents_double_counting_on_resume() {
+        // 恢复场景：journal 重演已把「累计 30」入账（卖单 fill 增量 -30）。
+        // restore 预填 last_filled 后，交易所累计 40 的回报增量必须为
+        // 40 − 30 = 10，而不是空状态算出的 40（把重演部分重复记账）。
+        use axon_oms::Fill as OmsFill;
+
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        let mut gateway = ExchangeGateway::shared(adapter).unwrap();
+
+        let order = OmsOrder::new(
+            "BTC-USDT".into(),
+            OmsSide::Sell,
+            OmsOrderType::Limit,
+            Decimal::from(90),
+            Decimal::from(100),
+        );
+        let record = OmsOrderRecord {
+            order: order.clone(),
+            fills: vec![OmsFill {
+                fill_id: "t-1".into(),
+                symbol: "BTC-USDT".into(),
+                instrument: None,
+                price: Decimal::from(100),
+                quantity: Decimal::from(-30),
+                fee: Decimal::ZERO,
+                timestamp: Utc::now(),
+            }],
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+        gateway.restore_last_filled(&[record]);
+
+        handle.push_message(sample_fill(ExchangeOrderId(order.id.0), 40));
+        let updates = gateway.poll_updates().unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].fill_quantity,
+            Decimal::from(10),
+            "增量应扣除重演已恢复的 30"
+        );
     }
 }
