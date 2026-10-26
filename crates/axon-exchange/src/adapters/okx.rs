@@ -191,7 +191,7 @@ impl OkxAdapter {
                     }
                 }
 
-                match tokio_tungstenite::connect_async(&url).await {
+                match super::connect_wss(&url).await {
                     Ok((ws_stream, _)) => {
                         attempt = 0;
                         backoff = reconnect_cfg.initial_backoff;

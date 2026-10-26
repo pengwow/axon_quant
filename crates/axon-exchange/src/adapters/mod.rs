@@ -9,6 +9,50 @@ pub mod binance;
 pub mod okx;
 
 use crate::types::{Position, Side, Symbol};
+use tokio_tungstenite::tungstenite;
+
+/// 建立 WSS 连接，TLS 显式使用 ring CryptoProvider
+///
+/// 不能用裸 `connect_async`：其内部 `ClientConfig::builder()` 依赖 rustls 的
+/// crate feature 自动选择 provider，而 tokio-tungstenite 拉入的 rustls 不带任何
+/// provider feature，在 pyo3 .so 构建图里首次 WSS 连接即 panic（REST 走 reqwest
+/// 自带 provider 链不受影响，所以 cargo test 侧 feature unification 下从未暴露）。
+/// `builder_with_provider` 显式指定后与进程级 default、全局 feature 解析均解耦。
+///
+/// 协议版本用 rustls 默认集（TLS1.2 + TLS1.3），不能强制 TLS1.3：
+/// Binance WS 服务器（stream / fstream）默认协商 TLS1.2，强制 1.3 会在客户端
+/// 本地直接报 PeerIncompatible::ServerTlsVersionIsDisabledByOurConfig 并无限
+/// 重试失败（testnet 演练实测根因）。
+// 透传 tokio-tungstenite 的返回类型，tungstenite::Error 体积(136B)超默认 lint 阈值
+#[allow(clippy::result_large_err)]
+pub(crate) async fn connect_wss<R>(
+    request: R,
+) -> tungstenite::Result<(
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tungstenite::handshake::client::Response,
+)>
+where
+    R: tungstenite::client::IntoClientRequest + Unpin,
+{
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("ring provider 必然支持默认版本集（TLS1.2 + TLS1.3）")
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
+            config,
+        ))),
+    )
+    .await
+}
 
 /// 共享的持仓 JSON 解析器
 ///
