@@ -50,19 +50,36 @@ pub trait ExecutionSink: Send {
 
     /// 是否由 sink 记录外部交易所回报（live 档 = `true`）
     ///
-    /// 打开此标志后，主回路在 [`Self::poll`] 之后调 [`Self::take_update_states`]，
-    /// 把 poll 拉到的每条原始回报写进 journal（broker 侧的外部输入，重演必需）。
-    /// 回测 / paper 的 poll 恒空，默认 `false` 即可。
+    /// 打开此标志后，主回路拉回报改走两段式：[`Self::poll_staged`] 只拉取
+    /// 落盘不应用 → [`Self::take_update_states`] + journal 落盘 →
+    /// [`Self::apply_staged`] 再应用，保证「已应用」的回报必然「已落盘」，
+    /// 中间崩溃重演不丢外部输入。回测 / paper 的 poll 恒空，默认 `false` 即可。
     fn records_external_responses(&self) -> bool {
         false
     }
 
+    /// 两段式第一段：拉取外部回报，只解析入队、**不应用**（live 档专用）
+    ///
+    /// 默认实现直接委托 [`Self::poll`]（拉取即应用），非 live 档无需关心；
+    /// live 实现应把回报暂存起来，等 journal 落盘后由 [`Self::apply_staged`] 应用。
+    fn poll_staged(&mut self) -> Result<Vec<Event>, KernelError> {
+        self.poll()
+    }
+
+    /// 两段式第二段：应用 [`Self::poll_staged`] 暂存的回报，返回派生事件
+    ///
+    /// 仅当 [`Self::records_external_responses`] 为 `true` 时被主回路调用。
+    /// 默认空实现配合默认的 [`Self::poll_staged`]（已应用过），避免重复应用。
+    fn apply_staged(&mut self) -> Result<Vec<Event>, KernelError> {
+        Ok(Vec::new())
+    }
+
     /// 取走 poll 阶段攒下的原始回报（journal 落盘用）
     ///
-    /// 只在 [`Self::records_external_responses`] 为 `true` 时被调用。约定：`poll`
-    /// 内每 apply 一条交易所回报就同步攒一条对应的 JSON 状态，两者一一对应、
-    /// 顺序一致；被 sink 丢弃的回报（未知订单 / 去重）也照攒——重演时同样的
-    /// 丢弃决策会再次发生，条数与顺序才能逐字对齐。本方法取走后清空。
+    /// 只在 [`Self::records_external_responses`] 为 `true` 时被调用。约定：
+    /// [`Self::poll_staged`] 内每条拉到的回报就攒一条对应 JSON 状态（顺序一致），
+    /// 被丢弃的回报（未知订单 / 去重）也照攒——重演时同样的丢弃决策会再次发生，
+    /// 条数与顺序才能逐字对齐。本方法取走后清空。
     fn take_update_states(&mut self) -> Vec<serde_json::Value> {
         Vec::new()
     }

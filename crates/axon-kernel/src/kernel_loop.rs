@@ -447,15 +447,17 @@ impl Kernel {
 
     /// 排空 sink 的外部回报队列并回流主队列
     ///
-    /// live 档 sink（`records_external_responses()`）的 poll 会消费交易所回报，
-    /// 回报是**外部输入**：不落 journal，崩溃后重演就少处理它们。回流之前把
-    /// sink 攒下的回报状态逐条落盘（sink trait 约定：poll 内每应用一条就攒一条，
-    /// 含被丢弃的）。journal 行的 event 槽是占位 Heartbeat——一条回报可能产出
-    /// 0 个内核事件（非法迁移 / 去重），行粒度跟回报走而不是跟事件走；重演由
-    /// `replay_entries` 调 `sink.replay_external` 注回。落盘失败向上抛。
+    /// live 档 sink（`records_external_responses()`）走两段式：`poll_staged`
+    /// 只拉取不应用 → 回报状态逐条落盘（sink trait 约定：每条回报对应一条
+    /// 状态，含被丢弃的）→ `apply_staged` 再应用。**落盘必须插在应用之前**：
+    /// 回报是外部输入，先应用后落盘的话，中间崩溃的重演会永久丢掉那批回报；
+    /// 先落盘最多多重演一次丢弃判定，幂等。journal 行的 event 槽是占位
+    /// Heartbeat——一条回报可能产出 0 个内核事件（非法迁移 / 去重），行粒度
+    /// 跟回报走而不是跟事件走；重演由 `replay_entries` 调 `sink.replay_external`
+    /// 注回。落盘失败向上抛。
     fn drain_external(&mut self) -> Result<(), KernelError> {
-        let out = self.sink.poll()?;
         if self.sink.records_external_responses() && !self.replaying {
+            self.sink.poll_staged()?;
             let placeholder = Event::System(SystemEvent::new(
                 0,
                 Timestamp::from_nanos(0),
@@ -464,8 +466,13 @@ impl Kernel {
             for state in self.sink.take_update_states() {
                 self.journal.append(&placeholder, Some(state))?;
             }
+            let out = self.sink.apply_staged()?;
+            self.queue.push_batch(out);
+        } else {
+            // 重演 / 非记录 sink：拉取即应用（无 journal 参与）
+            let out = self.sink.poll()?;
+            self.queue.push_batch(out);
         }
-        self.queue.push_batch(out);
         Ok(())
     }
 
