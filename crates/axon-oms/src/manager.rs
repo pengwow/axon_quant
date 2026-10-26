@@ -32,6 +32,14 @@ impl OrderManager {
         self.portfolio.write().deposit(currency, amount);
     }
 
+    /// 切换账务模式(`Cash` 现货 / `Wallet` 合约钱包)
+    ///
+    /// 只影响后续 `add_fill` 的现金流口径;合约账户必须用 `Wallet`,
+    /// 否则现金会按全额名义价值被扣减,与交易所钱包余额对不上。
+    pub fn set_accounting_mode(&self, mode: crate::portfolio::AccountingMode) {
+        self.portfolio.write().set_accounting_mode(mode);
+    }
+
     /// 取出现金(出金),余额不足时返回错误
     pub fn withdraw(
         &self,
@@ -144,14 +152,34 @@ impl OrderManager {
     pub fn add_fill(&self, order_id: OrderId, fill: Fill) -> Result<(), OmsError> {
         // 1. 状态机转移
         let prev_status: OrderStatus;
-        let new_status: OrderStatus = {
+        let (new_status, fill) = {
             let mut orders = self.active_orders.write();
             let order = orders
                 .get_mut(&order_id)
                 .ok_or_else(|| OmsError::OrderNotFound(order_id.to_string()))?;
             prev_status = order.status.clone();
 
-            let new_filled = order.status.filled_quantity() + fill.quantity;
+            // 超量回报钳制：fill 数量最多补齐剩余量，防止异常回报把 filled_qty
+            // 推过 order.quantity（现金 / 仓位会被多记）。被钳掉的超量部分不是
+            // 丢弃，而是留给上层对账（reconcile 的成交/持仓差集）去暴露。钳制
+            // 后的 fill 贯穿后续记账，保证状态机、portfolio、history 三处一致。
+            // 已满订单（remaining == 0）再来的回报状态机会拒（Filled 为终态）。
+            //
+            // 符号契约：全仓 Fill.quantity 带符号（买正卖负，portfolio 记账依赖
+            // 方向），而 order.quantity / filled_qty 均为绝对值 —— 状态机数学
+            // 只取绝对数量，钳制时保留方向符号（卖单超量钳到 -remaining）。
+            let remaining = order.quantity - order.status.filled_quantity();
+            let mut fill = fill;
+            let fill_qty_abs = fill.quantity.abs();
+            if fill_qty_abs > remaining {
+                fill.quantity = if fill.quantity.is_sign_negative() {
+                    -remaining
+                } else {
+                    remaining
+                };
+            }
+
+            let new_filled = order.status.filled_quantity() + fill.quantity.abs();
             let next = if new_filled >= order.quantity {
                 OrderStatus::Filled {
                     filled_qty: new_filled,
@@ -164,7 +192,7 @@ impl OrderManager {
                 }
             };
             order.transition(next.clone())?;
-            next
+            (next, fill)
         };
         // active_orders 锁已释放
 
@@ -210,6 +238,10 @@ impl OrderManager {
         }
     }
 
+    /// 从快照恢复订单簿与 portfolio
+    ///
+    /// 快照不携带账务模式,恢复后 `Portfolio` 回到默认 `Cash`;合约调用方需要在
+    /// `recover` 之后重新调用 [`Self::set_accounting_mode`]。
     pub fn recover(&self, snapshot: OmsSnapshot) -> Result<(), OmsError> {
         *self.active_orders.write() = snapshot.active_orders;
         *self.order_history.write() = snapshot.order_history;
@@ -303,6 +335,105 @@ mod tests {
         oms.add_fill(id, fill).unwrap();
         // portfolio 收到 fill 事件(0.1 * 65000 + 6.5 = 6506.5 USDT 消耗)
         assert_eq!(oms.snapshot_balance().cash.get("USDT"), Some(&dec!(3493.5)));
+    }
+
+    #[test]
+    fn test_add_fill_clamps_overfill() {
+        // 超量回报钳制：fill 0.12 > 剩余 0.1 → 按 0.1 记账，filled_qty 不越过订单数量
+        let oms = OrderManager::new();
+        oms.deposit("USDT", dec!(10000));
+        let order = make_order(Side::Buy, dec!(0.1), dec!(65000));
+        let id = oms.submit(order).unwrap();
+        oms.update_status(id, OrderStatus::Acknowledged).unwrap();
+
+        let fill = Fill {
+            fill_id: "f-over".into(),
+            symbol: "BTC-USDT".into(),
+            instrument: None,
+            price: dec!(65000),
+            quantity: dec!(0.12),
+            fee: dec!(7.8),
+            timestamp: Utc::now(),
+        };
+        oms.add_fill(id, fill).unwrap();
+
+        match oms.get_order_status(id) {
+            Some(OrderStatus::Filled { filled_qty, .. }) => {
+                assert_eq!(filled_qty, dec!(0.1), "超量部分被钳制到剩余量");
+            }
+            other => panic!("应转为 Filled，实际 {other:?}"),
+        }
+        // portfolio 只收到钳制后的记账：0.1 * 65000 + 7.8 = 6507.8
+        assert_eq!(oms.snapshot_balance().cash.get("USDT"), Some(&dec!(3492.2)));
+    }
+
+    #[test]
+    fn test_fill_sell_order_fully() {
+        // 回归：全仓 Fill.quantity 带符号（卖单为负），状态机必须按绝对值累计。
+        // 曾因直接比较带符号值导致卖单全额成交（-0.1 >= 0.1 为假）永远卡
+        // PartiallyFilled。
+        let oms = OrderManager::new();
+        oms.deposit("USDT", dec!(0.001));
+        let order = make_order(Side::Sell, dec!(0.1), dec!(65000));
+        let id = oms.submit(order).unwrap();
+        oms.update_status(id, OrderStatus::Acknowledged).unwrap();
+
+        let fill = Fill {
+            fill_id: "f-sell".into(),
+            symbol: "BTC-USDT".into(),
+            instrument: None,
+            price: dec!(65000),
+            quantity: dec!(-0.1),
+            fee: dec!(6.5),
+            timestamp: Utc::now(),
+        };
+        oms.add_fill(id, fill).unwrap();
+
+        match oms.get_order_status(id) {
+            Some(OrderStatus::Filled { filled_qty, .. }) => {
+                assert_eq!(filled_qty, dec!(0.1), "卖单全额成交，filled_qty 为绝对值");
+            }
+            other => panic!("卖单全额成交应转为 Filled，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_add_fill_clamps_sell_overfill() {
+        // 回归：卖单超量回报（-0.12 > 剩余 0.1 的绝对量）也必须被钳制，
+        // 且钳制保留符号（-0.1 而非 +0.1，否则 portfolio 记账方向翻转）。
+        let oms = OrderManager::new();
+        oms.deposit("USDT", dec!(0.001));
+        let order = make_order(Side::Sell, dec!(0.1), dec!(65000));
+        let id = oms.submit(order).unwrap();
+        oms.update_status(id, OrderStatus::Acknowledged).unwrap();
+
+        let fill = Fill {
+            fill_id: "f-sell-over".into(),
+            symbol: "BTC-USDT".into(),
+            instrument: None,
+            price: dec!(65000),
+            quantity: dec!(-0.12),
+            fee: dec!(7.8),
+            timestamp: Utc::now(),
+        };
+        oms.add_fill(id, fill).unwrap();
+
+        match oms.get_order_status(id) {
+            Some(OrderStatus::Filled { filled_qty, .. }) => {
+                assert_eq!(filled_qty, dec!(0.1), "卖单超量部分被钳到剩余量的绝对值");
+            }
+            other => panic!("应转为 Filled，实际 {other:?}"),
+        }
+        // 卖出 0.1 BTC 收款 6500，手续费 7.8，加初始 0.001 → USDT 余额 6492.201（方向未被翻转）
+        assert_eq!(
+            oms.snapshot_balance().cash.get("USDT"),
+            Some(&dec!(6492.201))
+        );
+        // portfolio 是持仓模型：卖单开空仓 -0.1，不动现金里的 BTC
+        let positions = oms.snapshot_positions();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].symbol, "BTC-USDT");
+        assert_eq!(positions[0].quantity, dec!(-0.1));
     }
 
     #[test]

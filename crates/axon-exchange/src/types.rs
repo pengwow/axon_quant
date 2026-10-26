@@ -176,7 +176,42 @@ pub struct OrderUpdate {
     pub status: OrderStatus,
     pub filled_qty: Decimal,
     pub avg_price: Option<Decimal>,
+    /// 本次成交手续费（计价币、正数；回报里没有该字段时为 `0`）
+    ///
+    /// 合约 `ORDER_TRADE_UPDATE` 的 `n` 就是本笔增量成交的手续费，可据此做钱包
+    /// 口径的现金对账。
+    #[serde(default)]
+    pub fee: Decimal,
+    /// 交易所原生成交编号（已归一，如 `binfut:BTCUSDT:373270969`）
+    ///
+    /// 归一格式同时是 REST `fetch_my_trades` 侧的 `UserTrade.trade_id` 格式，
+    /// 两侧产出同一字符串才能做成交集合对账。回报不带成交号的交易所为
+    /// `None`，由 exchange gateway 按旧格式（订单号:纳秒:增量）合成。
+    #[serde(default)]
+    pub trade_id: Option<String>,
     pub timestamp: DateTime<Utc>,
+}
+
+/// 交易所成交明细（`fetch_my_trades` 返回，REST 独立数据源）
+///
+/// `trade_id` 与 user data stream 回报里 `OrderUpdate.trade_id` 的归一格式
+/// 完全一致：同一笔成交在 WS 与 REST 两侧得到相同的 id，可直接做集合差集。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserTrade {
+    pub trade_id: String,
+    pub symbol: String,
+    /// 交易所内部订单号（数值型备查，如 Binance 合约 `orderId`）
+    pub order_id: String,
+    pub side: Side,
+    pub price: Decimal,
+    /// 本笔成交量：REST 逐笔返回，本身就是增量，无需差分
+    pub qty: Decimal,
+    pub quote_qty: Decimal,
+    pub commission: Decimal,
+    pub commission_asset: String,
+    pub realized_pnl: Decimal,
+    /// 成交时间（毫秒时间戳）
+    pub time_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +226,7 @@ pub enum WsMessage {
     Pong,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExchangeConfig {
     pub exchange_id: ExchangeId,
     pub api_key: String,
@@ -216,6 +251,39 @@ pub struct ExchangeConfig {
     /// - OKX 忽略此字段（OKX 合约与现货共享 `rest_base_url`）
     #[serde(default)]
     pub fapi_base_url: Option<String>,
+}
+
+// 手写 Debug 而非 derive：api_key / api_secret / passphrase 是明文凭证，
+// derive 会原样打进日志和错误信息，泄露面不可控。
+impl fmt::Debug for ExchangeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // 只保留首 4 位做区分，其余打码；空值显示 <empty>
+        let mask = |s: &str| -> String {
+            if s.is_empty() {
+                return "<empty>".into();
+            }
+            // 防非 ASCII 字符裁在 UTF-8 边界中间 panic
+            let mut end = s.len().min(4);
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}***", &s[..end])
+        };
+        f.debug_struct("ExchangeConfig")
+            .field("exchange_id", &self.exchange_id)
+            .field("api_key", &mask(&self.api_key))
+            .field("api_secret", &mask(&self.api_secret))
+            .field("passphrase", &self.passphrase.as_ref().map(|p| mask(p)))
+            .field("testnet", &self.testnet)
+            .field("rest_base_url", &self.rest_base_url)
+            .field("ws_url", &self.ws_url)
+            .field("rate_limit", &self.rate_limit)
+            .field("reconnect", &self.reconnect)
+            .field("proxy", &self.proxy)
+            .field("position_endpoint", &self.position_endpoint)
+            .field("fapi_base_url", &self.fapi_base_url)
+            .finish()
+    }
 }
 
 fn default_position_endpoint() -> String {

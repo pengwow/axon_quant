@@ -9,6 +9,7 @@ use crate::env::config::EnvConfig;
 use crate::env::error::{EnvError, EnvResult};
 use crate::env::executor::Executor;
 use crate::env::types::{EnvInfo, MarketBar};
+use crate::observation::normalizer::RunningStats;
 use crate::observation::types::{MarketState, Observation, ObservationSpace};
 use crate::reward::RewardFn;
 use crate::reward::history::ReturnHistory;
@@ -20,6 +21,17 @@ pub type StepResult = (Observation, f64, bool, EnvInfo);
 ///
 /// 组合观测空间、动作空间、奖励函数与执行器，
 /// 暴露 Gymnasium 风格的 `reset` / `step` / `render` 接口。
+///
+/// # 归一化统计量的累积
+///
+/// 只有 [`Self::step`]（训练 / 评估的实际推进）会把观测的原始特征值累积进
+/// 观测空间的归一化统计量；[`Self::reset`] 等只读路径用 `build`，不更新统计量。
+/// 因此 `TradingEnv::normalizer_stats()` 导出的统计量才是「训练期真实见过什么」。
+///
+/// # 破坏性语义
+///
+/// 在统计量累积生效之前，训练喂给模型的观测恒为全零（Z-Score 统计量空）。
+/// **此前训练的模型不可与本次之后的产物比较。**
 pub struct TradingEnv {
     /// 环境配置
     config: EnvConfig,
@@ -35,6 +47,9 @@ pub struct TradingEnv {
     executor: Executor,
     /// 行情数据
     market_data: Vec<MarketBar>,
+    /// 预热步数（观测窗口所需根数 - 1）：current_step 从这里起步，
+    /// 之前的 bar 只用于凑齐观测窗口，不产生交易决策
+    warmup_steps: usize,
     /// 当前时间步
     current_step: usize,
     /// 当前组合状态
@@ -62,13 +77,25 @@ impl TradingEnv {
             return Err(EnvError::EmptyMarketData);
         }
 
+        // 观测窗口需要 depth 根历史（含当前 bar）：不足时首个观测就构建不出
+        // 完整窗口，宁可初始化即失败。warmup = depth - 1，前 warmup 根只做暖机。
+        let depth = observation_space.required_history_depth();
+        if market_data.len() < depth {
+            return Err(EnvError::InsufficientHistory {
+                needed: depth,
+                have: market_data.len(),
+            });
+        }
+        let warmup_steps = depth - 1;
+
         let decoder = ActionDecoder::from_space(&action_space, &config.symbol)?;
         let executor = Executor::new(config.clone());
         let return_history = ReturnHistory::new(config.return_window);
         let portfolio = PortfolioState {
             cash: config.initial_capital,
             portfolio_value: config.initial_capital,
-            last_price: market_data[0].close,
+            // 交易实际从 warmup 那根 bar 开始，last_price 对齐市价而非数据首根
+            last_price: market_data[warmup_steps].close,
             ..Default::default()
         };
 
@@ -80,6 +107,7 @@ impl TradingEnv {
             reward_fn,
             executor,
             market_data,
+            warmup_steps,
             current_step: 0,
             portfolio,
             done: false,
@@ -97,14 +125,15 @@ impl TradingEnv {
     /// 3. 重置收益率历史
     /// 4. 返回初始观测
     pub fn reset(&mut self) -> EnvResult<Observation> {
-        self.current_step = 0;
+        // 跳过暖机区：前 warmup_steps 根只用于凑观测窗口，交易从第 warmup 根开始
+        self.current_step = self.warmup_steps;
         self.done = false;
         self.trades_executed = 0;
         self.transaction_costs = 0.0;
         self.portfolio = PortfolioState {
             cash: self.config.initial_capital,
             portfolio_value: self.config.initial_capital,
-            last_price: self.market_data[0].close,
+            last_price: self.market_data[self.warmup_steps].close,
             ..Default::default()
         };
         self.return_history.clear();
@@ -129,7 +158,9 @@ impl TradingEnv {
         // 1. 数据耗尽检查
         if self.current_step + 1 >= self.market_data.len() {
             self.done = true;
-            let obs = self.build_observation()?;
+            // step 的返回值走累积统计量的入口：只有训练/评估的实际推进才更新统计量，
+            // 只读推理（内核 RLStrategyHost、本环境 reset）不更新
+            let obs = self.build_observation_and_update()?;
             return Ok((obs, 0.0, true, self.build_info()));
         }
 
@@ -197,8 +228,8 @@ impl TradingEnv {
             self.done = true;
         }
 
-        // 8. 返回结果
-        let obs = self.build_observation()?;
+        // 8. 返回结果（step 是唯一累积归一化统计量的路径）
+        let obs = self.build_observation_and_update()?;
         let info = self.build_info();
         Ok((obs, reward, self.done, info))
     }
@@ -245,10 +276,51 @@ impl TradingEnv {
         self.build_info()
     }
 
+    /// 归一化运行时统计量（训练结束导出到模型旁车元数据）
+    ///
+    /// 无归一化状态的观测空间返回 `None`。
+    pub fn normalizer_stats(&self) -> Option<&[RunningStats]> {
+        self.observation_space.normalizer_stats()
+    }
+
+    /// 反序列化灌回归一化统计量（训练恢复 / 内核复现用）
+    ///
+    /// 统计量条数必须与特征数一致，否则返回 `EnvError::ObservationError`。
+    pub fn set_normalizer_stats(&mut self, stats: Vec<RunningStats>) -> Result<(), EnvError> {
+        self.observation_space
+            .set_normalizer_stats(stats)
+            .map_err(|e| EnvError::ObservationError(e.to_string()))
+    }
+
     // ── 内部辅助 ────────────────────────────────────────────
 
     /// 从 `market_data` 与组合状态构造 `MarketState` 再生成 `Observation`
+    ///
+    /// 只读路径（`reset`）用这个版本：不改变归一化统计量，
+    /// 同一次运行里观测口径保持稳定。
     fn build_observation(&self) -> EnvResult<Observation> {
+        let (market_state, history) = self.observation_inputs();
+        self.observation_space
+            .build(&market_state, &history)
+            .map_err(|e| EnvError::ObservationError(e.to_string()))
+    }
+
+    /// 训练 / 评估的实际 step 用这个版本：先归一化产出观测，再把原始特征值累积进统计量
+    ///
+    /// 只有真正推进 episode 的调用点才更新统计量——只读推理（内核 `RLStrategyHost`、
+    /// 本环境的 `reset`）一律走 `build`，否则同一份统计量会随推理步数漂移。
+    fn build_observation_and_update(&mut self) -> EnvResult<Observation> {
+        let (market_state, history) = self.observation_inputs();
+        self.observation_space
+            .build_and_update(&market_state, &history)
+            .map_err(|e| EnvError::ObservationError(e.to_string()))
+    }
+
+    /// 收集当前步的原始输入：当前状态（含组合字段）+ 最新在前的行情窗口
+    ///
+    /// `history[0]` 必须是当前 bar：观测侧按 `_t0` = 最新一根编号，这里用 `.rev()`
+    /// 让最新的 `current_step` 落在索引 0，与 `ObservationSpec` 的口径保持一致。
+    fn observation_inputs(&self) -> (MarketState, Vec<MarketState>) {
         let bar = self.market_data[self.current_step];
         let market_state = MarketState {
             timestamp: bar.timestamp,
@@ -267,10 +339,9 @@ impl TradingEnv {
             ..Default::default()
         };
 
-        // 收集最近 N 步历史
-        let start = self
-            .current_step
-            .saturating_sub(self.observation_space.num_features());
+        // 收集最近 N 步历史：起点受 warmup 钳制（而非 num_features，那是维度数
+        // 不是 bar 根数——旧实现把两者混用，window>1 时窗口只能凑出维度数根）
+        let start = self.current_step.saturating_sub(self.warmup_steps);
         let history: Vec<MarketState> = (start..=self.current_step)
             .rev()
             .map(|i| {
@@ -289,9 +360,7 @@ impl TradingEnv {
             })
             .collect();
 
-        self.observation_space
-            .build(&market_state, &history)
-            .map_err(|e| EnvError::ObservationError(e.to_string()))
+        (market_state, history)
     }
 
     /// 计算上一步的组合价值
@@ -449,6 +518,54 @@ mod tests {
         assert!(env.info().trades_executed > 0);
     }
 
+    /// 统计量可经环境导出 / 灌回，且灌回后观测逐位可复现
+    #[test]
+    fn test_normalizer_stats_round_trip() {
+        let mut env = make_env(20);
+        let mut stats = env
+            .normalizer_stats()
+            .expect("默认观测空间必须暴露统计量")
+            .to_vec();
+        assert_eq!(stats.len(), 2, "每个特征一条统计");
+
+        for value in [50.0, 60.0, 70.0] {
+            stats[0].update(value);
+        }
+        env.set_normalizer_stats(stats.clone()).unwrap();
+        let expected = env.reset().unwrap();
+        assert_ne!(expected.features[0], 0.0, "Z-Score 必须吃训练统计量");
+
+        env.set_normalizer_stats(stats).unwrap();
+        let actual = env.reset().unwrap();
+        assert_eq!(actual.features, expected.features, "灌回后必须逐位复现");
+
+        // 条数不符必须报错，而不是在 build 时越界
+        assert!(env.set_normalizer_stats(Vec::new()).is_err());
+    }
+
+    /// step 是唯一累积归一化统计量的路径：`reset` 只读，不改变统计量
+    #[test]
+    fn test_step_accumulates_normalizer_stats() {
+        let mut env = make_env(20);
+        env.reset().unwrap();
+        assert_eq!(
+            env.normalizer_stats().unwrap()[0].count,
+            0,
+            "reset 只读统计量"
+        );
+
+        env.step(&Action::continuous(vec![0.0])).unwrap();
+        let after_step = env.normalizer_stats().unwrap()[0].count;
+        assert!(after_step > 0, "step 必须累积原始特征值");
+
+        env.reset().unwrap();
+        assert_eq!(
+            env.normalizer_stats().unwrap()[0].count,
+            after_step,
+            "reset 不更新统计量"
+        );
+    }
+
     #[test]
     fn test_render_returns_nonempty_string() {
         let mut env = make_env(10);
@@ -467,6 +584,63 @@ mod tests {
             TradingEnv::new(config, action_space, make_obs_space(), reward_fn, vec![]);
         let err = result.err().expect("expected error");
         assert_eq!(err, EnvError::EmptyMarketData);
+    }
+
+    /// window>1 的观测空间需要 warmup：数据不足观测窗口时初始化即报错
+    #[test]
+    fn test_insufficient_history_errors() {
+        let config = EnvConfig::default();
+        let action_space = ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0));
+        let reward_fn = Box::new(PnLReward::default());
+        // window=3 → depth=3，只给 2 根数据
+        let space = Box::new(
+            DefaultObservationSpace::new(
+                3,
+                vec![FeatureConfig {
+                    name: "close".to_string(),
+                    source: FeatureSource::PriceField("close".to_string()),
+                    normalizer: NormalizerType::ZScore,
+                    clip_range: None,
+                }],
+            )
+            .unwrap(),
+        );
+        let err = TradingEnv::new(config, action_space, space, reward_fn, make_test_data(2))
+            .err()
+            .expect("expected error");
+        assert_eq!(err, EnvError::InsufficientHistory { needed: 3, have: 2 });
+    }
+
+    /// warmup 语义：reset 落在窗口末端，初始观测窗口完整（depth 根）且可 step
+    #[test]
+    fn test_warmup_starts_at_window_depth() {
+        let config = EnvConfig {
+            max_steps: 50,
+            ..Default::default()
+        };
+        let action_space = ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0));
+        let reward_fn = Box::new(PnLReward::default());
+        // 单特征 × window=3 → obs 维度 3，depth=3，warmup=2
+        let space = Box::new(
+            DefaultObservationSpace::new(
+                3,
+                vec![FeatureConfig {
+                    name: "close".to_string(),
+                    source: FeatureSource::PriceField("close".to_string()),
+                    normalizer: NormalizerType::ZScore,
+                    clip_range: None,
+                }],
+            )
+            .unwrap(),
+        );
+        let mut env =
+            TradingEnv::new(config, action_space, space, reward_fn, make_test_data(50)).unwrap();
+        let obs = env.reset().unwrap();
+        assert_eq!(env.current_step(), 2, "reset 必须落在窗口末端");
+        assert_eq!(obs.features.len(), 3, "单特征 × window=3");
+        let (_, _, done, info) = env.step(&Action::continuous(vec![0.0])).unwrap();
+        assert!(!done);
+        assert_eq!(info.current_step, 3, "暖机后正常推进");
     }
 
     #[test]

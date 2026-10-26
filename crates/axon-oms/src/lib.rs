@@ -58,7 +58,7 @@ pub mod types;
 
 pub use error::OmsError;
 pub use manager::OrderManager;
-pub use portfolio::{Portfolio, PortfolioError, PortfolioSnapshot, Position};
+pub use portfolio::{AccountingMode, Portfolio, PortfolioError, PortfolioSnapshot, Position};
 // 0.6.0 新增:`OMS_SNAPSHOT_VERSION_CURRENT` 等常量需显式 re-export
 // (在 `types::*` 之外),让 `axon_oms::OMS_SNAPSHOT_VERSION_CURRENT` 可用。
 pub use types::*;

@@ -27,11 +27,13 @@ members = [
     "crates/axon-harness",
     "crates/axon-integration-tests",
     "crates/axon-python",
+    # 统一交易内核：回测 / paper / live 共用唯一主回路
+    "crates/axon-kernel",
 ]
 
 # 统一的目标目录,加速增量编译
 [workspace.package]
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"
@@ -71,6 +73,8 @@ axon-risk = { path = "crates/axon-risk" }
 axon-data = { path = "crates/axon-data" }
 # Harness 编排系统 trait 接口 + 安全组件
 axon-harness = { path = "crates/axon-harness" }
+# 统一交易内核:回测 / paper / live 共用唯一主回路
+axon-kernel = { path = "crates/axon-kernel" }
 
 # 错误处理
 thiserror = "1.0"

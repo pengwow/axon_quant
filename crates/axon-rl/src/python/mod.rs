@@ -41,6 +41,7 @@ use crate::env::config::EnvConfig;
 use crate::env::error::EnvError;
 use crate::env::trading_env::TradingEnv;
 use crate::env::types::{EnvInfo, MarketBar};
+use crate::observation::normalizer::RunningStats;
 use crate::observation::space::DefaultObservationSpace;
 use crate::observation::types::{FeatureConfig, FeatureSource, NormalizerType};
 use crate::reward::pnl::PnLReward;
@@ -139,6 +140,8 @@ pub fn env_error_to_py(err: EnvError) -> PyErr {
         }
         EnvError::InvalidAction(_)
         | EnvError::EmptyMarketData
+        // 历史不足是入参数量问题（R-1 冷启动校验新增），归 ValueError
+        | EnvError::InsufficientHistory { .. }
         | EnvError::ActionError(_)
         | EnvError::ObservationError(_)
         | EnvError::RewardError(_) => PyValueError::new_err(err.to_string()),
@@ -195,6 +198,37 @@ pub fn parse_action_space(dict: &Bound<'_, PyDict>) -> PyResult<ActionSpace> {
             )))
         }
     }
+}
+
+// ──────────────────────────────────────────────
+// 归一化统计量的 JSON 表示
+// ──────────────────────────────────────────────
+
+/// 「统计量未采集」时 `min` 的 JSON 哨兵值
+///
+/// `serde_json` 把 `±∞` 写成 `null`，读回时无法还原成 `f64`；而空统计量的
+/// `min/max` 恒为 `±∞`。导出前换成有限哨兵，往返才不会在 `null` 上失败。
+/// 归一化结果不受影响：`min = f64::MAX` / `max = f64::MIN` 时
+/// `max - min` 仍溢出为 `-∞`，与原来一样落进「范围退化」分支。
+const STATS_UNSET_MIN: f64 = f64::MAX;
+/// 「统计量未采集」时 `max` 的 JSON 哨兵值（见 [`STATS_UNSET_MIN`]）
+const STATS_UNSET_MAX: f64 = f64::MIN;
+
+/// 导出前把非有限的 `min/max` 换成有限哨兵
+fn stats_json_ready(stats: &[RunningStats]) -> Vec<RunningStats> {
+    stats
+        .iter()
+        .map(|stats| {
+            let mut stats = stats.clone();
+            if !stats.min.is_finite() {
+                stats.min = STATS_UNSET_MIN;
+            }
+            if !stats.max.is_finite() {
+                stats.max = STATS_UNSET_MAX;
+            }
+            stats
+        })
+        .collect()
 }
 
 // ──────────────────────────────────────────────
@@ -353,6 +387,32 @@ impl PyTradingEnv {
     #[getter]
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         env_info_to_dict(&self.inner.info(), py)
+    }
+
+    /// 导出归一化运行时统计量（JSON 字符串，与 `ObservationSpec` 的 serde 表示一致）
+    ///
+    /// 无归一化状态的观测空间返回 `"null"`。训练结束后由调用方落进模型旁车，
+    /// 推理侧再经 [`Self::set_observation_stats`] 灌回。
+    fn observation_stats(&self) -> PyResult<String> {
+        match self.inner.normalizer_stats() {
+            Some(stats) => serde_json::to_string(&stats_json_ready(stats))
+                .map_err(|e| PyValueError::new_err(format!("统计量序列化失败: {e}"))),
+            None => Ok("null".to_string()),
+        }
+    }
+
+    /// 灌回归一化运行时统计量（`stats_json` 与 [`Self::observation_stats`] 同格式）
+    ///
+    /// 条数必须与特征数一致，否则抛 `ValueError`。
+    fn set_observation_stats(&mut self, stats_json: &str) -> PyResult<()> {
+        let stats: Vec<RunningStats> = serde_json::from_str(stats_json).map_err(|e| {
+            PyValueError::new_err(format!(
+                "stats_json 解析失败（期望 list[dict]，元素含 mean/m2/min/max/count/median_buffer）: {e}"
+            ))
+        })?;
+        self.inner
+            .set_normalizer_stats(stats)
+            .map_err(env_error_to_py)
     }
 
     fn __repr__(&self) -> String {

@@ -19,6 +19,18 @@
 //! // engine.subscribe(data_source).await;
 //! // engine.on_market_event(event);
 //! ```
+//!
+//! # 已废弃
+//!
+//! 本模块由 `axon-kernel` 的 `KernelPump` + `PaperSink` 取代（同一份历史数据，
+//! 内核主回路在回测 / paper / live 下跑同一条路径，模拟成交入口只剩 `PaperSink`）。
+//! M6 之后的新代码不得使用本模块；模块将在下个大版本直接移除，现有类型
+//! （`MarketDataEvent` / `StreamingEngine` / `PaperTradingEngine` 等）只保留
+//! 到那时为止。
+//!
+//! 这里只做文档标注、不加 `#[deprecated]` 属性：工作区内仍有 legacy 测试
+//! （`tests/e2e_streaming_paper.rs`、`tests/streaming_metrics_e2e.rs` 等）在跑这条
+//! 路径，属性会把工作区门禁的 `-D warnings` 打成失败。
 
 mod data_source;
 mod engine;

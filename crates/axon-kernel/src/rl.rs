@@ -1,0 +1,493 @@
+//! RL 推理 Host：把模型接到统一主回路
+//!
+//! 对内核而言 RL 与规则策略没有区别：收到收市 bar → 吐 `OrderIntent`。差异只在
+//! Host 内部：观测由 [`ObservationSpec`] 组装（与训练侧同一份代码），动作经
+//! [`ActionDecoder::decode_target_ratio`] 解码为权益占比 `∈ [-1, 1]`，最终以
+//! `SetTarget` 交给 sink 换算数量。
+//!
+//! # 为何不依赖 pyo3
+//!
+//! 推理后端用 [`InferenceBackend`] trait 抽象，内核只认识「`obs -> Action`」。
+//! V1 的 SB3 / Python 回调由 `axon-worker` 侧包一层实现（设计 6.3），内核保持
+//! 纯 Rust、可独立单测。
+
+use axon_core::{Bar, Instrument};
+use axon_rl::env::action_decoder::ActionDecoder;
+use axon_rl::env::error::EnvResult;
+use axon_rl::env::types::MarketBar;
+use axon_rl::{Action, ActionSpace, ObservationInput, ObservationSpec, PortfolioState};
+
+use crate::event::BarClosedEvent;
+use crate::host::{HostCtx, OrderIntent, StrategyHost};
+
+/// 推理后端
+///
+/// 同步 trait：每 bar 一次调用，模型推理耗时属于策略计算成本，不为它开异步
+/// 分支（设计 4.4 / 7.2 同一立场）。
+///
+/// `ponytail:` V1 后端是同步 trait，SB3 / SciPy 回调在 `axon-worker` 侧包一层
+/// 实现；若将来推理变成异步或需要批量预取，升级路径是新增一个 `infer_batch`
+/// 变体，而不是把 `on_event` 改成 async。
+pub trait InferenceBackend: Send {
+    /// 用观测向量推理出一个动作
+    ///
+    /// 返回 `None` 表示本次推理不可用（后端异常、结果非有限等）。Host 会走与
+    /// 坏观测相同的降级通道：显式 Hold，不产出 `SetTarget`——避免后端把
+    /// 「不可用」误编码成 0.0 目标仓位，把一次模型异常放大成清仓动作。
+    fn infer(&mut self, obs: &[f64]) -> Option<Action>;
+    /// 模型标识（写入日志 / journal 的产物三元组之一）
+    fn model_id(&self) -> &str;
+}
+
+/// RL 策略 Host
+pub struct RLStrategyHost {
+    /// 推理后端（可替换）
+    backend: Box<dyn InferenceBackend>,
+    /// 观测组装规格（与训练侧共用）
+    spec: ObservationSpec,
+    /// 本 Host 负责的品种
+    symbol: Instrument,
+    /// 已收市窗口，最多 `spec.required_history_depth()` 根，按时间升序存放
+    ///
+    /// 深度是 `window_size + 最大聚合窗口`，不是 `window_size`：观测窗口里最旧的
+    /// 那个槽位 `_t{window_size-1}` 还要再往前 `window` 根更早的历史，`WindowAgg`
+    /// 特征才凑得齐窗口。只留 `window_size` 根时聚合特征永远 `InsufficientData`，
+    /// 观测组装失败、推理降级为 Hold。
+    ///
+    /// 对外组装观测时会反转成「最新在前」，与 `TradingEnv` 收集历史的顺序一致。
+    history: Vec<MarketBar>,
+    /// 动作解码器（动作空间由模型决定）
+    decoder: ActionDecoder,
+}
+
+impl RLStrategyHost {
+    /// 构造 Host
+    ///
+    /// `action_space` 必须与训练该模型时使用的动作空间一致，否则
+    /// `decode_target_ratio` 的裁剪边界会错。
+    pub fn new(
+        backend: Box<dyn InferenceBackend>,
+        spec: ObservationSpec,
+        symbol: Instrument,
+        action_space: ActionSpace,
+    ) -> EnvResult<Self> {
+        let decoder = ActionDecoder::from_space(&action_space, &crate::core::symbol_key(&symbol))?;
+        Ok(Self {
+            backend,
+            spec,
+            symbol,
+            history: Vec::new(),
+            decoder,
+        })
+    }
+
+    /// 替换推理后端（热更新）
+    ///
+    /// **只在 bar 边界调用**：本方法不能在 `on_event` 执行期间（mid-bar）被触发，
+    /// 否则同一根 bar 的观测与动作可能来自两个模型。约定调用方在主回路之外、
+    /// 两次 `on_event` 之间完成 `build` → `swap`（设计 6.4 第 3 条）。
+    pub fn replace_backend(&mut self, backend: Box<dyn InferenceBackend>) {
+        self.backend = backend;
+    }
+
+    /// 当前模型标识
+    pub fn model_id(&self) -> &str {
+        self.backend.model_id()
+    }
+
+    /// 当前已收市窗口（按时间升序）
+    pub fn history(&self) -> &[MarketBar] {
+        &self.history
+    }
+
+    /// 观测规格（只读）
+    pub fn spec(&self) -> &ObservationSpec {
+        &self.spec
+    }
+}
+
+impl StrategyHost for RLStrategyHost {
+    fn name(&self) -> &str {
+        self.backend.model_id()
+    }
+
+    fn on_event(&mut self, ev: &BarClosedEvent<'_>, ctx: &HostCtx) -> Vec<OrderIntent> {
+        // 多 Host 共用主回路时按品种自行过滤
+        if ev.instrument != &self.symbol {
+            return Vec::new();
+        }
+
+        let bar = market_bar_of(ev.bar);
+
+        // 1) 维护已收市窗口：只保留窗口聚合所需的历史深度（`window_size + 最大聚合窗口`）
+        self.history.push(bar);
+        if self.history.len() > self.spec.required_history_depth() {
+            self.history.remove(0);
+        }
+
+        // 2) 组合视图：HostCtx 只有持仓 / 权益 / 盯市价，现金按权益反推
+        let position = ctx.positions.get(&self.symbol).copied().unwrap_or(0.0);
+        let last_price = ctx
+            .last_price
+            .get(&self.symbol)
+            .copied()
+            .filter(|price| *price > 0.0)
+            .unwrap_or(bar.close);
+        let equity = if ctx.equity > 0.0 {
+            ctx.equity
+        } else {
+            position.abs() * last_price
+        };
+        let portfolio = PortfolioState {
+            position,
+            cash: equity - position * last_price,
+            portfolio_value: equity,
+            last_price,
+            ..Default::default()
+        };
+
+        // 3) 观测：最新在前的窗口，与 TradingEnv 的口径一致
+        let window: Vec<MarketBar> = self.history.iter().rev().copied().collect();
+        let input = ObservationInput {
+            bar: &bar,
+            history: &window,
+            portfolio: &portfolio,
+        };
+        let obs = match self.spec.try_build(&input) {
+            Ok(obs) => obs,
+            Err(err) => {
+                // 坏观测不喂模型：显式 Hold（空 vec = 维持上次目标），由日志暴露
+                tracing::warn!(
+                    model = self.backend.model_id(),
+                    instrument = %self.symbol,
+                    error = %err,
+                    "rl host: observation build failed, holding"
+                );
+                return Vec::new();
+            }
+        };
+
+        // 4) 推理 + 动作解码为权益占比（内核侧唯一解码入口）；
+        //    后端不可用（None）与坏观测同通道：显式 Hold，不碰仓位
+        let action = match self.backend.infer(&obs) {
+            Some(action) => action,
+            None => {
+                tracing::warn!(
+                    model = self.backend.model_id(),
+                    instrument = %self.symbol,
+                    "rl host: inference unavailable, holding"
+                );
+                return Vec::new();
+            }
+        };
+        vec![OrderIntent::SetTarget {
+            instrument: self.symbol.clone(),
+            target_ratio: self.decoder.decode_target_ratio(&action),
+        }]
+    }
+}
+
+/// `axon_core::Bar`（纳秒时间戳）→ [`MarketBar`]（毫秒时间戳）
+///
+/// 单位换算只发生在 bar 边界这一处：`ObservationSpec` 在 `axon-rl`，其时间特征
+/// 按毫秒口径计算，与 `TradingEnv` 完全一致。
+fn market_bar_of(bar: &Bar) -> MarketBar {
+    MarketBar {
+        timestamp: (bar.timestamp.nanos.max(0) / 1_000_000) as u64,
+        open: bar.open.as_f64(),
+        high: bar.high.as_f64(),
+        low: bar.low.as_f64(),
+        close: bar.close.as_f64(),
+        volume: bar.volume.as_f64(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axon_core::types::{SpotInstrument, Symbol};
+    use axon_core::{Price, Quantity, Timestamp};
+
+    use super::*;
+    use crate::core::{KernelConfig, SeedLiquidity};
+    use crate::kernel_loop::Kernel;
+    use crate::pump::GridFrame;
+    use crate::sink::BacktestSink;
+    use axon_rl::observation::types::{
+        AggregationType, FeatureConfig, FeatureSource, NormalizerType,
+    };
+
+    const MIN: i64 = 60_000_000_000;
+
+    /// 固定输出一个连续动作的假后端，同时记录每次收到的观测长度
+    struct FixedBackend {
+        model: String,
+        value: f64,
+        lens: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl FixedBackend {
+        fn new(model: &str, value: f64) -> Self {
+            Self {
+                model: model.to_string(),
+                value,
+                lens: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl InferenceBackend for FixedBackend {
+        fn infer(&mut self, obs: &[f64]) -> Option<Action> {
+            self.lens.lock().unwrap().push(obs.len());
+            Some(Action::continuous(vec![self.value]))
+        }
+
+        fn model_id(&self) -> &str {
+            &self.model
+        }
+    }
+
+    fn btc() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("BTC"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    fn eth() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    fn bar(ts: i64, close: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(ts),
+            open: Price::from_f64(close),
+            high: Price::from_f64(close + 1.0),
+            low: Price::from_f64(close - 1.0),
+            close: Price::from_f64(close),
+            volume: Quantity::from_f64(1_000.0),
+        }
+    }
+
+    fn spec(window: usize) -> ObservationSpec {
+        ObservationSpec::new(
+            window,
+            vec![FeatureConfig {
+                name: "close".into(),
+                source: FeatureSource::PriceField("close".into()),
+                normalizer: NormalizerType::None,
+                clip_range: None,
+            }],
+        )
+        .unwrap()
+        .with_version("v1-test")
+    }
+
+    fn host(window: usize, value: f64) -> RLStrategyHost {
+        RLStrategyHost::new(
+            Box::new(FixedBackend::new("fake-model", value)),
+            spec(window),
+            btc(),
+            ActionSpace::Continuous(axon_rl::action::types::ContinuousActionSpace::new(
+                -1.0, 1.0,
+            )),
+        )
+        .unwrap()
+    }
+
+    fn ctx(equity: f64, position: f64, price: f64) -> HostCtx {
+        HostCtx {
+            positions: [(btc(), position)].into_iter().collect(),
+            equity,
+            last_price: [(btc(), price)].into_iter().collect(),
+        }
+    }
+
+    /// 跑一根 bar 并返回 `SetTarget` 的占比（空 vec 表示 Hold）
+    fn run_bar(host: &mut RLStrategyHost, b: Bar, ctx: &HostCtx) -> Option<f64> {
+        let null = serde_json::Value::Null;
+        let ev = BarClosedEvent {
+            instrument: &btc(),
+            interval: "1m",
+            bar: &b,
+            ts: Timestamp::from_nanos(b.timestamp.nanos + MIN),
+            state: &null,
+        };
+        let intents = host.on_event(&ev, ctx);
+        match intents.as_slice() {
+            [] => None,
+            [OrderIntent::SetTarget { target_ratio, .. }] => Some(*target_ratio),
+            other => panic!("unexpected intents: {other:?}"),
+        }
+    }
+
+    /// 含窗口聚合特征的规格：单个特征，`WindowAgg { Mean, window }`
+    fn spec_with_window_agg(window_size: usize, agg_window: usize) -> ObservationSpec {
+        ObservationSpec::new(
+            window_size,
+            vec![FeatureConfig {
+                name: "close_mean".into(),
+                source: FeatureSource::WindowAgg {
+                    source: Box::new(FeatureSource::PriceField("close".into())),
+                    agg: AggregationType::Mean,
+                    window: agg_window,
+                },
+                normalizer: NormalizerType::None,
+                clip_range: None,
+            }],
+        )
+        .unwrap()
+        .with_version("v1-test")
+    }
+
+    /// 记录每次完整观测的假后端（用于断言观测长度 / 取值 / 无 NaN）
+    struct RecordingBackend {
+        model: String,
+        observations: Arc<Mutex<Vec<Vec<f64>>>>,
+    }
+
+    impl InferenceBackend for RecordingBackend {
+        fn infer(&mut self, obs: &[f64]) -> Option<Action> {
+            self.observations.lock().unwrap().push(obs.to_vec());
+            Some(Action::continuous(vec![0.3]))
+        }
+
+        fn model_id(&self) -> &str {
+            &self.model
+        }
+    }
+
+    #[test]
+    fn test_host_ratio_history_and_window_truncation() {
+        let mut h = host(2, 0.5);
+        let c = ctx(10_000.0, 0.0, 100.0);
+
+        // 预热期：window=2 第一根 bar 历史不足，观测构建报 InsufficientData → Hold
+        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), None);
+        assert_eq!(h.history().len(), 1);
+        // 第 2 根起窗口凑满，恢复正常推理
+        assert_eq!(run_bar(&mut h, bar(MIN, 101.0), &c), Some(0.5));
+        assert_eq!(run_bar(&mut h, bar(2 * MIN, 102.0), &c), Some(0.5));
+
+        // 窗口只保留最近 2 根，且按时间升序
+        let closes: Vec<f64> = h.history().iter().map(|b| b.close).collect();
+        assert_eq!(closes, vec![101.0, 102.0]);
+        assert_eq!(h.model_id(), "fake-model");
+    }
+
+    /// 含 `WindowAgg` 特征时 Host 必须缓存 `window_size + 聚合窗口` 根历史
+    ///
+    /// 旧实现只留 `window_size` 根，最旧槽位 `_t{window_size-1}` 还要再往前 `window`
+    /// 根更早历史，永远 `InsufficientData` → 观测失败 → 每根 bar 都 Hold。这里连喂
+    /// 足量 bar：预热期之后每根都必须真的产出 `SetTarget`，且缓存深度稳定不增长。
+    #[test]
+    fn test_host_window_agg_history_depth() {
+        let (window_size, agg_window) = (3usize, 2usize);
+        let depth = window_size + agg_window;
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let mut h = RLStrategyHost::new(
+            Box::new(RecordingBackend {
+                model: "agg-model".to_string(),
+                observations: Arc::clone(&observations),
+            }),
+            spec_with_window_agg(window_size, agg_window),
+            btc(),
+            ActionSpace::Continuous(axon_rl::action::types::ContinuousActionSpace::new(
+                -1.0, 1.0,
+            )),
+        )
+        .unwrap();
+        assert_eq!(h.spec().required_history_depth(), depth);
+
+        let c = ctx(10_000.0, 0.0, 100.0);
+        let mut successes = 0;
+        for idx in 0..8i64 {
+            let ratio = run_bar(&mut h, bar(idx * MIN, 100.0 + idx as f64), &c);
+            if idx as usize + 1 < depth {
+                // 预热期：更早的 bar 还没收够 `window` 根，聚合特征缺数只能 Hold
+                assert_eq!(ratio, None, "第 {} 根 bar 仍处于预热期", idx + 1);
+            } else {
+                assert_eq!(ratio, Some(0.3), "第 {} 根 bar 必须产出 SetTarget", idx + 1);
+                successes += 1;
+            }
+            assert!(h.history().len() <= depth, "缓存不得超过所需深度");
+        }
+        assert_eq!(h.history().len(), depth, "缓存深度稳定在 window_size + 2");
+
+        let recorded = observations.lock().unwrap();
+        assert_eq!(recorded.len(), successes, "每根成功 bar 一次推理");
+        let last = recorded.last().expect("至少有一次成功观测");
+        assert_eq!(last.len(), window_size, "观测长度 = features × window_size");
+        assert!(
+            last.iter().all(|value| value.is_finite()),
+            "观测不得含 NaN: {last:?}"
+        );
+        // 最后一根 bar close = 107，最新在前且聚合取「更早」的 window 根：
+        // t0 = mean(106,105)、t1 = mean(105,104)、t2 = mean(104,103)
+        assert_eq!(last.as_slice(), [105.5, 104.5, 103.5]);
+    }
+
+    #[test]
+    fn test_host_rejects_other_instruments() {
+        let mut h = host(2, 0.5);
+        let null = serde_json::Value::Null;
+        let b = bar(0, 100.0);
+        let ev = BarClosedEvent {
+            instrument: &eth(),
+            interval: "1m",
+            bar: &b,
+            ts: Timestamp::from_nanos(MIN),
+            state: &null,
+        };
+        assert!(h.on_event(&ev, &ctx(10_000.0, 0.0, 100.0)).is_empty());
+        assert!(h.history().is_empty(), "别人的 bar 不进入本 Host 窗口");
+    }
+
+    #[test]
+    fn test_backend_replacement_takes_effect_at_bar_boundary() {
+        let mut h = host(2, 0.5);
+        let c = ctx(10_000.0, 0.0, 100.0);
+        // 第 1 根 bar 历史不足 → 预热 Hold；第 2 根起窗口凑满
+        assert_eq!(run_bar(&mut h, bar(0, 100.0), &c), None);
+        assert_eq!(run_bar(&mut h, bar(MIN, 100.0), &c), Some(0.5));
+
+        // bar 边界替换后端：下一次 on_event 必须用新模型
+        h.replace_backend(Box::new(FixedBackend::new("fake-model-v2", -0.4)));
+        assert_eq!(run_bar(&mut h, bar(2 * MIN, 100.0), &c), Some(-0.4));
+        assert_eq!(h.model_id(), "fake-model-v2");
+    }
+
+    /// 端到端：假后端 + 真实 `Kernel::run_history`，必须产生成交
+    #[test]
+    fn test_host_runs_inside_kernel_main_loop() {
+        let config = KernelConfig {
+            initial_cash: 10_000.0,
+            expected_instruments: [btc()].into_iter().collect(),
+            seed: SeedLiquidity {
+                half_spread: 0.0005,
+                depth_levels: 5,
+                size_per_level: 1_000.0,
+            },
+            ..KernelConfig::default()
+        };
+        let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+        kernel.add_host(Box::new(host(1, 0.5)));
+
+        let frames: Vec<GridFrame> = (0..3)
+            .map(|idx| GridFrame {
+                ts: Timestamp::from_nanos(idx as i64 * MIN),
+                bars: vec![(btc(), bar(idx as i64 * MIN, 100.0))],
+                states: Default::default(),
+            })
+            .collect();
+
+        let result = kernel.run_history(frames).expect("RL 主回路应跑通");
+        assert_eq!(result.bars_processed, 3);
+        assert_eq!(result.orders_submitted, 3, "每根 bar 一个 SetTarget");
+        assert!(result.run.fills >= 1, "0.5 权益占比必须真的成交");
+    }
+}

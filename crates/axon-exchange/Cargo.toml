@@ -10,6 +10,13 @@ axon-core = { path = "../axon-core" }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# tokio-tungstenite 的 rustls-tls-webpki-roots 拉入的 rustls 不带任何 CryptoProvider
+# feature；在 pyo3 .so 构建图（reqwest/alloy 的 provider 链被裁掉）里，
+# ClientConfig::builder() 因无法自动选择 provider 直接 panic，WSS 首次真网连接即炸。
+# 连接处（adapters::connect_wss）用 builder_with_provider(ring) 显式指定，
+# 不依赖进程级 default 与 crate feature 自动检测（避免 ring+aws-lc-rs 并存的 ambiguous）。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "0.26"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

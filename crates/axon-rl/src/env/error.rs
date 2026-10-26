@@ -21,6 +21,15 @@ pub enum EnvError {
     #[error("market data is empty")]
     EmptyMarketData,
 
+    /// 行情历史不足观测窗口（初始化时校验）
+    #[error("insufficient history: need {needed} bars, have {have}")]
+    InsufficientHistory {
+        /// 观测窗口完整所需的根数
+        needed: usize,
+        /// 实际提供的根数
+        have: usize,
+    },
+
     /// 观测计算失败
     #[error("observation computation failed: {0}")]
     ObservationError(String),
@@ -45,6 +54,7 @@ impl EnvError {
             }
             EnvError::InvalidAction(_)
             | EnvError::EmptyMarketData
+            | EnvError::InsufficientHistory { .. }
             | EnvError::ActionError(_)
             | EnvError::ObservationError(_)
             | EnvError::RewardError(_) => PyValueError::new_err(self.to_string()),
@@ -63,6 +73,7 @@ impl EnvError {
             | EnvError::InvalidAction(_)
             | EnvError::DataExhausted(_, _)
             | EnvError::EmptyMarketData
+            | EnvError::InsufficientHistory { .. }
             | EnvError::ObservationError(_)
             | EnvError::RewardError(_)
             | EnvError::ActionError(_) => false,
@@ -84,6 +95,10 @@ mod tests {
             EnvError::InvalidAction("bad action".into()),
             EnvError::DataExhausted(10, 10),
             EnvError::EmptyMarketData,
+            EnvError::InsufficientHistory {
+                needed: 30,
+                have: 10,
+            },
             EnvError::ObservationError("norm failed".into()),
             EnvError::RewardError("pnl calc".into()),
             EnvError::ActionError("invalid side".into()),

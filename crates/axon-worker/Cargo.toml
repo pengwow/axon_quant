@@ -12,8 +12,10 @@ name = "axon_worker"
 
 [features]
 default = []
-# Python 绑定：axon-python 聚合时启用
-python = ["dep:pyo3", "axon-strategy/python"]
+# Python 绑定：axon-python 聚合时启用。
+# `axon-rl/python` 提供 `parse_action_space`（RL host 的动作空间解析），
+# 与 `PyTradingEnv` 共用同一份定义，避免两套口径。
+python = ["dep:pyo3", "dep:tracing-subscriber", "axon-strategy/python", "axon-rl/python", "axon-exchange/python"]
 
 [dependencies]
 axon-core     = { workspace = true }
@@ -21,9 +23,27 @@ axon-strategy = { workspace = true }
 axon-llm      = { workspace = true, features = ["decision"] }
 axon-backtest = { workspace = true }
 axon-harness  = { workspace = true }
+# 统一交易内核：`PyKernel` 与 `BarContextSim` 的宿主
+axon-kernel   = { workspace = true }
+# RL 观测规格 / 动作空间：`PyKernel.add_rl_strategy` 的入参类型
+axon-rl       = { workspace = true }
+# 实时数据泵接缝：`market_data_rx() -> Receiver<WsMessage>`
+axon-exchange = { workspace = true }
+# live 订单簿记：`LiveSink` 的订单状态机 / 成交流水（M5）
+axon-oms      = { workspace = true }
+rust_decimal  = { workspace = true }
 async-trait   = { workspace = true }
+chrono        = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
+tracing       = { workspace = true }
+# tracing→Python logging 桥的自定义 Layer（registry / LevelFilter / try_init），
+# 仅 python 绑定的 `install_rust_logging` 使用
+tracing-subscriber = { workspace = true, optional = true }
 tokio         = { workspace = true }
 pyo3          = { workspace = true, optional = true }
+
+[dev-dependencies]
+# 崩溃恢复 mock 演练测试：临时 journal 文件
+tempfile      = { workspace = true }

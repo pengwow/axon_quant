@@ -1,8 +1,11 @@
 #!/bin/sh
-# git pre-commit 钩子：提交前自动格式化 Rust 代码并校验
+# git pre-commit 钩子：提交前自动校验（fmt + doc-check）
 #
 # 通过 `make install-hooks` 设置 `core.hooksPath` 指向本目录后生效。
-# 仅做格式检查（fast path，不拖慢提交）；clippy / test 交由 `make verify` 与 CI。
+# rustdoc 的 intra-doc 链接错误（private-intra-doc-links / redundant-explicit-links /
+# unresolved links）clippy 不覆盖，只有 CI docs job 的
+# RUSTDOCFLAGS="-D warnings" cargo doc 会拦——曾在 PR 才首次暴露（exit 101）。
+# 故把 doc-check 前移到本地提交；冷跑较慢，紧急提交可 SKIP=cargo-doc git commit 跳过。
 
 set -e
 
@@ -15,4 +18,10 @@ git add -u
 echo "==> [pre-commit] cargo fmt --all -- --check（校验）"
 cargo fmt --all -- --check
 
-echo "==> [pre-commit] 格式检查通过"
+# 与 AGENTS.md「提交前校验不能省」对齐；保留完整输出以便失败时直接看到 rustdoc 错误。
+if [ "$SKIP" != "cargo-doc" ]; then
+  echo "==> [pre-commit] doc-check（SKIP=cargo-doc 可跳过）"
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+fi
+
+echo "==> [pre-commit] 校验通过"
