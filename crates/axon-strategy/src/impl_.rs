@@ -365,9 +365,13 @@ impl Strategy for PythonStrategyImpl {
 
             // 解析返回：支持 dict 或带属性的对象
             let get_str = |key: &str| -> Option<String> {
-                ret.getattr(key)
-                    .and_then(|v| v.extract::<String>())
-                    .or_else(|_| ret.get_item(key).and_then(|v| v.extract::<String>()))
+                let v = ret.getattr(key).or_else(|_| ret.get_item(key)).ok()?;
+                // extract::<String> 只认原生 Python str；官方 Action 的
+                // action_type getter 返回 PyActionType pyclass 枚举（__str__
+                // 映射 "buy"/"sell"/"hold"），extract 失败会静默降级成 Hold
+                // 导致引擎里该策略永不成交，因此先 extract 再回退 str()。
+                v.extract::<String>()
+                    .or_else(|_| v.str().and_then(|s| s.extract::<String>()))
                     .ok()
             };
             let get_f64 = |key: &str| -> Option<f64> {

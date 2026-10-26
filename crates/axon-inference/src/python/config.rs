@@ -350,28 +350,36 @@ impl PyAction {
     #[new]
     #[pyo3(signature = (action_type, confidence, target_position, model_id, inference_time_us))]
     fn new(
-        action_type: &str,
+        action_type: &Bound<'_, PyAny>,
         confidence: f32,
         target_position: f32,
         model_id: String,
         inference_time_us: u64,
-    ) -> Self {
-        // 字符串 → ActionType 解析("buy" / "sell" / "hold" / "reduce_long" / "reduce_short")
-        let at = match action_type {
-            "buy" => RustActionType::Buy,
-            "sell" => RustActionType::Sell,
-            "hold" => RustActionType::Hold,
-            "reduce_long" => RustActionType::ReduceLong,
-            "reduce_short" => RustActionType::ReduceShort,
-            _ => RustActionType::Hold, // 默认 Hold
+    ) -> PyResult<Self> {
+        // 官方导出的 ActionType 枚举与字符串两种构造都要能用：文档示例
+        // `Action(ActionType.Buy, …)` 若构造直接 TypeError，Python 策略
+        // 在内核里就会决策失败被吞成 Hold（零成交、无报错），故双入口。
+        let at = if let Ok(a) = action_type.extract::<PyActionType>() {
+            RustActionType::from(a)
+        } else {
+            let s: String = action_type.extract()?;
+            // 字符串 → ActionType 解析("buy" / "sell" / "hold" / "reduce_long" / "reduce_short")
+            match s.as_str() {
+                "buy" => RustActionType::Buy,
+                "sell" => RustActionType::Sell,
+                "hold" => RustActionType::Hold,
+                "reduce_long" => RustActionType::ReduceLong,
+                "reduce_short" => RustActionType::ReduceShort,
+                _ => RustActionType::Hold, // 默认 Hold
+            }
         };
-        Self(RustAction {
+        Ok(Self(RustAction {
             action_type: at,
             confidence,
             target_position,
             model_id,
             inference_time_us,
-        })
+        }))
     }
     #[getter]
     fn action_type(&self) -> PyActionType {
@@ -616,8 +624,10 @@ mod tests {
 
     #[test]
     fn action_to_dict_roundtrip() {
-        let act = PyAction::new("buy", 0.95, 0.5, "model-1".into(), 250);
         Python::attach(|py| {
+            // new 已支持枚举/字符串双入口，这里用字符串入口覆盖解析分支
+            let at = pyo3::types::PyString::new(py, "buy");
+            let act = PyAction::new(at.as_any(), 0.95, 0.5, "model-1".into(), 250).unwrap();
             let d = act.to_dict(py).unwrap();
             assert_eq!(
                 d.get_item("action_type")

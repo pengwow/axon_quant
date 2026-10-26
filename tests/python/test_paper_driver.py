@@ -80,6 +80,44 @@ def test_shutdown_is_idempotent_noop():
     d.shutdown()
 
 
+def test_rule_strategy_action_object_produces_fill():
+    """规则策略返回 Action 对象（官方契约）→ 首根 bar 建仓必须成交。
+
+    回归（两个缺陷都表现为零成交、无报错）：
+    1. PyAction::new 的 action_type 只收 str，官方示例传 ActionType
+       枚举直接 TypeError（策略构造即崩）；
+    2. PythonStrategyImpl 解析 action_type 时 extract::<String> 对
+       PyActionType pyclass 枚举实例失败，曾静默降级 Hold。
+
+    内核契约：add_strategy 收到的 target_position 是**绝对数量**
+    （ratio→数量的换算在 QuantCell 侧 RustStrategyAdapter，内核不做）；
+    策略对象需带 `symbol` 属性（wrap_strategy 以此确定品种路由）。
+    bar0 close=100，目标 10 BTC：买单价 = 100 + 0.0005（绝对价差），
+    equity = (10000 − 10×100.0005) + 10×100 = 9999.995。
+    """
+    from axon_quant import Action, ActionType
+
+    d = worker.PaperDriver(["BTCUSDT"], initial_cash=10_000.0, fee_rate=0.0)
+
+    class _BuyOnce:
+        symbol = "BTC/USDT"
+
+        def on_bar(self, bar):
+            if bar["close"] <= 100.0:
+                # target_position = 10（绝对数量 BTC），非权益占比
+                return Action(ActionType.Buy, 0.8, 10.0, "rule_smoke", 0)
+            return Action(ActionType.Hold, 0.0, 0.0, "rule_smoke", 0)
+
+    d.add_strategy(_BuyOnce())
+    d.start()
+
+    d.feed_bar("BTCUSDT", START, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    snap = d.snapshot()
+    assert snap["positions"]["BTC/USDT"] == pytest.approx(10.0, abs=1e-4)
+    assert snap["equity"] == pytest.approx(9_999.995, abs=1e-4)
+
+
 def test_rl_feed_bar_roundtrip_matches_paper_ledger():
     """RL 策略灌两根 bar：建仓 0.3 → 清仓 0.0，逐项闭式核对资金链（fee=0）。
 
