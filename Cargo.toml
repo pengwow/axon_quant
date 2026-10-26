@@ -86,6 +86,8 @@ serde_json = "1.0"
 
 # Python 绑定（PyO3 0.28，所有 python feature crate 共享）
 # NOTE: 用 workspace 统一 pyo3 版本，避免各 crate 独立声明导致 Cargo.lock 分裂
+# NOTE: 不能启用 abi3*——pyo3-arrow 0.16 的零拷贝桥依赖 buffer protocol
+#       （pyo3::buffer），pyo3 在 abi3 模式下禁用该模块，两者互斥
 pyo3 = { version = "0.28", features = ["extension-module"] }
 
 # 日志 / 追踪

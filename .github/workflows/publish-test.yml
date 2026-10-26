@@ -16,6 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # requires-python = ">=3.13,<3.15"（pyproject.toml）；不能开 abi3
+        # （pyo3-arrow 的 buffer protocol 与之互斥），wheel 仅以 3.14 构建
         python-version: ['3.14']
     steps:
       - uses: actions/checkout@v4
@@ -34,20 +36,25 @@ jobs:
         run: pip install maturin
 
       - name: Build wheel
+        id: build
         run: maturin build --release --out dist
         env:
           PYO3_PYTHON: ${{ matrix.python-version }}
-        continue-on-error: false
+        continue-on-error: true # 首次失败交给重试链兜底，不立即判 job 红
 
+      # 重试链语义：仅在前序真的失败时接棒（outcome 精确衔接，避免原 if: failure()
+      # 在前序已成功时仍触发的重复编译）；前两步 continue-on-error: true，
+      # 最终成败由末步 retry 2 裁决——它失败则 job 红、成功则 job 绿
       - name: Build wheel (retry 1)
-        if: failure()
+        id: retry1
+        if: steps.build.outcome == 'failure'
         run: maturin build --release --out dist
         env:
           PYO3_PYTHON: ${{ matrix.python-version }}
-        continue-on-error: false
+        continue-on-error: true
 
       - name: Build wheel (retry 2)
-        if: failure()
+        if: steps.build.outcome == 'failure' && steps.retry1.outcome == 'failure'
         run: maturin build --release --out dist
         env:
           PYO3_PYTHON: ${{ matrix.python-version }}
