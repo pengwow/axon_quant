@@ -149,11 +149,18 @@ impl ObservationSpec {
         &self,
         history: &[MarketState],
     ) -> Result<Vec<RawFeatureValue>, ObservationError> {
-        // 只保留最新的 window_size 根；历史不足时按可用根数产出短向量（不补零）
-        let take = self.window_size.min(history.len());
-        let mut values = Vec::with_capacity(self.features.len() * take);
+        // 历史不足 window_size 时直接报错：产短向量会绕过 Err→Hold 降级契约，
+        // 让内核把维度不符的观测喂给模型。窗口聚合自身的 InsufficientData 检查
+        // 只覆盖带 WindowAgg 的特征，这里兜住纯 PriceField 的情形。
+        if history.len() < self.window_size {
+            return Err(ObservationError::InsufficientData {
+                needed: self.window_size,
+                have: history.len(),
+            });
+        }
+        let mut values = Vec::with_capacity(self.features.len() * self.window_size);
         for (feature_idx, feat_config) in self.features.iter().enumerate() {
-            for t in 0..take {
+            for t in 0..self.window_size {
                 // history[t] 是距今 t 步的 bar；窗口聚合要的「过去」是更早的 t+1.. （同样最新在前）
                 let raw =
                     extract_feature_value(&feat_config.source, &history[t], &history[t + 1..])?;
@@ -463,9 +470,9 @@ mod tests {
         assert_eq!(actual.len(), features().len() * window);
     }
 
-    /// 历史短于 window 时两者都必须产出短向量（不是补零）
+    /// 历史短于 window 时必须报 InsufficientData（短向量会绕过 Err→Hold 契约）
     #[test]
-    fn test_spec_matches_short_history() {
+    fn test_spec_rejects_short_history() {
         let window = 5;
         let spec = ObservationSpec::new(window, vec![features()[1].clone()]).unwrap();
         let space = DefaultObservationSpace::new(window, vec![features()[1].clone()]).unwrap();
@@ -474,17 +481,25 @@ mod tests {
         let history: Vec<MarketState> = bars.iter().map(market_state_of).collect();
         let portfolio = PortfolioState::default();
 
-        let expected = space
+        let space_err = space
             .build(&market_state_of(&bars[0]), &history)
-            .unwrap()
-            .features;
-        let actual = spec.build(&ObservationInput {
-            bar: &bars[0],
-            history: &bars,
-            portfolio: &portfolio,
-        });
-        assert_eq!(actual, expected);
-        assert_eq!(actual.len(), 2, "短历史不补零");
+            .unwrap_err();
+        let spec_err = spec
+            .try_build(&ObservationInput {
+                bar: &bars[0],
+                history: &bars,
+                portfolio: &portfolio,
+            })
+            .unwrap_err();
+        for err in [space_err, spec_err] {
+            assert!(
+                matches!(
+                    err,
+                    ObservationError::InsufficientData { needed: 5, have: 2 }
+                ),
+                "期望 InsufficientData{{needed:5, have:2}}，实际 {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -595,7 +610,9 @@ mod tests {
             NormalizerType::None,
         )];
         let spec = ObservationSpec::new(2, bad).unwrap();
-        let bars = vec![bar(0, 100.0)];
+        // 窗口必须凑满（2 根），常数检查（InsufficientData）先于特征提取，
+        // 否则这里的断言会先命中窗口错误而不是字段错误
+        let bars = vec![bar(0, 100.0), bar(1, 101.0)];
         let portfolio = PortfolioState::default();
         let input = ObservationInput {
             bar: &bars[0],

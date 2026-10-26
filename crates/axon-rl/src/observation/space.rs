@@ -107,6 +107,10 @@ impl ObservationSpace for DefaultObservationSpace {
         names
     }
 
+    fn required_history_depth(&self) -> usize {
+        self.spec.required_history_depth()
+    }
+
     fn num_features(&self) -> usize {
         self.spec.num_features()
     }

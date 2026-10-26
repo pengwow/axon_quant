@@ -47,6 +47,9 @@ pub struct TradingEnv {
     executor: Executor,
     /// 行情数据
     market_data: Vec<MarketBar>,
+    /// 预热步数（观测窗口所需根数 - 1）：current_step 从这里起步，
+    /// 之前的 bar 只用于凑齐观测窗口，不产生交易决策
+    warmup_steps: usize,
     /// 当前时间步
     current_step: usize,
     /// 当前组合状态
@@ -74,13 +77,25 @@ impl TradingEnv {
             return Err(EnvError::EmptyMarketData);
         }
 
+        // 观测窗口需要 depth 根历史（含当前 bar）：不足时首个观测就构建不出
+        // 完整窗口，宁可初始化即失败。warmup = depth - 1，前 warmup 根只做暖机。
+        let depth = observation_space.required_history_depth();
+        if market_data.len() < depth {
+            return Err(EnvError::InsufficientHistory {
+                needed: depth,
+                have: market_data.len(),
+            });
+        }
+        let warmup_steps = depth - 1;
+
         let decoder = ActionDecoder::from_space(&action_space, &config.symbol)?;
         let executor = Executor::new(config.clone());
         let return_history = ReturnHistory::new(config.return_window);
         let portfolio = PortfolioState {
             cash: config.initial_capital,
             portfolio_value: config.initial_capital,
-            last_price: market_data[0].close,
+            // 交易实际从 warmup 那根 bar 开始，last_price 对齐市价而非数据首根
+            last_price: market_data[warmup_steps].close,
             ..Default::default()
         };
 
@@ -92,6 +107,7 @@ impl TradingEnv {
             reward_fn,
             executor,
             market_data,
+            warmup_steps,
             current_step: 0,
             portfolio,
             done: false,
@@ -109,14 +125,15 @@ impl TradingEnv {
     /// 3. 重置收益率历史
     /// 4. 返回初始观测
     pub fn reset(&mut self) -> EnvResult<Observation> {
-        self.current_step = 0;
+        // 跳过暖机区：前 warmup_steps 根只用于凑观测窗口，交易从第 warmup 根开始
+        self.current_step = self.warmup_steps;
         self.done = false;
         self.trades_executed = 0;
         self.transaction_costs = 0.0;
         self.portfolio = PortfolioState {
             cash: self.config.initial_capital,
             portfolio_value: self.config.initial_capital,
-            last_price: self.market_data[0].close,
+            last_price: self.market_data[self.warmup_steps].close,
             ..Default::default()
         };
         self.return_history.clear();
@@ -322,10 +339,9 @@ impl TradingEnv {
             ..Default::default()
         };
 
-        // 收集最近 N 步历史
-        let start = self
-            .current_step
-            .saturating_sub(self.observation_space.num_features());
+        // 收集最近 N 步历史：起点受 warmup 钳制（而非 num_features，那是维度数
+        // 不是 bar 根数——旧实现把两者混用，window>1 时窗口只能凑出维度数根）
+        let start = self.current_step.saturating_sub(self.warmup_steps);
         let history: Vec<MarketState> = (start..=self.current_step)
             .rev()
             .map(|i| {
@@ -568,6 +584,63 @@ mod tests {
             TradingEnv::new(config, action_space, make_obs_space(), reward_fn, vec![]);
         let err = result.err().expect("expected error");
         assert_eq!(err, EnvError::EmptyMarketData);
+    }
+
+    /// window>1 的观测空间需要 warmup：数据不足观测窗口时初始化即报错
+    #[test]
+    fn test_insufficient_history_errors() {
+        let config = EnvConfig::default();
+        let action_space = ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0));
+        let reward_fn = Box::new(PnLReward::default());
+        // window=3 → depth=3，只给 2 根数据
+        let space = Box::new(
+            DefaultObservationSpace::new(
+                3,
+                vec![FeatureConfig {
+                    name: "close".to_string(),
+                    source: FeatureSource::PriceField("close".to_string()),
+                    normalizer: NormalizerType::ZScore,
+                    clip_range: None,
+                }],
+            )
+            .unwrap(),
+        );
+        let err = TradingEnv::new(config, action_space, space, reward_fn, make_test_data(2))
+            .err()
+            .expect("expected error");
+        assert_eq!(err, EnvError::InsufficientHistory { needed: 3, have: 2 });
+    }
+
+    /// warmup 语义：reset 落在窗口末端，初始观测窗口完整（depth 根）且可 step
+    #[test]
+    fn test_warmup_starts_at_window_depth() {
+        let config = EnvConfig {
+            max_steps: 50,
+            ..Default::default()
+        };
+        let action_space = ActionSpace::Continuous(ContinuousActionSpace::new(-1.0, 1.0));
+        let reward_fn = Box::new(PnLReward::default());
+        // 单特征 × window=3 → obs 维度 3，depth=3，warmup=2
+        let space = Box::new(
+            DefaultObservationSpace::new(
+                3,
+                vec![FeatureConfig {
+                    name: "close".to_string(),
+                    source: FeatureSource::PriceField("close".to_string()),
+                    normalizer: NormalizerType::ZScore,
+                    clip_range: None,
+                }],
+            )
+            .unwrap(),
+        );
+        let mut env =
+            TradingEnv::new(config, action_space, space, reward_fn, make_test_data(50)).unwrap();
+        let obs = env.reset().unwrap();
+        assert_eq!(env.current_step(), 2, "reset 必须落在窗口末端");
+        assert_eq!(obs.features.len(), 3, "单特征 × window=3");
+        let (_, _, done, info) = env.step(&Action::continuous(vec![0.0])).unwrap();
+        assert!(!done);
+        assert_eq!(info.current_step, 3, "暖机后正常推进");
     }
 
     #[test]

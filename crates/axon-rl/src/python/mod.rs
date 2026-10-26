@@ -140,6 +140,8 @@ pub fn env_error_to_py(err: EnvError) -> PyErr {
         }
         EnvError::InvalidAction(_)
         | EnvError::EmptyMarketData
+        // 历史不足是入参数量问题（R-1 冷启动校验新增），归 ValueError
+        | EnvError::InsufficientHistory { .. }
         | EnvError::ActionError(_)
         | EnvError::ObservationError(_)
         | EnvError::RewardError(_) => PyValueError::new_err(err.to_string()),

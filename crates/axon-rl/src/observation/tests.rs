@@ -354,12 +354,17 @@ fn test_observation_space_build_basic() {
 
 #[test]
 fn test_observation_space_build_with_insufficient_history() {
-    // history 短于 window 时应仍能 build（仅取可用）
+    // history 短于 window 时必须报错，短向量会绕过内核 Err→Hold 降级契约
     let space = DefaultObservationSpace::new(5, vec![close_feature()]).unwrap();
     let history = newest_first_history(&[101.0, 100.0]);
-    let obs = space.build(&history[0], &history).unwrap();
-    assert_eq!(obs.features.len(), 2);
-    assert_eq!(obs.feature_names[0], "close_t0", "_t0 仍是当前 bar");
+    let err = space.build(&history[0], &history).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            ObservationError::InsufficientData { needed: 5, have: 2 }
+        ),
+        "期望 InsufficientData{{needed:5, have:2}}，实际 {err:?}"
+    );
 }
 
 #[test]

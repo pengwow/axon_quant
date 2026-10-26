@@ -246,6 +246,13 @@ pub trait ObservationSpace: Send + Sync {
     }
     /// 所有特征名（按 `features` 顺序）
     fn feature_names(&self) -> Vec<String>;
+    /// 观测窗口完整所需的最少历史根数（含当前 bar）
+    ///
+    /// 调用方（内核 RL host / 训练环境）据此保证喂给 [`Self::build`] 的历史
+    /// 至少有这么多根——不足时纯 PriceField 特征也会因产出短观测而报错，
+    /// 预热期必须等待而不是降级。无默认实现：trait 本身不知道窗口概念，
+    /// 唯一合理的来源是具体实现的空间配置。
+    fn required_history_depth(&self) -> usize;
     /// 特征维度总数（`num_features × window_size`）
     fn num_features(&self) -> usize;
     /// 归一化运行时统计量（仅带归一化的实现返回 `Some`）

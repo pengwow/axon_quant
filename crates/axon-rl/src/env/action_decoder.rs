@@ -77,7 +77,13 @@ impl ActionDecoder {
                     Ok(DiscreteActionEnum::Hold) => 0.0,
                     Ok(DiscreteActionEnum::Buy(bin)) => bin.to_fraction(space.n_quantity_bins),
                     Ok(DiscreteActionEnum::Sell(bin)) => -bin.to_fraction(space.n_quantity_bins),
-                    Err(_) => 0.0,
+                    Err(_) => {
+                        // 离散语义没有「维持上次目标」的表达，仍归 0.0；
+                        // 但非法 index 超出动作空间属于模型/采样异常，静默
+                        // 处理会吞掉观测错位、步数漂移这类上游 bug，必须留痕。
+                        tracing::warn!(index, "离散动作 index 超出动作空间，按 Hold(0.0) 处理");
+                        0.0
+                    }
                 },
                 ActionType::Continuous(_) => 0.0,
             },
