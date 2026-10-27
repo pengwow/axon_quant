@@ -1232,6 +1232,19 @@ impl BacktestEngine {
         &self.stats
     }
 
+    /// 成交明细累计条数（paper 运行期增量读取的游标锚点）
+    pub fn fills_len(&self) -> usize {
+        self.bt_state.fills_detail.len()
+    }
+
+    /// 自游标 `cursor` 起的成交明细切片（append-only、不消费）
+    ///
+    /// `fill_id` = `fills_detail` 下标（全局唯一且单调递增），天然就是游标：
+    /// 调用方拉走后把游标推进到返回切片的长度即可增量读取。越界游标安全为空。
+    pub fn fills_since(&self, cursor: usize) -> &[FillRecord] {
+        self.bt_state.fills_detail.get(cursor..).unwrap_or(&[])
+    }
+
     // ── T3.8 新增:多 leg API(策略目标仓位 + 当前仓位查询) ─────────
 
     /// 设置某 leg 的目标仓位(仅记录,不主动下单)

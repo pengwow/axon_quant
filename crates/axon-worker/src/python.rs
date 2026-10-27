@@ -282,23 +282,7 @@ impl PyBacktestResult {
     fn fills_detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::empty(py);
         for fr in &self.fills_detail {
-            let d = PyDict::new(py);
-            d.set_item("timestamp_ns", fr.timestamp.nanos)?;
-            d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
-            d.set_item("taker_order_id", fr.taker_order_id)?;
-            d.set_item("maker_order_id", fr.maker_order_id)?;
-            d.set_item(
-                "taker_side",
-                match fr.taker_side {
-                    axon_core::market::Side::Buy => "Buy",
-                    axon_core::market::Side::Sell => "Sell",
-                },
-            )?;
-            d.set_item("price", fr.price.as_f64())?;
-            d.set_item("quantity", fr.quantity.as_f64())?;
-            // fill 全局唯一 id（= fills_detail 下标），供 trades 的 entry_fill_ids/exit_fill_id 关联
-            d.set_item("fill_id", fr.fill_id)?;
-            list.append(d)?;
+            list.append(fill_record_dict(py, fr)?)?;
         }
         Ok(list)
     }
@@ -401,6 +385,29 @@ fn instrument_to_tuple<'py>(py: Python<'py>, inst: &Instrument) -> PyResult<Boun
             )
         }
     }
+}
+
+/// FillRecord → Python dict（终态 fills_detail 与 paper 运行期 fills_since 共用的字段契约）
+///
+/// `quantity` 为正数绝对量，方向在 `taker_side`；`fill_id` = fills_detail 下标。
+fn fill_record_dict<'py>(py: Python<'py>, fr: &FillRecord) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("timestamp_ns", fr.timestamp.nanos)?;
+    d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
+    d.set_item("taker_order_id", fr.taker_order_id)?;
+    d.set_item("maker_order_id", fr.maker_order_id)?;
+    d.set_item(
+        "taker_side",
+        match fr.taker_side {
+            axon_core::market::Side::Buy => "Buy",
+            axon_core::market::Side::Sell => "Sell",
+        },
+    )?;
+    d.set_item("price", fr.price.as_f64())?;
+    d.set_item("quantity", fr.quantity.as_f64())?;
+    // fill 全局唯一 id（= fills_detail 下标），供 trades 的 entry_fill_ids/exit_fill_id 关联
+    d.set_item("fill_id", fr.fill_id)?;
+    Ok(d)
 }
 
 /// Python 端 BacktestRunner（Rust 原生回测编排器）
@@ -1723,6 +1730,23 @@ impl PyPaperDriver {
         }
         dict.set_item("positions", positions)?;
         Ok(dict)
+    }
+
+    /// 运行期成交增量读取：`list[dict]`，字段与 `BacktestResult.fills_detail` 一致
+    ///
+    /// `cursor` 传上次游标即可增量拉新：fill_id = fills_detail 下标，全局唯一且
+    /// 单调递增，调用方拉走后把游标推进返回 len。越界游标安全为空；
+    /// paper 账纯内存、重启即清零，游标随之从 0 重新开始。
+    #[pyo3(signature = (cursor = 0))]
+    fn fills_since<'py>(&self, py: Python<'py>, cursor: usize) -> PyResult<Bound<'py, PyList>> {
+        let fills = kernel_lock(&self.inner, "paper driver")?
+            .fills_since(cursor)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let list = PyList::empty(py);
+        for fr in &fills {
+            list.append(fill_record_dict(py, fr)?)?;
+        }
+        Ok(list)
     }
 
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op（保持接口对称）

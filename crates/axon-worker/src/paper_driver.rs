@@ -27,6 +27,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use axon_core::portfolio::FillRecord;
 use axon_core::{
     Bar, Event, Instrument, MarketDataEvent, MarketDataPayload, Price, Quantity, Timestamp,
 };
@@ -247,6 +248,19 @@ impl PaperDriver {
         })
     }
 
+    /// 运行期成交增量读取：自游标 `cursor` 起的新成交（append-only、不消费）
+    ///
+    /// 游标语义 = `fills_detail` 下标（`fill_id` 全局唯一且单调递增）：调用方
+    /// 拉走后把游标推进 `returned.len()` 即可增量拉新；越界游标安全为空。
+    /// paper 账面纯内存，重启即清零，游标随之从 0 重新开始。
+    pub fn fills_since(&self, cursor: usize) -> Result<Vec<FillRecord>, String> {
+        let kernel = self
+            .kernel
+            .as_ref()
+            .ok_or_else(|| "内核未启动，请先 start".to_string())?;
+        Ok(kernel.fills_since(cursor).to_vec())
+    }
+
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op
     pub fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
@@ -403,6 +417,46 @@ mod tests {
             "清仓后权益 = 全部落袋(含 0.05 价差成本): {}",
             snap.equity
         );
+    }
+
+    /// T1b：fills_since 增量游标——fill_id 单调递增、游标推进增量拉新、越界安全为空
+    #[test]
+    fn fills_since_incremental_cursor() {
+        let mut driver =
+            PaperDriver::new(None, paper_config(), vec!["BTCUSDT".into()]).expect("构造成功");
+        // 未启动即拉取：明确报错，不静默给空
+        let err = driver.fills_since(0).unwrap_err();
+        assert!(err.contains("内核未启动"), "未启动报错: {err}");
+
+        driver.connect().expect("feed_bar 模式 connect 直接 Ok");
+        driver
+            .start(vec![Box::new(RatioHost::new(vec![0.3, 0.0]))])
+            .expect("start 成功");
+
+        // bar0 close=100：建仓 30 股 @ mid+0.05 = 100.05
+        feed_flat(&mut driver, "BTCUSDT", 0, 100.0);
+        driver.tick().expect("tick 应成功");
+        let fills = driver.fills_since(0).expect("拉取成功");
+        assert_eq!(fills.len(), 1, "建仓应产出 1 笔成交");
+        assert_eq!(fills[0].fill_id, 0);
+        assert_eq!(fills[0].quantity.as_f64(), 30.0);
+        assert!((fills[0].price.as_f64() - 100.05).abs() < 1e-6);
+        assert!(matches!(fills[0].taker_side, axon_core::market::Side::Buy));
+        // 游标推进到返回 len 后重拉：无新增（append-only、不消费）
+        assert!(driver.fills_since(1).expect("重拉成功").is_empty());
+
+        // bar1 close=110：清仓 30 股 @ 110−0.05 = 109.95
+        feed_flat(&mut driver, "BTCUSDT", 1, 110.0);
+        driver.tick().expect("tick 应成功");
+        let fills = driver.fills_since(1).expect("增量拉取成功");
+        assert_eq!(fills.len(), 1, "清仓只新增 1 笔");
+        assert_eq!(fills[0].fill_id, 1, "fill_id 单调递增");
+        assert!(matches!(fills[0].taker_side, axon_core::market::Side::Sell));
+        assert_eq!(fills[0].quantity.as_f64(), 30.0, "quantity 为正数绝对量");
+        assert!((fills[0].price.as_f64() - 109.95).abs() < 1e-6);
+
+        // 越界游标安全为空
+        assert!(driver.fills_since(999).expect("越界游标返回空").is_empty());
     }
 
     /// 只交易 BTC 的宿主（T2 多品种栅栏用）
