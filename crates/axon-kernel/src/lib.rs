@@ -15,6 +15,7 @@
 //! | [`core`] | [`KernelCore`]（`BacktestEngine` 的内核侧代理）+ [`KernelConfig`] |
 //! | [`pump`] | [`HistoryPump`](pump::build_frames) 帧构造 + [`BarGridBarrier`] |
 //! | [`host`] | [`StrategyHost`] 同步决策接口 + `OrderIntent` / `HostCtx` |
+//! | [`risk`] | [`RiskCheck`] pre-trade 风控接缝（paper / live 共用） |
 //! | [`sink`] | [`ExecutionSink`] 执行出口（M1: `NullSink` / `BacktestSink`） |
 //! | [`journal`] | 事件溯源日志（M0 内存版） |
 //! | [`persist`] | `RunManifest`（重演所需的外部输入指纹） |
@@ -76,6 +77,7 @@ pub mod kernel_loop;
 pub mod lifecycle;
 pub mod persist;
 pub mod pump;
+pub mod risk;
 pub mod rl;
 pub mod sink;
 
@@ -88,6 +90,7 @@ pub use kernel_loop::{Kernel, KernelResult};
 pub use lifecycle::BarLifecycle;
 pub use persist::{ModelArtifact, RunManifest};
 pub use pump::{BarGridBarrier, GridFrame, build_frames};
+pub use risk::{AllowAllRisk, RiskCheck};
 pub use rl::{InferenceBackend, RLStrategyHost};
 pub use sink::{BacktestSink, ExecutionSink, NullSink, PaperSink};
 

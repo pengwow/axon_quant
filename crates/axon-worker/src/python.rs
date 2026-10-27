@@ -35,6 +35,7 @@ use axon_kernel::{
     RLStrategyHost, RunManifest, StrategyHost, build_frames,
 };
 use axon_oms::AccountingMode;
+use axon_risk::config::RiskConfig;
 use axon_rl::{
     Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec, RunningStats,
 };
@@ -1552,6 +1553,45 @@ impl PyLiveDriver {
             .shutdown()
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
+
+    /// 装配 pre-trade 风控（B3，start 前调用；未配置时驱动保持默认无风控行为）
+    ///
+    /// `config` 为可省略键的 dict（键见 `risk_config_from_dict`），缺省键用
+    /// 引擎默认值；`max_position_value` 是单品种目标仓名义额上限（金额口径），
+    /// `None` 表示不做该检查。resume 恢复路径不装配风控。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn set_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        kernel_lock(&self.inner, "live driver")?.set_risk(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 回灌当日盈亏（**增量**语义）：累计亏损触达 `max_daily_loss` 时熔断开仓；
+    /// 未配置风控时 no-op（行为同未接线）
+    fn update_risk_pnl(&self, pnl: f64) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.update_daily_pnl(pnl);
+        }
+        Ok(())
+    }
+
+    /// 跨日清零当日盈亏与熔断器（未配置风控时 no-op）
+    fn reset_risk_daily(&self) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.reset_daily();
+        }
+        Ok(())
+    }
 }
 
 /// 纸面驱动器：PaperDriver 的 Python 面（模拟盘，纯内存账本）
@@ -1755,6 +1795,43 @@ impl PyPaperDriver {
             .shutdown()
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
+
+    /// 装配 pre-trade 风控（B3，start 前调用；未配置时驱动保持默认无风控行为）
+    ///
+    /// 参数语义与 `LiveDriver.set_risk_config` 一致。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn set_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        kernel_lock(&self.inner, "paper driver")?.set_risk(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 回灌当日盈亏（**增量**语义，paper 由 equity 差值法在 Python 侧算 delta）；
+    /// 未配置风控时 no-op
+    fn update_risk_pnl(&self, pnl: f64) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.update_daily_pnl(pnl);
+        }
+        Ok(())
+    }
+
+    /// 跨日清零当日盈亏与熔断器（未配置风控时 no-op）
+    fn reset_risk_daily(&self) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.reset_daily();
+        }
+        Ok(())
+    }
 }
 
 /// 只读探查 journal 头 manifest（不接管文件、不重演）
@@ -1848,6 +1925,32 @@ fn kernel_lock<'a, T>(m: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>
     m.lock().map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel {what} lock 失败: {e}"))
     })
+}
+
+/// 风控配置 dict → `RiskConfig`（B3）：缺省键用引擎默认值，未知键直接报错
+/// （防调用方拼错键名后静默走默认值）
+fn risk_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<RiskConfig> {
+    let mut cfg = RiskConfig::default();
+    for (key, value) in dict.iter() {
+        let key: String = key.extract()?;
+        match key.as_str() {
+            "max_order_value" => cfg.max_order_value = value.extract()?,
+            "max_daily_loss" => cfg.max_daily_loss = value.extract()?,
+            "max_leverage" => cfg.max_leverage = value.extract()?,
+            "max_drawdown" => cfg.max_drawdown = value.extract()?,
+            "circuit_breaker_cooldown_secs" => {
+                let secs: u64 = value.extract()?;
+                cfg.circuit_breaker_cooldown = std::time::Duration::from_secs(secs);
+            }
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "未知风控配置键 `{other}`（可用键: max_order_value / max_daily_loss / \
+                     max_leverage / max_drawdown / circuit_breaker_cooldown_secs）"
+                )));
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 /// futures / settle / contract_size → 品种撮合口径

@@ -31,6 +31,8 @@ axon-rl       = { workspace = true }
 axon-exchange = { workspace = true }
 # live 订单簿记：`LiveSink` 的订单状态机 / 成交流水（M5）
 axon-oms      = { workspace = true }
+# B3 风控接线：`EngineRiskCheck` 把 DefaultRiskEngine 接进内核 RiskCheck 接缝
+axon-risk     = { workspace = true }
 rust_decimal  = { workspace = true }
 async-trait   = { workspace = true }
 chrono        = { workspace = true }

@@ -74,3 +74,31 @@ def test_start_without_host_fails_fast(tmp_path):
     d = worker.LiveDriver(_config(), ["BTCUSDT"])
     with pytest.raises((ValueError, RuntimeError), match="至少需要一个策略宿主"):
         d.start(str(tmp_path / "live.journal"))
+
+
+def test_risk_config_accepts_known_keys():
+    """B3：已知配置键 + 金额上限在 start 前装配成功（构造期不发网络请求）"""
+    d = worker.LiveDriver(_config(), ["BTCUSDT"])
+    d.set_risk_config(
+        {
+            "max_order_value": 10_000.0,
+            "max_daily_loss": 500.0,
+            "max_leverage": 3.0,
+            "max_drawdown": 0.10,
+            "circuit_breaker_cooldown_secs": 60,
+        },
+        max_position_value=8_000.0,
+    )
+
+
+def test_risk_config_rejects_unknown_key():
+    d = worker.LiveDriver(_config(), ["BTCUSDT"])
+    with pytest.raises(ValueError, match="未知风控配置键"):
+        d.set_risk_config({"max_daily_loss_x": 100.0})
+
+
+def test_risk_pnl_reset_noop_without_config():
+    """未配置风控时 pnl 回灌 / 跨日清零是 no-op（opt-in 契约，start 前也可调）"""
+    d = worker.LiveDriver(_config(), ["BTCUSDT"])
+    d.update_risk_pnl(-100.0)
+    d.reset_risk_daily()

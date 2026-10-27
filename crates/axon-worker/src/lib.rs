@@ -30,6 +30,11 @@ pub mod live_driver;
 
 pub use live_driver::LiveDriver;
 
+/// B3 风控接线：`EngineRiskCheck` 把 axon-risk 引擎接进内核 RiskCheck 接缝
+pub mod risk_check;
+
+pub use risk_check::{EngineRiskCheck, RiskHandle};
+
 /// 纸面驱动：Kernel + KernelPump + PaperSink 装配（M6 paper 接线）
 pub mod paper_driver;
 

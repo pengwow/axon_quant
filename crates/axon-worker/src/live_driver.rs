@@ -23,7 +23,8 @@
 //!
 //! - 仅支持永续合约（`InstrumentMode::Swap`）+ 钱包口径（`AccountingMode::Wallet`），
 //!   现货请走原 StrategyLoop；
-//! - 风控沿用 `LiveSink` 默认 `AllowAllRisk`；
+//! - 风控默认 `LiveSink` 的 `AllowAllRisk`；`with_risk` 配置后 start 装配
+//!   `EngineRiskCheck`（B3），resume 恢复路径不注入；
 //! - 行情 fanout 通道满时新行情被丢弃（容量 4096，正常 tick 节奏不会触顶）；
 //! - 多品种共享一个内核一个账本，不同品种收市 bar 乱序会 `Err`——v1 以单品种为主；
 //! - 交易所成交流水审计只翻最近 1000 笔（`TRADES_PAGE_LIMIT`），更长的停机窗口
@@ -45,6 +46,7 @@ use axon_kernel::{
     interval_to_nanos,
 };
 use axon_oms::AccountingMode;
+use axon_risk::RiskConfig;
 
 use crate::backtest::instrument_key_for;
 use crate::exchange_gateway::ExchangeGateway;
@@ -53,6 +55,7 @@ use crate::pump::{Gap, KernelPump};
 use crate::reconcile::{
     LocalSnapshot, ReconcileConfig, ReconcileReport, VenueSnapshot, reconcile, resume_guard,
 };
+use crate::risk_check::{EngineRiskCheck, RiskHandle};
 
 /// 行情 fan-out 通道容量：满即丢新增行情（tick 节奏下不会触顶）
 const FANOUT_CHANNEL_CAPACITY: usize = 4096;
@@ -86,6 +89,11 @@ pub struct LiveDriver {
     rest_gateway: ExchangeGateway,
     /// 统一内核；`tick` / `snapshot` / `shutdown` 要求已启动
     kernel: Option<Kernel>,
+    /// B3 风控：start 时注入 LiveSink 的配置（None = 默认 AllowAllRisk，
+    /// 行为同接线前）；`f64` 是单品种仓名义额上限，`None` 表示不做名义额检查
+    risk: Option<(RiskConfig, Option<f64>)>,
+    /// start 成功后的引擎句柄，上层经它回灌当日盈亏（联动熔断）/ 跨日清零
+    risk_handle: Option<RiskHandle>,
 }
 
 impl LiveDriver {
@@ -146,7 +154,29 @@ impl LiveDriver {
             rest_gateway,
             pump,
             kernel: None,
+            risk: None,
+            risk_handle: None,
         })
+    }
+
+    /// 注入 pre-trade 风控（B3）：start 时装配进 LiveSink
+    ///
+    /// `max_position_value` 是单品种目标净仓的金额上限（金额口径；None = 不查）。
+    /// 不调用此方法时 LiveSink 用默认 `AllowAllRisk`，行为同接线前。
+    /// 注意 resume 恢复路径不装配风控（恢复会话优先对账放行）。
+    pub fn with_risk(mut self, config: RiskConfig, max_position_value: Option<f64>) -> Self {
+        self.set_risk(config, max_position_value);
+        self
+    }
+
+    /// 非消耗版装配（pyo3 绑定层复用）：driver 已在锁里，无法走 consuming builder
+    pub fn set_risk(&mut self, config: RiskConfig, max_position_value: Option<f64>) {
+        self.risk = Some((config, max_position_value));
+    }
+
+    /// start 成功后的风控引擎句柄（未注入风控时为 None）
+    pub fn risk_handle(&self) -> Option<&RiskHandle> {
+        self.risk_handle.as_ref()
     }
 
     /// 连接交易所并订阅品种（幂等安全：失败时网关放回可重试）
@@ -185,6 +215,15 @@ impl LiveDriver {
             .ok_or_else(|| "驱动器网关缺失，请先 connect".to_string())?;
         let sink = LiveSink::new(Box::new(gateway), self.shadow_cash)
             .with_accounting_mode(self.accounting);
+        // B3：有风控配置则装配 EngineRiskCheck 并留出句柄供 pnl 回灌；
+        // 无配置保持 AllowAllRisk（opt-in，行为不变）
+        let sink = if let Some((risk_config, max_position_value)) = self.risk.take() {
+            let (check, handle) = EngineRiskCheck::new(risk_config, max_position_value);
+            self.risk_handle = Some(handle);
+            sink.with_risk(Box::new(check))
+        } else {
+            sink
+        };
         let mut kernel = Kernel::new(self.config.clone(), Box::new(sink));
         kernel.set_manifest(RunManifest::default());
         for host in hosts {
