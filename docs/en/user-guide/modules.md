@@ -20,6 +20,7 @@ Each module section uses 7 standardized fields:
 ---
 
 ## 1. `axon-core`
+core`
 
 ### Core Responsibility
 The **bottom-most** type library in the workspace; defines shared data structures, error conventions, scheduling primitives and statistical primitives. **Does not depend on** any other `axon-*` crate.
@@ -119,6 +120,7 @@ let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Limit { price: P
 ---
 
 ## 2. `axon-backtest`
+backtest`
 
 ### Core Responsibility
 Event-driven backtest engine + L1/L2/L3 deterministic matching + impact-aware matching + streaming backtest.
@@ -217,102 +219,87 @@ println!("Sharpe = {}, MaxDD = {}", result.sharpe(), result.max_drawdown());
 
 ---
 
-## 3. `axon-kernel`
+## 3. `axon-strategy`
 
 ### Core Responsibility
-**Unified trading kernel**: the same main loop (`Kernel::run`) powers backtest, paper and live — mode differences live solely in assembly time (data pump + `ExecutionSink` implementation), the loop itself contains zero mode branches.
+**Unified Strategy trait + built-in implementations**: defines an async Strategy trait (`decide()`) shared by backtest, paper and live — four built-in implementations cover the spectrum from fast SDM paths to pure rules, fast/slow routing, and Python strategy adapters. A Strategy is deliberately **mode-agnostic**; whether it runs in a backtest, on paper or live is injected by the consumer. Introduced recently (around `0.22.1`, landed alongside `axon-worker`).
 
 ### Code Location
-- `crates/axon-kernel/src/lib.rs` — public API (`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`)
-- `crates/axon-kernel/src/kernel_loop.rs` — main loop (`run` / `run_history` / `replay_from` / `resume_replay`)
-- `crates/axon-kernel/src/lifecycle.rs` — per-bar nine-step orchestration (`BarLifecycle::on_bar_closed`)
-- `crates/axon-kernel/src/pump.rs` — history loader: `build_frames` grid alignment + `BarGridBarrier` frame barrier
-- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
-- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
-- `crates/axon-kernel/src/journal.rs` — event-sourced log (`Journal::create` / `append` / `open` / `resume`)
-- `crates/axon-kernel/src/persist.rs` — `RunManifest` (external-input fingerprints required for replay)
-- `crates/axon-kernel/src/core.rs` — `KernelCore` (kernel-side proxy for `BacktestEngine`) + `KernelConfig`
-- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator` (tick / kline → close `BarClosed` + de-duplication)
-- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` borrowed view + interval → nanosecond / close-time derivation
-- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost` (RL inference plugged into the main loop)
+- `crates/axon-strategy/src/lib.rs` — entry
+- `crates/axon-strategy/src/trait_.rs` — `Strategy` trait + `BarContext` + `StrategyDecision` + `StrategyError`
+- `crates/axon-strategy/src/impl_.rs` — four built-in implementations: `SdmStrategyImpl` / `RuleStrategyImpl` / `SwarmRouteStrategyImpl` / `PythonStrategyImpl`
+- `crates/axon-strategy/src/python.rs` — Python bindings (`PyRuleStrategyImpl`)
 
 ### Core Mechanism
-- **Single main loop**: `Kernel::run()` pulls events from the queue → `BarGridBarrier` waits for every symbol at the same grid timestamp → `BarLifecycle::on_bar_closed` executes nine steps → collects results. `run_history` ingests a batch of `GridFrame`s, `replay_from` reads a journal, `resume_replay` continues after a replay
-- **BarLifecycle nine steps** (a byte-for-byte copy of `axon-worker::BacktestRunner::run()` semantics):
-  1. Clock alignment + forward-fill `last_price` for symbols that have no bar this tick
-  2. Liquidation snapshot — **must** be taken before `rebalance`
-  3. `begin_bar_multi`: seed liquidity + auto rebalance + funding dispatch + `sample_bar_nav`
-  4. Per-`BarClosed` per-`StrategyHost` → `Vec<OrderIntent>` (Hosts self-filter by `instrument`)
-  5. Budget-proportional reduction of `effective_targets` (only when margin is not enabled)
-  6. Submit targets via `ExecutionSink::submit`, one-shot `finish_bar` to push them into the engine
-  7. `push_funding` + drain the engine queue
-  8. `check_margin` liquidation (tier-wise partial → zero at the lowest tier)
-  9. `sample_bar_nav` (already done in step 3; skip)
-- **GridFrame / build_frames / BarGridBarrier**: multi-symbol backtests require bar-wise grid alignment; `build_frames(bars, InstrumentMode, states)` pivots the per-symbol sequence into `Vec<GridFrame>`; `BarGridBarrier` aggregates same-timestamp frames incrementally in paper / live mode and only triggers one `on_bar_closed` when full
-- **StrategyHost / OrderIntent**: synchronous trait; `on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`; `HostCtx` is backfilled with `equity / positions / last_price` at the end of step 3 before Hosts decide. Returning an empty `Vec` means "keep the last effective target" — **not** flattening (flattening requires explicit `OrderIntent::SetTarget { target_ratio: 0.0 }`)
-- **Three ExecutionSink implementations**:
-  - `NullSink`: no-op, used in unit tests / skeletons
-  - `BacktestSink`: wraps a `BacktestEngine` directly — per-bar semantics match `BacktestRunner` byte-for-byte (M1 closed-loop consistency goal)
-  - `PaperSink`: L1 matching + order-book quotes, wired inside `axon-worker::PaperDriver`
-- **Journal + RunManifest event sourcing**:
-  - `Journal::create(path, manifest)` writes the file header, `append(entry)` appends, `open(path)` reads back, `resume(path)` reads back + yields a handle for continuation
-  - `RunManifest` records every external-input fingerprint needed for replay (market bars, states, funding, sink config etc.); format version lives in `persist::JOURNAL_FORMAT_VERSION`
-- **RLStrategyHost**: a standalone module that shares the same `ObservationSpec` + `CostModel` between training and inference; registered via `axon-worker::PyKernel.add_rl_strategy`
+- **async Strategy trait**: `decide(&BarContext) -> Result<StrategyDecision, StrategyError>`. `BarContext` packs `symbol / bar_index / timestamp_ns / Bar / state` into a single struct to avoid repeated `Option`-chain unwraps on the consumer side. The Strategy itself carries zero branches for "am I running in backtest?" — `BacktestRunner`, live `EventDrivenLoop` and paper `PaperDriver` all consume it the same way (calling `decide` once per bar).
+- **StrategyDecision attribution exit**: richer than a bare `Action`, it carries `confidence` (SDM-calibrated; `0.0` for rule strategies), `target_position` (`-1.0` to `1.0`; `None` is derived by the consumer from the action), `source` (`sdm_direct` / `fallback` / `rule`), `probabilities` (three-key buy/sell/hold distribution; `None` for rule strategies), `sub_signals` (volatility_regime / drawdown_risk and other attribution-only indicators), and `reason` (fallback_reason / harness_reject_reason). Backtest reports and the Harness governance layer both depend on these attribution fields.
+- **SdmStrategyImpl (fast path)**: chains `DecisionBackend` → `SdmCascadeDecisionLayer` → (optional) `HarnessBridge.adjudicate`. Default passes `None` for harness (backtests usually do not need the governance layer); when live, after wiring in CircuitBreaker / PositionGuard, `adjudicate` returns `Rejected` / `NeedRevision` / `CircuitBreak` and the Strategy immediately surfaces `StrategyError::HarnessRejected` without propagating an Action downstream.
+- **RuleStrategyImpl (rule fallback)**: opens a position only when the dual moving-average signal (`state.features.sma5_vs_sma20`) and the recent bar return (`state.features.ret_1`) point in the same direction; otherwise `Hold`. Used as a baseline when `DecisionBackend` is not wired up, or as the slow-path fallback of `SwarmRouteStrategyImpl`.
+- **SwarmRouteStrategyImpl (fast/slow router)**: runs the `fast` Strategy (typically the SDM fast path, ~70 ms) on every bar; if `confidence >= upgrade_threshold` the result is returned immediately; otherwise upgrades to the `slow` Strategy (typically an LLM slow path or rule fallback). SDM `sub_signals` stay decoupled — the slow Strategy decides independently whether to reuse them.
+- **PythonStrategyImpl (`#[cfg(feature = "python")]`)**: bridges Python objects that expose `decide(bar_dict)` or `on_bar(bar_dict)`. Converts the Rust `Bar` into a Python dict (`timestamp / open / high / low / close / volume / symbol / state`), parses the return into `action_type / confidence / target_position`. Lets QuantCell users plug custom Python strategies into the Rust `BacktestRunner` / `PyKernel`.
 
 ### Applicable Scenarios
-- You want backtest / paper / live to share the same per-bar orchestration (M1 closed-loop backtest is the smallest usable path — `BacktestSink` output is byte-identical to `BacktestRunner::run()`)
-- You want to drive a backtest directly on the Rust side, bypassing Python bindings (`Kernel` is pure Rust)
-- You need journal event sourcing: crash recovery (`replay_from`), fixture construction for contract tests, or shadow oracle dual-run comparison (M3 lives in `axon-worker::shadow`)
+- You want the same Strategy to run unmodified across backtest, paper and live driver chains (the Strategy trait is mode-agnostic; consumer-side wiring lives in `axon-worker`)
+- You want the SDM fast path (~70 ms) to run on every bar, upgrading to an LLM slow path only when confidence is low (`SwarmRouteStrategyImpl`)
+- `DecisionBackend` is not yet wired up and you need a baseline or CI fallback (`RuleStrategyImpl`)
+- You want to plug QuantCell-side custom Python strategies into the Rust backtest engine (`PythonStrategyImpl`)
 
 ### Non-applicable Scenarios
-- Direct exchange placement (the kernel has no networking; live wiring is in `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`)
-- Backtest framework-level configuration and orchestration (that is `axon-worker` — the kernel is the assembled runner)
-- Standalone matching / market-data / risk (each split into dedicated crates: `axon-backtest` / `axon-exchange` / `axon-risk`)
+- Matching / execution (that is `axon-backtest` / `axon-kernel`; Strategy only emits Actions)
+- Market data / position management (that is `axon-exchange` / `axon-oms`)
+- Running a full backtest standalone — Strategy is only a decision unit; consumer assembly lives in `axon-worker` (`BacktestRunner` / `PyKernel` / `LiveDriver` / `PaperDriver`)
 
 ### How to Use
 
-**Python side (the kernel is wrapped by `axon_worker.PyKernel` or `BacktestRunner`; Python users almost always go through the worker):**
+**Python side (primary usage; injected via `axon_worker.add_strategy`):**
 
 ```python
-from axon_quant.worker import Kernel  # PyKernel, the Python wrapper for the kernel
+from axon_quant.worker import Kernel, BacktestRunner
+from axon_quant.strategy import RuleStrategyImpl
 
+# ─── Rule strategy (dual-MA direction consistency) ────
 k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
-k.add_strategy(my_rule_strategy)
-k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
-      journal_path="/tmp/run.journal")  # record for replay_from
-result = k.result()
+k.add_strategy(RuleStrategyImpl(name="ma_rule", symbol="BTCUSDT"))
+result = k.run(bars_by_symbol={"BTCUSDT": bars}, journal_path="/tmp/run.journal")
 print(result.final_nav)
+
+# ─── Also works on the legacy BacktestRunner ──────────
+runner = BacktestRunner(initial_cash=100_000.0)
+runner.add_strategy(RuleStrategyImpl("rule1", "BTCUSDT"))
+result = runner.run(bars={"BTCUSDT": bars}, state_by_symbol={})
 ```
 
-**Rust side (drive the kernel directly for backtests / replays):**
+**Rust side (developing a custom Strategy or wiring SDM / Swarm):**
 
 ```rust
-use axon_kernel::{
-    Kernel, KernelConfig, KernelError, RunManifest, Journal,
-    StrategyHost, OrderIntent, GridFrame, build_frames,
-};
-use axon_kernel::sink::BacktestSink;
-use axon_core::market::Bar;
+use std::sync::Arc;
+use axon_strategy::{Strategy, BarContext, StrategyDecision, StrategyError};
+use axon_strategy::impl_::{SdmStrategyImpl, SdmStrategyConfig, RuleStrategyImpl, SwarmRouteStrategyImpl};
+use axon_llm::decision::DecisionBackend;
 
-// 1) Build kernel + sink (use BacktestSink for the backtest path)
-let cfg = KernelConfig::default();
-let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+// 1) Rule strategy (simplest)
+let rule = Arc::new(RuleStrategyImpl::new("ma_rule", "BTCUSDT"));
+let decision = rule.decide(&ctx).await?;
+println!("action={:?}, source={}", decision.action, decision.source);
 
-// 2) Register hosts (rule strategy or RL)
-kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+// 2) SDM fast path + optional Harness
+let backend: Arc<dyn DecisionBackend> = /* ... */;
+let sdm = Arc::new(
+    SdmStrategyImpl::new(&cfg, backend, questions_raw).unwrap()
+);
 
-// 3) History replay: build_frames aligns the multi-symbol grid; run_history ingests directly
-let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
-kernel.run_history(frames)?;
-let result = kernel.result();
-
-// 4) Replay from journal
-let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+// 3) Fast/slow route: low confidence upgrades to rule
+let route = Arc::new(SwarmRouteStrategyImpl::new(
+    "route_btc", "BTCUSDT",
+    sdm.clone(),   // fast: SDM fast path
+    rule.clone(),  // slow: rule fallback
+    0.7,           // upgrade when confidence < 0.7
+));
 ```
 
 ### Key Dependencies
-- **Depends on**: `axon-core` (types), `axon-backtest` (`BacktestSink` matching engine), `axon-rl` (RL observation spec / cost model, shared with `TradingEnv`)
-- **Depended on by**: `axon-worker` (host for `PyKernel` / `LiveDriver` / `PaperDriver`)
+- **Depends on**: `axon-core` (`Bar` / `harness_types::{AgentIntent, TaskContext}`), `axon-llm` (`decision::*` — `DecisionBackend` / `SdmCascadeDecisionLayer` / `Action` / `Question` / `CascadeConfig` / `RuleFallback` / `FallbackDecider`), `axon-harness` (`HarnessBridge` / `Adjudication` — optional governance layer)
+- **Depended on by**: `axon-worker` (`Strategy` → `StrategyHost` bridge + `BacktestRunner.add_strategy` / `PyKernel.add_strategy` / `PaperDriver.add_strategy` / `LiveDriver.add_strategy`)
 
 ---
 
@@ -2660,3 +2647,201 @@ axon-core ◄── axon-backtest ◄── axon-kernel ◄── axon-worker
 | Crash recovery / three-way reconcile | `axon-worker::LiveRecovery` + `reconcile()` |
 | Legacy vs kernel dual-run diff | `axon-worker::shadow::run_shadow` |
 | Cross-module end-to-end tests | `axon-integration-tests` |
+## 26. `axon-kernel`
+
+### Core Responsibility
+**Unified trading kernel**: the same main loop (`Kernel::run`) powers backtest, paper and live — mode differences live solely in assembly time (data pump + `ExecutionSink` implementation), the loop itself contains zero mode branches.
+
+### Code Location
+- `crates/axon-kernel/src/lib.rs` — public API (`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`)
+- `crates/axon-kernel/src/kernel_loop.rs` — main loop (`run` / `run_history` / `replay_from` / `resume_replay`)
+- `crates/axon-kernel/src/lifecycle.rs` — per-bar nine-step orchestration (`BarLifecycle::on_bar_closed`)
+- `crates/axon-kernel/src/pump.rs` — history loader: `build_frames` grid alignment + `BarGridBarrier` frame barrier
+- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
+- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
+- `crates/axon-kernel/src/journal.rs` — event-sourced log (`Journal::create` / `append` / `open` / `resume`)
+- `crates/axon-kernel/src/persist.rs` — `RunManifest` (external-input fingerprints required for replay)
+- `crates/axon-kernel/src/core.rs` — `KernelCore` (kernel-side proxy for `BacktestEngine`) + `KernelConfig`
+- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator` (tick / kline → close `BarClosed` + de-duplication)
+- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` borrowed view + interval → nanosecond / close-time derivation
+- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost` (RL inference plugged into the main loop)
+
+### Core Mechanism
+- **Single main loop**: `Kernel::run()` pulls events from the queue → `BarGridBarrier` waits for every symbol at the same grid timestamp → `BarLifecycle::on_bar_closed` executes nine steps → collects results. `run_history` ingests a batch of `GridFrame`s, `replay_from` reads a journal, `resume_replay` continues after a replay
+- **BarLifecycle nine steps** (a byte-for-byte copy of `axon-worker::BacktestRunner::run()` semantics):
+  1. Clock alignment + forward-fill `last_price` for symbols that have no bar this tick
+  2. Liquidation snapshot — **must** be taken before `rebalance`
+  3. `begin_bar_multi`: seed liquidity + auto rebalance + funding dispatch + `sample_bar_nav`
+  4. Per-`BarClosed` per-`StrategyHost` → `Vec<OrderIntent>` (Hosts self-filter by `instrument`)
+  5. Budget-proportional reduction of `effective_targets` (only when margin is not enabled)
+  6. Submit targets via `ExecutionSink::submit`, one-shot `finish_bar` to push them into the engine
+  7. `push_funding` + drain the engine queue
+  8. `check_margin` liquidation (tier-wise partial → zero at the lowest tier)
+  9. `sample_bar_nav` (already done in step 3; skip)
+- **GridFrame / build_frames / BarGridBarrier**: multi-symbol backtests require bar-wise grid alignment; `build_frames(bars, InstrumentMode, states)` pivots the per-symbol sequence into `Vec<GridFrame>`; `BarGridBarrier` aggregates same-timestamp frames incrementally in paper / live mode and only triggers one `on_bar_closed` when full
+- **StrategyHost / OrderIntent**: synchronous trait; `on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`; `HostCtx` is backfilled with `equity / positions / last_price` at the end of step 3 before Hosts decide. Returning an empty `Vec` means "keep the last effective target" — **not** flattening (flattening requires explicit `OrderIntent::SetTarget { target_ratio: 0.0 }`)
+- **Three ExecutionSink implementations**:
+  - `NullSink`: no-op, used in unit tests / skeletons
+  - `BacktestSink`: wraps a `BacktestEngine` directly — per-bar semantics match `BacktestRunner` byte-for-byte (M1 closed-loop consistency goal)
+  - `PaperSink`: L1 matching + order-book quotes, wired inside `axon-worker::PaperDriver`
+- **Journal + RunManifest event sourcing**:
+  - `Journal::create(path, manifest)` writes the file header, `append(entry)` appends, `open(path)` reads back, `resume(path)` reads back + yields a handle for continuation
+  - `RunManifest` records every external-input fingerprint needed for replay (market bars, states, funding, sink config etc.); format version lives in `persist::JOURNAL_FORMAT_VERSION`
+- **RLStrategyHost**: a standalone module that shares the same `ObservationSpec` + `CostModel` between training and inference; registered via `axon-worker::PyKernel.add_rl_strategy`
+
+### Applicable Scenarios
+- You want backtest / paper / live to share the same per-bar orchestration (M1 closed-loop backtest is the smallest usable path — `BacktestSink` output is byte-identical to `BacktestRunner::run()`)
+- You want to drive a backtest directly on the Rust side, bypassing Python bindings (`Kernel` is pure Rust)
+- You need journal event sourcing: crash recovery (`replay_from`), fixture construction for contract tests, or shadow oracle dual-run comparison (M3 lives in `axon-worker::shadow`)
+
+### Non-applicable Scenarios
+- Direct exchange placement (the kernel has no networking; live wiring is in `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`)
+- Backtest framework-level configuration and orchestration (that is `axon-worker` — the kernel is the assembled runner)
+- Standalone matching / market-data / risk (each split into dedicated crates: `axon-backtest` / `axon-exchange` / `axon-risk`)
+
+### How to Use
+
+**Python side (the kernel is wrapped by `axon_worker.PyKernel` or `BacktestRunner`; Python users almost always go through the worker):**
+
+```python
+from axon_quant.worker import Kernel  # PyKernel, the Python wrapper for the kernel
+
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(my_rule_strategy)
+k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
+      journal_path="/tmp/run.journal")  # record for replay_from
+result = k.result()
+print(result.final_nav)
+```
+
+**Rust side (drive the kernel directly for backtests / replays):**
+
+```rust
+use axon_kernel::{
+    Kernel, KernelConfig, KernelError, RunManifest, Journal,
+    StrategyHost, OrderIntent, GridFrame, build_frames,
+};
+use axon_kernel::sink::BacktestSink;
+use axon_core::market::Bar;
+
+// 1) Build kernel + sink (use BacktestSink for the backtest path)
+let cfg = KernelConfig::default();
+let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+
+// 2) Register hosts (rule strategy or RL)
+kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+
+// 3) History replay: build_frames aligns the multi-symbol grid; run_history ingests directly
+let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
+kernel.run_history(frames)?;
+let result = kernel.result();
+
+// 4) Replay from journal
+let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+```
+
+### Key Dependencies
+- **Depends on**: `axon-core` (types), `axon-backtest` (`BacktestSink` matching engine), `axon-rl` (RL observation spec / cost model, shared with `TradingEnv`)
+- **Depended on by**: `axon-worker` (host for `PyKernel` / `LiveDriver` / `PaperDriver`)
+
+---
+
+
+
+### Core Responsibility
+**Unified trading kernel**: the same main loop (`Kernel::run`) powers backtest, paper and live — mode differences live solely in assembly time (data pump + `ExecutionSink` implementation), the loop itself contains zero mode branches.
+
+### Code Location
+- `crates/axon-kernel/src/lib.rs` — public API (`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`)
+- `crates/axon-kernel/src/kernel_loop.rs` — main loop (`run` / `run_history` / `replay_from` / `resume_replay`)
+- `crates/axon-kernel/src/lifecycle.rs` — per-bar nine-step orchestration (`BarLifecycle::on_bar_closed`)
+- `crates/axon-kernel/src/pump.rs` — history loader: `build_frames` grid alignment + `BarGridBarrier` frame barrier
+- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
+- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
+- `crates/axon-kernel/src/journal.rs` — event-sourced log (`Journal::create` / `append` / `open` / `resume`)
+- `crates/axon-kernel/src/persist.rs` — `RunManifest` (external-input fingerprints required for replay)
+- `crates/axon-kernel/src/core.rs` — `KernelCore` (kernel-side proxy for `BacktestEngine`) + `KernelConfig`
+- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator` (tick / kline → close `BarClosed` + de-duplication)
+- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` borrowed view + interval → nanosecond / close-time derivation
+- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost` (RL inference plugged into the main loop)
+
+### Core Mechanism
+- **Single main loop**: `Kernel::run()` pulls events from the queue → `BarGridBarrier` waits for every symbol at the same grid timestamp → `BarLifecycle::on_bar_closed` executes nine steps → collects results. `run_history` ingests a batch of `GridFrame`s, `replay_from` reads a journal, `resume_replay` continues after a replay
+- **BarLifecycle nine steps** (a byte-for-byte copy of `axon-worker::BacktestRunner::run()` semantics):
+  1. Clock alignment + forward-fill `last_price` for symbols that have no bar this tick
+  2. Liquidation snapshot — **must** be taken before `rebalance`
+  3. `begin_bar_multi`: seed liquidity + auto rebalance + funding dispatch + `sample_bar_nav`
+  4. Per-`BarClosed` per-`StrategyHost` → `Vec<OrderIntent>` (Hosts self-filter by `instrument`)
+  5. Budget-proportional reduction of `effective_targets` (only when margin is not enabled)
+  6. Submit targets via `ExecutionSink::submit`, one-shot `finish_bar` to push them into the engine
+  7. `push_funding` + drain the engine queue
+  8. `check_margin` liquidation (tier-wise partial → zero at the lowest tier)
+  9. `sample_bar_nav` (already done in step 3; skip)
+- **GridFrame / build_frames / BarGridBarrier**: multi-symbol backtests require bar-wise grid alignment; `build_frames(bars, InstrumentMode, states)` pivots the per-symbol sequence into `Vec<GridFrame>`; `BarGridBarrier` aggregates same-timestamp frames incrementally in paper / live mode and only triggers one `on_bar_closed` when full
+- **StrategyHost / OrderIntent**: synchronous trait; `on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`; `HostCtx` is backfilled with `equity / positions / last_price` at the end of step 3 before Hosts decide. Returning an empty `Vec` means "keep the last effective target" — **not** flattening (flattening requires explicit `OrderIntent::SetTarget { target_ratio: 0.0 }`)
+- **Three ExecutionSink implementations**:
+  - `NullSink`: no-op, used in unit tests / skeletons
+  - `BacktestSink`: wraps a `BacktestEngine` directly — per-bar semantics match `BacktestRunner` byte-for-byte (M1 closed-loop consistency goal)
+  - `PaperSink`: L1 matching + order-book quotes, wired inside `axon-worker::PaperDriver`
+- **Journal + RunManifest event sourcing**:
+  - `Journal::create(path, manifest)` writes the file header, `append(entry)` appends, `open(path)` reads back, `resume(path)` reads back + yields a handle for continuation
+  - `RunManifest` records every external-input fingerprint needed for replay (market bars, states, funding, sink config etc.); format version lives in `persist::JOURNAL_FORMAT_VERSION`
+- **RLStrategyHost**: a standalone module that shares the same `ObservationSpec` + `CostModel` between training and inference; registered via `axon-worker::PyKernel.add_rl_strategy`
+
+### Applicable Scenarios
+- You want backtest / paper / live to share the same per-bar orchestration (M1 closed-loop backtest is the smallest usable path — `BacktestSink` output is byte-identical to `BacktestRunner::run()`)
+- You want to drive a backtest directly on the Rust side, bypassing Python bindings (`Kernel` is pure Rust)
+- You need journal event sourcing: crash recovery (`replay_from`), fixture construction for contract tests, or shadow oracle dual-run comparison (M3 lives in `axon-worker::shadow`)
+
+### Non-applicable Scenarios
+- Direct exchange placement (the kernel has no networking; live wiring is in `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`)
+- Backtest framework-level configuration and orchestration (that is `axon-worker` — the kernel is the assembled runner)
+- Standalone matching / market-data / risk (each split into dedicated crates: `axon-backtest` / `axon-exchange` / `axon-risk`)
+
+### How to Use
+
+**Python side (the kernel is wrapped by `axon_worker.PyKernel` or `BacktestRunner`; Python users almost always go through the worker):**
+
+```python
+from axon_quant.worker import Kernel  # PyKernel, the Python wrapper for the kernel
+
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(my_rule_strategy)
+k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
+      journal_path="/tmp/run.journal")  # record for replay_from
+result = k.result()
+print(result.final_nav)
+```
+
+**Rust side (drive the kernel directly for backtests / replays):**
+
+```rust
+use axon_kernel::{
+    Kernel, KernelConfig, KernelError, RunManifest, Journal,
+    StrategyHost, OrderIntent, GridFrame, build_frames,
+};
+use axon_kernel::sink::BacktestSink;
+use axon_core::market::Bar;
+
+// 1) Build kernel + sink (use BacktestSink for the backtest path)
+let cfg = KernelConfig::default();
+let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+
+// 2) Register hosts (rule strategy or RL)
+kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+
+// 3) History replay: build_frames aligns the multi-symbol grid; run_history ingests directly
+let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
+kernel.run_history(frames)?;
+let result = kernel.result();
+
+// 4) Replay from journal
+let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+```
+
+### Key Dependencies
+- **Depends on**: `axon-core` (types), `axon-backtest` (`BacktestSink` matching engine), `axon-rl` (RL observation spec / cost model, shared with `TradingEnv`)
+- **Depended on by**: `axon-worker` (host for `PyKernel` / `LiveDriver` / `PaperDriver`)
+
+---
+

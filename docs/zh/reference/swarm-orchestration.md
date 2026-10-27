@@ -1,6 +1,6 @@
 # `axon-llm::swarm` 多 Agent 编排
 
-> 适用版本:`axon-llm` v0.6.0+
+> 适用版本:`axon-llm` v0.22.1+
 > 状态:**已实现**(0.6.0 工作流 B + 0.11.0 投票共识)
 > 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3, `docs/superpowers/specs/2026-08-01-axon-quant-0.11.0-multi-agent-design.md`
 

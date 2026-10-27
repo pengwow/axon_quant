@@ -1,6 +1,6 @@
 # LLM Trading Architecture
 
-> Applicable version: axon-llm v0.6.0+
+> Applicable version: axon-llm v0.22.1+
 > Status: 🟢 In sync with code (Stage A~K + 0.11.0 Multi-Agent fully delivered)
 
 This document describes the trading pipeline architecture of `axon-llm`. Target audience: engineers integrating LLM agents into production trading systems.

@@ -20,6 +20,7 @@
 ---
 
 ## 1. `axon-core`
+core`
 
 ### 核心职责
 工作区**最底层**类型库，定义整个系统共享的数据结构、错误约定、调度原语和统计原语。**不依赖**任何其他 `axon-*` crate。
@@ -122,6 +123,7 @@ let order = Order::spot(1, "BTC", "USDT", Side::Buy, OrderType::Limit { price: P
 ---
 
 ## 2. `axon-backtest`
+backtest`
 
 ### 核心职责
 事件驱动的回测引擎 + L1/L2/L3 多级确定性撮合 + 市场冲击感知撮合 + 流式回测。
@@ -220,102 +222,88 @@ println!("Sharpe = {}, MaxDD = {}", result.sharpe(), result.max_drawdown());
 
 ---
 
-## 3. `axon-kernel`
+## 3. `axon-strategy`
+strategy`
 
 ### 核心职责
-**统一交易内核**：回测 / paper / live 三种模式跑同一条主回路（`Kernel::run`），模式差异只在装配时的数据泵与 `ExecutionSink` 实现，主回路本身没有任何 mode 分支。
+**统一策略 trait + 内置实现**：定义 Strategy async trait（`decide()` 回测/实盘共用），内置 SDM 快路径、规则兜底、快慢路由、Python 策略适配器四种实现——Strategy 本身不感知运行模式（回测/实盘/paper 由消费端注入），让同一个策略在三条驱动链上零改动复用。近期（0.22.1 阶段）引入，与 `axon-worker` 同期落地。
 
 ### 代码位置
-- `crates/axon-kernel/src/lib.rs` — 公开 API（`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`）
-- `crates/axon-kernel/src/kernel_loop.rs` — 主回路（`run` / `run_history` / `replay_from` / `resume_replay`）
-- `crates/axon-kernel/src/lifecycle.rs` — per-bar 九步编排（`BarLifecycle::on_bar_closed`）
-- `crates/axon-kernel/src/pump.rs` — 历史泵：`build_frames` 网格对齐 + `BarGridBarrier` 帧屏障
-- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
-- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
-- `crates/axon-kernel/src/journal.rs` — 事件溯源（`Journal::create` / `append` / `open` / `resume`）
-- `crates/axon-kernel/src/persist.rs` — `RunManifest`（重演所需的外部输入指纹）
-- `crates/axon-kernel/src/core.rs` — `KernelCore`（对 `BacktestEngine` 的内核侧代理）+ `KernelConfig`
-- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator`（tick / kline → 收市 `BarClosed` + 去重）
-- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` 借用视图 + 周期 → 纳秒 / 收市时刻推导
-- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost`（RL 推理接入主回路）
+- `crates/axon-strategy/src/lib.rs` — 入口
+- `crates/axon-strategy/src/trait_.rs` — `Strategy` trait + `BarContext` + `StrategyDecision` + `StrategyError`
+- `crates/axon-strategy/src/impl_.rs` — 四个内置实现：`SdmStrategyImpl` / `RuleStrategyImpl` / `SwarmRouteStrategyImpl` / `PythonStrategyImpl`
+- `crates/axon-strategy/src/python.rs` — Python 绑定（`PyRuleStrategyImpl`）
 
 ### 核心机制
-- **唯一主回路**：`Kernel::run()` 从队列取事件 → `BarGridBarrier` 等齐同网格点所有品种 → `BarLifecycle::on_bar_closed` 九步编排 → 结果收集；`run_history` 灌 `GridFrame` 批次、`replay_from` 走 journal 重演、`resume_replay` 接在重演之后继续跑
-- **BarLifecycle 九步**（复刻 `axon-worker::BacktestRunner::run()` 语义，必须逐字段一致）：
-  1. 对齐时钟 + 前向填充 `last_price`（无 bar 品种沿用上次）
-  2. 强平快照（`snapshot_liquidated`）——必须在 rebalance 之前拍
-  3. `begin_bar_multi`：seed 流动性 + 自动 rebalance + funding 调度 + sample_bar_nav
-  4. 逐 `BarClosed` 逐 `StrategyHost` → `Vec<OrderIntent>`（Host 按 `instrument` 自行过滤）
-  5. budget 同比例缩减 `effective_targets`（仅未启用保证金时）
-  6. 目标交 `ExecutionSink::submit` 登记，一次 `finish_bar` 把目标压到引擎
-  7. `push_funding` + 排空引擎队列
-  8. `check_margin` 强平（逐档部分强平→最低档清零）
-  9. `sample_bar_nav`（第 3 步已做，不再重复）
-- **GridFrame / build_frames / BarGridBarrier**：多品种回测要求每 bar 网格对齐，`build_frames(bars, InstrumentMode, states)` 把按品种分开的 bar 序列逐列对齐成 `Vec<GridFrame>`；`BarGridBarrier` 在 paper / live 模式下边收 tick 边攒同时间戳帧，集齐后才触发一次 `on_bar_closed`
-- **StrategyHost / OrderIntent**：同步 trait，`on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`；`HostCtx` 在第 3 步结束后回填 `equity / positions / last_price`，Host 据此决策；返回空 `Vec` 是"维持上次生效目标"，**不是平仓**（平仓必须显式 `OrderIntent::SetTarget { target_ratio: 0.0 }`）
-- **ExecutionSink 三实现**：
-  - `NullSink`：空跑，单测 / 骨架用
-  - `BacktestSink`：直接把 `BacktestEngine` 包进 sink，per-bar 语义与 `BacktestRunner` 逐字一致（M1 回测闭环的一致性目标）
-  - `PaperSink`：L1 撮合 + 盘口报价，装配在 `axon-worker::PaperDriver`
-- **Journal + RunManifest 事件溯源**：
-  - `Journal::create(path, manifest)` 写文件头，`append(entry)` 追加，`open(path)` 读回，`resume(path)` 读回 + 持有续跑句柄
-  - `RunManifest` 记录重演所需的所有外部输入指纹（market bar、state、funding、sink 配置等），格式版本见 `persist::JOURNAL_FORMAT_VERSION`
-- **RLStrategyHost**：独立模块，训练/推理共用 `ObservationSpec` + `CostModel`；由 `axon-worker::PyKernel.add_rl_strategy` 注册
+- **async Strategy trait**：`decide(&BarContext) -> Result<StrategyDecision, StrategyError>`。`BarContext` 一次性打包 `symbol / bar_index / timestamp_ns / Bar / state`，避免消费端多次 Option 嵌套解引用；Strategy 不持有"是否在回测"的分支——回测的 `BacktestRunner`、实盘的 `EventDrivenLoop`、paper 的 `PaperDriver` 对 Strategy 的消费模式完全相同（逐 bar 调 `decide`）。
+- **StrategyDecision 归因出口**：比裸 `Action` 多带 `confidence`（SDM 校准值；规则策略为 0.0）、`target_position`（-1.0 ~ 1.0；None 由消费端按 action 推导）、`source`（`sdm_direct` / `fallback` / `rule`）、`probabilities`（买/卖/观望三键概率，规则策略为 None）、`sub_signals`（volatility_regime / drawdown_risk 等归因指标，不参与门控）、`reason`（fallback_reason / harness_reject_reason）。回测报告和 Harness 治理层都依赖这些归因字段。
+- **SdmStrategyImpl（快路径）**：`DecisionBackend` → `SdmCascadeDecisionLayer` →（可选）`HarnessBridge.adjudicate` 串联。默认不传 harness（回测场景通常不需要治理层）；实盘接入 CircuitBreaker / PositionGuard 后，`adjudicate` 返回 `Rejected` / `NeedRevision` / `CircuitBreak` 时 Strategy 直接返回 `StrategyError::HarnessRejected`，不向下游传播 Action。
+- **RuleStrategyImpl（规则兜底）**：双均线（`state.features.sma5_vs_sma20`）+ 近一根收益（`state.features.ret_1`）同向才开仓，矛盾则 Hold。用途：DecisionBackend 未接通时的保底，或 SwarmRouteStrategyImpl 的慢路径兜底。
+- **SwarmRouteStrategyImpl（快慢路由）**：每根 bar 必跑 `fast` Strategy（通常是 SDM 快路径，70ms 级），`confidence >= upgrade_threshold` 直接返回；低于阈值时升级到 `slow` Strategy（通常是 LLM 慢路径或规则兜底）。SDM 的 `sub_signals` 由慢路径自行决定是否复用，两策略保持解耦。
+- **PythonStrategyImpl（#[cfg(feature = "python")]）**：桥接 Python 对象的 `decide(bar_dict)` 或 `on_bar(bar_dict)` 方法，把 Rust `Bar` 转成 Python dict（含 `timestamp / open / high / low / close / volume / symbol / state`），返回解析为 `action_type / confidence / target_position`。让 QuantCell 自定义 Python 策略能跑在 Rust `BacktestRunner` / `PyKernel` 上。
 
 ### 适用场景
-- 想让回测 / paper / live 三种模式共享同一条 per-bar 编排（M1 回测闭环是最小可用路径，`BacktestSink` 跑出来的结果与 `BacktestRunner::run()` 逐字段一致）
-- 想在 Rust 侧直接驱动回测而不走 Python 绑定（内核本身就是纯 Rust 的 `Kernel`）
-- 需要 journal 事件溯源：崩溃恢复（`replay_from`）、契约测试构造 fixture、shadow oracle 新旧双跑比对（M3 落在 `axon-worker::shadow`）
+- 想让同一个策略在回测 / paper / live 三种驱动链上零改动复用（Strategy trait 不感知运行模式，消费端 `axon-worker` 做装配）
+- 想让 SDM 快路径（70ms 级）每 bar 必跑，低置信时再升级到 LLM 慢路径（`SwarmRouteStrategyImpl`）
+- DecisionBackend 未接通时用 `RuleStrategyImpl` 做 baseline 或 CI 测试兜底
+- 把 QuantCell 侧自定义的 Python 策略塞进 Rust 回测引擎跑（`PythonStrategyImpl`）
 
 ### 不适用场景
-- 直接连交易所下单（内核本身不做网络，live 接线在 `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`）
-- 回测框架层的参数配置与编排（那是 `axon-worker` 的领域，内核是装配好的跑器）
-- 独立的撮合 / 行情 / 风控（都拆成独立 crate：`axon-backtest` / `axon-exchange` / `axon-risk`）
+- 撮合 / 执行（那是 `axon-backtest` / `axon-kernel` 的领域，Strategy 只输出 Action）
+- 行情 / 资金管理（`axon-exchange` / `axon-oms` 的领域）
+- 独立跑完整回测——Strategy 只是决策单元，消费端装配在 `axon-worker`（`BacktestRunner` / `PyKernel` / `LiveDriver` / `PaperDriver`）
 
 ### 怎么用
 
-**Python 侧（不走内核；Python 用户通常直接用 `axon_worker.PyKernel` 或 `BacktestRunner`，内核是它们的 Rust 侧实现）：**
+**Python 侧（主用法，通过 `axon_worker.add_strategy` 注入）：**
 
 ```python
-from axon_quant.worker import Kernel  # PyKernel，内核的 Python 包装
+from axon_quant.worker import Kernel, BacktestRunner
+from axon_quant.strategy import RuleStrategyImpl
 
+# ─── 规则策略（双均线方向一致性）──────────────────────
 k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
-k.add_strategy(my_rule_strategy)
-k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
-      journal_path="/tmp/run.journal")  # 录制，供 replay_from
-result = k.result()
+k.add_strategy(RuleStrategyImpl(name="ma_rule", symbol="BTCUSDT"))
+result = k.run(bars_by_symbol={"BTCUSDT": bars}, journal_path="/tmp/run.journal")
 print(result.final_nav)
+
+# ─── 也可直接给 legacy BacktestRunner ─────────────────
+runner = BacktestRunner(initial_cash=100_000.0)
+runner.add_strategy(RuleStrategyImpl("rule1", "BTCUSDT"))
+result = runner.run(bars={"BTCUSDT": bars}, state_by_symbol={})
 ```
 
-**Rust 侧（直接驱动内核做回测 / 重演）：**
+**Rust 侧（开发自定义 Strategy 或 SDM/Swarm 装配时使用）：**
 
 ```rust
-use axon_kernel::{
-    Kernel, KernelConfig, KernelError, RunManifest, Journal,
-    StrategyHost, OrderIntent, GridFrame, build_frames,
-};
-use axon_kernel::sink::BacktestSink;
-use axon_core::market::Bar;
+use std::sync::Arc;
+use axon_strategy::{Strategy, BarContext, StrategyDecision, StrategyError};
+use axon_strategy::impl_::{SdmStrategyImpl, SdmStrategyConfig, RuleStrategyImpl, SwarmRouteStrategyImpl};
+use axon_llm::decision::DecisionBackend;
 
-// 1) 构造内核 + sink（回测路径用 BacktestSink）
-let cfg = KernelConfig::default();
-let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+// 1) 规则策略（最简）
+let rule = Arc::new(RuleStrategyImpl::new("ma_rule", "BTCUSDT"));
+let decision = rule.decide(&ctx).await?;
+println!("action={:?}, source={}", decision.action, decision.source);
 
-// 2) 注册 Host（规则策略或 RL）
-kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+// 2) SDM 快路径 + 可选 Harness
+let backend: Arc<dyn DecisionBackend> = /* ... */;
+let sdm = Arc::new(
+    SdmStrategyImpl::new(&cfg, backend, questions_raw).unwrap()
+);
 
-// 3) 历史回测：build_frames 对齐多品种网格，run_history 直接灌
-let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
-kernel.run_history(frames)?;
-let result = kernel.result();
-
-// 4) 重演：replay_from 直接读 journal
-let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+// 3) 快慢路由：低置信升级到 rule
+let route = Arc::new(SwarmRouteStrategyImpl::new(
+    "route_btc", "BTCUSDT",
+    sdm.clone(),   // fast: SDM 快路径
+    rule.clone(),  // slow: 规则兜底
+    0.7,           // confidence < 0.7 升级
+));
 ```
 
 ### 关键依赖
-- **依赖**：`axon-core`（类型）、`axon-backtest`（`BacktestSink` 的撮合实现）、`axon-rl`（RL 观测规格 / 成本模型，与 `TradingEnv` 共用）
-- **被依赖**：`axon-worker`（`PyKernel` / `LiveDriver` / `PaperDriver` 的宿主）
+- **依赖**：`axon-core`（`Bar` / `harness_types::{AgentIntent, TaskContext}`）、`axon-llm`（`decision::*` — `DecisionBackend` / `SdmCascadeDecisionLayer` / `Action` / `Question` / `CascadeConfig` / `RuleFallback` / `FallbackDecider`）、`axon-harness`（`HarnessBridge` / `Adjudication` — 可选风控治理层）
+- **被依赖**：`axon-worker`（`Strategy` → `StrategyHost` 桥接 + `BacktestRunner.add_strategy` / `PyKernel.add_strategy` / `PaperDriver.add_strategy` / `LiveDriver.add_strategy`）
 
 ---
 
@@ -2662,3 +2650,201 @@ axon-core ◄── axon-backtest ◄── axon-kernel ◄── axon-worker
 | 崩溃恢复 / 三路对账 | `axon-worker::LiveRecovery` + `reconcile()` |
 | 新旧双跑比对 | `axon-worker::shadow::run_shadow` |
 | 跨模块端到端测试 | `axon-integration-tests` |
+## 26. `axon-kernel`
+
+### 核心职责
+**统一交易内核**：回测 / paper / live 三种模式跑同一条主回路（`Kernel::run`），模式差异只在装配时的数据泵与 `ExecutionSink` 实现，主回路本身没有任何 mode 分支。
+
+### 代码位置
+- `crates/axon-kernel/src/lib.rs` — 公开 API（`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`）
+- `crates/axon-kernel/src/kernel_loop.rs` — 主回路（`run` / `run_history` / `replay_from` / `resume_replay`）
+- `crates/axon-kernel/src/lifecycle.rs` — per-bar 九步编排（`BarLifecycle::on_bar_closed`）
+- `crates/axon-kernel/src/pump.rs` — 历史泵：`build_frames` 网格对齐 + `BarGridBarrier` 帧屏障
+- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
+- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
+- `crates/axon-kernel/src/journal.rs` — 事件溯源（`Journal::create` / `append` / `open` / `resume`）
+- `crates/axon-kernel/src/persist.rs` — `RunManifest`（重演所需的外部输入指纹）
+- `crates/axon-kernel/src/core.rs` — `KernelCore`（对 `BacktestEngine` 的内核侧代理）+ `KernelConfig`
+- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator`（tick / kline → 收市 `BarClosed` + 去重）
+- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` 借用视图 + 周期 → 纳秒 / 收市时刻推导
+- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost`（RL 推理接入主回路）
+
+### 核心机制
+- **唯一主回路**：`Kernel::run()` 从队列取事件 → `BarGridBarrier` 等齐同网格点所有品种 → `BarLifecycle::on_bar_closed` 九步编排 → 结果收集；`run_history` 灌 `GridFrame` 批次、`replay_from` 走 journal 重演、`resume_replay` 接在重演之后继续跑
+- **BarLifecycle 九步**（复刻 `axon-worker::BacktestRunner::run()` 语义，必须逐字段一致）：
+  1. 对齐时钟 + 前向填充 `last_price`（无 bar 品种沿用上次）
+  2. 强平快照（`snapshot_liquidated`）——必须在 rebalance 之前拍
+  3. `begin_bar_multi`：seed 流动性 + 自动 rebalance + funding 调度 + sample_bar_nav
+  4. 逐 `BarClosed` 逐 `StrategyHost` → `Vec<OrderIntent>`（Host 按 `instrument` 自行过滤）
+  5. budget 同比例缩减 `effective_targets`（仅未启用保证金时）
+  6. 目标交 `ExecutionSink::submit` 登记，一次 `finish_bar` 把目标压到引擎
+  7. `push_funding` + 排空引擎队列
+  8. `check_margin` 强平（逐档部分强平→最低档清零）
+  9. `sample_bar_nav`（第 3 步已做，不再重复）
+- **GridFrame / build_frames / BarGridBarrier**：多品种回测要求每 bar 网格对齐，`build_frames(bars, InstrumentMode, states)` 把按品种分开的 bar 序列逐列对齐成 `Vec<GridFrame>`；`BarGridBarrier` 在 paper / live 模式下边收 tick 边攒同时间戳帧，集齐后才触发一次 `on_bar_closed`
+- **StrategyHost / OrderIntent**：同步 trait，`on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`；`HostCtx` 在第 3 步结束后回填 `equity / positions / last_price`，Host 据此决策；返回空 `Vec` 是"维持上次生效目标"，**不是平仓**（平仓必须显式 `OrderIntent::SetTarget { target_ratio: 0.0 }`）
+- **ExecutionSink 三实现**：
+  - `NullSink`：空跑，单测 / 骨架用
+  - `BacktestSink`：直接把 `BacktestEngine` 包进 sink，per-bar 语义与 `BacktestRunner` 逐字一致（M1 回测闭环的一致性目标）
+  - `PaperSink`：L1 撮合 + 盘口报价，装配在 `axon-worker::PaperDriver`
+- **Journal + RunManifest 事件溯源**：
+  - `Journal::create(path, manifest)` 写文件头，`append(entry)` 追加，`open(path)` 读回，`resume(path)` 读回 + 持有续跑句柄
+  - `RunManifest` 记录重演所需的所有外部输入指纹（market bar、state、funding、sink 配置等），格式版本见 `persist::JOURNAL_FORMAT_VERSION`
+- **RLStrategyHost**：独立模块，训练/推理共用 `ObservationSpec` + `CostModel`；由 `axon-worker::PyKernel.add_rl_strategy` 注册
+
+### 适用场景
+- 想让回测 / paper / live 三种模式共享同一条 per-bar 编排（M1 回测闭环是最小可用路径，`BacktestSink` 跑出来的结果与 `BacktestRunner::run()` 逐字段一致）
+- 想在 Rust 侧直接驱动回测而不走 Python 绑定（内核本身就是纯 Rust 的 `Kernel`）
+- 需要 journal 事件溯源：崩溃恢复（`replay_from`）、契约测试构造 fixture、shadow oracle 新旧双跑比对（M3 落在 `axon-worker::shadow`）
+
+### 不适用场景
+- 直接连交易所下单（内核本身不做网络，live 接线在 `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`）
+- 回测框架层的参数配置与编排（那是 `axon-worker` 的领域，内核是装配好的跑器）
+- 独立的撮合 / 行情 / 风控（都拆成独立 crate：`axon-backtest` / `axon-exchange` / `axon-risk`）
+
+### 怎么用
+
+**Python 侧（不走内核；Python 用户通常直接用 `axon_worker.PyKernel` 或 `BacktestRunner`，内核是它们的 Rust 侧实现）：**
+
+```python
+from axon_quant.worker import Kernel  # PyKernel，内核的 Python 包装
+
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(my_rule_strategy)
+k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
+      journal_path="/tmp/run.journal")  # 录制，供 replay_from
+result = k.result()
+print(result.final_nav)
+```
+
+**Rust 侧（直接驱动内核做回测 / 重演）：**
+
+```rust
+use axon_kernel::{
+    Kernel, KernelConfig, KernelError, RunManifest, Journal,
+    StrategyHost, OrderIntent, GridFrame, build_frames,
+};
+use axon_kernel::sink::BacktestSink;
+use axon_core::market::Bar;
+
+// 1) 构造内核 + sink（回测路径用 BacktestSink）
+let cfg = KernelConfig::default();
+let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+
+// 2) 注册 Host（规则策略或 RL）
+kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+
+// 3) 历史回测：build_frames 对齐多品种网格，run_history 直接灌
+let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
+kernel.run_history(frames)?;
+let result = kernel.result();
+
+// 4) 重演：replay_from 直接读 journal
+let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+```
+
+### 关键依赖
+- **依赖**：`axon-core`（类型）、`axon-backtest`（`BacktestSink` 的撮合实现）、`axon-rl`（RL 观测规格 / 成本模型，与 `TradingEnv` 共用）
+- **被依赖**：`axon-worker`（`PyKernel` / `LiveDriver` / `PaperDriver` 的宿主）
+
+---
+
+
+
+### 核心职责
+**统一交易内核**：回测 / paper / live 三种模式跑同一条主回路（`Kernel::run`），模式差异只在装配时的数据泵与 `ExecutionSink` 实现，主回路本身没有任何 mode 分支。
+
+### 代码位置
+- `crates/axon-kernel/src/lib.rs` — 公开 API（`Kernel` / `StrategyHost` / `ExecutionSink` / `RunManifest` / `Journal`）
+- `crates/axon-kernel/src/kernel_loop.rs` — 主回路（`run` / `run_history` / `replay_from` / `resume_replay`）
+- `crates/axon-kernel/src/lifecycle.rs` — per-bar 九步编排（`BarLifecycle::on_bar_closed`）
+- `crates/axon-kernel/src/pump.rs` — 历史泵：`build_frames` 网格对齐 + `BarGridBarrier` 帧屏障
+- `crates/axon-kernel/src/host.rs` — `StrategyHost` trait + `OrderIntent` / `OrderSpec` / `HostCtx`
+- `crates/axon-kernel/src/sink.rs` — `ExecutionSink` trait + `NullSink` / `BacktestSink` / `PaperSink`
+- `crates/axon-kernel/src/journal.rs` — 事件溯源（`Journal::create` / `append` / `open` / `resume`）
+- `crates/axon-kernel/src/persist.rs` — `RunManifest`（重演所需的外部输入指纹）
+- `crates/axon-kernel/src/core.rs` — `KernelCore`（对 `BacktestEngine` 的内核侧代理）+ `KernelConfig`
+- `crates/axon-kernel/src/aggregator.rs` — `BarAggregator`（tick / kline → 收市 `BarClosed` + 去重）
+- `crates/axon-kernel/src/event.rs` — `BarClosedEvent` 借用视图 + 周期 → 纳秒 / 收市时刻推导
+- `crates/axon-kernel/src/rl.rs` — `RLStrategyHost`（RL 推理接入主回路）
+
+### 核心机制
+- **唯一主回路**：`Kernel::run()` 从队列取事件 → `BarGridBarrier` 等齐同网格点所有品种 → `BarLifecycle::on_bar_closed` 九步编排 → 结果收集；`run_history` 灌 `GridFrame` 批次、`replay_from` 走 journal 重演、`resume_replay` 接在重演之后继续跑
+- **BarLifecycle 九步**（复刻 `axon-worker::BacktestRunner::run()` 语义，必须逐字段一致）：
+  1. 对齐时钟 + 前向填充 `last_price`（无 bar 品种沿用上次）
+  2. 强平快照（`snapshot_liquidated`）——必须在 rebalance 之前拍
+  3. `begin_bar_multi`：seed 流动性 + 自动 rebalance + funding 调度 + sample_bar_nav
+  4. 逐 `BarClosed` 逐 `StrategyHost` → `Vec<OrderIntent>`（Host 按 `instrument` 自行过滤）
+  5. budget 同比例缩减 `effective_targets`（仅未启用保证金时）
+  6. 目标交 `ExecutionSink::submit` 登记，一次 `finish_bar` 把目标压到引擎
+  7. `push_funding` + 排空引擎队列
+  8. `check_margin` 强平（逐档部分强平→最低档清零）
+  9. `sample_bar_nav`（第 3 步已做，不再重复）
+- **GridFrame / build_frames / BarGridBarrier**：多品种回测要求每 bar 网格对齐，`build_frames(bars, InstrumentMode, states)` 把按品种分开的 bar 序列逐列对齐成 `Vec<GridFrame>`；`BarGridBarrier` 在 paper / live 模式下边收 tick 边攒同时间戳帧，集齐后才触发一次 `on_bar_closed`
+- **StrategyHost / OrderIntent**：同步 trait，`on_event(&BarClosedEvent, &HostCtx) -> Vec<OrderIntent>`；`HostCtx` 在第 3 步结束后回填 `equity / positions / last_price`，Host 据此决策；返回空 `Vec` 是"维持上次生效目标"，**不是平仓**（平仓必须显式 `OrderIntent::SetTarget { target_ratio: 0.0 }`）
+- **ExecutionSink 三实现**：
+  - `NullSink`：空跑，单测 / 骨架用
+  - `BacktestSink`：直接把 `BacktestEngine` 包进 sink，per-bar 语义与 `BacktestRunner` 逐字一致（M1 回测闭环的一致性目标）
+  - `PaperSink`：L1 撮合 + 盘口报价，装配在 `axon-worker::PaperDriver`
+- **Journal + RunManifest 事件溯源**：
+  - `Journal::create(path, manifest)` 写文件头，`append(entry)` 追加，`open(path)` 读回，`resume(path)` 读回 + 持有续跑句柄
+  - `RunManifest` 记录重演所需的所有外部输入指纹（market bar、state、funding、sink 配置等），格式版本见 `persist::JOURNAL_FORMAT_VERSION`
+- **RLStrategyHost**：独立模块，训练/推理共用 `ObservationSpec` + `CostModel`；由 `axon-worker::PyKernel.add_rl_strategy` 注册
+
+### 适用场景
+- 想让回测 / paper / live 三种模式共享同一条 per-bar 编排（M1 回测闭环是最小可用路径，`BacktestSink` 跑出来的结果与 `BacktestRunner::run()` 逐字段一致）
+- 想在 Rust 侧直接驱动回测而不走 Python 绑定（内核本身就是纯 Rust 的 `Kernel`）
+- 需要 journal 事件溯源：崩溃恢复（`replay_from`）、契约测试构造 fixture、shadow oracle 新旧双跑比对（M3 落在 `axon-worker::shadow`）
+
+### 不适用场景
+- 直接连交易所下单（内核本身不做网络，live 接线在 `axon-worker::LiveDriver` + `axon-exchange` + `axon-oms`）
+- 回测框架层的参数配置与编排（那是 `axon-worker` 的领域，内核是装配好的跑器）
+- 独立的撮合 / 行情 / 风控（都拆成独立 crate：`axon-backtest` / `axon-exchange` / `axon-risk`）
+
+### 怎么用
+
+**Python 侧（不走内核；Python 用户通常直接用 `axon_worker.PyKernel` 或 `BacktestRunner`，内核是它们的 Rust 侧实现）：**
+
+```python
+from axon_quant.worker import Kernel  # PyKernel，内核的 Python 包装
+
+k = Kernel(initial_cash=100_000.0, interval="1m", futures=True)
+k.add_strategy(my_rule_strategy)
+k.run(bars_by_symbol={"BTCUSDT": [...]}, states_by_symbol={...},
+      journal_path="/tmp/run.journal")  # 录制，供 replay_from
+result = k.result()
+print(result.final_nav)
+```
+
+**Rust 侧（直接驱动内核做回测 / 重演）：**
+
+```rust
+use axon_kernel::{
+    Kernel, KernelConfig, KernelError, RunManifest, Journal,
+    StrategyHost, OrderIntent, GridFrame, build_frames,
+};
+use axon_kernel::sink::BacktestSink;
+use axon_core::market::Bar;
+
+// 1) 构造内核 + sink（回测路径用 BacktestSink）
+let cfg = KernelConfig::default();
+let mut kernel = Kernel::new(cfg.clone(), Box::new(BacktestSink::new()));
+
+// 2) 注册 Host（规则策略或 RL）
+kernel.add_host(Box::new(TargetHost { ratio: 0.5 }));
+
+// 3) 历史回测：build_frames 对齐多品种网格，run_history 直接灌
+let frames = build_frames(&bars_map, &InstrumentMode::Spot, None)?;
+kernel.run_history(frames)?;
+let result = kernel.result();
+
+// 4) 重演：replay_from 直接读 journal
+let result2 = kernel.replay_from(Path::new("/tmp/run.journal"))?;
+```
+
+### 关键依赖
+- **依赖**：`axon-core`（类型）、`axon-backtest`（`BacktestSink` 的撮合实现）、`axon-rl`（RL 观测规格 / 成本模型，与 `TradingEnv` 共用）
+- **被依赖**：`axon-worker`（`PyKernel` / `LiveDriver` / `PaperDriver` 的宿主）
+
+---
+

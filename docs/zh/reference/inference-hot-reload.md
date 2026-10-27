@@ -1,6 +1,6 @@
 # `axon-inference` 模型热更新(0.6.0 P0 Stage 6 收口)
 
-> 适用版本:`axon-inference` v0.6.0+
+> 适用版本:`axon-inference` v0.22.1+
 > 状态:**已实现**(Stage 6 收口)
 > 上游 plan:`docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` 工作流 C
 

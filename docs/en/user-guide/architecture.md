@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> Applicable version: AXON v0.21.0+ (unified trading kernel)
+> Applicable version: AXON v0.22.1+ (unified trading kernel)
 
 ## System Overview
 

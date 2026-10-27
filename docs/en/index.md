@@ -31,7 +31,7 @@ AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven t
 
     Backtesting, training, hyperparameter optimization, walk-forward validation, experiment tracking, and model registry share the same `MarketBar` / `PortfolioState` data structures.
 
--   :material-package-variant-closed: **23 Independent Crates**
+-   :material-package-variant-closed: **26 Independent Crates**
 
     ---
 
@@ -80,49 +80,56 @@ AXON (**A**I-driven e**X**ecution and **O**rder e**N**gine) is an event-driven t
 
 ## Architecture Overview
 
-AXON uses Cargo Workspace to manage 23 crates, organized in 9 layers:
+AXON uses Cargo Workspace to manage **26 crates**, organized by responsibility and dependency topology into **7 layers** (cargo metadata verified):
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 9: Application Entry                                  │
-│  ├─ axon-cli        CLI tool                                 │
-│  └─ axon-python     PyO3 unified entry (axon_quant package)  │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 8: AI Agents                                          │
-│  ├─ axon-llm        ReAct agent + Tool Calling               │
-│  └─ axon-explain    SHAP / Counterfactual / Decision Report  │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 7: Model Services                                     │
-│  ├─ axon-inference  ONNX / Candle / tch inference engine     │
-│  └─ axon-ensemble   Model ensemble (Voting / Stacking)       │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 6: Training Pipeline                                  │
-│  ├─ axon-rl         Gymnasium env + VecEnv + Reward functions│
-│  ├─ axon-hpo        Optuna hyperparameter optimization       │
-│  ├─ axon-distributed Ray Actor distributed training          │
-│  └─ axon-walk-forward Rolling forward validation            │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 5: Experiment Governance                               │
-│  ├─ axon-tracker    MLflow / WandB / Local / Memory tracking │
-│  └─ axon-registry   Model registry (SemVer + Lifecycle)      │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 4: Production Execution                                │
-│  ├─ axon-exchange   Binance / OKX adapters (REST + WebSocket)│
-│  ├─ axon-risk       Risk engine (Position / Drawdown / VaR)  │
-│  ├─ axon-oms        Order management system                  │
-│  └─ axon-monitor    Monitoring + Health checks               │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 3: Backtesting Engine                                  │
-│  ├─ axon-backtest   L1/L2/L3 matching + Almgren-Chriss impact│
-│  └─ axon-compliance Compliance audit + Reports               │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 2: Data Services                                       │
-│  └─ axon-data       Arrow columnar storage + CSV/Parquet     │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 1: Core Types                                          │
-│  └─ axon-core       Timestamp / Price / Quantity / Order     │
-│                     / Event / Queue / Portfolio / SIMD        │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Layer 6 Application Entry (top-level, depends on all)    │
+│  ├─ axon-python         PyO3 unified entry (axon_quant pkg) │
+│  └─ axon-integration-tests End-to-end integration gating  │
+├──────────────────────────────────────────────────────────┤
+│  Layer 5 Strategy & Orchestration                          │
+│  ├─ axon-worker         Orchestration: PyKernel / LiveDriver /│
+│  │                       PaperDriver / DataPump / Gateway  │
+│  └─ axon-strategy       Strategy decision / registration /│
+│                         scheduling                          │
+├──────────────────────────────────────────────────────────┤
+│  Layer 4 LLM Agent                                         │
+│  └─ axon-llm            ReAct agent + Tool Calling          │
+├──────────────────────────────────────────────────────────┤
+│  Layer 3 Unified Trading Kernel (new in 0.22.0, shared     │
+│                               by backtest/paper/live)       │
+│  └─ axon-kernel         Kernel main loop + BarLifecycle    │
+│                         nine steps + ExecutionSink +        │
+│                         Journal event-sourcing              │
+├──────────────────────────────────────────────────────────┤
+│  Layer 2 Pipeline & Governance                              │
+│  ├─ axon-rl / axon-hpo / axon-walk-forward  Training pipeline│
+│  ├─ axon-tracker / axon-registry  Experiment governance    │
+│  ├─ axon-distributed / axon-cli  Distributed & CLI          │
+│  ├─ axon-defi            DeFi on-chain interaction          │
+│  ├─ axon-risk / axon-monitor  Risk control & monitoring      │
+├──────────────────────────────────────────────────────────┤
+│  Layer 1 Engine Layer (built directly on axon-core)        │
+│  ├─ axon-backtest       L1/L2/L3 matching + isolated margin│
+│                         engine                               │
+│  ├─ axon-exchange       Binance / OKX adapters (user-data  │
+│                         stream + three-pass reconciliation) │
+│  ├─ axon-oms            Order management system              │
+│  ├─ axon-data           Arrow columnar storage + feature     │
+│                         pipeline                             │
+│  ├─ axon-inference      ONNX / Candle / tch inference engine│
+│  ├─ axon-explain        SHAP explainability                 │
+│  ├─ axon-ensemble       HardVote / SoftVote / Stacking      │
+│  ├─ axon-compliance     Compliance audit + daily / monthly  │
+│                         reports                              │
+│  └─ axon-harness        Unified benchmark / conformance      │
+├──────────────────────────────────────────────────────────┤
+│  Layer 0 Core Types (bottom layer, depended on by all)     │
+│  └─ axon-core           Timestamp / Price / Order /          │
+│                         Instrument / Event / Queue / Fees   │
+│                         / SIMD                               │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -167,7 +174,7 @@ obs, reward, terminated, truncated, info = env.step([0.5])
 - [LLM Agent Trading](user-guide/llm-trading/oader.md)
 - [Production Deployment](user-guide/production.md)
 - [Traditional Strategy Migration](user-guide/traditional-strategy.md)
-- [Module Reference (23 crates)](user-guide/modules.md)
+- [Module Reference (26 crates)](user-guide/modules.md)
 - [API Reference](reference/api-reference.md)
 - [FAQ](about/faq.md)
 
