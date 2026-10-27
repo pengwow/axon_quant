@@ -1592,6 +1592,48 @@ impl PyLiveDriver {
         }
         Ok(())
     }
+
+    /// 风控运行时句柄是否已就绪（set_risk_config + start 后装配）；热更方法需它为真
+    fn risk_assembled(&self) -> PyResult<bool> {
+        Ok(kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .is_some())
+    }
+
+    /// 运行时热更风控配置与单品种名义额上限（实时生效、免重启）
+    ///
+    /// 阈值替换不追溯熔断激活态（已触发的熔断不因放宽而解除）；需已
+    /// `set_risk_config` 装配，未装配时报错（用 `risk_assembled` 探测）。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn update_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        let Some(handle) = handle else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "风控运行时未装配（需先 set_risk_config 并 start），无法热更",
+            ));
+        };
+        handle.update_config(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 人工启停风控（实时生效）：停用后所有订单放行（含熔断态扩仓），
+    /// 停用期间当日盈亏回灌照常累计；未装配时 no-op（本就无风控检查）
+    fn set_risk_enabled(&self, enabled: bool) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.set_enabled(enabled);
+        }
+        Ok(())
+    }
 }
 
 /// 纸面驱动器：PaperDriver 的 Python 面（模拟盘，纯内存账本）
@@ -1829,6 +1871,48 @@ impl PyPaperDriver {
             .cloned();
         if let Some(handle) = handle {
             handle.reset_daily();
+        }
+        Ok(())
+    }
+
+    /// 风控运行时句柄是否已就绪（set_risk_config + start 后装配）；热更方法需它为真
+    fn risk_assembled(&self) -> PyResult<bool> {
+        Ok(kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .is_some())
+    }
+
+    /// 运行时热更风控配置与单品种名义额上限（实时生效、免重启）
+    ///
+    /// 阈值替换不追溯熔断激活态（已触发的熔断不因放宽而解除）；需已
+    /// `set_risk_config` 装配，未装配时报错（用 `risk_assembled` 探测）。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn update_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        let Some(handle) = handle else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "风控运行时未装配（需先 set_risk_config 并 start），无法热更",
+            ));
+        };
+        handle.update_config(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 人工启停风控（实时生效）：停用后所有订单放行（含熔断态扩仓），
+    /// 停用期间当日盈亏回灌照常累计；未装配时 no-op（本就无风控检查）
+    fn set_risk_enabled(&self, enabled: bool) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.set_enabled(enabled);
         }
         Ok(())
     }

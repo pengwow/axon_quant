@@ -10,6 +10,8 @@ fee_rate）、RL 策略注册、无宿主 / 未 start 的 fail-fast，以及 fee
 卖单吃 bid=mid−0.0005；SetTarget 换算 qty = ratio × equity / close。
 """
 
+import time
+
 import pytest
 
 from axon_quant import worker
@@ -200,3 +202,74 @@ def test_risk_pnl_backfill_blocks_expansion_allows_exit():
 
     # 跨日清零恢复后调用不抛错（无风控句柄残留锁死的兜底口径）
     d.reset_risk_daily()
+
+
+def test_risk_assembled_lifecycle_and_runtime_toggle():
+    """热更三方法端到端：assembled 探测 / 停用 bypass / 重启用复挡 / 热更阈值。
+
+    对照 test_risk_pnl_backfill_blocks_expansion_allows_exit（同熔断档下扩仓
+    必拒），本测试补充运行时开关三语义：
+    1. 停用 bypass 全放行——熔断激活态下扩仓同笔放行（bar2）；
+    2. 重启用清 bypass——熔断激活态回到挡单（bar3），证明开关实时生效；
+    3. 热更 max_daily_loss 放宽不追溯已激活熔断（bar4 仍拒）；cooldown
+       收 0 后激活态立即失效、新阈值实时生效（bar5 扩仓放行）。
+    set_risk_enabled 未装配时 no-op（构造后先调一次，opt-in 契约同
+    test_risk_pnl_reset_noop_without_config）。
+    """
+    d = worker.PaperDriver(["BTCUSDT"], initial_cash=10_000.0, fee_rate=0.0)
+    assert d.risk_assembled() is False
+
+    ratios = iter([0.1, 0.5, 0.5, 0.9, 0.9, 0.9])
+    d.add_rl_strategy(
+        lambda obs: next(ratios), "m1", "v1-rl", 1, FEATURES, CONTINUOUS_1_1, "BTC/USDT"
+    )
+    d.set_risk_enabled(False)  # 未装配 no-op：不抛错即契约
+    d.set_risk_config({"max_daily_loss": 5.0}, max_position_value=50_000.0)
+    # start 前仅存 pending 配置（set_risk 不建句柄），风险句柄 start 时装配
+    assert d.risk_assembled() is False
+    d.start()
+    assert d.risk_assembled() is True
+
+    # bar0 建仓 10 股，回灌 −6 触发熔断（与参照测试同档）
+    d.feed_bar("BTCUSDT", START, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    assert d.snapshot()["positions"]["BTC/USDT"] == pytest.approx(10.0, abs=1e-4)
+    d.update_risk_pnl(-6.0)
+
+    # bar1 扩仓被熔断拒
+    d.feed_bar("BTCUSDT", START + ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    with pytest.raises(RuntimeError, match="risk rejected"):
+        d.tick()
+
+    # 停用：熔断态扩仓放行；停用期间 pnl 回灌照常累计（daily_pnl = −7）
+    d.set_risk_enabled(False)
+    d.update_risk_pnl(-1.0)
+    d.feed_bar("BTCUSDT", START + 2 * ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    assert d.snapshot()["positions"]["BTC/USDT"] == pytest.approx(50.0, abs=1e-2)
+
+    # 重启用：bypass 清除，熔断激活态恢复挡单
+    d.set_risk_enabled(True)
+    d.feed_bar("BTCUSDT", START + 3 * ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    with pytest.raises(RuntimeError, match="risk rejected"):
+        d.tick()
+
+    # 热更放宽 max_daily_loss：阈值实时到位但不追溯已激活熔断
+    d.update_risk_config({"max_daily_loss": 100.0}, max_position_value=None)
+    d.feed_bar("BTCUSDT", START + 4 * ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    with pytest.raises(RuntimeError, match="risk rejected"):
+        d.tick()
+
+    # 热更 cooldown=0：激活态立即失效 + 新 max_daily_loss 生效 → 扩仓放行。
+    # breaker 自恢复是秒级粒度（now − activated > cooldown 需跨秒），
+    # 与内核单测 update_cooldown_shortens_recovery 的 sleep 1.1s 同口径
+    d.update_risk_config(
+        {"max_daily_loss": 100.0, "circuit_breaker_cooldown_secs": 0},
+        max_position_value=None,
+    )
+    time.sleep(1.1)
+    d.feed_bar("BTCUSDT", START + 5 * ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    snap = d.snapshot()
+    assert snap["positions"]["BTC/USDT"] == pytest.approx(90.0, abs=0.5)
+    assert snap["equity"] == pytest.approx(9_999.96, abs=0.02)
