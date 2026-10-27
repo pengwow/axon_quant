@@ -51,6 +51,17 @@ impl DefaultRiskEngine {
         }
     }
 
+    /// 运行时热更风控配置：整体替换 config，并同步 CircuitBreaker 的
+    /// 私有阈值/冷却快照；daily_pnl / peak_value / pnl_history /
+    /// 熔断激活态全部保留（阈值替换不追溯激活态，见 spec §3.2）。
+    pub fn set_config(&mut self, config: RiskConfig) {
+        self.circuit_breaker
+            .update_daily_loss_limit(config.max_daily_loss);
+        self.circuit_breaker
+            .update_cooldown(config.circuit_breaker_cooldown);
+        self.config = config;
+    }
+
     /// 计算当前 VaR(95)；不足样本时返回 0
     fn compute_var_95(&self) -> (f64, f64) {
         let history = self.pnl_history.lock();
@@ -534,5 +545,42 @@ mod tests {
         pf.add_position(make_pos(btc_perp(), -0.6));
         let pair = LegPair::new(btc_spot(), btc_perp());
         assert_eq!(engine.check_leg_pair(&pf, &pair), RiskResult::Allow);
+    }
+
+    // ===== 运行时热更（set_config）=====
+
+    #[test]
+    fn set_config_swaps_threshold_keeps_state() {
+        let mut engine = DefaultRiskEngine::new(RiskConfig::default());
+        engine.update_daily_pnl(-8_000.0); // 累计 -8_000，未达默认 10_000，不熔断
+        engine.set_config(RiskConfig {
+            max_daily_loss: 5_000.0,
+            ..Default::default()
+        });
+        // 状态保留：累计亏损仍在 engine 上，收紧后的下一次回灌即触发熔断
+        engine.update_daily_pnl(-1.0);
+        let portfolio = funded_portfolio(100_000.0);
+        let order = make_limit_order(Side::Buy, 100.0, 10.0);
+        assert!(matches!(
+            engine.check_order(&order, &portfolio),
+            RiskResult::Reject(RiskReason::CircuitBreakerActive { .. })
+        ));
+    }
+
+    #[test]
+    fn set_config_does_not_release_active_breaker() {
+        let mut engine = DefaultRiskEngine::new(RiskConfig::default());
+        engine.update_daily_pnl(-10_000.0); // 达默认 10_000 → 熔断触发
+        engine.set_config(RiskConfig {
+            max_daily_loss: 50_000.0,
+            ..Default::default()
+        }); // 放宽
+        let portfolio = funded_portfolio(100_000.0);
+        let order = make_limit_order(Side::Buy, 100.0, 10.0);
+        // 阈值替换不追溯熔断激活态：仍拒
+        assert!(matches!(
+            engine.check_order(&order, &portfolio),
+            RiskResult::Reject(RiskReason::CircuitBreakerActive { .. })
+        ));
     }
 }
