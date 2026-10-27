@@ -1,6 +1,6 @@
 # `axon-llm::swarm` Multi-Agent Orchestration
 
-> Applies to: `axon-llm` v0.6.0+
+> Applies to: `axon-llm` v0.22.1+
 > Status: **Implemented** (0.6.0 Workflow B + 0.11.0 Voting Consensus)
 > Plan: `docs/superpowers/plans/2026-07-18-axon-quant-0.6.0.md` §3, `docs/superpowers/specs/2026-08-01-axon-quant-0.11.0-multi-agent-design.md`
 

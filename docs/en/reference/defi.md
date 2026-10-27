@@ -1,6 +1,6 @@
 # DeFi On-Chain Trading (Python Bindings)
 
-> Applies to:AXON v0.3.0+ (`axon-defi` 0.3.0 P0 Batches 1-4 fully delivered)
+> Applies to:AXON v0.22.1+ (`axon-defi` 0.3.0 P0 Batches 1-4 fully delivered)
 > Upstream:[axon-defi Rust crate](https://github.com/pengwow/axon_quant/blob/main/crates/axon-defi/) + [axon_quant.defi top-level wrapper](https://github.com/pengwow/axon_quant/blob/main/python/axon_quant/defi.py)
 > Design doc:[DeFi On-Chain Trading Architecture](https://github.com/pengwow/axon_quant/blob/main/.axon-internal/specs/2026-06-21-defi-onchain-trading-design.md)
 > Runnable example:`examples/17_python_bindings/python_bindings_demo.py` (DeFi section)

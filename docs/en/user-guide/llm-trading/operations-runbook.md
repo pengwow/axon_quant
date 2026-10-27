@@ -1,6 +1,6 @@
 # LLM Trading Operations Runbook
 
-> Applicable version: axon-llm v0.6.0+
+> Applicable version: axon-llm v0.22.1+
 > Audience: Operations / SRE / On-call Engineers
 > Prerequisites: [overview.md](overview.md) [risk-safety.md](risk-safety.md) [metrics-alerting.md](metrics-alerting.md)
 

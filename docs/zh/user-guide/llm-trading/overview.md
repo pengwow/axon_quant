@@ -1,6 +1,6 @@
 # LLM 交易架构
 
-> 适用版本:axon-llm v0.6.0+
+> 适用版本:axon-llm v0.22.1+
 > 状态:🟢 与代码同步(Stage A~K + 0.11.0 Multi-Agent 全部交付)
 
 本文档描述 `axon-llm` 的交易链路架构。目标读者:正在把 LLM agent 接入生产交易系统的工程师。

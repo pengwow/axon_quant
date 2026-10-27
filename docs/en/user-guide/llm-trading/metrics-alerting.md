@@ -1,6 +1,6 @@
 # LLM Trading Metrics & Alerting
 
-> Applicable version: axon-llm v0.6.0+
+> Applicable version: axon-llm v0.22.1+
 > Prerequisites: [overview.md](overview.md) §5
 
 This document details `TradingMetrics`'s metric system, data outlets, and integration templates for applications to connect to monitoring backends.

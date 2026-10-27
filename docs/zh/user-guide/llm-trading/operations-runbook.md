@@ -1,6 +1,6 @@
 # LLM 交易运维手册
 
-> 适用版本:axon-llm v0.6.0+
+> 适用版本:axon-llm v0.22.1+
 > 读者:运维 / SRE / on-call 工程师
 > 前置阅读:[overview.md](overview.md) [risk-safety.md](risk-safety.md) [metrics-alerting.md](metrics-alerting.md)
 

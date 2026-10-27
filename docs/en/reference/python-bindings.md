@@ -3,7 +3,7 @@
 > **Full runnable example**: [`examples/17_python_bindings/python_bindings_demo.py`](https://github.com/pengwow/axon_quant/blob/main/examples/17_python_bindings/python_bindings_demo.py)
 > Covers all 6 modules (Backtest / Risk / OMS / Exchange / Inference / LLM Trading). Run with one command.
 
-> Applicable version: AXON v0.6.0+ Python bindings (Stage K delivery)
+> Applicable version: AXON v0.22.1+ Python bindings (Stage K delivery)
 
 AXON exposes core Rust types to Python via PyO3, providing the `axon_quant` package.
 
