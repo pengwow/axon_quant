@@ -110,6 +110,14 @@ impl LiveDriver {
         if symbols.is_empty() {
             return Err("至少需要一个交易品种".to_string());
         }
+        // 行情订阅按 config.interval 参数化（见 BinanceAdapter::with_kline_interval），
+        // 非法周期串会被 Binance 静默忽略（订阅成功、零推送），构造期拒绝
+        if interval_to_nanos(&config.interval).is_none() {
+            return Err(format!(
+                "不支持的 interval 周期串（只认小写 s/m/h/d/w 后缀，如 \"1m\"/\"15m\"/\"1h\"）: {}",
+                config.interval
+            ));
+        }
         let shadow_cash = Decimal::from_f64(shadow_cash)
             .ok_or_else(|| format!("影子保证金不是有效数字: {shadow_cash}"))?;
         // instrument → 交易所 symbol 反查表（缺口补灌按 gap.instrument 反查）

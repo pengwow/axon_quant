@@ -1418,9 +1418,12 @@ impl PyLiveDriver {
             interval: interval.clone(),
             ..KernelConfig::default()
         };
-        let adapter: Arc<tokio::sync::Mutex<Box<dyn ExchangeAdapter>>> = Arc::new(
-            tokio::sync::Mutex::new(Box::new(BinanceAdapter::new(config.inner))),
-        );
+        // kline 订阅粒度必须与内核 config.interval 一致（同一个 interval 字符串），
+        // 否则 1h 策略会每分钟收到 1m bar 触发 on_bar（历史踩坑：订阅硬编码 1m）
+        let adapter: Arc<tokio::sync::Mutex<Box<dyn ExchangeAdapter>>> =
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                BinanceAdapter::new(config.inner).with_kline_interval(&interval),
+            )));
         // LiveDriver::new 会校验 v1 边界（Spot / Cash / 空品种在此报错），不放行坏配置
         let live = LiveDriver::new(
             adapter,
