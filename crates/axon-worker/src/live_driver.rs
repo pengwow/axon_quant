@@ -370,8 +370,17 @@ impl LiveDriver {
                 .map_err(|_| format!("journal manifest 的影子基线不是合法十进制数: {raw}"))?,
             None => shadow_cash,
         };
+        // ②' adopt 接管的初始持仓：首跑已随 manifest 落 journal 首行，重演必须
+        //     种回同一份，才能维持「影子持仓 = 初始持仓 + 成交效果 = 交易所持仓」；
+        //     旧 journal 缺字段读回 None（行为不变），字段非法 = 文件被手改，拒绝不猜
+        let replay_positions = match &manifest.initial_positions {
+            Some(list) => seed_positions(list)?,
+            None => Vec::new(),
+        };
         // ② 重演期用假网关的 sink（避免重演的 place_order 打真实交易所）
-        let sink = LiveSink::for_replay(replay_cash).with_accounting_mode(accounting);
+        let sink = LiveSink::for_replay(replay_cash)
+            .with_accounting_mode(accounting)
+            .with_initial_positions(replay_positions);
         // ③ 建内核并重演
         let mut kernel = Kernel::new(config.clone(), Box::new(sink));
         kernel.set_manifest(manifest);
@@ -1114,6 +1123,84 @@ mod tests {
         assert_eq!(initial[0].quantity, "30");
         assert_eq!(initial[0].avg_price, "100");
 
+        driver.shutdown().expect("shutdown");
+    }
+
+    /// T6：adopt 带仓起跑 → 策略加仓成交 → kill -9 → resume 从 manifest 播种
+    /// 初始持仓 + 重演成交 → 对账 clean 放行（核心等式：初始 30 + 成交 30 = 交易所 60）
+    #[test]
+    fn resume_after_adopt_seeds_initial_positions() {
+        // ── 首跑：mock 残留 30 张多头 → adopt 起跑 → bar1 加仓成交 → 硬崩 ──
+        let (adapter_a, handle_a) = mock_exchange(ExchangeId::Binance);
+        handle_a.state().positions.push(Position {
+            symbol: ExchangeSymbol(SYMBOL.into()),
+            side: ExchangeSide::Buy,
+            quantity: Decimal::from(30),
+            avg_entry_price: Decimal::from(100),
+            unrealized_pnl: Decimal::ZERO,
+        });
+        let mut driver = LiveDriver::new(
+            adapter_a,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+            ExistingPositions::Adopt,
+        )
+        .expect("构造应成功");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("live.journal");
+        driver.connect().expect("connect");
+        driver
+            .start(&journal, vec![Box::new(CycleHost::new())])
+            .expect("adopt 起跑应成功");
+        // bar0（target 0.3 = 30 张）与接管持仓一致 → 不应产生任何订单，
+        // 这条断言同时守护「seed 持仓参与 SetTarget 差额计算」这个前提
+        handle_a.push_message(kline_closed(0));
+        two_ticks(&mut driver);
+        assert!(
+            handle_a.state().sent_orders.is_empty(),
+            "bar0 目标与接管持仓一致，不应下单"
+        );
+        // bar1（target 0.6 = 60 张）→ 差额 +30 买单 → 成交
+        handle_a.push_message(kline_closed(1));
+        two_ticks(&mut driver);
+        drive_fill(&mut driver, &handle_a, "t-1", 1);
+        two_ticks(&mut driver);
+        let local = driver.snapshot().expect("snapshot");
+        let position = local.positions.values().next().expect("应持 60 张");
+        assert!((position - 60.0).abs() < 1e-9, "position = {position}");
+        assert!((local.cash - 9_999.0).abs() < 1e-6, "cash = {}", local.cash);
+        // 模拟 kill -9：同步线程，plain drop 即崩溃
+        drop(driver);
+
+        // ── 新建 mock 搬运状态 → resume：重演 manifest 播种 30 + journal 成交 +30 ──
+        let (adapter_b, handle_b) = mock_exchange(ExchangeId::Binance);
+        {
+            let src = handle_a.state();
+            let mut dst = handle_b.state();
+            dst.positions = src.positions.clone();
+            dst.account = src.account.clone();
+            dst.trades = src.trades.clone();
+        }
+        let mut driver = LiveDriver::new(
+            adapter_b,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+            ExistingPositions::Adopt,
+        )
+        .expect("构造应成功");
+        driver.connect().expect("connect");
+        let report = driver
+            .resume(&journal, vec![Box::new(CycleHost::new())])
+            .expect("resume 应守卫放行");
+        assert!(report.is_clean(), "恢复对账应 clean: {report:?}");
+        let local = driver.snapshot().expect("snapshot");
+        let position = local.positions.values().next().expect("重演后应持 60 张");
+        assert!((position - 60.0).abs() < 1e-9, "position = {position}");
+        assert!((local.cash - 9_999.0).abs() < 1e-6, "cash = {}", local.cash);
         driver.shutdown().expect("shutdown");
     }
 }
