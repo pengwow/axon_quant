@@ -40,6 +40,19 @@ impl OrderManager {
         self.portfolio.write().set_accounting_mode(mode);
     }
 
+    /// 注入初始持仓（adopt 接管）：合并覆盖同 symbol，不触碰 cash
+    ///
+    /// 供 live 启动把交易所残留持仓抄进影子账本；symbol 用 `BASE/QUOTE` 规范键，
+    /// quantity 带符号（正 = 多，负 = 空）。cash 由 `deposit` 单独钉住，这里绝不改它。
+    pub fn seed_initial_positions(&self, positions: Vec<crate::types::Position>) {
+        let mut portfolio = self.portfolio.write();
+        for position in positions {
+            portfolio
+                .positions
+                .insert(position.symbol.clone(), position);
+        }
+    }
+
     /// 取出现金(出金),余额不足时返回错误
     pub fn withdraw(
         &self,
@@ -284,7 +297,7 @@ impl Default for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{OrderType, Side};
+    use crate::types::{OrderType, Position, Side};
     use pretty_assertions::assert_eq;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
@@ -793,5 +806,46 @@ mod tests {
         let positions = oms.snapshot_positions();
         assert_eq!(positions.len(), 1);
         assert_eq!(positions[0].quantity, dec!(10));
+    }
+
+    /// seed_initial_positions：注入持仓只动 positions，不碰 cash
+    #[test]
+    fn seed_initial_positions_inserts_positions() {
+        let oms = OrderManager::new();
+        oms.deposit("USDT", dec!(10_000));
+        oms.seed_initial_positions(vec![Position {
+            symbol: "BTC/USDT".into(),
+            quantity: dec!(-0.5),
+            avg_price: dec!(100.25),
+            realized_pnl: Decimal::ZERO,
+            updated_at: Utc::now(),
+        }]);
+
+        let positions = oms.snapshot_positions();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].symbol, "BTC/USDT");
+        assert_eq!(positions[0].quantity, dec!(-0.5));
+        assert_eq!(positions[0].avg_price, dec!(100.25));
+        // cash 不受注入影响（基线由 deposit 单独钉住）
+        assert_eq!(oms.snapshot_balance().cash.get("USDT"), Some(&dec!(10_000)));
+    }
+
+    /// 同 symbol 重复注入按覆盖合并（接管/重放幂等，不叠加）
+    #[test]
+    fn seed_initial_positions_overwrites_same_symbol() {
+        let oms = OrderManager::new();
+        let make = |quantity: Decimal| Position {
+            symbol: "BTC/USDT".into(),
+            quantity,
+            avg_price: dec!(100),
+            realized_pnl: Decimal::ZERO,
+            updated_at: Utc::now(),
+        };
+        oms.seed_initial_positions(vec![make(dec!(1))]);
+        oms.seed_initial_positions(vec![make(dec!(2))]);
+
+        let positions = oms.snapshot_positions();
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].quantity, dec!(2));
     }
 }
