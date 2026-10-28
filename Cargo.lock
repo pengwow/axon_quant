@@ -417,9 +417,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rlp"
-version = "0.3.16"
+version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24671b1f62edcf0f9b62994c7bf72cd621a04a4b99f5020ece1a647b40e2f103"
+checksum = "6aafa19ee4ccc64dad34105c83a62c004c893ee0dd6763931b37430bdae197f4"
 dependencies = [
  "alloy-rlp-derive",
  "arrayvec",
@@ -428,9 +428,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rlp-derive"
-version = "0.3.16"
+version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d4311c03125e8a18296504560b9de3d75ecbd0dcda7f71e6cf2a196d57e6fba"
+checksum = "401f61cc68aca05d91f58ef5ad6084da1d632fcb23710cbd62bda3bdf79293aa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -660,9 +660,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-trie"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94e3e0a88f8db47250ac8a95fb825d020719f833eb1dc661bd3609c3bbece7d"
+checksum = "70c7c04b6e5a7a2325f53d38c319a47d01c3609b44845ac2801bac9643fe26b9"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "axon-backtest"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "axon-cli"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "axon-compliance"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "axon-core"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "bincode",
  "chrono",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "axon-data"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "axon-defi"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "axon-distributed"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "axon-ensemble"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "axon-exchange"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1485,7 +1485,7 @@ dependencies = [
 
 [[package]]
 name = "axon-explain"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "axon-harness"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "blake3",
@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "axon-hpo"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "axon-inference"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "candle-core",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "axon-integration-tests"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "axon-backtest",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "axon-kernel"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "axon-llm"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "axon-monitor"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "axon-oms"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "axon-python"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-backtest",
  "axon-compliance",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "axon-registry"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "axon-risk"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-core",
  "axon-monitor",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "axon-rl"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "axon-strategy"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1768,7 +1768,7 @@ dependencies = [
 
 [[package]]
 name = "axon-tracker"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "axon-walk-forward"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "axon-worker"
-version = "0.22.5"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "axon-backtest",
@@ -7029,9 +7029,9 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "unicode-width"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "unicode-xid"
