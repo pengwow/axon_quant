@@ -1016,6 +1016,7 @@ mod tests {
             seed: 42,
             model_artifacts: Vec::new(),
             shadow_cash: None,
+            initial_positions: None,
         }
     }
 

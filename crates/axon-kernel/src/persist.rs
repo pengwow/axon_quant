@@ -30,6 +30,22 @@ pub struct ModelArtifact {
     pub normalizer_hash: String,
 }
 
+/// adopt 接管时抄进影子账本的初始持仓单元
+///
+/// live `start` 拉取交易所残留持仓后写入 [`RunManifest::initial_positions`]；
+/// `resume` 重演时按它把同一份持仓种回影子 OMS，保证
+/// 「影子持仓 = 初始持仓 + 成交效果」与交易所恒等。
+/// 数量与均价用 Decimal 字符串落盘，避免 f64 往返丢精度。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestPosition {
+    /// instrument_key（`BASE/QUOTE`，与 live 侧 `fetch_venue_snapshot` 的口径一致）
+    pub symbol: String,
+    /// 带符号净额（正 = 多，负 = 空），Decimal 字符串
+    pub quantity: String,
+    /// 交易所 avg_entry_price，Decimal 字符串，仅供 OMS 盈亏展示
+    pub avg_price: String,
+}
+
 /// 一次运行的复现指纹
 ///
 /// 作为 journal 首行落盘。**任一字段不同，重演结果不保证一致**：
@@ -67,6 +83,13 @@ pub struct RunManifest {
     /// 否则基线只存在于首跑进程内存里，重启后被兜底值顶替，对账必然假阳性。
     #[serde(default)]
     pub shadow_cash: Option<String>,
+    /// adopt 接管时的初始持仓（fresh start 抄自交易所，resume 据此播种影子账本）
+    ///
+    /// `serde(default)` 兼容旧 journal：缺字段读成 None（行为不变：不播种）。
+    /// 只有 `ExistingPositions::Adopt` 且交易所确实有持仓时才写入；
+    /// 空 vec 与 None 等价，都表示「无接管持仓」。
+    #[serde(default)]
+    pub initial_positions: Option<Vec<ManifestPosition>>,
 }
 
 impl Default for RunManifest {
@@ -80,6 +103,44 @@ impl Default for RunManifest {
             seed: 0,
             model_artifacts: Vec::new(),
             shadow_cash: None,
+            initial_positions: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// initial_positions 往返：序列化 → 读回逐字段相等
+    #[test]
+    fn manifest_positions_roundtrip() {
+        let manifest = RunManifest {
+            initial_positions: Some(vec![ManifestPosition {
+                symbol: "BTC/USDT".into(),
+                quantity: "-0.5".into(),
+                avg_price: "100.25".into(),
+            }]),
+            ..RunManifest::default()
+        };
+        let raw = serde_json::to_string(&manifest).expect("序列化");
+        let roundtrip: RunManifest = serde_json::from_str(&raw).expect("反序列化");
+        assert_eq!(roundtrip, manifest);
+    }
+
+    /// 旧 journal 缺 initial_positions 字段读回 None（行为兼容）
+    #[test]
+    fn legacy_manifest_without_initial_positions() {
+        let legacy = r#"{
+            "journal_format": 1,
+            "code_version": "0.0.0",
+            "config_hash": "",
+            "data_hash": "",
+            "seed": 0,
+            "model_artifacts": []
+        }"#;
+        let manifest: RunManifest = serde_json::from_str(legacy).expect("旧格式应可读回");
+        assert_eq!(manifest.initial_positions, None);
+        assert_eq!(manifest.shadow_cash, None);
     }
 }

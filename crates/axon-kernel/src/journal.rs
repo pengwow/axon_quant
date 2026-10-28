@@ -309,6 +309,7 @@ mod tests {
                 normalizer_hash: "norm-xyz".to_string(),
             }],
             shadow_cash: None,
+            initial_positions: None,
         }
     }
 
