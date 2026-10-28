@@ -27,7 +27,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use axon_core::portfolio::FillRecord;
+use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::{
     Bar, Event, Instrument, MarketDataEvent, MarketDataPayload, Price, Quantity, Timestamp,
 };
@@ -296,6 +296,20 @@ impl PaperDriver {
             .as_ref()
             .ok_or_else(|| "内核未启动，请先 start".to_string())?;
         Ok(kernel.fills_since(cursor).to_vec())
+    }
+
+    /// 运行期已配对交易增量读取：自游标 `cursor` 起的新配对交易（append-only、不消费）
+    ///
+    /// 游标语义 = 引擎 `bt_state.trades` 下标（只在完全平仓/反手时 append，
+    /// 顺序与配对完成时间一致）：调用方拉走后把游标推进 `returned.len()` 即可。
+    /// 与 trades 配套的 `entry_fill_ids`/`exit_fill_ids` 直接引用 fill_id，
+    /// 可与 [`Self::fills_since`] 的游标各自独立推进、互不影响。
+    pub fn trades_since(&self, cursor: usize) -> Result<Vec<TradeRecord>, String> {
+        let kernel = self
+            .kernel
+            .as_ref()
+            .ok_or_else(|| "内核未启动，请先 start".to_string())?;
+        Ok(kernel.trades_since(cursor).to_vec())
     }
 
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op

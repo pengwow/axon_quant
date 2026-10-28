@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use axon_backtest::engine::RunResult;
-use axon_core::portfolio::FillRecord;
+use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::{
     Event, EventQueue, Instrument, MarketDataEvent, MarketDataPayload, SystemAction, SystemEvent,
     Timestamp,
@@ -440,6 +440,16 @@ impl Kernel {
     /// 运行中自游标起的成交明细（append-only、不消费；paper 循环推成交落库用）
     pub fn fills_since(&self, cursor: usize) -> &[FillRecord] {
         self.core.fills_since(cursor)
+    }
+
+    /// 运行中已配对交易累计条数（增量读取的游标锚点）
+    pub fn trades_len(&self) -> usize {
+        self.core.trades_len()
+    }
+
+    /// 运行中自游标起的已配对交易（append-only、不消费；paper 循环推配对盈亏落库用）
+    pub fn trades_since(&self, cursor: usize) -> &[TradeRecord] {
+        self.core.trades_since(cursor)
     }
 
     /// 队列耗尽后的收尾

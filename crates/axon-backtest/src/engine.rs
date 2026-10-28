@@ -1245,6 +1245,22 @@ impl BacktestEngine {
         self.bt_state.fills_detail.get(cursor..).unwrap_or(&[])
     }
 
+    /// 已配对交易累计条数（paper 运行期增量读取的游标锚点）
+    ///
+    /// trades 与 fills 不同：只在完全平仓/反手时 append（FLAT_TO_FLAT 聚合
+    /// 语义），append-only 且顺序与配对完成时间一致，下标同样可作游标。
+    pub fn trades_len(&self) -> usize {
+        self.bt_state.trades.len()
+    }
+
+    /// 自游标 `cursor` 起的已配对交易切片（append-only、不消费）
+    ///
+    /// 语义同 [`Self::fills_since`]：调用方拉走后把游标推进到返回切片长度
+    /// 即可增量读取；越界游标安全为空。
+    pub fn trades_since(&self, cursor: usize) -> &[TradeRecord] {
+        self.bt_state.trades.get(cursor..).unwrap_or(&[])
+    }
+
     // ── T3.8 新增:多 leg API(策略目标仓位 + 当前仓位查询) ─────────
 
     /// 设置某 leg 的目标仓位(仅记录,不主动下单)

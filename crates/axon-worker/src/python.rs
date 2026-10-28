@@ -1831,6 +1831,37 @@ impl PyPaperDriver {
         Ok(list)
     }
 
+    /// 运行期已配对交易增量读取：`list[dict]`，字段与 `BacktestResult.trades` 一致
+    ///
+    /// `cursor` 传上次游标即可增量拉新：游标 = 引擎已配对交易下标（只在完全
+    /// 平仓/反手时 append），调用方拉走后推进返回 len；越界游标安全为空，
+    /// paper 账重启即清零、游标从 0 重新开始。
+    #[pyo3(signature = (cursor = 0))]
+    fn trades_since<'py>(&self, py: Python<'py>, cursor: usize) -> PyResult<Bound<'py, PyList>> {
+        let trades = kernel_lock(&self.inner, "paper driver")?
+            .trades_since(cursor)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let list = PyList::empty(py);
+        for tr in &trades {
+            let d = PyDict::new(py);
+            d.set_item("timestamp_ns", tr.trade.timestamp.nanos)?;
+            d.set_item("price", tr.trade.price.as_f64())?;
+            d.set_item("quantity", tr.trade.quantity.as_f64())?;
+            d.set_item("buyer_order_id", tr.trade.buyer_order_id)?;
+            d.set_item("seller_order_id", tr.trade.seller_order_id)?;
+            d.set_item("realized_pnl", tr.realized_pnl as f64 / 1e6)?;
+            d.set_item("commission", tr.commission as f64 / 1e6)?;
+            d.set_item("net_quantity", tr.net_quantity as f64 / 1e6)?;
+            d.set_item("entry_price", tr.entry_price as f64 / 1e6)?;
+            d.set_item("entry_time_ns", tr.entry_time_ns)?;
+            d.set_item("instrument", instrument_to_tuple(py, &tr.instrument)?)?;
+            d.set_item("entry_fill_ids", tr.entry_fill_ids.clone())?;
+            d.set_item("exit_fill_ids", tr.exit_fill_ids.clone())?;
+            list.append(d)?;
+        }
+        Ok(list)
+    }
+
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op（保持接口对称）
     fn shutdown(&mut self) -> PyResult<()> {
         kernel_lock(&self.inner, "paper driver")?
