@@ -46,7 +46,7 @@ use axon_strategy::trait_::Strategy;
 use crate::LiveSink;
 use crate::backtest::{BacktestResult, BacktestRunner};
 use crate::kernel_host::BarContextSim;
-use crate::live_driver::LiveDriver;
+use crate::live_driver::{ExistingPositions, LiveDriver};
 use crate::paper_driver::PaperDriver;
 use crate::python_logging::install_rust_logging;
 use crate::reconcile::{
@@ -1375,7 +1375,7 @@ impl PyLiveDriver {
     /// 接管其全部异步调用，绑定层不再直接触碰 adapter
     #[allow(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet".to_string(), futures=true, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None))]
+    #[pyo3(signature = (config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet".to_string(), futures=true, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None, existing_positions=None))]
     fn new(
         config: PyExchangeConfig,
         symbols: Vec<String>,
@@ -1387,6 +1387,7 @@ impl PyLiveDriver {
         contract_size: f64,
         interval: String,
         fee_rate: Option<f64>,
+        existing_positions: Option<String>,
     ) -> PyResult<Self> {
         if !initial_cash.is_finite() || initial_cash <= 0.0 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1418,6 +1419,15 @@ impl PyLiveDriver {
                 )));
             }
         };
+        let existing_positions = match existing_positions.as_deref() {
+            None | Some("adopt") => ExistingPositions::Adopt,
+            Some("reject") => ExistingPositions::Reject,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown existing_positions: {other} (expected 'adopt' / 'reject')"
+                )));
+            }
+        };
         let instrument_mode = build_instrument_mode(futures, settle.as_deref(), contract_size)?;
         let kernel_config = KernelConfig {
             initial_cash,
@@ -1439,6 +1449,7 @@ impl PyLiveDriver {
             accounting_mode,
             shadow_cash,
             symbols,
+            existing_positions,
         )
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(Self {

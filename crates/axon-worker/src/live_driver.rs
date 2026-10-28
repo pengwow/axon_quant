@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use chrono::Utc;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use tokio::sync::mpsc;
@@ -42,10 +43,10 @@ use axon_core::Instrument;
 use axon_exchange::ExchangeAdapter;
 use axon_exchange::types::{Side as ExchangeSide, Symbol as ExchangeSymbol};
 use axon_kernel::{
-    InstrumentMode, Journal, Kernel, KernelConfig, KernelError, RunManifest, StrategyHost,
-    interval_to_nanos,
+    InstrumentMode, Journal, Kernel, KernelConfig, KernelError, ManifestPosition, RunManifest,
+    StrategyHost, interval_to_nanos,
 };
-use axon_oms::AccountingMode;
+use axon_oms::{AccountingMode, Position as OmsPosition};
 use axon_risk::RiskConfig;
 
 use crate::backtest::instrument_key_for;
@@ -63,6 +64,17 @@ const FANOUT_CHANNEL_CAPACITY: usize = 4096;
 const TRADES_PAGE_LIMIT: u32 = 1000;
 /// 单次缺口补灌的最大拉取根数（`fetch_ohlcv` 无 since 参数、只能取最近 N 根）
 const MAX_GAP_FETCH: usize = 1000;
+
+/// start 阶段对交易所已有持仓的策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExistingPositions {
+    /// freqtrade 式恢复精神（默认）：把残留持仓抄进影子账本带仓起跑，
+    /// 并随 `RunManifest` 持久化，resume 重演时种回同一初始持仓
+    #[default]
+    Adopt,
+    /// 保守选项：残留持仓即拒绝起跑（强制干净起点）
+    Reject,
+}
 
 /// 统一内核的实盘驱动器
 ///
@@ -94,6 +106,8 @@ pub struct LiveDriver {
     risk: Option<(RiskConfig, Option<f64>)>,
     /// start 成功后的引擎句柄，上层经它回灌当日盈亏（联动熔断）/ 跨日清零
     risk_handle: Option<RiskHandle>,
+    /// 起跑时对交易所残留持仓的策略（Adopt 接管 / Reject 拒绝）
+    existing_positions: ExistingPositions,
 }
 
 impl LiveDriver {
@@ -106,6 +120,7 @@ impl LiveDriver {
         accounting: AccountingMode,
         shadow_cash: f64,
         symbols: Vec<String>,
+        existing_positions: ExistingPositions,
     ) -> Result<Self, String> {
         if !matches!(config.instrument_mode, InstrumentMode::Swap { .. }) {
             return Err(
@@ -156,6 +171,7 @@ impl LiveDriver {
             kernel: None,
             risk: None,
             risk_handle: None,
+            existing_positions,
         })
     }
 
@@ -200,8 +216,9 @@ impl LiveDriver {
     /// - 影子基线钉到真实钱包余额（`total_balance - unrealized_pnl`，与 resume
     ///   对账的 venue 口径一致）。拉取失败 fail-fast 放回网关可重试——影子基线
     ///   拒绝回退兜底值，基线错位正是重启后对账假阳性的根源；
-    /// - 账户已有持仓则拒绝起跑（干净起点守卫）：影子 OMS 从零记仓，带仓跑
-    ///   意味着 resume 对账必然报持仓断裂，提前暴露好过埋雷到恢复阶段。
+    /// - 账户已有持仓时的处理由 [`ExistingPositions`] 决定：默认 `Adopt` 把残留持仓
+    ///   抄进影子账本带仓起跑（随 manifest 持久化，resume 重演种回同一份）；
+    ///   `Reject` 保留干净起点守卫（带仓跑会让 resume 对账必然断裂）。
     ///
     /// journal 建立失败属启动期硬故障（kernel 连 sink 一起 drop，网关随之释放），
     /// 需重建 LiveDriver 重 connect。
@@ -232,12 +249,27 @@ impl LiveDriver {
                 ));
             }
         };
-        if let Err(e) = check_no_positions(&gateway) {
-            self.gateway = Some(gateway);
-            return Err(e);
-        }
-        let sink =
-            LiveSink::new(Box::new(gateway), shadow_cash).with_accounting_mode(self.accounting);
+        // 带仓起跑策略：Reject 走干净起点守卫；Adopt（默认）把交易所残留持仓
+        // 抄进影子账本。采集与解析都在 sink 构造（gateway move 进 sink）之前完成，
+        // 失败时网关放回可整体重试
+        let adopted = match self.existing_positions {
+            ExistingPositions::Adopt => collect_positions(&gateway)
+                .and_then(|collected| seed_positions(&collected).map(|oms| (collected, oms))),
+            ExistingPositions::Reject => {
+                check_no_positions(&gateway).map(|()| (Vec::new(), Vec::new()))
+            }
+        };
+        let (manifest_positions, oms_positions) = match adopted {
+            Ok(positions) => positions,
+            Err(e) => {
+                // 网关放回：重试走完整的 connect → start
+                self.gateway = Some(gateway);
+                return Err(format!("start 前交易所持仓体检失败: {e}"));
+            }
+        };
+        let sink = LiveSink::new(Box::new(gateway), shadow_cash)
+            .with_accounting_mode(self.accounting)
+            .with_initial_positions(oms_positions);
         // B3：有风控配置则装配 EngineRiskCheck 并留出句柄供 pnl 回灌；
         // 无配置保持 AllowAllRisk（opt-in，行为不变）
         let sink = if let Some((risk_config, max_position_value)) = self.risk.take() {
@@ -252,6 +284,7 @@ impl LiveDriver {
         // 重演起点必须等于首跑起点，兜底值只在旧 journal 缺字段时凑数
         let manifest = RunManifest {
             shadow_cash: Some(shadow_cash.to_string()),
+            initial_positions: (!manifest_positions.is_empty()).then_some(manifest_positions),
             ..RunManifest::default()
         };
         kernel.set_manifest(manifest);
@@ -514,6 +547,68 @@ fn check_no_positions(gateway: &ExchangeGateway) -> Result<(), String> {
     }
 }
 
+/// 读取交易所残留持仓，折算成 adopt 接管的 manifest 单元
+///
+/// Buy 为正 / Sell 为负、同品种互抵取净额、近零过滤——口径与
+/// `fetch_venue_snapshot` 严格一致（对账恒等式靠这个一致性成立）。
+/// ponytail: 双向持仓互抵后均价取最后一腿，属启发式；单向真实持仓（常态）
+/// 该值即交易所 avg_entry_price，精确。
+fn collect_positions(gateway: &ExchangeGateway) -> Result<Vec<ManifestPosition>, String> {
+    // key → (带符号净额, 均价)
+    let mut net: BTreeMap<String, (Decimal, Decimal)> = BTreeMap::new();
+    for position in gateway.positions()? {
+        let signed = match position.side {
+            ExchangeSide::Buy => position.quantity,
+            ExchangeSide::Sell => -position.quantity,
+        };
+        let key = instrument_key_for(&position.symbol.0);
+        let entry = net
+            .entry(key)
+            .or_insert((Decimal::ZERO, position.avg_entry_price));
+        entry.0 += signed;
+        entry.1 = position.avg_entry_price;
+    }
+    Ok(net
+        .into_iter()
+        .filter(|(_, (quantity, _))| quantity.abs().to_f64().unwrap_or(0.0) > f64::EPSILON)
+        .map(|(symbol, (quantity, avg_price))| ManifestPosition {
+            symbol,
+            quantity: quantity.to_string(),
+            avg_price: avg_price.to_string(),
+        })
+        .collect())
+}
+
+/// manifest 持仓单元 → OMS 持仓（String 解析 Decimal，不经 f64 往返）
+///
+/// 同一转换在 start 首跑与 resume 重演两个路径复用，保证两边账本口径一致。
+fn seed_positions(manifest_positions: &[ManifestPosition]) -> Result<Vec<OmsPosition>, String> {
+    manifest_positions
+        .iter()
+        .map(|p| {
+            let quantity = p.quantity.parse::<Decimal>().map_err(|_| {
+                format!(
+                    "manifest 持仓数量不是合法十进制数: {} {}",
+                    p.symbol, p.quantity
+                )
+            })?;
+            let avg_price = p.avg_price.parse::<Decimal>().map_err(|_| {
+                format!(
+                    "manifest 持仓均价不是合法十进制数: {} {}",
+                    p.symbol, p.avg_price
+                )
+            })?;
+            Ok(OmsPosition {
+                symbol: p.symbol.clone(),
+                quantity,
+                avg_price,
+                realized_pnl: Decimal::ZERO,
+                updated_at: Utc::now(),
+            })
+        })
+        .collect()
+}
+
 /// 拉取交易所侧快照：带符号持仓 + 钱包现金 + 成交流水 id 集合
 ///
 /// 口径与 `LocalSnapshot::from_sink` 严格对齐（|q| 过滤、BASE/QUOTE 键、
@@ -764,6 +859,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::default(),
         )
         .expect("构造应成功");
 
@@ -807,6 +903,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::default(),
         )
         .expect("构造应成功");
         let dir = tempfile::tempdir().expect("tempdir");
@@ -840,6 +937,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::default(),
         )
         .expect("构造应成功");
         driver.connect().expect("connect");
@@ -886,6 +984,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::default(),
         )
         .expect("构造应成功");
         let dir = tempfile::tempdir().expect("tempdir");
@@ -924,6 +1023,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::default(),
         )
         .expect("构造应成功");
         driver.connect().expect("connect");
@@ -951,6 +1051,7 @@ mod tests {
             AccountingMode::Wallet,
             10_000.0,
             vec![SYMBOL.into()],
+            ExistingPositions::Reject,
         )
         .expect("构造应成功");
         let dir = tempfile::tempdir().expect("tempdir");
@@ -966,6 +1067,53 @@ mod tests {
         driver
             .start(&journal, vec![Box::new(CycleHost::new())])
             .expect("清仓后重试应成功");
+        driver.shutdown().expect("shutdown");
+    }
+
+    /// T5：adopt 模式起跑 → 接管交易所残留持仓进影子账本 → manifest 落盘 → 对账 clean
+    #[test]
+    fn start_adopt_leftover_positions() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        handle.state().positions.push(Position {
+            symbol: ExchangeSymbol(SYMBOL.into()),
+            side: ExchangeSide::Buy,
+            quantity: Decimal::from(30),
+            avg_entry_price: Decimal::from(100),
+            unrealized_pnl: Decimal::ZERO,
+        });
+        let mut driver = LiveDriver::new(
+            adapter,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+            ExistingPositions::Adopt,
+        )
+        .expect("构造应成功");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("live.journal");
+        driver.connect().expect("connect");
+        driver
+            .start(&journal, vec![Box::new(CycleHost::new())])
+            .expect("adopt 应允许带仓起跑");
+
+        // 影子账本已接管持仓（无成交不动现金）
+        let local = driver.snapshot().expect("snapshot");
+        let position = local.positions.values().next().expect("应接管到持仓");
+        assert!((position - 30.0).abs() < 1e-9, "position = {position}");
+        let venue = manual_venue(&handle);
+        let report = reconcile(&local, &venue, &ReconcileConfig::default());
+        assert!(report.is_clean(), "带仓起点对账应 clean: {report:?}");
+        resume_guard(&report).expect("守卫应放行");
+
+        // manifest 首行应记录初始持仓（resume 播种的数据源）
+        let (manifest, _) = Journal::open(&journal).expect("journal 可读");
+        let initial = manifest.initial_positions.expect("应记录初始持仓");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].symbol, "BTC/USDT");
+        assert_eq!(initial[0].quantity, "30");
+        assert_eq!(initial[0].avg_price, "100");
+
         driver.shutdown().expect("shutdown");
     }
 }

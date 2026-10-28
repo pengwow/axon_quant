@@ -43,7 +43,8 @@ use axon_core::{Event, Instrument, MarketDataPayload, OrderAction, OrderEvent, T
 use axon_kernel::{ExecutionSink, HostCtx, KernelCore, KernelError, OrderId, OrderIntent};
 use axon_oms::{
     AccountingMode, Fill, Order as OmsOrder, OrderId as OmsOrderId, OrderManager,
-    OrderStatus as OmsOrderStatus, OrderType as OmsOrderType, Side as OmsSide,
+    OrderStatus as OmsOrderStatus, OrderType as OmsOrderType, Position as OmsPosition,
+    Side as OmsSide,
 };
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -340,6 +341,18 @@ impl LiveSink {
     /// 初始资金只会把账目差异藏起来。
     pub fn for_replay(shadow_cash: Decimal) -> Self {
         Self::new(Box::new(ReplayGateway { venue_seq: 0 }), shadow_cash)
+    }
+
+    /// 注入 adopt 接管的初始持仓（构造后链式注入，OMS 持仓种子）
+    ///
+    /// fresh start 时由 [`crate::live_driver::LiveDriver::start`] 注入交易所残留持仓；resume 重演时
+    /// 注入 manifest 读回的同一份，保证重演带仓起点与首跑一致。只动持仓不动 cash
+    /// （cash 已由 `deposit(shadow_cash)` 钉好）。
+    pub fn with_initial_positions(self, positions: Vec<OmsPosition>) -> Self {
+        if !positions.is_empty() {
+            self.oms.seed_initial_positions(positions);
+        }
+        self
     }
 
     /// 设置 OMS 影子账本的账务模式（默认 [`AccountingMode::Cash`]）
