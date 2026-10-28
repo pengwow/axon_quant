@@ -59,6 +59,14 @@ pub struct RunManifest {
     pub seed: u64,
     /// 本次运行用到的模型产物（无模型时为空 vec）
     pub model_artifacts: Vec<ModelArtifact>,
+    /// start 时实际生效的影子账本基线现金（USDT，十进制字符串保精度）
+    ///
+    /// `serde(default)` 兼容旧 journal：缺字段读成 None，恢复方回退用自己的
+    /// 兜底基线（行为不变）。live start 从交易所拉真实钱包余额作影子基线时
+    /// 写入此字段，resume 按它重建重演起点，保证「重演基线 = 首跑基线」——
+    /// 否则基线只存在于首跑进程内存里，重启后被兜底值顶替，对账必然假阳性。
+    #[serde(default)]
+    pub shadow_cash: Option<String>,
 }
 
 impl Default for RunManifest {
@@ -71,6 +79,7 @@ impl Default for RunManifest {
             data_hash: String::new(),
             seed: 0,
             model_artifacts: Vec::new(),
+            shadow_cash: None,
         }
     }
 }

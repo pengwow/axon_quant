@@ -196,6 +196,13 @@ impl LiveDriver {
 
     /// 全新起跑：建内核、挂 journal、注册策略宿主
     ///
+    /// start 前先做交易所侧体检（base 都要求 connect 已完成，走同一 REST 通道）：
+    /// - 影子基线钉到真实钱包余额（`total_balance - unrealized_pnl`，与 resume
+    ///   对账的 venue 口径一致）。拉取失败 fail-fast 放回网关可重试——影子基线
+    ///   拒绝回退兜底值，基线错位正是重启后对账假阳性的根源；
+    /// - 账户已有持仓则拒绝起跑（干净起点守卫）：影子 OMS 从零记仓，带仓跑
+    ///   意味着 resume 对账必然报持仓断裂，提前暴露好过埋雷到恢复阶段。
+    ///
     /// journal 建立失败属启动期硬故障（kernel 连 sink 一起 drop，网关随之释放），
     /// 需重建 LiveDriver 重 connect。
     pub fn start(
@@ -213,8 +220,24 @@ impl LiveDriver {
             .gateway
             .take()
             .ok_or_else(|| "驱动器网关缺失，请先 connect".to_string())?;
-        let sink = LiveSink::new(Box::new(gateway), self.shadow_cash)
-            .with_accounting_mode(self.accounting);
+        // 影子基线 = 交易所真实钱包余额；initial_cash 只是调用方的预算语义，
+        // 直接当基线会让「影子账本起点 ≠ 交易所钱包」，resume 对账第一天就验不过
+        let shadow_cash = match venue_cash(&gateway) {
+            Ok(cash) => cash,
+            Err(e) => {
+                // 网关放回：重试走完整的 connect → start
+                self.gateway = Some(gateway);
+                return Err(format!(
+                    "start 前拉取交易所钱包余额失败，拒绝以兜底值建立影子基线: {e}"
+                ));
+            }
+        };
+        if let Err(e) = check_no_positions(&gateway) {
+            self.gateway = Some(gateway);
+            return Err(e);
+        }
+        let sink =
+            LiveSink::new(Box::new(gateway), shadow_cash).with_accounting_mode(self.accounting);
         // B3：有风控配置则装配 EngineRiskCheck 并留出句柄供 pnl 回灌；
         // 无配置保持 AllowAllRisk（opt-in，行为不变）
         let sink = if let Some((risk_config, max_position_value)) = self.risk.take() {
@@ -225,7 +248,13 @@ impl LiveDriver {
             sink
         };
         let mut kernel = Kernel::new(self.config.clone(), Box::new(sink));
-        kernel.set_manifest(RunManifest::default());
+        // 实际生效的影子基线随 manifest 落 journal 首行，resume 读回同一值：
+        // 重演起点必须等于首跑起点，兜底值只在旧 journal 缺字段时凑数
+        let manifest = RunManifest {
+            shadow_cash: Some(shadow_cash.to_string()),
+            ..RunManifest::default()
+        };
+        kernel.set_manifest(manifest);
         for host in hosts {
             kernel.add_host(host);
         }
@@ -299,8 +328,17 @@ impl LiveDriver {
         // ① 预读 journal：恢复 manifest 供 set_manifest
         let (manifest, _entries) =
             Journal::open(journal_path).map_err(|e| format!("journal 预读失败: {e}"))?;
+        // ①' 重演基线：start 已把首跑实际生效的影子基线（交易所钱包余额）落进
+        //     manifest 首行，优先取它；旧 journal 缺字段回退调用方传入值（行为
+        //     不变）。字段非法 = 文件被手改，直接拒绝不猜。
+        let replay_cash = match &manifest.shadow_cash {
+            Some(raw) => raw
+                .parse::<Decimal>()
+                .map_err(|_| format!("journal manifest 的影子基线不是合法十进制数: {raw}"))?,
+            None => shadow_cash,
+        };
         // ② 重演期用假网关的 sink（避免重演的 place_order 打真实交易所）
-        let sink = LiveSink::for_replay(shadow_cash).with_accounting_mode(accounting);
+        let sink = LiveSink::for_replay(replay_cash).with_accounting_mode(accounting);
         // ③ 建内核并重演
         let mut kernel = Kernel::new(config.clone(), Box::new(sink));
         kernel.set_manifest(manifest);
@@ -439,6 +477,41 @@ fn backfill_gap(
         kernel.enqueue_external(event, None).map_err(kerr)?;
     }
     Ok(())
+}
+
+/// 拉取交易所钱包口径现金（`total_balance - unrealized_pnl`）
+///
+/// 与 `fetch_venue_snapshot` 的 cash 口径一致，start 用它钉影子基线
+/// （Decimal 全程无 f64 往返，`to_string` 落 manifest 保精度）。
+fn venue_cash(gateway: &ExchangeGateway) -> Result<Decimal, String> {
+    let account = gateway.account_info()?;
+    Ok(account.total_balance - account.unrealized_pnl)
+}
+
+/// 干净起点守卫：start 时交易所不应有任何持仓
+///
+/// 过滤口径与 `fetch_venue_snapshot` 一致（近零视为空仓），残留持仓进入
+/// 报错清单供人工核对——影子 OMS 从零记仓，带仓起跑必然埋下对账断裂。
+fn check_no_positions(gateway: &ExchangeGateway) -> Result<(), String> {
+    let leftovers: Vec<String> = gateway
+        .positions()?
+        .iter()
+        .filter(|p| p.quantity.abs().to_f64().unwrap_or(0.0) > f64::EPSILON)
+        .map(|p| {
+            let side = match p.side {
+                ExchangeSide::Buy => "long",
+                ExchangeSide::Sell => "short",
+            };
+            format!("{} {} {}", p.symbol.0, side, p.quantity)
+        })
+        .collect();
+    if leftovers.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "start 要求干净起点，但交易所已有持仓（影子账本从零记仓，带仓起跑会让 resume 对账必然失败，请先人工处理持仓）: {leftovers:?}"
+        ))
+    }
 }
 
 /// 拉取交易所侧快照：带符号持仓 + 钱包现金 + 成交流水 id 集合
@@ -797,6 +870,102 @@ mod tests {
 
         // bar0 重演走 ReplayGateway 不打 mock，bar1/bar2 走真实网关
         assert_eq!(handle_b.state().sent_orders.len(), 2);
+        driver.shutdown().expect("shutdown");
+    }
+
+    /// T3：start 基线自动钉到交易所钱包余额（≠ initial_cash 兜底值），且
+    /// resume 从 journal manifest 读回同一基线——兜底值错也不影响对账放行
+    #[test]
+    fn start_pins_shadow_baseline_to_venue_cash() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        // 交易所真实余额 4881.9，明显 ≠ 构造传入的兜底 10_000
+        handle.state().account.total_balance = Decimal::new(48819, 1);
+        let mut driver = LiveDriver::new(
+            adapter,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+        )
+        .expect("构造应成功");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("live.journal");
+        driver.connect().expect("connect");
+        driver
+            .start(&journal, vec![Box::new(CycleHost::new())])
+            .expect("start");
+
+        // 未成交时影子现金 = 交易所钱包余额，而非 initial_cash
+        let local = driver.snapshot().expect("snapshot");
+        assert!((local.cash - 4881.9).abs() < 1e-6, "cash = {}", local.cash);
+
+        // 一笔成交只扣手续费，与交易所真相同步
+        handle.push_message(kline_closed(0));
+        two_ticks(&mut driver);
+        drive_fill(&mut driver, &handle, "t-0", 0);
+        two_ticks(&mut driver);
+        let local = driver.snapshot().expect("snapshot");
+        assert!((local.cash - 4880.9).abs() < 1e-6, "cash = {}", local.cash);
+
+        // 硬崩 → 新驱动（兜底基线仍是错的 10_000）→ resume 从 manifest 首行
+        // 读回首跑基线 4881.9 → 对账 clean；若按兜底值重演必然 cash_break
+        drop(driver);
+        let (adapter_b, handle_b) = mock_exchange(ExchangeId::Binance);
+        {
+            let src = handle.state();
+            let mut dst = handle_b.state();
+            dst.positions = src.positions.clone();
+            dst.account = src.account.clone();
+            dst.trades = src.trades.clone();
+        }
+        let mut driver = LiveDriver::new(
+            adapter_b,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+        )
+        .expect("构造应成功");
+        driver.connect().expect("connect");
+        let report = driver
+            .resume(&journal, vec![Box::new(CycleHost::new())])
+            .expect("resume 应守卫放行");
+        assert!(report.is_clean(), "恢复对账应 clean: {report:?}");
+        driver.shutdown().expect("shutdown");
+    }
+
+    /// T4：start 前交易所已有持仓 → 干净起点守卫拒绝，网关放回后清仓可整体重试
+    #[test]
+    fn start_rejects_leftover_positions() {
+        let (adapter, handle) = mock_exchange(ExchangeId::Binance);
+        handle.state().positions.push(Position {
+            symbol: ExchangeSymbol(SYMBOL.into()),
+            side: ExchangeSide::Buy,
+            quantity: Decimal::from(30),
+            avg_entry_price: Decimal::from(100),
+            unrealized_pnl: Decimal::ZERO,
+        });
+        let mut driver = LiveDriver::new(
+            adapter,
+            live_config(),
+            AccountingMode::Wallet,
+            10_000.0,
+            vec![SYMBOL.into()],
+        )
+        .expect("构造应成功");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("live.journal");
+        driver.connect().expect("connect");
+        let err = driver
+            .start(&journal, vec![Box::new(CycleHost::new())])
+            .expect_err("带仓起跑应被拒绝");
+        assert!(err.contains("干净起点"), "报错应说明原因: {err}");
+
+        // 清掉持仓后整体重试成功（网关确实放回了）
+        handle.state().positions.clear();
+        driver
+            .start(&journal, vec![Box::new(CycleHost::new())])
+            .expect("清仓后重试应成功");
         driver.shutdown().expect("shutdown");
     }
 }
