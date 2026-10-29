@@ -33,7 +33,10 @@ fn venue_snapshot(entries: &[(&str, f64)], cash: f64, fill_ids: &[&str]) -> Venu
         positions: positions(entries),
         cash,
         fill_ids: fills(fill_ids),
+        // 本文件半数用例直接操作 open_order_ids 验证幽灵单/孤儿单差集，
+        // 必须声明可验证，比对逻辑才会生效
         open_order_ids: BTreeSet::new(),
+        open_orders_verified: true,
     }
 }
 
@@ -188,7 +191,10 @@ fn test_report_json_roundtrip() {
     );
     let dir = std::env::temp_dir().join(unique);
 
-    let path = report.write_json(&dir).expect("报告应能落盘");
+    // write_json 接收完整路径（每个 worker 一份独立文件），自动建父目录
+    let path = report
+        .write_json(&dir.join("worker_9.reconcile.json"))
+        .expect("报告应能落盘");
     assert!(path.exists());
     let content = std::fs::read_to_string(&path).expect("落盘文件应可读");
     let parsed: ReconcileReport = serde_json::from_str(&content).expect("报告 JSON 应可解析回读");
@@ -196,4 +202,25 @@ fn test_report_json_roundtrip() {
     assert_eq!(parsed.frozen_instruments, vec!["BTC/USDT".to_string()]);
 
     std::fs::remove_dir_all(&dir).expect("清理临时目录");
+}
+
+/// 9) venue 侧挂单不可验证（网关无 fetch_open_orders）→ 跳过挂单差集：本地
+///    在挂单不误报为孤儿单，但报告必须标注 open_orders_unverified 提示人工核对
+#[test]
+fn test_unverified_open_orders_skip_orphan_diff() {
+    let mut local = snapshot(&[("BTC/USDT", 1.5)], 10_000.0, &["t1"]);
+    local.open_order_ids = fills(&["local-1"]);
+    let mut venue = venue_snapshot(&[("BTC/USDT", 1.5)], 10_000.0, &["t1"]);
+    venue.open_orders_verified = false;
+    venue.open_order_ids.clear();
+
+    let report = reconcile(&local, &venue, &ReconcileConfig::default());
+
+    assert!(
+        report.orphan_local_orders.is_empty(),
+        "挂单不可验证时空集合不能当真值，本地在挂单不得误报孤儿单"
+    );
+    assert!(report.ghost_orders.is_empty());
+    assert!(report.open_orders_unverified, "报告必须如实标注挂单未比对");
+    assert!(resume_guard(&report).is_ok(), "挂单未比对不构成阻断理由");
 }

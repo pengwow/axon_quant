@@ -108,6 +108,8 @@ pub struct LiveDriver {
     risk_handle: Option<RiskHandle>,
     /// 起跑时对交易所残留持仓的策略（Adopt 接管 / Reject 拒绝）
     existing_positions: ExistingPositions,
+    /// 单笔订单最小名义价值（USDT，0 = 不预检）；start 时透传给 LiveSink
+    min_notional: f64,
 }
 
 impl LiveDriver {
@@ -172,6 +174,7 @@ impl LiveDriver {
             risk: None,
             risk_handle: None,
             existing_positions,
+            min_notional: 0.0,
         })
     }
 
@@ -188,6 +191,14 @@ impl LiveDriver {
     /// 非消耗版装配（pyo3 绑定层复用）：driver 已在锁里，无法走 consuming builder
     pub fn set_risk(&mut self, config: RiskConfig, max_position_value: Option<f64>) {
         self.risk = Some((config, max_position_value));
+    }
+
+    /// 非消耗版装配（pyo3 绑定层复用）：设置单笔订单最小名义价值预检（USDT，0 = 关闭）
+    ///
+    /// start 时透传给 LiveSink；resume 路径**不**透传——重演期重决策的开销单
+    /// 被过滤会与首跑账目不一致，恢复对账会出假阳性
+    pub fn set_min_notional(&mut self, min_notional: f64) {
+        self.min_notional = min_notional.max(0.0);
     }
 
     /// start 成功后的风控引擎句柄（未注入风控时为 None）
@@ -269,7 +280,8 @@ impl LiveDriver {
         };
         let sink = LiveSink::new(Box::new(gateway), shadow_cash)
             .with_accounting_mode(self.accounting)
-            .with_initial_positions(oms_positions);
+            .with_initial_positions(oms_positions)
+            .with_min_notional(self.min_notional);
         // B3：有风控配置则装配 EngineRiskCheck 并留出句柄供 pnl 回灌；
         // 无配置保持 AllowAllRisk（opt-in，行为不变）
         let sink = if let Some((risk_config, max_position_value)) = self.risk.take() {
@@ -358,8 +370,9 @@ impl LiveDriver {
         accounting: AccountingMode,
         symbols: &[ExchangeSymbol],
     ) -> Result<(Kernel, ReconcileReport), String> {
-        // ① 预读 journal：恢复 manifest 供 set_manifest
-        let (manifest, _entries) =
+        // ① 预读 journal：恢复 manifest 供 set_manifest；entries 的首条时间戳
+        //     还作为 ⑤ 交易所成交流水的对账窗口起点
+        let (manifest, entries) =
             Journal::open(journal_path).map_err(|e| format!("journal 预读失败: {e}"))?;
         // ①' 重演基线：start 已把首跑实际生效的影子基线（交易所钱包余额）落进
         //     manifest 首行，优先取它；旧 journal 缺字段回退调用方传入值（行为
@@ -402,11 +415,36 @@ impl LiveDriver {
             .expect("LiveDriver 的 sink 必为 LiveSink");
         gateway.restore_last_filled(&replayed.oms().snapshot().order_history);
         // ⑤ 交易所体检（此时 gateway 未 move，失败可整体重试）
-        let venue = fetch_venue_snapshot(gateway, symbols)?;
+        // fill 对账窗口从本 run 的首条 journal 记录起：fetch_my_trades 不带
+        // since 只回最近 N 笔，长跑账户会把窗口外历史成交全部报成
+        // missing_fills（worker_3 实测 117 笔误报全源于此）。空 journal（首启
+        // 前崩溃等极端场景）退回全量拉取，保守不漏。
+        let since_ms = entries
+            .first()
+            .map(|entry| entry.event.timestamp().nanos / 1_000_000);
+        let venue = fetch_venue_snapshot(gateway, symbols, since_ms)?;
         // ⑥⑦ 对账 + 守卫
         let report = reconcile(&local, &venue, &ReconcileConfig::default());
-        resume_guard(&report)
-            .map_err(|e| format!("恢复守卫拒绝继续交易，请人工核对持仓与资金后重试 resume: {e}"))?;
+        if let Err(e) = resume_guard(&report) {
+            // 守卫拒绝必须让人工有据可依：把报告（含 local/venue 现金对比）落盘
+            // 到 journal 旁，错误信息同时带上现金明细；落盘失败只附注，不掩盖
+            // 守卫主错误
+            let mut reason = e;
+            if let Some(c) = &report.cash_break {
+                reason.push_str(&format!(
+                    ": 现金 本地 {} vs 交易所 {}（venue-本地 {:+}）",
+                    c.local, c.venue, c.diff
+                ));
+            }
+            let report_path = journal_path.with_extension("reconcile.json");
+            let retry = match report.write_json(&report_path) {
+                Ok(p) => format!("（对账报告已落盘: {}）", p.display()),
+                Err(io) => format!("（对账报告落盘失败: {io}）"),
+            };
+            return Err(format!(
+                "恢复守卫拒绝继续交易，请人工核对持仓与资金后重试 resume: {reason}{retry}"
+            ));
+        }
         Ok((kernel, report))
     }
 
@@ -622,9 +660,13 @@ fn seed_positions(manifest_positions: &[ManifestPosition]) -> Result<Vec<OmsPosi
 ///
 /// 口径与 `LocalSnapshot::from_sink` 严格对齐（|q| 过滤、BASE/QUOTE 键、
 /// 现金扣除未实现盈亏），否则对账必然假阳性。
+///
+/// `since_ms`：本 run 的对账窗口起点（journal 首条记录时间，毫秒）。
+/// `None` = 窗口未知，全量拉最近 `TRADES_PAGE_LIMIT` 笔（旧行为）。
 fn fetch_venue_snapshot(
     gateway: &ExchangeGateway,
     symbols: &[ExchangeSymbol],
+    since_ms: Option<i64>,
 ) -> Result<VenueSnapshot, String> {
     // 持仓：Buy 为正、Sell 为负，同品种双向互抵后取净额
     let mut positions: BTreeMap<String, f64> = BTreeMap::new();
@@ -648,7 +690,7 @@ fn fetch_venue_snapshot(
     // 成交流水 id：重启窗口内疑似丢账的成交，交给 reconcile 按 fill_id 对齐
     let mut fill_ids = BTreeSet::new();
     for symbol in symbols {
-        for trade in gateway.fetch_my_trades(symbol, None, TRADES_PAGE_LIMIT)? {
+        for trade in gateway.fetch_my_trades(symbol, since_ms, TRADES_PAGE_LIMIT)? {
             fill_ids.insert(trade.trade_id);
         }
     }
@@ -656,10 +698,11 @@ fn fetch_venue_snapshot(
         positions,
         cash,
         fill_ids,
-        // 交易所网关暂无 fetch_open_orders 接口，venue 侧在挂单填空集合：
-        // 空集合不会产生幽灵单误报（resume_guard 只拦 ghost），本地在挂单会以
-        // 孤儿单身份进报告供人工核对（与 python 侧 snapshot_from_dict 缺省语义一致）
+        // 交易所网关暂无 fetch_open_orders 接口，venue 侧在挂单集合不可验证：
+        // 填空集合并声明 verified=false，让 reconcile 跳过挂单差集比对——否则
+        // 本地真实在挂单会整表误报为孤儿单（worker_3 32 个误报的根因）
         open_order_ids: BTreeSet::new(),
+        open_orders_verified: false,
     })
 }
 
@@ -854,7 +897,10 @@ mod tests {
                 .to_f64()
                 .unwrap_or(0.0),
             fill_ids: state.trades.iter().map(|t| t.trade_id.clone()).collect(),
+            // 与 fetch_venue_snapshot 同口径：mock 状态也没有在挂单查询，
+            // 声明不可验证而不是拿空集合当真值
             open_order_ids: BTreeSet::new(),
+            open_orders_verified: false,
         }
     }
 

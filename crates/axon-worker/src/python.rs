@@ -1040,19 +1040,23 @@ fn manifest_dict<'py>(
     Ok(d)
 }
 
-/// 快照 tuple 物化类型：(positions, cash, fill_ids, open_order_ids)
+/// 快照 tuple 物化类型：(positions, cash, fill_ids, open_order_ids, open_orders_verified)
 type SnapshotTuple = (
     BTreeMap<String, f64>,
     f64,
     BTreeSet<String>,
     BTreeSet<String>,
+    bool,
 );
 
-/// 快照 dict 四字段 → (positions, cash, fill_ids, open_order_ids)
+/// 快照 dict 四字段 → (positions, cash, fill_ids, open_order_ids, open_orders_verified)
 ///
 /// `positions` / `cash` / `fill_ids` 缺省取空值：venue 初始无仓、无成交是常态；
 /// `open_order_ids` 缺省为空（调用方未接 `fetch_open_orders` 时不参与比对）；
-/// `LocalSnapshot` 与 `VenueSnapshot` 字段同构，共用本函数。
+/// `open_orders_verified` 缺省 `false`——未声明可验证即按「未拉取挂单」处理，
+/// reconcile 会跳过挂单差集比对，避免空集合当真值误报孤儿单（worker_3 事故）。
+/// `LocalSnapshot` 与 `VenueSnapshot` 字段同构，共用本函数（第 5 元仅 venue 有效，
+/// local 侧由调用方丢弃）。
 fn snapshot_from_dict(d: &Bound<'_, PyDict>) -> PyResult<SnapshotTuple> {
     let positions: BTreeMap<String, f64> = d
         .get_item("positions")?
@@ -1078,7 +1082,18 @@ fn snapshot_from_dict(d: &Bound<'_, PyDict>) -> PyResult<SnapshotTuple> {
         .unwrap_or_default()
         .into_iter()
         .collect();
-    Ok((positions, cash, fill_ids, open_order_ids))
+    let open_orders_verified: bool = d
+        .get_item("open_orders_verified")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or(false);
+    Ok((
+        positions,
+        cash,
+        fill_ids,
+        open_order_ids,
+        open_orders_verified,
+    ))
 }
 
 /// 崩溃恢复重演器：从 journal 重建 OMS 影子账本并抽取本地快照
@@ -1375,7 +1390,7 @@ impl PyLiveDriver {
     /// 接管其全部异步调用，绑定层不再直接触碰 adapter
     #[allow(clippy::too_many_arguments)]
     #[new]
-    #[pyo3(signature = (config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet".to_string(), futures=true, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None, existing_positions=None))]
+    #[pyo3(signature = (config, symbols, initial_cash=100000.0, shadow_cash=None, accounting="wallet".to_string(), futures=true, settle=None, contract_size=1.0, interval="1m".to_string(), fee_rate=None, existing_positions=None, min_notional=0.0))]
     fn new(
         config: PyExchangeConfig,
         symbols: Vec<String>,
@@ -1388,6 +1403,7 @@ impl PyLiveDriver {
         interval: String,
         fee_rate: Option<f64>,
         existing_positions: Option<String>,
+        min_notional: f64,
     ) -> PyResult<Self> {
         if !initial_cash.is_finite() || initial_cash <= 0.0 {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1428,6 +1444,12 @@ impl PyLiveDriver {
                 )));
             }
         };
+        // 与 fee_rate 同口径：负数 / NaN 会让预检语义失真，构造期拒绝
+        if !min_notional.is_finite() || min_notional < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "min_notional 必须是有限非负数，收到: {min_notional}"
+            )));
+        }
         let instrument_mode = build_instrument_mode(futures, settle.as_deref(), contract_size)?;
         let kernel_config = KernelConfig {
             initial_cash,
@@ -1443,7 +1465,7 @@ impl PyLiveDriver {
                 BinanceAdapter::new(config.inner).with_kline_interval(&interval),
             )));
         // LiveDriver::new 会校验 v1 边界（Spot / Cash / 空品种在此报错），不放行坏配置
-        let live = LiveDriver::new(
+        let mut live = LiveDriver::new(
             adapter,
             kernel_config,
             accounting_mode,
@@ -1452,6 +1474,8 @@ impl PyLiveDriver {
             existing_positions,
         )
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        // 最小名义预检（0 = 关闭，set 内部钳到非负）
+        live.set_min_notional(min_notional);
         Ok(Self {
             instrument_mode,
             strategies: Mutex::new(Vec::new()),
@@ -1978,6 +2002,8 @@ fn read_manifest(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyAny>> {
 /// 只报告不修账。`position_tolerance` / `cash_tolerance` 缺省走引擎默认
 ///（1e-8 / 1e-6）；负容差会把「差异必报」退化成「永不报」，构造期拒绝。
 /// `local` 可直接传 `resume()` 的返回值（多出的 entries / manifest 键被忽略）。
+/// `venue` 可带可选键 `open_orders_verified`（缺省 `false`）：只有真实拉过
+/// 在挂单才声明 `true`，否则跳过挂单差集比对并在报告标注 `open_orders_unverified`。
 #[pyfunction]
 #[pyo3(name = "reconcile", signature = (local, venue, position_tolerance=None, cash_tolerance=None))]
 fn reconcile_snapshots<'py>(
@@ -2004,19 +2030,23 @@ fn reconcile_snapshots<'py>(
         }
         *target = t;
     }
-    let (positions, cash, fill_ids, open_order_ids) = snapshot_from_dict(local.cast::<PyDict>()?)?;
+    let (positions, cash, fill_ids, open_order_ids, _) =
+        snapshot_from_dict(local.cast::<PyDict>()?)?;
     let local = LocalSnapshot {
         positions,
         cash,
         fill_ids,
         open_order_ids,
     };
-    let (positions, cash, fill_ids, open_order_ids) = snapshot_from_dict(venue.cast::<PyDict>()?)?;
+    // venue 侧第 5 元 open_orders_verified 生效：未声明即按未拉取挂单处理
+    let (positions, cash, fill_ids, open_order_ids, open_orders_verified) =
+        snapshot_from_dict(venue.cast::<PyDict>()?)?;
     let venue = VenueSnapshot {
         positions,
         cash,
         fill_ids,
         open_order_ids,
+        open_orders_verified,
     };
     let report = reconcile_impl(&local, &venue, &config);
     let json_mod = py.import("json")?;

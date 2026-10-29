@@ -863,8 +863,10 @@ fn venue_snapshot(
         // 合约钱包口径：与 OMS `AccountingMode::Wallet` 的 cash 对齐
         cash: balances.wallet.to_f64().unwrap_or(0.0),
         fill_ids,
-        // 网关暂无 fetch_open_orders 接口，与 venue 快照主路径同语义：空集合
+        // 网关暂无 fetch_open_orders 接口，与 venue 快照主路径同语义：
+        // 空集合且声明不可验证，reconcile 跳过挂单差集比对
         open_order_ids: BTreeSet::new(),
+        open_orders_verified: false,
     }
 }
 

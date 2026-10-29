@@ -151,6 +151,27 @@ impl OrderManager {
         Ok(())
     }
 
+    /// 处理一个 fill（实时回报路径）：超量回报按剩余量钳制，其余见私有
+    /// `add_fill_impl`（公共文档不能链接私有项，故用纯文本引用）。
+    pub fn add_fill(&self, order_id: OrderId, fill: Fill) -> Result<(), OmsError> {
+        self.add_fill_impl(order_id, fill, false)
+    }
+
+    /// 重演路径专用：journal 回报是首跑真实发生的成交，本地簿记必须镜像，
+    /// 超出重演订单数量的部分**扩容订单**而不是钳制。
+    ///
+    /// 为什么不能复用 `add_fill`：journal 不保存首跑的订单意图数量（只存回报），
+    /// 重演重启后 `submit_target` 用重演侧重算的 delta 重新派生意图，可能小于
+    /// 首跑真实成交量；若按实时语义钳制，真实成交被烧结，本地持仓/现金与交易
+    /// 所出现不可恢复的缺口（worker_3 对账事故的根因）。扩容保持 OMS 不变量
+    /// `filled <= quantity`，并让 order_history 与实际回报一致。
+    ///
+    /// ponytail：整单丢失场景（重演 delta 被最小数量/min_notional 过滤导致回报
+    /// 无对应订单，apply_update 丢弃）仍由 resume 守卫兜底，不在此处理。
+    pub fn add_fill_replay(&self, order_id: OrderId, fill: Fill) -> Result<(), OmsError> {
+        self.add_fill_impl(order_id, fill, true)
+    }
+
     /// 处理一个 fill:状态机转移 + emit fill event 给 portfolio
     ///
     /// **Lock pattern(per spec §5.3)**:
@@ -162,29 +183,46 @@ impl OrderManager {
     ///
     /// **锁不重叠**避免死锁;**best-effort reverse**:若 order 已被并发
     /// cancel(不在 active 集合),跳过 reverse 但仍返回 Err(上游决定如何处理)。
-    pub fn add_fill(&self, order_id: OrderId, fill: Fill) -> Result<(), OmsError> {
+    ///
+    /// 超量回报（`fill_qty_abs > remaining`）的处理按 `replay` 分流：
+    /// - 实时路径（`replay=false`）：钳制。fill 最多补齐剩余量，防止异常回报把
+    ///   filled_qty 推过 order.quantity（现金 / 仓位会被多记）。被钳掉的超量部
+    ///   分不是丢弃，而是留给上层对账（reconcile 的成交/持仓差集）去暴露。钳
+    ///   制后的 fill 贯穿后续记账，保证状态机、portfolio、history 三处一致。
+    ///   已满订单（remaining == 0）再来的回报状态机会拒（Filled 为终态）。
+    /// - 重演路径（`replay=true`）：扩容，见 [`Self::add_fill_replay`]。
+    ///
+    /// 符号契约：全仓 Fill.quantity 带符号（买正卖负，portfolio 记账依赖
+    /// 方向），而 order.quantity / filled_qty 均为绝对值 —— 状态机数学
+    /// 只取绝对数量，钳制时保留方向符号（卖单超量钳到 -remaining）。
+    fn add_fill_impl(&self, order_id: OrderId, fill: Fill, replay: bool) -> Result<(), OmsError> {
         // 1. 状态机转移
         let prev_status: OrderStatus;
-        let (new_status, fill) = {
+        let (new_status, fill, expanded_quantity) = {
             let mut orders = self.active_orders.write();
             let order = orders
                 .get_mut(&order_id)
                 .ok_or_else(|| OmsError::OrderNotFound(order_id.to_string()))?;
             prev_status = order.status.clone();
 
-            // 超量回报钳制：fill 数量最多补齐剩余量，防止异常回报把 filled_qty
-            // 推过 order.quantity（现金 / 仓位会被多记）。被钳掉的超量部分不是
-            // 丢弃，而是留给上层对账（reconcile 的成交/持仓差集）去暴露。钳制
-            // 后的 fill 贯穿后续记账，保证状态机、portfolio、history 三处一致。
-            // 已满订单（remaining == 0）再来的回报状态机会拒（Filled 为终态）。
-            //
-            // 符号契约：全仓 Fill.quantity 带符号（买正卖负，portfolio 记账依赖
-            // 方向），而 order.quantity / filled_qty 均为绝对值 —— 状态机数学
-            // 只取绝对数量，钳制时保留方向符号（卖单超量钳到 -remaining）。
             let remaining = order.quantity - order.status.filled_quantity();
             let mut fill = fill;
             let fill_qty_abs = fill.quantity.abs();
-            if fill_qty_abs > remaining {
+            // 扩容时记录新数量，供 order_history 同步（record.order 与 active
+            // 订单必须一致，否则后续从 history 读取口径会分叉）。
+            let mut expanded_quantity: Option<Decimal> = None;
+            if fill_qty_abs > remaining && replay {
+                let new_quantity = order.status.filled_quantity() + fill_qty_abs;
+                tracing::warn!(
+                    order_id = %order_id,
+                    order_quantity = %order.quantity,
+                    fill_quantity = %fill_qty_abs,
+                    new_quantity = %new_quantity,
+                    "oms replay: 重演回报超出重演订单数量，扩容订单镜像真实成交"
+                );
+                order.quantity = new_quantity;
+                expanded_quantity = Some(new_quantity);
+            } else if fill_qty_abs > remaining {
                 fill.quantity = if fill.quantity.is_sign_negative() {
                     -remaining
                 } else {
@@ -205,7 +243,7 @@ impl OrderManager {
                 }
             };
             order.transition(next.clone())?;
-            (next, fill)
+            (next, fill, expanded_quantity)
         };
         // active_orders 锁已释放
 
@@ -228,6 +266,9 @@ impl OrderManager {
             let mut history = self.order_history.write();
             if let Some(record) = history.iter_mut().rfind(|r| r.order.id == order_id) {
                 record.order.status = new_status.clone();
+                if let Some(q) = expanded_quantity {
+                    record.order.quantity = q;
+                }
                 record.fills.push(fill.clone());
             }
         }
@@ -378,6 +419,48 @@ mod tests {
         }
         // portfolio 只收到钳制后的记账：0.1 * 65000 + 7.8 = 6507.8
         assert_eq!(oms.snapshot_balance().cash.get("USDT"), Some(&dec!(3492.2)));
+    }
+
+    #[test]
+    fn test_add_fill_replay_expands_order() {
+        // 回归 worker_3 对账事故：重演路径的回报是首跑真实成交，超量时必须
+        // 扩容订单（而非钳制），让簿记镜像交易所——否则真实成交被烧结，重启
+        // 后本地持仓/现金与交易所出现对账缺口。
+        let oms = OrderManager::new();
+        oms.deposit("USDT", dec!(10000));
+        let order = make_order(Side::Buy, dec!(0.1), dec!(65000));
+        let id = oms.submit(order).unwrap();
+        oms.update_status(id, OrderStatus::Acknowledged).unwrap();
+
+        let fill = Fill {
+            fill_id: "f-replay".into(),
+            symbol: "BTC-USDT".into(),
+            instrument: None,
+            price: dec!(65000),
+            quantity: dec!(0.12),
+            fee: dec!(7.8),
+            timestamp: Utc::now(),
+        };
+        oms.add_fill_replay(id, fill).unwrap();
+
+        match oms.get_order_status(id) {
+            Some(OrderStatus::Filled { filled_qty, .. }) => {
+                assert_eq!(filled_qty, dec!(0.12), "订单扩容到已成交总量");
+            }
+            other => panic!("扩容后应按实际成交量转 Filled，实际 {other:?}"),
+        }
+        // portfolio 收到全额记账：0.12 * 65000 + 7.8 = 7807.8（不烧结）
+        assert_eq!(oms.snapshot_balance().cash.get("USDT"), Some(&dec!(2192.2)));
+        // order_history 的订单数量与回报一致地扩容（record.order 不与 active 订单分叉）
+        let snap = oms.snapshot();
+        let record = snap
+            .order_history
+            .iter()
+            .rfind(|r| r.order.id == id)
+            .expect("history 应有该订单");
+        assert_eq!(record.order.quantity, dec!(0.12));
+        assert_eq!(record.fills.len(), 1);
+        assert_eq!(record.fills[0].quantity, dec!(0.12));
     }
 
     #[test]

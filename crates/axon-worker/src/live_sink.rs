@@ -307,6 +307,11 @@ pub struct LiveSink {
     pending_update_states: Vec<serde_json::Value>,
     /// poll 拉到、**尚未应用**的回报（两段式落盘后再应用，见 `poll_staged`）
     pending_applies: Vec<VenueUpdate>,
+    /// 单笔订单最小名义价值（USDT，0 = 不预检）
+    ///
+    /// 交易所（如 Binance 永续 NOTIONAL 过滤器）会拒绝名义价值低于下限的订单，
+    /// 预检避免每根 bar 都打一遍必败请求把 tick 循环刷成 ERROR
+    min_notional: f64,
 }
 
 impl LiveSink {
@@ -332,6 +337,7 @@ impl LiveSink {
             last_price: HashMap::new(),
             pending_update_states: Vec::new(),
             pending_applies: Vec::new(),
+            min_notional: 0.0,
         }
     }
 
@@ -362,6 +368,20 @@ impl LiveSink {
     /// 影响。按 `Cash` 的全额口径扣现金，现金对账必然偏差。
     pub fn with_accounting_mode(self, mode: AccountingMode) -> Self {
         self.oms.set_accounting_mode(mode);
+        self
+    }
+
+    /// 设置单笔订单最小名义价值预检（USDT，默认 0 = 关闭）
+    ///
+    /// 差额单的名义价值（`|delta| * price`）低于该阈值时直接跳过不下单：交易所
+    /// 会拒单（Binance 永续 NOTIONAL 过滤器错误码 -4164），重试也是必败，预检
+    /// 免掉这轮必败请求。跳过不丢意图——下一根 bar 的 `SetTarget` 会用最新
+    /// 权益 / 价格重算差额，跨过阈值后自然放行。
+    /// ponytail: 清灰尘仓的用户意图会被跳过；交易所对 reduceOnly 单豁免名义下限，
+    /// 升级路径是减仓市价单按方向附 `reduceOnly` 绕过该限制
+    pub fn with_min_notional(mut self, min_notional: f64) -> Self {
+        // NaN 经 f64::max 落到 0.0（关闭预检），负值同被钳到 0
+        self.min_notional = min_notional.max(0.0);
         self
     }
 
@@ -471,6 +491,17 @@ impl LiveSink {
                 instrument = ?instrument,
                 target_quantity,
                 "live sink: 已到目标仓位，无需下单"
+            );
+            return Ok(Vec::new());
+        }
+        // 名义价值预检：低于交易所最小下单额的差额单必被拒（Binance 永续
+        // NOTIONAL 过滤器 -4164），重试两轮也无济于事，直接跳过保住 tick 循环
+        if self.min_notional > 0.0 && delta.abs() * price < self.min_notional {
+            tracing::debug!(
+                instrument = ?instrument,
+                notional = delta.abs() * price,
+                min_notional = self.min_notional,
+                "live sink: 差额名义价值低于最小下单额，跳过（待权益/价格变化跨过阈值）"
             );
             return Ok(Vec::new());
         }
@@ -604,7 +635,10 @@ impl LiveSink {
     ///
     /// 单条回报的问题（未知订单、非法迁移、重复成交）只告警跳过，不把整条
     /// 主回路打挂；网关本身拉取失败才是 `KernelError::Sink`（见 `poll`）。
-    fn apply_update(&mut self, update: VenueUpdate, out: &mut Vec<Event>) {
+    ///
+    /// `replay`：journal 重演路径传 true——回报是首跑真实成交，OMS 记账走
+    /// 扩容语义（`add_fill_replay`）；实时 poll 传 false，走严格钳制。
+    fn apply_update(&mut self, update: VenueUpdate, replay: bool, out: &mut Vec<Event>) {
         let Some(order) = self.orders.get(&update.order_id) else {
             tracing::warn!(
                 order_id = %update.order_id,
@@ -619,7 +653,7 @@ impl LiveSink {
         let instrument = order.instrument.clone();
 
         if update.fill_quantity > Decimal::ZERO {
-            self.apply_fill_update(update, kernel_id, side, symbol, instrument, out);
+            self.apply_fill_update(update, replay, kernel_id, side, symbol, instrument, out);
             return;
         }
 
@@ -654,9 +688,13 @@ impl LiveSink {
     }
 
     /// 成交类回报：`trade_id` 去重 → OMS 记账 → 回流 `Event::Fill`
+    // ponytail: 7 参数来自回报处理的独立语义（路由字段 + replay 分支 + 事件出口），
+    // 打包结构体只是搬家；若路由字段还要加，再抽 VenueFillCtx
+    #[allow(clippy::too_many_arguments)]
     fn apply_fill_update(
         &mut self,
         update: VenueUpdate,
+        replay: bool,
         kernel_id: u64,
         side: OmsSide,
         symbol: String,
@@ -702,7 +740,14 @@ impl LiveSink {
             fee: update.fee,
             timestamp: to_utc(update.timestamp),
         };
-        if let Err(err) = self.oms.add_fill(update.order_id, fill) {
+        // 重演回报是首跑真实成交：走扩容语义让簿记镜像交易所；实时回报仍
+        // 严格钳制（防异常回报多记账）。
+        let fill_result = if replay {
+            self.oms.add_fill_replay(update.order_id, fill)
+        } else {
+            self.oms.add_fill(update.order_id, fill)
+        };
+        if let Err(err) = fill_result {
             // 未记账就把 trade_id 放回去：交易所重投时还有机会落账。
             self.seen_trade_ids.remove(&trade_id);
             tracing::warn!(
@@ -805,7 +850,7 @@ impl ExecutionSink for LiveSink {
     fn apply_staged(&mut self) -> Result<Vec<Event>, KernelError> {
         let mut out = Vec::new();
         for update in std::mem::take(&mut self.pending_applies) {
-            self.apply_update(update, &mut out);
+            self.apply_update(update, false, &mut out);
         }
         Ok(out)
     }
@@ -822,7 +867,7 @@ impl ExecutionSink for LiveSink {
         let update = VenueUpdate::from_journal_state(state)
             .map_err(|e| KernelError::Sink(format!("回报状态还原失败: {e}")))?;
         let mut out = Vec::new();
-        self.apply_update(update, &mut out);
+        self.apply_update(update, true, &mut out);
         Ok(out)
     }
 
@@ -1108,7 +1153,40 @@ mod tests {
         );
     }
 
-    /// 4) `SetTarget` 差额单：持仓 10、目标 15 → 只下 5
+    /// 4) 重演路径：回报超出重演订单数量时必须扩容入账而非钳制烧结
+    #[test]
+    fn test_replay_external_expands_overfill() {
+        // worker_3 对账事故回归：重演路径回报是首跑真实成交，超出重演订单
+        // 数量时必须扩容入账而非钳制烧结，否则重启后持仓/现金对不上交易所。
+        let MockHandles { gateway, .. } = mock(0);
+        let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32));
+        let mut core = core(10_000.0);
+        sink.submit(
+            OrderIntent::Submit(spec(CoreSide::Buy, 5.0)),
+            &mut core,
+            &HostCtx::default(),
+        )
+        .expect("下单应成功");
+        let oms_id = *sink.orders.keys().next().expect("应有订单");
+
+        // 首跑真实成交 6.0，重演侧订单意图只剩 5.0（journal 不存意图，重演
+        // delta 重算偏小）→ 经 journal state 行回放
+        let update = filled_update(oms_id, "trade-replay", Decimal::from(6u32));
+        let events = sink
+            .replay_external(&update.to_journal_state())
+            .expect("重演回报应能入账");
+
+        assert!(matches!(events[0], Event::Fill(_)));
+        assert_eq!(sink.position(&btc()), 6.0, "重演必须全额入账（扩容非钳制）");
+        match sink.oms.get_order_status(oms_id) {
+            Some(OmsOrderStatus::Filled { filled_qty, .. }) => {
+                assert_eq!(filled_qty, Decimal::from(6u32));
+            }
+            other => panic!("扩容后应 Filled，实际 {other:?}"),
+        }
+    }
+
+    /// 5) `SetTarget` 差额单：持仓 10、目标 15 → 只下 5
     #[test]
     fn test_set_target_places_only_the_difference() {
         let MockHandles {
@@ -1160,6 +1238,36 @@ mod tests {
         assert_eq!(rebalance.quantity, Decimal::from(5u32), "只允许下差额");
         assert_eq!(rebalance.side, OmsSide::Buy);
         assert_eq!(placed.len(), 2, "建仓 1 笔 + 差额 1 笔");
+    }
+
+    /// 4b) `SetTarget` 最小名义预检：差额名义价值低于阈值直接跳过（不下单、不报错），
+    ///     跨过阈值后放行——防 Binance -4164「notional < 20」必败拒单刷 tick 异常
+    #[test]
+    fn test_set_target_skips_below_min_notional() {
+        let mut core = core(15.0);
+        core.update_last_price(&btc(), 1.0);
+        let intent = OrderIntent::SetTarget {
+            instrument: btc(),
+            target_ratio: 1.0,
+        };
+
+        // 差额 15（名义 15 USDT）< 阈值 20 → 跳过，网关零调用
+        let MockHandles {
+            gateway, placed, ..
+        } = mock(0);
+        let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32)).with_min_notional(20.0);
+        sink.submit(intent.clone(), &mut core, &HostCtx::default())
+            .expect("低于最小名义额应静默跳过而非报错");
+        assert!(placed.lock().unwrap().is_empty(), "预检拦截后不得触达网关");
+
+        // 同一意图，阈值降到 10 → 名义 15 跨过阈值，正常下单
+        let MockHandles {
+            gateway, placed, ..
+        } = mock(0);
+        let mut sink = LiveSink::new(gateway, Decimal::from(1_000_000u32)).with_min_notional(10.0);
+        sink.submit(intent, &mut core, &HostCtx::default())
+            .expect("跨过阈值的目标调仓应成功");
+        assert_eq!(placed.lock().unwrap().len(), 1, "跨过阈值必须放行");
     }
 
     /// 5) 风控拒绝 → `submit` 返回 Err，网关一次都没被调用
