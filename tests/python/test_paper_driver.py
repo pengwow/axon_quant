@@ -146,3 +146,57 @@ def test_rl_feed_bar_roundtrip_matches_paper_ledger():
     snap = d.snapshot()
     assert snap["positions"] == {}
     assert snap["equity"] == pytest.approx(10_299.97, abs=1e-4)
+
+
+def test_risk_pnl_reset_noop_without_config():
+    """未配置风控时 pnl 回灌 / 跨日清零是 no-op（opt-in 契约）"""
+    d = worker.PaperDriver(["BTCUSDT"])
+    d.update_risk_pnl(-100.0)
+    d.reset_risk_daily()
+
+
+def test_risk_config_rejects_unknown_key():
+    """未知配置键必须报错，防拼错键名静默走默认值"""
+    d = worker.PaperDriver(["BTCUSDT"])
+    with pytest.raises(ValueError, match="未知风控配置键"):
+        d.set_risk_config({"max_daily_loss_x": 100.0})
+
+
+def test_risk_pnl_backfill_blocks_expansion_allows_exit():
+    """B3 端到端：pnl 回灌联动熔断 → 扩仓 tick 拒（risk rejected）→ 平仓放行。
+
+    max_daily_loss=5：bar0 ratio=0.1 建仓 10 股（名义 1000 过检），回灌
+    −6 触发熔断；bar1 ratio=0.5 扩仓（target 50 股 > 10 → 走引擎链）被
+    熔断拒单，tick 上抛 RuntimeError；bar2 ratio=0 平仓在引擎链前放行，
+    账本回到空仓（fee=0：卖单价 99.9995，equity = 9999.99）。
+    """
+    d = worker.PaperDriver(["BTCUSDT"], initial_cash=10_000.0, fee_rate=0.0)
+    ratios = iter([0.1, 0.5, 0.0])
+    d.add_rl_strategy(
+        lambda obs: next(ratios), "m1", "v1-rl", 1, FEATURES, CONTINUOUS_1_1, "BTC/USDT"
+    )
+    d.set_risk_config({"max_daily_loss": 5.0}, max_position_value=50_000.0)
+    d.start()
+
+    # bar0 建仓 0.1
+    d.feed_bar("BTCUSDT", START, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    assert d.snapshot()["positions"]["BTC/USDT"] == pytest.approx(10.0, abs=1e-4)
+
+    # 回灌当日亏损 → 熔断
+    d.update_risk_pnl(-6.0)
+
+    # bar1 扩仓被拒
+    d.feed_bar("BTCUSDT", START + ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    with pytest.raises(RuntimeError, match="risk rejected"):
+        d.tick()
+
+    # bar2 平仓放行（熔断下唯一出场通道）
+    d.feed_bar("BTCUSDT", START + 2 * ONE_MIN, 100.0, 101.0, 99.0, 100.0, 10_000.0)
+    d.tick()
+    snap = d.snapshot()
+    assert snap["positions"] == {}
+    assert snap["equity"] == pytest.approx(9_999.99, abs=1e-4)
+
+    # 跨日清零恢复后调用不抛错（无风控句柄残留锁死的兜底口径）
+    d.reset_risk_daily()

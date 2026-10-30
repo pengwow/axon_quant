@@ -27,6 +27,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use axon_core::portfolio::FillRecord;
 use axon_core::{
     Bar, Event, Instrument, MarketDataEvent, MarketDataPayload, Price, Quantity, Timestamp,
 };
@@ -37,10 +38,13 @@ use axon_kernel::{
     interval_to_nanos,
 };
 
+use axon_risk::RiskConfig;
+
 use crate::backtest::instrument_key_for;
 use crate::exchange_gateway::ExchangeGateway;
 use crate::live_sink::LiveOrderGateway;
 use crate::pump::{Gap, KernelPump};
+use crate::risk_check::{EngineRiskCheck, RiskHandle};
 
 /// 行情 fan-out 通道容量（与 `live_driver` 同值：tick 节奏下不会触顶）
 const FANOUT_CHANNEL_CAPACITY: usize = 4096;
@@ -77,6 +81,11 @@ pub struct PaperDriver {
     kernel: Option<Kernel>,
     /// `feed_bar` 事件的递增序列号
     next_seq: u64,
+    /// B3 风控：start 时注入 PaperSink 的配置（None = 默认 AllowAllRisk，
+    /// 行为同接线前）；`f64` 是单品种仓名义额上限，`None` 表示不做名义额检查
+    risk: Option<(RiskConfig, Option<f64>)>,
+    /// start 成功后的引擎句柄，上层经它回灌当日盈亏（联动熔断）/ 跨日清零
+    risk_handle: Option<RiskHandle>,
 }
 
 impl PaperDriver {
@@ -125,7 +134,28 @@ impl PaperDriver {
             pump,
             kernel: None,
             next_seq: 0,
+            risk: None,
+            risk_handle: None,
         })
+    }
+
+    /// 注入 pre-trade 风控（B3）：start 时装配进 PaperSink
+    ///
+    /// `max_position_value` 是单品种目标净仓的金额上限（金额口径；None = 不查）。
+    /// 不调用此方法时 PaperSink 用默认 `AllowAllRisk`，行为同接线前。
+    pub fn with_risk(mut self, config: RiskConfig, max_position_value: Option<f64>) -> Self {
+        self.set_risk(config, max_position_value);
+        self
+    }
+
+    /// 非消耗版装配（pyo3 绑定层复用）：driver 已在锁里，无法走 consuming builder
+    pub fn set_risk(&mut self, config: RiskConfig, max_position_value: Option<f64>) {
+        self.risk = Some((config, max_position_value));
+    }
+
+    /// start 成功后的风控引擎句柄（未注入风控时为 None）
+    pub fn risk_handle(&self) -> Option<&RiskHandle> {
+        self.risk_handle.as_ref()
     }
 
     /// 连接交易所并订阅品种（gateway 模式；失败时网关保留可重试）
@@ -147,7 +177,15 @@ impl PaperDriver {
         if hosts.is_empty() {
             return Err("至少需要一个策略宿主".to_string());
         }
-        let mut kernel = Kernel::new(self.config.clone(), Box::new(PaperSink::new()));
+        // B3：有风控配置则装配 EngineRiskCheck 进 PaperSink，并把句柄留出供
+        // 上层回灌当日盈亏；无配置保持 AllowAllRisk（opt-in，行为不变）
+        let mut sink = PaperSink::new();
+        if let Some((risk_config, max_position_value)) = self.risk.take() {
+            let (check, handle) = EngineRiskCheck::new(risk_config, max_position_value);
+            sink = sink.with_risk(Box::new(check));
+            self.risk_handle = Some(handle);
+        }
+        let mut kernel = Kernel::new(self.config.clone(), Box::new(sink));
         kernel.set_manifest(RunManifest::default());
         for host in hosts {
             kernel.add_host(host);
@@ -245,6 +283,19 @@ impl PaperDriver {
             equity: kernel.equity_snapshot(),
             positions: kernel.positions_snapshot(),
         })
+    }
+
+    /// 运行期成交增量读取：自游标 `cursor` 起的新成交（append-only、不消费）
+    ///
+    /// 游标语义 = `fills_detail` 下标（`fill_id` 全局唯一且单调递增）：调用方
+    /// 拉走后把游标推进 `returned.len()` 即可增量拉新；越界游标安全为空。
+    /// paper 账面纯内存，重启即清零，游标随之从 0 重新开始。
+    pub fn fills_since(&self, cursor: usize) -> Result<Vec<FillRecord>, String> {
+        let kernel = self
+            .kernel
+            .as_ref()
+            .ok_or_else(|| "内核未启动，请先 start".to_string())?;
+        Ok(kernel.fills_since(cursor).to_vec())
     }
 
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op
@@ -403,6 +454,46 @@ mod tests {
             "清仓后权益 = 全部落袋(含 0.05 价差成本): {}",
             snap.equity
         );
+    }
+
+    /// T1b：fills_since 增量游标——fill_id 单调递增、游标推进增量拉新、越界安全为空
+    #[test]
+    fn fills_since_incremental_cursor() {
+        let mut driver =
+            PaperDriver::new(None, paper_config(), vec!["BTCUSDT".into()]).expect("构造成功");
+        // 未启动即拉取：明确报错，不静默给空
+        let err = driver.fills_since(0).unwrap_err();
+        assert!(err.contains("内核未启动"), "未启动报错: {err}");
+
+        driver.connect().expect("feed_bar 模式 connect 直接 Ok");
+        driver
+            .start(vec![Box::new(RatioHost::new(vec![0.3, 0.0]))])
+            .expect("start 成功");
+
+        // bar0 close=100：建仓 30 股 @ mid+0.05 = 100.05
+        feed_flat(&mut driver, "BTCUSDT", 0, 100.0);
+        driver.tick().expect("tick 应成功");
+        let fills = driver.fills_since(0).expect("拉取成功");
+        assert_eq!(fills.len(), 1, "建仓应产出 1 笔成交");
+        assert_eq!(fills[0].fill_id, 0);
+        assert_eq!(fills[0].quantity.as_f64(), 30.0);
+        assert!((fills[0].price.as_f64() - 100.05).abs() < 1e-6);
+        assert!(matches!(fills[0].taker_side, axon_core::market::Side::Buy));
+        // 游标推进到返回 len 后重拉：无新增（append-only、不消费）
+        assert!(driver.fills_since(1).expect("重拉成功").is_empty());
+
+        // bar1 close=110：清仓 30 股 @ 110−0.05 = 109.95
+        feed_flat(&mut driver, "BTCUSDT", 1, 110.0);
+        driver.tick().expect("tick 应成功");
+        let fills = driver.fills_since(1).expect("增量拉取成功");
+        assert_eq!(fills.len(), 1, "清仓只新增 1 笔");
+        assert_eq!(fills[0].fill_id, 1, "fill_id 单调递增");
+        assert!(matches!(fills[0].taker_side, axon_core::market::Side::Sell));
+        assert_eq!(fills[0].quantity.as_f64(), 30.0, "quantity 为正数绝对量");
+        assert!((fills[0].price.as_f64() - 109.95).abs() < 1e-6);
+
+        // 越界游标安全为空
+        assert!(driver.fills_since(999).expect("越界游标返回空").is_empty());
     }
 
     /// 只交易 BTC 的宿主（T2 多品种栅栏用）
@@ -597,6 +688,97 @@ mod tests {
             calls.load(Ordering::SeqCst),
             4,
             "重复 bar 不得触发第二次决策"
+        );
+    }
+
+    /// T5（B3）：风控注入全链路——扩仓超名义额被拒（拒单 = tick 报 risk rejected
+    /// Err、账面零副作用），减仓 / 平仓放行
+    #[test]
+    fn risk_injection_blocks_expansion_allows_reduce() {
+        // 名义额上限 2000：0.5 目标 = 50 股 × 100 = 5000 超限拒；0.1 = 1000 放行
+        let mut driver = PaperDriver::new(None, paper_config(), vec!["BTCUSDT".into()])
+            .expect("构造成功")
+            .with_risk(RiskConfig::default(), Some(2_000.0));
+        driver.connect().expect("feed_bar 模式 connect 直接 Ok");
+        driver
+            .start(vec![Box::new(RatioHost::new(vec![0.5, 0.1, 0.0]))])
+            .expect("start 成功");
+        assert!(driver.risk_handle().is_some(), "注入后应有引擎句柄");
+
+        // bar0：扩仓 0.5 超名义额 → 拒单（lifecycle 经 `?` 上传播为 tick Err）
+        feed_flat(&mut driver, "BTCUSDT", 0, 100.0);
+        let err = driver.tick().expect_err("扩仓超名义额必须拒单");
+        assert!(err.contains("risk rejected"), "拒单错误: {err}");
+        let snap = driver.snapshot().expect("snapshot 成功");
+        assert!(
+            snap.positions.is_empty(),
+            "拒单不得产生持仓: {:?}",
+            snap.positions
+        );
+
+        // bar1：0.1 名义额 1000 限内 → 建仓 10 股（0.1 × 10000 / 100）
+        feed_flat(&mut driver, "BTCUSDT", 1, 100.0);
+        driver.tick().expect("限内建仓应成功");
+        let qty = driver
+            .snapshot()
+            .expect("snapshot 成功")
+            .positions
+            .get("BTC/USDT")
+            .copied()
+            .unwrap_or(0.0);
+        assert!((qty - 10.0).abs() < 1e-2, "建仓 10 股（盯市比例）: {qty}");
+
+        // bar2：0.0 平仓 → 减仓通道无条件放行
+        feed_flat(&mut driver, "BTCUSDT", 2, 100.0);
+        driver.tick().expect("平仓放行");
+        assert!(
+            driver
+                .snapshot()
+                .expect("snapshot 成功")
+                .positions
+                .is_empty(),
+            "平仓后应空仓"
+        );
+    }
+
+    /// T5b（B3）：pnl 回灌触达当日限额 → 熔断拒扩仓，但平仓（减仓分支在引擎
+    /// 熔断检查之前）仍是止损出场通道
+    #[test]
+    fn circuit_breaker_via_pnl_backfill_blocks_expansion_allows_exit() {
+        // 名义额放宽，专测熔断联动
+        let mut driver = PaperDriver::new(None, paper_config(), vec!["BTCUSDT".into()])
+            .expect("构造成功")
+            .with_risk(RiskConfig::default(), Some(100_000.0));
+        driver.connect().expect("feed_bar 模式 connect 直接 Ok");
+        driver
+            .start(vec![Box::new(RatioHost::new(vec![0.1, 0.5, 0.0]))])
+            .expect("start 成功");
+
+        // bar0：建仓 10 股（0.1 × 10000 / 100）
+        feed_flat(&mut driver, "BTCUSDT", 0, 100.0);
+        driver.tick().expect("初始建仓应成功");
+
+        // 回灌当日亏损 −10000（= 默认 max_daily_loss）→ 引擎内部触发熔断
+        driver
+            .risk_handle()
+            .expect("句柄存在")
+            .update_daily_pnl(-10_000.0);
+
+        // bar1：0.5 扩仓 → 熔断拒单
+        feed_flat(&mut driver, "BTCUSDT", 1, 100.0);
+        let err = driver.tick().expect_err("熔断后扩仓必须拒");
+        assert!(err.contains("risk rejected"), "拒单错误: {err}");
+
+        // bar2：0.0 平仓 → 减仓放行分支在引擎链之前，出场通道畅通
+        feed_flat(&mut driver, "BTCUSDT", 2, 100.0);
+        driver.tick().expect("熔断后平仓必须放行");
+        assert!(
+            driver
+                .snapshot()
+                .expect("snapshot 成功")
+                .positions
+                .is_empty(),
+            "止损后应空仓"
         );
     }
 }

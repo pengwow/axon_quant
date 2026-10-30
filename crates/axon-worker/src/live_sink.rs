@@ -272,24 +272,9 @@ impl LiveOrderGateway for ReplayGateway {
     }
 }
 
-/// 下单前风控检查
-///
-/// 内联点固定在 [`LiveSink::submit`] 入口，与回测路径共用同一位置。返回
-/// `Err(reason)` 表示拒单，意图不会到达网关。
-pub trait RiskCheck: Send {
-    /// 检查一个意图（只读账户视图在 `ctx` 上）
-    fn check(&mut self, intent: &OrderIntent, ctx: &HostCtx) -> Result<(), String>;
-}
-
-/// 默认放行（无风控配置时用）
-#[derive(Debug, Default)]
-pub struct AllowAllRisk;
-
-impl RiskCheck for AllowAllRisk {
-    fn check(&mut self, _intent: &OrderIntent, _ctx: &HostCtx) -> Result<(), String> {
-        Ok(())
-    }
-}
+// RiskCheck / AllowAllRisk 已上移到 axon-kernel（PaperSink 与 LiveSink 共用同一
+// pre-trade 接缝）；这里 re-export 保持 `axon_worker::live_sink::RiskCheck` 引用不破。
+pub use axon_kernel::risk::{AllowAllRisk, RiskCheck};
 
 /// sink 自己记下的订单元信息
 ///

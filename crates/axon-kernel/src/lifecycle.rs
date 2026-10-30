@@ -87,6 +87,9 @@ impl BarLifecycle {
         ctx.last_price = core.last_price_map();
 
         // 4) 逐 BarClosed 逐 Host 决策(只对本帧有真实 bar 的品种)
+        // 标注前提：live 链路的行情订阅粒度 = config.interval（构造方经
+        // BinanceAdapter::with_kline_interval 对齐），此处 interval 才是真实
+        // bar 周期而非错标；回测/paper 数据源本身就是 config.interval 粒度。
         let close_ts = close_time(frame.ts, config.interval.as_str()).unwrap_or(frame.ts);
         let mut decided: HashSet<String> = HashSet::new();
         let null_state = serde_json::Value::Null;

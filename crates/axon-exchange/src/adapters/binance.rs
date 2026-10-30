@@ -68,6 +68,11 @@ pub struct BinanceAdapter {
     // 本机时间 + 偏移：本机漂移超出 recvWindow（默认 5s）会被 -1021 间歇拒单。
     // connect 时校准一次，失败保持原值只告警，不阻断连接。
     time_offset_ms: AtomicI64,
+    // 行情 kline 流订阅周期（如 "1m"/"15m"/"1h"）。必须与下游内核
+    // KernelConfig.interval 同粒度：pump 按 kline 自带 interval 聚合，订错粒度
+    // 会让 BarClosedEvent 把真实周期错标成 config.interval。默认 "1m" 维持
+    // 历史行为；live 链路由构造方经 with_kline_interval 对齐。
+    kline_interval: String,
 }
 
 impl BinanceAdapter {
@@ -93,7 +98,18 @@ impl BinanceAdapter {
             user_stream_ready: watch::Sender::new(false),
             user_stream_last_error: Arc::new(PkMutex::new(None)),
             time_offset_ms: AtomicI64::new(0),
+            kline_interval: "1m".to_string(),
         }
+    }
+
+    /// 覆写 kline 订阅周期（builder 风格）。
+    ///
+    /// live 链路必须用它把订阅对齐到 KernelConfig.interval，否则 1h 策略会
+    /// 每分钟收到 1m bar 触发 on_bar（信号频率放大约 60 倍）。默认构造方
+    /// （测试 / REST-only 场景）保持 "1m" 不受影响。
+    pub fn with_kline_interval(mut self, interval: &str) -> Self {
+        self.kline_interval = interval.to_string();
+        self
     }
 
     /// HMAC-SHA256 签名
@@ -264,6 +280,8 @@ impl BinanceAdapter {
         let ws_writer_slot = self.ws_writer.clone();
         let disconnect_notify = self.disconnect_notify.clone();
         let shutdown = self.shutdown.clone();
+        // kline 订阅周期在监督任务里要用于重连后的重订阅，提前 clone 进闭包
+        let kline_interval = self.kline_interval.clone();
 
         // 重连监督任务：负责建立连接、启动读写任务、断线后指数退避重连
         tokio::spawn(async move {
@@ -289,7 +307,7 @@ impl BinanceAdapter {
                         {
                             let symbols = subscribed.lock().await.clone();
                             if !symbols.is_empty() {
-                                let streams = Self::build_streams(&symbols);
+                                let streams = Self::build_streams(&symbols, &kline_interval);
                                 if let Err(e) = Self::send_subscribe_msg(&writer, streams).await {
                                     tracing::warn!("subscribe on (re)connect failed: {}", e);
                                 }
@@ -482,7 +500,11 @@ impl BinanceAdapter {
     }
 
     /// 构造交易对 stream 名称列表
-    fn build_streams(symbols: &[Symbol]) -> Vec<String> {
+    ///
+    /// `kline_interval` 必须是 Binance 合法周期串（如 "1m"/"15m"/"1h"/"1d"）。
+    /// 非法值会被 Binance 静默忽略（订阅成功、零推送），与带斜杠 symbol 同陷阱，
+    /// 因此由调用方（LiveDriver::new）在构造期校验合法性。
+    fn build_streams(symbols: &[Symbol], kline_interval: &str) -> Vec<String> {
         symbols
             .iter()
             .flat_map(|s| {
@@ -491,7 +513,7 @@ impl BinanceAdapter {
                     format!("{lower}@depth@100ms"),
                     format!("{lower}@ticker"),
                     format!("{lower}@trade"),
-                    format!("{lower}@kline_1m"),
+                    format!("{lower}@kline_{kline_interval}"),
                 ]
             })
             .collect()
@@ -1393,7 +1415,7 @@ impl ExchangeAdapter for BinanceAdapter {
             }
         }
 
-        let streams = Self::build_streams(symbols);
+        let streams = Self::build_streams(symbols, &self.kline_interval);
         tracing::info!("Subscribing to {} streams", streams.len());
 
         // 通过共享 writer 发送订阅消息
@@ -2476,12 +2498,15 @@ mod tests {
     #[test]
     fn test_build_streams_includes_depth_ticker_trade_kline() {
         let syms = [Symbol::new("BTCUSDT")];
-        let streams = BinanceAdapter::build_streams(&syms);
+        let streams = BinanceAdapter::build_streams(&syms, "1m");
         assert_eq!(streams.len(), 4);
         assert!(streams.contains(&"btcusdt@depth@100ms".to_string()));
         assert!(streams.contains(&"btcusdt@ticker".to_string()));
         assert!(streams.contains(&"btcusdt@trade".to_string()));
         assert!(streams.contains(&"btcusdt@kline_1m".to_string()));
+        // kline 周期参数化：live 链路按 KernelConfig.interval 订阅（R1 修复）
+        let hourly = BinanceAdapter::build_streams(&syms, "1h");
+        assert!(hourly.contains(&"btcusdt@kline_1h".to_string()));
     }
 
     /// BASE/QUOTE 形式必须归一成连写小写：带斜杠的 stream 名会被 Binance
@@ -2489,7 +2514,7 @@ mod tests {
     #[test]
     fn test_build_streams_normalizes_slashed_symbol() {
         let syms = [Symbol::new("BTC/USDT"), Symbol::new("ETHUSDT")];
-        let streams = BinanceAdapter::build_streams(&syms);
+        let streams = BinanceAdapter::build_streams(&syms, "1m");
         assert!(streams.contains(&"btcusdt@kline_1m".to_string()));
         assert!(streams.contains(&"ethusdt@depth@100ms".to_string()));
         // 任何流名都不得残留分隔符

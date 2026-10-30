@@ -17,6 +17,7 @@ use axon_core::{Event, Instrument, MarketDataPayload, OrderAction, OrderEvent};
 use crate::KernelError;
 use crate::core::KernelCore;
 use crate::host::{HostCtx, OrderIntent};
+use crate::risk::{AllowAllRisk, RiskCheck};
 
 /// 执行出口
 ///
@@ -287,7 +288,6 @@ impl ExecutionSink for BacktestSink {
 /// （市场数据契约），报价只能归因到最近一根 `BarClosed` 的品种。单品种 paper
 /// 完全正确；多品种需要 M5 接 WS 时在泵侧补一条带品种的报价通道，而不是改
 /// 市场数据契约。
-#[derive(Debug, Default)]
 pub struct PaperSink {
     /// L1 撮合 + 全量账务（与回测同一实现）
     inner: BacktestSink,
@@ -295,12 +295,42 @@ pub struct PaperSink {
     last_price: HashMap<Instrument, f64>,
     /// 最近一根收市 bar 的品种——Tick / Depth 载荷不带 instrument，用它归因
     active: Option<Instrument>,
+    /// pre-trade 风控（ QuantCell B3 接线点；无配置时 [`AllowAllRisk`] 放行）
+    risk: Box<dyn RiskCheck>,
+}
+
+// `Box<dyn RiskCheck>` 不可 Default/Debug，手动实现跳过 risk 字段
+impl Default for PaperSink {
+    fn default() -> Self {
+        Self {
+            inner: BacktestSink::default(),
+            last_price: HashMap::new(),
+            active: None,
+            risk: Box::new(AllowAllRisk),
+        }
+    }
+}
+
+impl std::fmt::Debug for PaperSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaperSink")
+            .field("inner", &self.inner)
+            .field("last_price", &self.last_price)
+            .field("active", &self.active)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PaperSink {
     /// 创建 paper sink
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 替换 pre-trade 风控（paper 与 live 共用 [`RiskCheck`] 接缝，B3 接线）
+    pub fn with_risk(mut self, risk: Box<dyn RiskCheck>) -> Self {
+        self.risk = risk;
+        self
     }
 
     /// 记录一条报价（仅对 `active` 品种生效）
@@ -321,6 +351,10 @@ impl ExecutionSink for PaperSink {
         core: &mut KernelCore,
         ctx: &HostCtx,
     ) -> Result<Vec<Event>, KernelError> {
+        // pre-trade 风控最先执行：拒单不得产生任何副作用（报价同步也算）
+        self.risk
+            .check(&intent, ctx)
+            .map_err(|reason| KernelError::Sink(format!("risk rejected: {reason}")))?;
         // 目标换算点仍是 BacktestSink；先把 paper 记到的最新报价写进账务核心，
         // 换算与盯市都用它，而不是回测路径的前向填充价。
         if let OrderIntent::SetTarget { instrument, .. } = &intent

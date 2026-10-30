@@ -35,6 +35,7 @@ use axon_kernel::{
     RLStrategyHost, RunManifest, StrategyHost, build_frames,
 };
 use axon_oms::AccountingMode;
+use axon_risk::config::RiskConfig;
 use axon_rl::{
     Action, ActionSpace, ContinuousActionSpace, FeatureConfig, ObservationSpec, RunningStats,
 };
@@ -282,23 +283,7 @@ impl PyBacktestResult {
     fn fills_detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::empty(py);
         for fr in &self.fills_detail {
-            let d = PyDict::new(py);
-            d.set_item("timestamp_ns", fr.timestamp.nanos)?;
-            d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
-            d.set_item("taker_order_id", fr.taker_order_id)?;
-            d.set_item("maker_order_id", fr.maker_order_id)?;
-            d.set_item(
-                "taker_side",
-                match fr.taker_side {
-                    axon_core::market::Side::Buy => "Buy",
-                    axon_core::market::Side::Sell => "Sell",
-                },
-            )?;
-            d.set_item("price", fr.price.as_f64())?;
-            d.set_item("quantity", fr.quantity.as_f64())?;
-            // fill 全局唯一 id（= fills_detail 下标），供 trades 的 entry_fill_ids/exit_fill_id 关联
-            d.set_item("fill_id", fr.fill_id)?;
-            list.append(d)?;
+            list.append(fill_record_dict(py, fr)?)?;
         }
         Ok(list)
     }
@@ -401,6 +386,29 @@ fn instrument_to_tuple<'py>(py: Python<'py>, inst: &Instrument) -> PyResult<Boun
             )
         }
     }
+}
+
+/// FillRecord → Python dict（终态 fills_detail 与 paper 运行期 fills_since 共用的字段契约）
+///
+/// `quantity` 为正数绝对量，方向在 `taker_side`；`fill_id` = fills_detail 下标。
+fn fill_record_dict<'py>(py: Python<'py>, fr: &FillRecord) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("timestamp_ns", fr.timestamp.nanos)?;
+    d.set_item("instrument", instrument_to_tuple(py, &fr.instrument)?)?;
+    d.set_item("taker_order_id", fr.taker_order_id)?;
+    d.set_item("maker_order_id", fr.maker_order_id)?;
+    d.set_item(
+        "taker_side",
+        match fr.taker_side {
+            axon_core::market::Side::Buy => "Buy",
+            axon_core::market::Side::Sell => "Sell",
+        },
+    )?;
+    d.set_item("price", fr.price.as_f64())?;
+    d.set_item("quantity", fr.quantity.as_f64())?;
+    // fill 全局唯一 id（= fills_detail 下标），供 trades 的 entry_fill_ids/exit_fill_id 关联
+    d.set_item("fill_id", fr.fill_id)?;
+    Ok(d)
 }
 
 /// Python 端 BacktestRunner（Rust 原生回测编排器）
@@ -1418,9 +1426,12 @@ impl PyLiveDriver {
             interval: interval.clone(),
             ..KernelConfig::default()
         };
-        let adapter: Arc<tokio::sync::Mutex<Box<dyn ExchangeAdapter>>> = Arc::new(
-            tokio::sync::Mutex::new(Box::new(BinanceAdapter::new(config.inner))),
-        );
+        // kline 订阅粒度必须与内核 config.interval 一致（同一个 interval 字符串），
+        // 否则 1h 策略会每分钟收到 1m bar 触发 on_bar（历史踩坑：订阅硬编码 1m）
+        let adapter: Arc<tokio::sync::Mutex<Box<dyn ExchangeAdapter>>> =
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                BinanceAdapter::new(config.inner).with_kline_interval(&interval),
+            )));
         // LiveDriver::new 会校验 v1 边界（Spot / Cash / 空品种在此报错），不放行坏配置
         let live = LiveDriver::new(
             adapter,
@@ -1541,6 +1552,45 @@ impl PyLiveDriver {
         kernel_lock(&self.inner, "live driver")?
             .shutdown()
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// 装配 pre-trade 风控（B3，start 前调用；未配置时驱动保持默认无风控行为）
+    ///
+    /// `config` 为可省略键的 dict（键见 `risk_config_from_dict`），缺省键用
+    /// 引擎默认值；`max_position_value` 是单品种目标仓名义额上限（金额口径），
+    /// `None` 表示不做该检查。resume 恢复路径不装配风控。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn set_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        kernel_lock(&self.inner, "live driver")?.set_risk(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 回灌当日盈亏（**增量**语义）：累计亏损触达 `max_daily_loss` 时熔断开仓；
+    /// 未配置风控时 no-op（行为同未接线）
+    fn update_risk_pnl(&self, pnl: f64) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.update_daily_pnl(pnl);
+        }
+        Ok(())
+    }
+
+    /// 跨日清零当日盈亏与熔断器（未配置风控时 no-op）
+    fn reset_risk_daily(&self) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "live driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.reset_daily();
+        }
+        Ok(())
     }
 }
 
@@ -1722,11 +1772,65 @@ impl PyPaperDriver {
         Ok(dict)
     }
 
+    /// 运行期成交增量读取：`list[dict]`，字段与 `BacktestResult.fills_detail` 一致
+    ///
+    /// `cursor` 传上次游标即可增量拉新：fill_id = fills_detail 下标，全局唯一且
+    /// 单调递增，调用方拉走后把游标推进返回 len。越界游标安全为空；
+    /// paper 账纯内存、重启即清零，游标随之从 0 重新开始。
+    #[pyo3(signature = (cursor = 0))]
+    fn fills_since<'py>(&self, py: Python<'py>, cursor: usize) -> PyResult<Bound<'py, PyList>> {
+        let fills = kernel_lock(&self.inner, "paper driver")?
+            .fills_since(cursor)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let list = PyList::empty(py);
+        for fr in &fills {
+            list.append(fill_record_dict(py, fr)?)?;
+        }
+        Ok(list)
+    }
+
     /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op（保持接口对称）
     fn shutdown(&mut self) -> PyResult<()> {
         kernel_lock(&self.inner, "paper driver")?
             .shutdown()
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    }
+
+    /// 装配 pre-trade 风控（B3，start 前调用；未配置时驱动保持默认无风控行为）
+    ///
+    /// 参数语义与 `LiveDriver.set_risk_config` 一致。
+    #[pyo3(signature = (config, max_position_value=None))]
+    fn set_risk_config(
+        &self,
+        config: &Bound<'_, PyDict>,
+        max_position_value: Option<f64>,
+    ) -> PyResult<()> {
+        let cfg = risk_config_from_dict(config)?;
+        kernel_lock(&self.inner, "paper driver")?.set_risk(cfg, max_position_value);
+        Ok(())
+    }
+
+    /// 回灌当日盈亏（**增量**语义，paper 由 equity 差值法在 Python 侧算 delta）；
+    /// 未配置风控时 no-op
+    fn update_risk_pnl(&self, pnl: f64) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.update_daily_pnl(pnl);
+        }
+        Ok(())
+    }
+
+    /// 跨日清零当日盈亏与熔断器（未配置风控时 no-op）
+    fn reset_risk_daily(&self) -> PyResult<()> {
+        let handle = kernel_lock(&self.inner, "paper driver")?
+            .risk_handle()
+            .cloned();
+        if let Some(handle) = handle {
+            handle.reset_daily();
+        }
+        Ok(())
     }
 }
 
@@ -1821,6 +1925,32 @@ fn kernel_lock<'a, T>(m: &'a Mutex<T>, what: &str) -> PyResult<MutexGuard<'a, T>
     m.lock().map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel {what} lock 失败: {e}"))
     })
+}
+
+/// 风控配置 dict → `RiskConfig`（B3）：缺省键用引擎默认值，未知键直接报错
+/// （防调用方拼错键名后静默走默认值）
+fn risk_config_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<RiskConfig> {
+    let mut cfg = RiskConfig::default();
+    for (key, value) in dict.iter() {
+        let key: String = key.extract()?;
+        match key.as_str() {
+            "max_order_value" => cfg.max_order_value = value.extract()?,
+            "max_daily_loss" => cfg.max_daily_loss = value.extract()?,
+            "max_leverage" => cfg.max_leverage = value.extract()?,
+            "max_drawdown" => cfg.max_drawdown = value.extract()?,
+            "circuit_breaker_cooldown_secs" => {
+                let secs: u64 = value.extract()?;
+                cfg.circuit_breaker_cooldown = std::time::Duration::from_secs(secs);
+            }
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "未知风控配置键 `{other}`（可用键: max_order_value / max_daily_loss / \
+                     max_leverage / max_drawdown / circuit_breaker_cooldown_secs）"
+                )));
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 /// futures / settle / contract_size → 品种撮合口径
