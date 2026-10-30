@@ -44,6 +44,18 @@ impl CircuitBreaker {
         self.active.store(false, Ordering::Release);
         self.activated_at.store(0, Ordering::Relaxed);
     }
+
+    /// 热更日亏熔断阈值：仅影响下一次 check_and_trigger 判定，
+    /// 不追溯激活态（已触发的熔断不由本方法解除）。
+    pub fn update_daily_loss_limit(&mut self, limit: f64) {
+        self.daily_loss_limit = limit;
+    }
+
+    /// 热更熔断冷却时长：已激活熔断的 activated_at 时间戳不变，
+    /// 只改变自恢复等待窗口。
+    pub fn update_cooldown(&mut self, cooldown: Duration) {
+        self.cooldown = cooldown;
+    }
 }
 
 #[cfg(test)]
@@ -82,6 +94,30 @@ mod tests {
     fn test_circuit_breaker_positive_pnl_no_trigger() {
         let cb = CircuitBreaker::new(10_000.0, Duration::from_secs(60));
         cb.check_and_trigger(5_000.0);
+        assert!(!cb.is_active());
+    }
+
+    // ===== 热更（DefaultRiskEngine::set_config 配套，spec §3.2）=====
+
+    #[test]
+    fn update_daily_loss_limit_takes_effect_immediately() {
+        let mut cb = CircuitBreaker::new(10_000.0, Duration::from_secs(60));
+        cb.check_and_trigger(-5_000.0); // 未达原阈值
+        assert!(!cb.is_active());
+        cb.update_daily_loss_limit(1_000.0);
+        // check_and_trigger 收累计亏损值：热更后下一次回灌立即按新阈值判定
+        cb.check_and_trigger(-5_001.0);
+        assert!(cb.is_active());
+    }
+
+    #[test]
+    fn update_cooldown_shortens_recovery() {
+        let mut cb = CircuitBreaker::new(1_000.0, Duration::from_secs(3600));
+        cb.check_and_trigger(-1_000.0);
+        assert!(cb.is_active()); // 冷却窗口内
+        // activated_at 不变，仅冷却归零 → 下一秒起自恢复
+        cb.update_cooldown(Duration::from_secs(0));
+        std::thread::sleep(Duration::from_millis(1100));
         assert!(!cb.is_active());
     }
 }

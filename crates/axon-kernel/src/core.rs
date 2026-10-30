@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use axon_backtest::L1MatchingEngine;
 use axon_backtest::engine::{BacktestEngine, BacktestEngineConfig, FeeConfig, RunResult};
 use axon_backtest::margin::MarginSpec;
-use axon_core::portfolio::FillRecord;
+use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::types::{Instrument, SwapInstrument, SwapSettle, Symbol};
 use axon_core::{Event, EventQueue, SimulatedClock, Timestamp};
 
@@ -262,6 +262,16 @@ impl KernelCore {
     /// 自游标 `cursor` 起的成交明细（append-only、不消费，语义见引擎同名方法）
     pub fn fills_since(&self, cursor: usize) -> &[FillRecord] {
         self.engine.fills_since(cursor)
+    }
+
+    /// 已配对交易累计条数（paper 运行期增量读取的游标锚点）
+    pub fn trades_len(&self) -> usize {
+        self.engine.trades_len()
+    }
+
+    /// 自游标 `cursor` 起的已配对交易（append-only、不消费，语义见引擎同名方法）
+    pub fn trades_since(&self, cursor: usize) -> &[TradeRecord] {
+        self.engine.trades_since(cursor)
     }
 
     /// 更新某品种的最新价(前向填充的写入点)

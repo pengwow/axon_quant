@@ -11,11 +11,15 @@
 //!
 //! 口径注记：引擎的 `max_position_per_instrument` 是**数量**口径，而
 //! QuantCell 的 `worker_risk_control` 是**金额/比例**口径，桥层把前者置
-//! `f64::INFINITY` 禁用，另以构造参数 `max_position_value` 做目标净仓名义额
-//! 检查。paper 侧当日盈亏由 Python 经 [`RiskHandle::update_daily_pnl`] 回灌，
-//! 累计亏损触达 `max_daily_loss` 时联动熔断；跨日调用 [`RiskHandle::reset_daily`]。
+//! `f64::INFINITY` 禁用，另以运行时可热更的 `max_position_value` 做目标净仓
+//! 名义额检查。paper 侧当日盈亏由 Python 经 [`RiskHandle::update_daily_pnl`]
+//! 回灌，累计亏损触达 `max_daily_loss` 时联动熔断；跨日调用
+//! [`RiskHandle::reset_daily`]。运行时热更走 [`RiskHandle::update_config`]
+//! / [`RiskHandle::set_enabled`]：阈值替换不追溯熔断激活态；停用（bypass）
+//! 顶层短路全放行（含熔断态扩仓），停用期间 pnl 回灌照常累计。
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use axon_core::market::Side;
 use axon_core::order::{Order, OrderType, TimeInForce};
@@ -27,21 +31,48 @@ use axon_risk::config::RiskConfig;
 use axon_risk::engine::{DefaultRiskEngine, RiskEngine};
 use axon_risk::error::RiskResult;
 
-/// 引擎背书的 pre-trade 风控（实现内核接缝 `RiskCheck`）
-pub struct EngineRiskCheck {
-    /// 与 [`RiskHandle`] 共享同一引擎实例：handle 负责 pnl 回灌 / 跨日清零
-    engine: Arc<Mutex<DefaultRiskEngine>>,
-    /// 单品种目标仓名义额上限（金额口径，替代引擎的数量口径 position limit）；
-    /// `None` 表示不做名义额检查（仅引擎检查链）
-    max_position_value: Option<f64>,
+/// 引擎锁的中毒恢复提取（两处持有方共用）：单次 panic 不应把风控永久锁死
+/// （拒绝服务比带缺陷放行更糟）
+fn lock_engine(engine: &Mutex<DefaultRiskEngine>) -> MutexGuard<'_, DefaultRiskEngine> {
+    engine.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// 共享引擎状态的运行时句柄：回灌当日盈亏（联动熔断）、跨日清零
+/// RiskHandle ↔ EngineRiskCheck 的运行时热更通道。
+///
+/// 加锁顺序固定「先 RwLock 后引擎 Mutex」，所有用例遵守此序，防交叉死锁。
+#[derive(Clone)]
+struct SharedRiskState {
+    /// 单品种名义额上限（金额口径）；`None` = 不限
+    max_position_value: Arc<RwLock<Option<f64>>>,
+    /// 人工停用风控（enabled=False）置 true：check() 顶层短路全放行（含熔断态扩仓）
+    bypass: Arc<AtomicBool>,
+}
+
+impl SharedRiskState {
+    fn read_max_position_value(&self) -> Option<f64> {
+        // 读侧中毒恢复：写锁持有者 panic 后读锁仍可拿回数据
+        *self
+            .max_position_value
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// 引擎背书的 pre-trade 风控（实现内核接缝 `RiskCheck`）
+pub struct EngineRiskCheck {
+    /// 与 [`RiskHandle`] 共享同一引擎实例：handle 负责 pnl 回灌 / 跨日清零 / 热更
+    engine: Arc<Mutex<DefaultRiskEngine>>,
+    /// 与 [`RiskHandle`] 共享的热更通道（名义额上限 + 启停开关）
+    shared: SharedRiskState,
+}
+
+/// 共享引擎状态的运行时句柄：回灌当日盈亏（联动熔断）、跨日清零、配置热更
 ///
 /// `Clone` 设计：驱动层可以把句柄转交给 Python 侧的 pnl 回灌线程/Sync 线程。
 #[derive(Clone)]
 pub struct RiskHandle {
     engine: Arc<Mutex<DefaultRiskEngine>>,
+    shared: SharedRiskState,
 }
 
 impl EngineRiskCheck {
@@ -55,18 +86,17 @@ impl EngineRiskCheck {
         // 会误拒正常仓位，统一禁用，仓位限额只走金额口径的 max_position_value
         config.max_position_per_instrument = f64::INFINITY;
         let engine = Arc::new(Mutex::new(DefaultRiskEngine::new(config)));
+        let shared = SharedRiskState {
+            max_position_value: Arc::new(RwLock::new(max_position_value)),
+            bypass: Arc::new(AtomicBool::new(false)),
+        };
         (
             Self {
                 engine: Arc::clone(&engine),
-                max_position_value,
+                shared: shared.clone(),
             },
-            RiskHandle { engine },
+            RiskHandle { engine, shared },
         )
-    }
-
-    fn lock_engine(&self) -> MutexGuard<'_, DefaultRiskEngine> {
-        // 中毒恢复：单次 panic 不应把风控永久锁死（拒绝服务比带缺陷放行更糟）
-        self.engine.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// SetTarget 分支：先按权益换算目标数量，减仓放行、扩仓进引擎链
@@ -156,9 +186,9 @@ impl EngineRiskCheck {
     }
 
     /// 金额口径名义额上限（引擎 `max_position_per_instrument` 是数量口径，
-    /// 桥层已禁用，这里代管 QuantCell 的金额/比例语义）
+    /// 桥层已禁用，这里代管 QuantCell 的金额/比例语义；运行时可热更）
     fn check_notional(&self, net_qty: f64, price: f64, label: &str) -> Result<(), String> {
-        if let Some(limit) = self.max_position_value {
+        if let Some(limit) = self.shared.read_max_position_value() {
             let notional = (net_qty * price).abs();
             if notional > limit {
                 return Err(format!(
@@ -178,7 +208,7 @@ impl EngineRiskCheck {
         ref_price: Option<f64>,
         ctx: &HostCtx,
     ) -> Result<(), String> {
-        let engine = self.lock_engine();
+        let engine = lock_engine(&self.engine);
         let portfolio = mirror_portfolio(ctx);
         let order = build_order(instrument, side, qty, ref_price);
         match engine.check_order(&order, &portfolio) {
@@ -195,6 +225,11 @@ impl EngineRiskCheck {
 
 impl RiskCheck for EngineRiskCheck {
     fn check(&mut self, intent: &OrderIntent, ctx: &HostCtx) -> Result<(), String> {
+        // 人工停用风控：顶层短路全放行（含熔断态扩仓）；停用期间引擎侧
+        // daily_pnl 回灌照常累计，重启用后以热更阈值接续判定
+        if self.shared.bypass.load(Ordering::Acquire) {
+            return Ok(());
+        }
         match intent {
             // 撤单只动既有挂单，不改变敞口，恒放行
             OrderIntent::Cancel(_) => Ok(()),
@@ -212,16 +247,32 @@ impl RiskHandle {
     ///
     /// 引擎内部累计触达 `-max_daily_loss` 即触发熔断，之后的扩仓全部被拒。
     pub fn update_daily_pnl(&self, pnl: f64) {
-        self.lock_engine().update_daily_pnl(pnl);
+        lock_engine(&self.engine).update_daily_pnl(pnl);
     }
 
     /// 跨日清零：清当日累计盈亏与熔断器（不清 VaR 历史窗口）
     pub fn reset_daily(&self) {
-        self.lock_engine().reset_daily();
+        lock_engine(&self.engine).reset_daily();
     }
 
-    fn lock_engine(&self) -> MutexGuard<'_, DefaultRiskEngine> {
-        self.engine.lock().unwrap_or_else(|p| p.into_inner())
+    /// 运行时热更引擎配置与单品种名义额上限（阈值替换不追溯熔断激活态）。
+    ///
+    /// 加锁顺序「先 RwLock 后引擎 Mutex」；数量口径限额由共享槽位接管，
+    /// 统一按模块口径禁用。
+    pub fn update_config(&self, config: RiskConfig, max_position_value: Option<f64>) {
+        *self
+            .shared
+            .max_position_value
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = max_position_value;
+        let mut cfg = config;
+        cfg.max_position_per_instrument = f64::INFINITY;
+        lock_engine(&self.engine).set_config(cfg);
+    }
+
+    /// 人工启停风控：停用（false）时 check() 顶层短路全放行（含熔断态扩仓）
+    pub fn set_enabled(&self, enabled: bool) {
+        self.shared.bypass.store(!enabled, Ordering::Release);
     }
 }
 
@@ -458,5 +509,63 @@ mod tests {
             )
             .expect_err("跨零翻仓按目标净仓名义额拒绝");
         assert!(err.contains("名义额"), "实际拒因: {err}");
+    }
+
+    #[test]
+    fn bypass_allows_expansion_even_active_breaker() {
+        let (mut check, handle) = make_pair(1_000.0);
+        // 默认 max_daily_loss = 10_000：累计 −10_000 触发熔断
+        handle.update_daily_pnl(-10_000.0);
+        // 0.5 × 1000 / 10 = 50 qty × 10 = 500 名义 ≤ 1000：过名义额、熔断拒
+        let err = check
+            .check(&set_target(0.5), &ctx(1_000.0, 10.0, 0.0))
+            .expect_err("熔断态扩仓应被引擎拒绝");
+        assert!(err.contains("CircuitBreaker"), "实际拒因: {err}");
+        // 人工停用：check() 顶层短路，熔断态扩仓也放行
+        handle.set_enabled(false);
+        check
+            .check(&set_target(0.5), &ctx(1_000.0, 10.0, 0.0))
+            .expect("停用后扩仓全放行");
+    }
+
+    #[test]
+    fn update_config_swaps_notional_limit() {
+        let (mut check, handle) = make_pair(10.0);
+        // 50 qty × 10 = 500 名义 > 10 → 拒
+        let err = check
+            .check(&set_target(0.5), &ctx(1_000.0, 10.0, 0.0))
+            .expect_err("初始上限下扩仓应被拒");
+        assert!(err.contains("名义额"), "实际拒因: {err}");
+        // 热更放宽到 1000：同一笔放行
+        handle.update_config(RiskConfig::default(), Some(1_000.0));
+        check
+            .check(&set_target(0.5), &ctx(1_000.0, 10.0, 0.0))
+            .expect("热更放宽后同一笔放行");
+        // 热更为不限（None）：仍放行
+        handle.update_config(RiskConfig::default(), None);
+        check
+            .check(&set_target(0.5), &ctx(1_000.0, 10.0, 0.0))
+            .expect("上限取消后仍放行");
+    }
+
+    #[test]
+    fn update_config_keeps_state_and_updates_threshold() {
+        let (mut check, handle) = make_pair(1_000.0);
+        // 累计 −8_000 未触默认阈值 10_000
+        handle.update_daily_pnl(-8_000.0);
+        // 热更收紧阈值为 5_000：整段替换 config，但 daily_pnl 等状态保留
+        handle.update_config(
+            RiskConfig {
+                max_daily_loss: 5_000.0,
+                ..RiskConfig::default()
+            },
+            Some(1_000.0),
+        );
+        // 累计 −8_001 ≤ −5_000 → 以新阈值触发熔断
+        handle.update_daily_pnl(-1.0);
+        let err = check
+            .check(&set_target(0.1), &ctx(1_000.0, 10.0, 0.0))
+            .expect_err("热更收紧后累计亏损接续触发熔断");
+        assert!(err.contains("CircuitBreaker"), "实际拒因: {err}");
     }
 }
