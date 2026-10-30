@@ -88,7 +88,7 @@ pub use host::{HostCtx, OrderId, OrderIntent, OrderSpec, StrategyHost};
 pub use journal::{Journal, JournalEntry};
 pub use kernel_loop::{Kernel, KernelResult};
 pub use lifecycle::BarLifecycle;
-pub use persist::{ModelArtifact, RunManifest};
+pub use persist::{ManifestPosition, ModelArtifact, RunManifest};
 pub use pump::{BarGridBarrier, GridFrame, build_frames};
 pub use risk::{AllowAllRisk, RiskCheck};
 pub use rl::{InferenceBackend, RLStrategyHost};

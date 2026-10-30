@@ -275,8 +275,10 @@ fn assert_reconciled(label: &str, sink: &LiveSink, ledger: &VenueLedger) {
         positions,
         cash: ledger.cash.to_f64().expect("现金转 f64"),
         fill_ids: ledger.fill_ids.clone(),
-        // 脚本化网关无在挂单查询，两侧均为空集合（对账不涉及在挂单比对）
+        // 脚本化网关无在挂单查询：两侧均为空集合且声明不可验证，
+        // reconcile 会跳过挂单差集比对（不拿空集合当真值）
         open_order_ids: BTreeSet::new(),
+        open_orders_verified: false,
     };
     let report = reconcile(&local, &venue, &ReconcileConfig::default());
     assert!(report.is_clean(), "{label}: 三路对账必须干净: {report:#?}");

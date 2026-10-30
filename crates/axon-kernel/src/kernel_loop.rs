@@ -1015,6 +1015,8 @@ mod tests {
             data_hash: "data-def".to_string(),
             seed: 42,
             model_artifacts: Vec::new(),
+            shadow_cash: None,
+            initial_positions: None,
         }
     }
 

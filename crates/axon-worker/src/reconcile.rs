@@ -109,6 +109,12 @@ pub struct VenueSnapshot {
     pub fill_ids: BTreeSet<String>,
     /// 交易所当前在挂订单编号（如 `fetch_open_orders`），由调用方填入
     pub open_order_ids: BTreeSet<String>,
+    /// 在挂单集合是否真实拉取过（调用方接入了 `fetch_open_orders`）
+    ///
+    /// 网关无该接口时调用方只能填空集合——空集合当真值会把本地真实在挂单
+    /// 整表误报为孤儿单（worker_3 事故），必须在填报侧声明「不可验证」，
+    /// 让 [`reconcile`] 跳过挂单差集比对。
+    pub open_orders_verified: bool,
 }
 
 /// 对账阈值
@@ -168,6 +174,10 @@ pub struct ReconcileReport {
     /// 只报告不阻断——它不会凭空产生交易，处置由调用方决定
     #[serde(default)]
     pub orphan_local_orders: Vec<String>,
+    /// 在挂单差集未比对（venue 侧不可验证）时为 `true`；此时两个挂单差异列表
+    /// 恒为空只能说明「没比对」，不能说明「无差异」，人工核对时必须先看本标记
+    #[serde(default)]
+    pub open_orders_unverified: bool,
     /// 现金差异；在容差内时为 `None`
     pub cash_break: Option<CashBreak>,
     /// 冻结开仓的品种（`position_breaks` 的品种集合，升序）
@@ -185,14 +195,18 @@ impl ReconcileReport {
             && self.cash_break.is_none()
     }
 
-    /// 落盘为 `<dir>/reconcile-report.json`（`dir` 不存在时自动创建），返回文件路径
-    pub fn write_json(&self, dir: &Path) -> std::io::Result<PathBuf> {
-        std::fs::create_dir_all(dir)?;
-        let path = dir.join("reconcile-report.json");
+    /// 落盘为指定完整路径的 pretty JSON（父目录不存在时自动创建），返回该路径。
+    ///
+    /// 接收完整路径而非目录，是为了让多个 worker 的报告可以与各自的 journal
+    /// 并排落盘（如 `worker_3.reconcile.json`），互不覆盖。
+    pub fn write_json(&self, path: &Path) -> std::io::Result<PathBuf> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::other(format!("序列化对账报告失败: {e}")))?;
-        std::fs::write(&path, json)?;
-        Ok(path)
+        std::fs::write(path, json)?;
+        Ok(path.to_path_buf())
     }
 }
 
@@ -239,16 +253,26 @@ pub fn reconcile(
         .collect();
 
     // 在挂单双向差集：venue 有本地无 = 幽灵单；本地有 venue 无 = 孤儿本地单。
-    let ghost_orders = venue
-        .open_order_ids
-        .difference(&local.open_order_ids)
-        .cloned()
-        .collect();
-    let orphan_local_orders = local
-        .open_order_ids
-        .difference(&venue.open_order_ids)
-        .cloned()
-        .collect();
+    // 只有 venue 侧真实拉过挂单（open_orders_verified）才参与比对：网关无
+    // fetch_open_orders 时venue 只能填空集合，拿空集合当真值会把本地真实在挂单
+    // 整表误报为孤儿单（worker_3 事故）。不可验证时跳过比对并如实标注，
+    // 让人工核对者知道「没比对」而不是「无差异」。
+    let (ghost_orders, orphan_local_orders, open_orders_unverified) = if venue.open_orders_verified
+    {
+        let ghost_orders = venue
+            .open_order_ids
+            .difference(&local.open_order_ids)
+            .cloned()
+            .collect();
+        let orphan_local_orders = local
+            .open_order_ids
+            .difference(&venue.open_order_ids)
+            .cloned()
+            .collect();
+        (ghost_orders, orphan_local_orders, false)
+    } else {
+        (Vec::new(), Vec::new(), true)
+    };
 
     let cash_diff = venue.cash - local.cash;
     // 超出容差即 break：不按手续费 / 资金费自动归因抵扣。
@@ -264,6 +288,7 @@ pub fn reconcile(
         extra_fills,
         ghost_orders,
         orphan_local_orders,
+        open_orders_unverified,
         cash_break,
         frozen_instruments,
     }

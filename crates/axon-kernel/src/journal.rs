@@ -308,6 +308,8 @@ mod tests {
                 spec_version: "spec-3".to_string(),
                 normalizer_hash: "norm-xyz".to_string(),
             }],
+            shadow_cash: None,
+            initial_positions: None,
         }
     }
 

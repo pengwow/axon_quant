@@ -28,7 +28,7 @@ pub use exchange_gateway::ExchangeGateway;
 /// 实时驱动编排：Kernel + KernelPump + ExchangeGateway 装配状态机（M6 live 接线）
 pub mod live_driver;
 
-pub use live_driver::LiveDriver;
+pub use live_driver::{ExistingPositions, LiveDriver};
 
 /// B3 风控接线：`EngineRiskCheck` 把 axon-risk 引擎接进内核 RiskCheck 接缝
 pub mod risk_check;
