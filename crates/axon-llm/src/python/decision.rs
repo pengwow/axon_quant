@@ -185,16 +185,20 @@ fn shared_runtime() -> &'static Arc<tokio::runtime::Runtime> {
 
 /// 兼容嵌套 runtime 上下文的同步块驱动。
 ///
-/// 问题：Python 回调可能从 Rust kernel 的 tokio runtime 里进来
-/// （回测 kernel loop、worker pump 都是 Rust async 驱动），
-/// 此时再 `Runtime::block_on` 会 panic "Cannot start a runtime from within a runtime"。
+/// 两种场景：
+/// - **内核回测路径**：`BarContextSim::on_event` 在 `self.runtime.block_on(async decide)`
+///   （kernel_host.rs:89）里调 Python strategy，当前线程**已经在 R_K 的 runtime 上下文
+///   中**。此线程内再 `handle.block_on` 同一个 runtime → tokio 1.x panic "Cannot start
+///   a runtime from within a runtime"。
+/// - **纯 CLI / 独立调用**：当前线程无 runtime 上下文 → 共享 runtime 直接 block_on。
 ///
-/// 解法：检测 `Handle::try_current()`。
-/// - 已有 runtime 上下文 → 用 `block_in_place` 临时让出线程，在内部用 `Handle.block_on` 驱动 future；
-/// - 无 runtime 上下文 → 直接用共享 runtime `block_on`。
+/// 解法：
+/// - `Handle::try_current()` Ok → runtime 上下文已存在，用 `futures::executor::block_on`
+///   只驱动 future（不持有 runtime），复用当前上下文；
+/// - Err → 共享 runtime `block_on`。
 fn _block_on<F: std::future::Future>(future: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(move || handle.block_on(future)),
+        Ok(_) => futures::executor::block_on(future),
         Err(_) => shared_runtime().block_on(future),
     }
 }

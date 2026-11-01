@@ -1612,6 +1612,7 @@ dependencies = [
  "axon-risk",
  "bytes",
  "chrono",
+ "futures",
  "futures-core",
  "hex",
  "parking_lot",

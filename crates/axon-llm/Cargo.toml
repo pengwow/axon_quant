@@ -115,6 +115,8 @@ toml = { version = "0.8" }
 bytes = { version = "1", optional = true }
 # Stream trait
 futures-core = { version = "0.3", optional = true }
+# futures::executor::block_on — 在已有 runtime 上下文里驱动 future，避免嵌套 panic
+futures = { version = "0.3", default-features = false, features = ["executor"] }
 
 # 真实交易所适配(默认禁用,trading-exchange feature 启用时激活)
 # 引入后传递依赖 hmac / sha2 / hex / tokio-tungstenite / rust_decimal。
