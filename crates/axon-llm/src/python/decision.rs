@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -27,12 +28,11 @@ use crate::types::Message;
 
 use super::helpers::pythonize;
 
-/// Python 侧决策后端包装（持有 trait 对象 + 独占 tokio runtime）
+/// Python 侧决策后端包装（持有 trait 对象，runtime 由全局 `_block_on` 管理）
 #[pyclass(name = "DecisionBackend", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDecisionBackend {
     pub(crate) inner: Arc<dyn DecisionBackend>,
-    pub(crate) runtime: Arc<tokio::runtime::Runtime>,
 }
 
 /// Python 侧规则兜底
@@ -114,7 +114,6 @@ impl FallbackDecider for PyLlmFallbackAdapter {
 #[pyclass(name = "SdmCascadeDecisionLayer", skip_from_py_object)]
 pub struct PyCascadeLayer {
     shared: Arc<SdmCascadeDecisionLayer>,
-    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 fn map_decision_err(e: DecisionError) -> PyErr {
@@ -166,12 +165,38 @@ pub fn make_decision_backend(config: &Bound<'_, PyDict>) -> PyResult<PyDecisionB
         }
     };
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(PyDecisionBackend {
-        inner,
-        runtime: Arc::new(runtime),
+    // runtime 由全局 _block_on 统一管理，不再随 backend 走
+    Ok(PyDecisionBackend { inner })
+}
+
+/// 全局共享 runtime：所有 cascade layer 共用。
+/// 用 OnceLock 懒初始化，进程内只建一次；返回 Arc 以便多个 backend 克隆共享。
+fn shared_runtime() -> &'static Arc<tokio::runtime::Runtime> {
+    static RT: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+    RT.get_or_init(|| {
+        Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create global tokio runtime for axon-llm"),
+        )
     })
+}
+
+/// 兼容嵌套 runtime 上下文的同步块驱动。
+///
+/// 问题：Python 回调可能从 Rust kernel 的 tokio runtime 里进来
+/// （回测 kernel loop、worker pump 都是 Rust async 驱动），
+/// 此时再 `Runtime::block_on` 会 panic "Cannot start a runtime from within a runtime"。
+///
+/// 解法：检测 `Handle::try_current()`。
+/// - 已有 runtime 上下文 → 用 `block_in_place` 临时让出线程，在内部用 `Handle.block_on` 驱动 future；
+/// - 无 runtime 上下文 → 直接用共享 runtime `block_on`。
+fn _block_on<F: std::future::Future>(future: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(move || handle.block_on(future)),
+        Err(_) => shared_runtime().block_on(future),
+    }
 }
 
 /// 从 Python state/questions 两个 dict 构造 DecisionRequest
@@ -244,7 +269,6 @@ impl PyCascadeLayer {
         );
         Self {
             shared: Arc::new(layer),
-            runtime: backend.runtime.clone(),
         }
     }
 
@@ -266,11 +290,14 @@ impl PyCascadeLayer {
         );
         Self {
             shared: Arc::new(layer),
-            runtime: backend.runtime.clone(),
         }
     }
 
     /// 同步决策：state/questions 为 dict，返回结果 dict
+    ///
+    /// 兼容嵌套 runtime：若调用发生在另一个 tokio runtime 上下文里
+    /// （Rust kernel 回测循环等），用 block_in_place + Handle.block_on 驱动，
+    /// 否则直接用共享 runtime block_on。见 `_block_on`。
     fn decide<'py>(
         &self,
         py: Python<'py>,
@@ -278,7 +305,7 @@ impl PyCascadeLayer {
         questions: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let req = parse_request(py, state, questions)?;
-        let d = self.runtime.block_on(self.shared.decide(&req));
+        let d = _block_on(self.shared.decide(&req));
         decision_to_dict(py, &d)
     }
 
