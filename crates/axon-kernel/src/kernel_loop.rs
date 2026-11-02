@@ -6,7 +6,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// 进度回调签名：(已处理帧数, 总帧数)
+///
+/// 用 `Arc<dyn Fn>` 是因为 PyO3 侧需要把 Python callable 包装成 Send+Sync 的
+/// Rust 闭包（跨线程安全），而 Kernel 本身不依赖 pyo3。
+pub type ProgressCb = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 use axon_backtest::engine::RunResult;
 use axon_core::portfolio::{FillRecord, TradeRecord};
@@ -63,6 +70,12 @@ pub struct Kernel {
     next_seq: u64,
     /// 重演进行中：`enqueue_external` / `drain_external` 由此抑制 journal 写入
     replaying: bool,
+    /// 可选进度回调，每 5% 触发一次 `(已处理帧数, 总帧数)`
+    progress_cb: Option<ProgressCb>,
+    /// 本次 run 的总帧数（load_frames 时设定，用于百分比计算）
+    total_frames: u64,
+    /// 上次已上报的百分比（0-100），避免同百分比重复触发
+    last_reported_pct: u8,
 }
 
 impl Kernel {
@@ -87,12 +100,42 @@ impl Kernel {
             started: Instant::now(),
             next_seq: 0,
             replaying: false,
+            progress_cb: None,
+            total_frames: 0,
+            last_reported_pct: 0,
         }
     }
 
     /// 注册一个策略 Host（多个 Host 按注册顺序依次决策）
     pub fn add_host(&mut self, host: Box<dyn StrategyHost>) {
         self.hosts.push(host);
+    }
+
+    /// 设置进度回调（可选）。每处理完 5% 的帧数触发一次，回调参数是 `(已处理, 总量)`。
+    ///
+    /// 不设置则静默执行（默认 None，零开销）。重演模式也支持进度上报。
+    pub fn set_progress_cb(&mut self, cb: ProgressCb) {
+        self.progress_cb = Some(cb);
+    }
+
+    /// 内部辅助：检查是否跨了 5% 阈值，是则触发回调
+    #[inline]
+    fn maybe_report_progress(&mut self) {
+        let Some(cb) = &self.progress_cb else {
+            return;
+        };
+        if self.total_frames == 0 {
+            return;
+        }
+        let processed = self.lifecycle.bars_processed;
+        // 向上取整到下一个 5% 档位，避免浮点
+        let pct = ((processed * 100) / self.total_frames) as u8;
+        // 每 5% 阈值触发一次，同时 100% 封顶
+        let threshold = (pct / 5).min(20) * 5;
+        if threshold > self.last_reported_pct {
+            self.last_reported_pct = threshold;
+            cb(processed, self.total_frames);
+        }
     }
 
     /// 构造本内核时固化的配置（只读）
@@ -165,6 +208,10 @@ impl Kernel {
     ///
     /// 屏障期望集合为空时用本批帧的品种并集补齐。
     pub fn load_frames(&mut self, frames: Vec<GridFrame>) -> Result<(), KernelError> {
+        // 记录总量供进度百分比计算；每 run 开头重置上报阈值
+        self.total_frames = frames.len() as u64;
+        self.last_reported_pct = 0;
+
         let interval_ns = interval_to_nanos(&self.config.interval)
             .ok_or_else(|| KernelError::Pump(format!("非法 interval: {}", self.config.interval)))?;
         if let Some(first) = frames.first() {
@@ -231,7 +278,12 @@ impl Kernel {
         while let Some(ev) = self.queue.next() {
             self.dispatch(ev)?;
             self.drain_external()?;
+            // dispatch 内部 lifecycle.on_bar_closed 会递增 bars_processed，
+            // 在这里检查是否跨 5% 阈值并触发进度回调。回调本身极轻量（阈值内走 fast path）。
+            self.maybe_report_progress();
         }
+        // drain_queue 跑完必定是 100%，最后补一枪确保回调拿到终点值
+        self.maybe_report_progress();
         Ok(())
     }
 
