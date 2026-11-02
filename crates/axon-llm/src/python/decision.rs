@@ -28,7 +28,7 @@ use crate::types::Message;
 
 use super::helpers::pythonize;
 
-/// Python 侧决策后端包装（持有 trait 对象，runtime 由全局 `_block_on` 管理）
+/// Python 侧决策后端包装（持有 trait 对象，runtime 由全局共享 runtime 管理）
 #[pyclass(name = "DecisionBackend", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDecisionBackend {
@@ -165,7 +165,7 @@ pub fn make_decision_backend(config: &Bound<'_, PyDict>) -> PyResult<PyDecisionB
         }
     };
 
-    // runtime 由全局 _block_on 统一管理，不再随 backend 走
+    // runtime 由全局共享 runtime 统一管理，不再随 backend 走
     Ok(PyDecisionBackend { inner })
 }
 
@@ -181,26 +181,6 @@ fn shared_runtime() -> &'static Arc<tokio::runtime::Runtime> {
                 .expect("failed to create global tokio runtime for axon-llm"),
         )
     })
-}
-
-/// 兼容嵌套 runtime 上下文的同步块驱动。
-///
-/// 两种场景：
-/// - **内核回测路径**：`BarContextSim::on_event` 在 `self.runtime.block_on(async decide)`
-///   （kernel_host.rs:89）里调 Python strategy，当前线程**已经在 R_K 的 runtime 上下文
-///   中**。此线程内再 `handle.block_on` 同一个 runtime → tokio 1.x panic "Cannot start
-///   a runtime from within a runtime"。
-/// - **纯 CLI / 独立调用**：当前线程无 runtime 上下文 → 共享 runtime 直接 block_on。
-///
-/// 解法：
-/// - `Handle::try_current()` Ok → runtime 上下文已存在，用 `futures::executor::block_on`
-///   只驱动 future（不持有 runtime），复用当前上下文；
-/// - Err → 共享 runtime `block_on`。
-fn _block_on<F: std::future::Future>(future: F) -> F::Output {
-    match tokio::runtime::Handle::try_current() {
-        Ok(_) => futures::executor::block_on(future),
-        Err(_) => shared_runtime().block_on(future),
-    }
 }
 
 /// 从 Python state/questions 两个 dict 构造 DecisionRequest
@@ -299,9 +279,10 @@ impl PyCascadeLayer {
 
     /// 同步决策：state/questions 为 dict，返回结果 dict
     ///
-    /// 兼容嵌套 runtime：若调用发生在另一个 tokio runtime 上下文里
-    /// （Rust kernel 回测循环等），用 block_in_place + Handle.block_on 驱动，
-    /// 否则直接用共享 runtime block_on。见 `_block_on`。
+    /// 嵌套 runtime（kernel 回测）下由 `block_on_compat` 把 decide future
+    /// spawn 到共享 runtime 驱动，避免嵌套 panic 与 reactor 不驱动的 hang；
+    /// 等待期间 `detach` 释放 GIL，避免 S1 http 决策耗时卡住其他
+    /// Python 线程（进度查询等接口曾被拖慢到秒级）。
     fn decide<'py>(
         &self,
         py: Python<'py>,
@@ -309,7 +290,12 @@ impl PyCascadeLayer {
         questions: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let req = parse_request(py, state, questions)?;
-        let d = _block_on(self.shared.decide(&req));
+        let shared = self.shared.clone();
+        let d = py.detach(move || {
+            crate::decision::backend::block_on_compat(shared_runtime().as_ref(), async move {
+                shared.decide(&req).await
+            })
+        });
         decision_to_dict(py, &d)
     }
 
