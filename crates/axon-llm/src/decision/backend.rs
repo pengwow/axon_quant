@@ -50,6 +50,19 @@ impl DecisionError {
             Self::Backend(_) => "Backend",
         }
     }
+
+    /// 错误内部详情（供 cascade 拼接 fallback_reason；kind() 的稳定别名保持不变）
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Network(msg) | Self::Auth(msg) | Self::Parse(msg) | Self::Backend(msg) => {
+                msg.clone()
+            }
+            Self::RateLimited { retry_after } => match retry_after {
+                Some(secs) => format!("retry_after={secs}s"),
+                None => "retry_after unknown".to_string(),
+            },
+        }
+    }
 }
 
 /// SDM 决策后端 trait：所有实现（stub / replay / http）必须满足
@@ -85,6 +98,23 @@ mod tests {
             }
             .kind(),
             "RateLimited"
+        );
+    }
+
+    #[test]
+    fn detail_returns_inner_message() {
+        assert_eq!(DecisionError::Network("boom".into()).detail(), "boom");
+        assert_eq!(DecisionError::Parse("bad json".into()).detail(), "bad json");
+        assert_eq!(
+            DecisionError::RateLimited {
+                retry_after: Some(2)
+            }
+            .detail(),
+            "retry_after=2s"
+        );
+        assert_eq!(
+            DecisionError::RateLimited { retry_after: None }.detail(),
+            "retry_after unknown"
         );
     }
 }
