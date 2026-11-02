@@ -1007,8 +1007,9 @@ impl PyKernel {
         };
 
         // 可选进度回调桥接：把 Python callable 包成 Send+Sync Rust 闭包，
-        // 内核 drain_queue 每 5% 触发一次。闭包内部重拿 GIL 调 callable，
-        // 内核跑在 Python 线程里，attach() 就是获取当前线程已持有的 GIL 句柄。
+        // 内核 load_frames 先报 (0, total)，drain_queue 每帧触发一次。
+        // 闭包内部重拿 GIL 调 callable：内核跑在 Python 线程里，
+        // attach() 就是获取当前线程已持有的 GIL 句柄。
         if let Some(cb) = on_progress {
             let cb_owned = cb.unbind(); // Py<PyAny>（Send）
             let cb_synced = Mutex::new(cb_owned); // Mutex<T> 当 T: Send 时 Mutex 是 Send+Sync
