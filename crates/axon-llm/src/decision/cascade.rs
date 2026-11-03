@@ -46,14 +46,25 @@ pub fn gate_allows(action: Action, confidence: f64, config: &CascadeConfig) -> b
     confidence >= threshold
 }
 
+/// 兜底决策产物（含排查用原始输出）
+pub struct FallbackOutcome {
+    /// 最终动作
+    pub action: Action,
+    /// buy/sell/hold 概率分布
+    pub probabilities: BTreeMap<String, f64>,
+    /// 置信度
+    pub confidence: f64,
+    /// LLM 兜底解析抽取前的原始文本；规则兜底为 None
+    pub raw: Option<String>,
+    /// LLM 兜底 reasoning_content；无则 None
+    pub thinking: Option<String>,
+}
+
 /// 兜底决策协议
 #[async_trait]
 pub trait FallbackDecider: Send + Sync {
-    /// 返回 (动作, buy/sell/hold 概率分布, 置信度)
-    async fn decide(
-        &self,
-        state: &serde_json::Value,
-    ) -> Result<(Action, BTreeMap<String, f64>, f64), DecisionError>;
+    /// 根据领域状态生成兜底决策及原始输出
+    async fn decide(&self, state: &serde_json::Value) -> Result<FallbackOutcome, DecisionError>;
 }
 
 /// 确定性规则兜底：双均线偏离与近一根收益同向才开仓，否则 hold
@@ -74,10 +85,7 @@ impl Default for RuleFallback {
 
 #[async_trait]
 impl FallbackDecider for RuleFallback {
-    async fn decide(
-        &self,
-        state: &serde_json::Value,
-    ) -> Result<(Action, BTreeMap<String, f64>, f64), DecisionError> {
+    async fn decide(&self, state: &serde_json::Value) -> Result<FallbackOutcome, DecisionError> {
         let feat = |name: &str| -> Result<f64, DecisionError> {
             state
                 .get("features")
@@ -114,7 +122,13 @@ impl FallbackDecider for RuleFallback {
             }
         }
         let confidence = probs[action.as_str()];
-        Ok((action, probs, confidence))
+        Ok(FallbackOutcome {
+            action,
+            probabilities: probs,
+            confidence,
+            raw: None,
+            thinking: None,
+        })
     }
 }
 
@@ -193,11 +207,13 @@ impl SdmCascadeDecisionLayer {
                         format!("sdm_error: {}: {}", e.kind(), truncate_detail(&e.detail())),
                         None,
                         BTreeMap::new(),
+                        None,
                     )
                     .await;
             }
         };
 
+        let s1_raw = serde_json::to_string(&resp).ok();
         let sub_signals = extract_sub_signals(&resp);
         let usage = resp.usage;
 
@@ -220,6 +236,7 @@ impl SdmCascadeDecisionLayer {
                         "sdm_error: invalid_choice".to_string(),
                         Some(usage),
                         sub_signals,
+                        s1_raw.clone(),
                     )
                     .await;
             }
@@ -233,6 +250,7 @@ impl SdmCascadeDecisionLayer {
                     format!("low_confidence: {}: {}", action.as_str(), confidence),
                     Some(usage),
                     sub_signals,
+                    s1_raw.clone(),
                 )
                 .await;
         }
@@ -246,6 +264,9 @@ impl SdmCascadeDecisionLayer {
             fallback_reason: None,
             sdm_usage: Some(usage),
             sub_signals,
+            s1_raw: s1_raw.clone(),
+            s2_raw: None,
+            s2_thinking: None,
         }
     }
 
@@ -256,16 +277,20 @@ impl SdmCascadeDecisionLayer {
         reason: String,
         usage: Option<DecisionUsage>,
         sub_signals: BTreeMap<String, f64>,
+        s1_raw: Option<String>,
     ) -> CascadeDecision {
         match self.fallback.decide(&req.state).await {
-            Ok((action, probabilities, confidence)) => CascadeDecision {
-                action,
+            Ok(outcome) => CascadeDecision {
+                action: outcome.action,
                 source: DecisionSource::Fallback,
-                confidence,
-                probabilities,
+                confidence: outcome.confidence,
+                probabilities: outcome.probabilities,
                 fallback_reason: Some(reason),
                 sdm_usage: usage,
                 sub_signals,
+                s1_raw,
+                s2_raw: outcome.raw,
+                s2_thinking: outcome.thinking,
             },
             Err(e) => {
                 let mut probabilities = BTreeMap::new();
@@ -284,6 +309,9 @@ impl SdmCascadeDecisionLayer {
                     )),
                     sdm_usage: usage,
                     sub_signals,
+                    s1_raw,
+                    s2_raw: None,
+                    s2_thinking: None,
                 }
             }
         }
@@ -386,6 +414,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn s1_raw_survives_low_confidence_fallback() {
+        let (b, req) = req_with(Some(choice_resp("buy", 0.5)));
+        let layer = SdmCascadeDecisionLayer::new(
+            b,
+            Arc::new(RuleFallback::new()),
+            CascadeConfig::default(),
+        );
+        let d = layer.decide(&req).await;
+        assert!(d.s1_raw.is_some());
+        assert!(d.s1_raw.as_deref().unwrap().contains("next_direction"));
+        assert!(d.s2_raw.is_none()); // 规则兜底无 LLM 原文
+    }
+
+    #[tokio::test]
     async fn backend_error_falls_back_with_no_usage() {
         let (b, req) = req_with(None);
         let layer = SdmCascadeDecisionLayer::new(
@@ -420,10 +462,7 @@ mod tests {
     struct FailingFallback;
     #[async_trait]
     impl FallbackDecider for FailingFallback {
-        async fn decide(
-            &self,
-            _s: &serde_json::Value,
-        ) -> Result<(Action, BTreeMap<String, f64>, f64), DecisionError> {
+        async fn decide(&self, _s: &serde_json::Value) -> Result<FallbackOutcome, DecisionError> {
             Err(DecisionError::Backend("down".into()))
         }
     }

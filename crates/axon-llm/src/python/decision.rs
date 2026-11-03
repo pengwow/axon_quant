@@ -13,7 +13,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::decision::backend::{DecisionBackend, DecisionError};
 use crate::decision::cascade::{
-    CascadeConfig, FallbackDecider, RuleFallback, SdmCascadeDecisionLayer,
+    CascadeConfig, FallbackDecider, FallbackOutcome, RuleFallback, SdmCascadeDecisionLayer,
 };
 use crate::decision::http::{SdmHttpBackend, SdmHttpConfig};
 use crate::decision::replay::ReplayDecisionBackend;
@@ -78,17 +78,7 @@ struct PyLlmFallbackAdapter {
 
 #[async_trait::async_trait]
 impl FallbackDecider for PyLlmFallbackAdapter {
-    async fn decide(
-        &self,
-        state: &serde_json::Value,
-    ) -> Result<
-        (
-            crate::decision::types::Action,
-            std::collections::BTreeMap<String, f64>,
-            f64,
-        ),
-        DecisionError,
-    > {
+    async fn decide(&self, state: &serde_json::Value) -> Result<FallbackOutcome, DecisionError> {
         let prompt = crate::decision::LlmFallback::default_template();
         let state_str = state.to_string();
         let vars = std::collections::HashMap::from([("state", state_str.as_str())]);
@@ -103,10 +93,18 @@ impl FallbackDecider for PyLlmFallbackAdapter {
             .await
             .map_err(crate::decision::llm_fallback::map_llm_error)?;
         drop(guard);
+        let thinking = resp.reasoning_content.clone();
         let content = resp
             .content
             .ok_or_else(|| DecisionError::Parse("llm empty".into()))?;
-        parse_llm_content(&content)
+        let (action, probabilities, confidence) = parse_llm_content(&content)?;
+        Ok(FallbackOutcome {
+            action,
+            probabilities,
+            confidence,
+            raw: Some(content),
+            thinking,
+        })
     }
 }
 
@@ -234,6 +232,18 @@ fn decision_to_dict<'py>(
         subs.set_item(k, *val)?;
     }
     dict.set_item("sub_signals", subs)?;
+    match &d.s1_raw {
+        Some(s) => dict.set_item("s1_raw", s)?,
+        None => dict.set_item("s1_raw", py.None())?,
+    }
+    match &d.s2_raw {
+        Some(s) => dict.set_item("s2_raw", s)?,
+        None => dict.set_item("s2_raw", py.None())?,
+    }
+    match &d.s2_thinking {
+        Some(s) => dict.set_item("s2_thinking", s)?,
+        None => dict.set_item("s2_thinking", py.None())?,
+    }
     Ok(dict)
 }
 

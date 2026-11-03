@@ -202,6 +202,14 @@ pub struct CascadeDecision {
     pub sdm_usage: Option<DecisionUsage>,
     /// 子问题信号，仅归因，禁止参与门控
     pub sub_signals: BTreeMap<String, f64>,
+    /// S1 原始响应（DecisionResponse 的 serde JSON 文本；S1 异常未响应时为 None）
+    /// ponytail: 这里是结构化序列化而非 HTTP 字节原文，from_value 会丢未知字段；
+    /// 排查需要字节级原文时，升级路径是 http.rs 保留 text 嵌入 DecisionResponse
+    pub s1_raw: Option<String>,
+    /// S2 兜底原始响应文本（JSON 抽取前的 content 全文；规则兜底为 None）
+    pub s2_raw: Option<String>,
+    /// S2 模型思考过程（reasoning_content；无 / 规则兜底为 None）
+    pub s2_thinking: Option<String>,
 }
 
 #[cfg(test)]
