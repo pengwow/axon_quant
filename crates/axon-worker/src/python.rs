@@ -32,7 +32,7 @@ use axon_exchange::adapters::binance::BinanceAdapter;
 use axon_exchange::python::config::PyExchangeConfig;
 use axon_kernel::{
     BacktestSink, InferenceBackend, InstrumentMode, Journal, Kernel, KernelConfig, KernelResult,
-    RLStrategyHost, RunManifest, StrategyHost, build_frames,
+    ProgressCb, RLStrategyHost, RunManifest, StrategyHost, build_frames,
 };
 use axon_oms::AccountingMode;
 use axon_risk::config::RiskConfig;
@@ -916,7 +916,8 @@ impl PyKernel {
     ///   输入（含当帧逐 bar state）落 journal，供 `LiveRecovery.resume` 崩溃恢复
     ///   重演 / 契约测试构造 fixture。对照重演：`LiveRecovery` 构造参数必须与
     ///   本侧内核参数一致（initial_cash / interval / fee_rate / 品种口径）。
-    #[pyo3(signature = (bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None, journal_path=None))]
+    #[pyo3(signature = (bars_by_symbol, states_by_symbol=None, funding_by_symbol=None, capital_budget=None, journal_path=None, on_progress=None))]
+    #[allow(clippy::too_many_arguments)] // pyo3 强制参数扁平，无法包结构体
     fn run(
         &self,
         py: Python<'_>,
@@ -925,6 +926,7 @@ impl PyKernel {
         funding_by_symbol: Option<Bound<'_, PyDict>>,
         capital_budget: Option<f64>,
         journal_path: Option<String>,
+        on_progress: Option<Bound<'_, PyAny>>,
     ) -> PyResult<PyBacktestResult> {
         let bars_map = parse_bars(bars_by_symbol)?;
         if bars_map.is_empty() {
@@ -1003,6 +1005,24 @@ impl PyKernel {
             }
             rl_strategies.len()
         };
+
+        // 可选进度回调桥接：把 Python callable 包成 Send+Sync Rust 闭包，
+        // 内核 load_frames 先报 (0, total)，drain_queue 每帧触发一次。
+        // 闭包内部重拿 GIL 调 callable：内核跑在 Python 线程里，
+        // attach() 就是获取当前线程已持有的 GIL 句柄。
+        if let Some(cb) = on_progress {
+            let cb_owned = cb.unbind(); // Py<PyAny>（Send）
+            let cb_synced = Mutex::new(cb_owned); // Mutex<T> 当 T: Send 时 Mutex 是 Send+Sync
+            let progress_cb: ProgressCb = Arc::new(move |current, total| {
+                let guard = cb_synced.lock().expect("进度回调被 poison");
+                // attach() 取当前线程 GIL；内核 run() 本身是 Python 调进来的，GIL 必在
+                Python::attach(|py| {
+                    // 返回值忽略；Python 端抛异常也不影响内核继续跑
+                    let _ = guard.call1(py, (current, total));
+                });
+            });
+            kernel.set_progress_cb(progress_cb);
+        }
 
         let result = kernel.run_history(frames).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel 回测失败: {e}"))

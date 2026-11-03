@@ -6,7 +6,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// 进度回调签名：(已处理帧数, 总帧数)
+///
+/// 用 `Arc<dyn Fn>` 是因为 PyO3 侧需要把 Python callable 包装成 Send+Sync 的
+/// Rust 闭包（跨线程安全），而 Kernel 本身不依赖 pyo3。
+pub type ProgressCb = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 use axon_backtest::engine::RunResult;
 use axon_core::portfolio::{FillRecord, TradeRecord};
@@ -63,6 +70,12 @@ pub struct Kernel {
     next_seq: u64,
     /// 重演进行中：`enqueue_external` / `drain_external` 由此抑制 journal 写入
     replaying: bool,
+    /// 可选进度回调，每处理完一帧触发一次 `(已处理帧数, 总帧数)`
+    progress_cb: Option<ProgressCb>,
+    /// 本次 run 的总帧数（load_frames 时设定，用于百分比计算）
+    total_frames: u64,
+    /// 上次已上报的帧数，避免同帧重复触发
+    last_reported_processed: u64,
 }
 
 impl Kernel {
@@ -87,12 +100,39 @@ impl Kernel {
             started: Instant::now(),
             next_seq: 0,
             replaying: false,
+            progress_cb: None,
+            total_frames: 0,
+            last_reported_processed: 0,
         }
     }
 
     /// 注册一个策略 Host（多个 Host 按注册顺序依次决策）
     pub fn add_host(&mut self, host: Box<dyn StrategyHost>) {
         self.hosts.push(host);
+    }
+
+    /// 设置进度回调（可选）。每处理完一帧触发一次，回调参数是 `(已处理, 总量)`；
+    /// `load_frames` 时先报一次 `(0, 总量)`，让调用方立即看到总帧数。
+    ///
+    /// 不设置则静默执行（默认 None，零开销）。重演模式也支持进度上报。
+    pub fn set_progress_cb(&mut self, cb: ProgressCb) {
+        self.progress_cb = Some(cb);
+    }
+
+    /// 内部辅助：每处理完一帧触发一次回调（同一帧数不重复上报）
+    #[inline]
+    fn maybe_report_progress(&mut self) {
+        let Some(cb) = &self.progress_cb else {
+            return;
+        };
+        if self.total_frames == 0 {
+            return;
+        }
+        let processed = self.lifecycle.bars_processed;
+        if processed > self.last_reported_processed {
+            self.last_reported_processed = processed;
+            cb(processed, self.total_frames);
+        }
     }
 
     /// 构造本内核时固化的配置（只读）
@@ -165,6 +205,15 @@ impl Kernel {
     ///
     /// 屏障期望集合为空时用本批帧的品种并集补齐。
     pub fn load_frames(&mut self, frames: Vec<GridFrame>) -> Result<(), KernelError> {
+        // 记录总量供进度百分比计算；每 run 开头重置上报游标
+        self.total_frames = frames.len() as u64;
+        self.last_reported_processed = 0;
+        // 启动即报 (0, total)：慢决策场景下第一帧可能要数秒，
+        // 调用方不应等到第一帧结束才能看到总帧数
+        if let Some(cb) = &self.progress_cb {
+            cb(0, self.total_frames);
+        }
+
         let interval_ns = interval_to_nanos(&self.config.interval)
             .ok_or_else(|| KernelError::Pump(format!("非法 interval: {}", self.config.interval)))?;
         if let Some(first) = frames.first() {
@@ -231,7 +280,12 @@ impl Kernel {
         while let Some(ev) = self.queue.next() {
             self.dispatch(ev)?;
             self.drain_external()?;
+            // dispatch 内部 lifecycle.on_bar_closed 会递增 bars_processed，
+            // 每帧触发一次进度回调（同帧数 fast path 直接跳过）
+            self.maybe_report_progress();
         }
+        // drain_queue 跑完必定是 100%，最后补一枪确保回调拿到终点值（已报过则跳过）
+        self.maybe_report_progress();
         Ok(())
     }
 
@@ -661,6 +715,58 @@ mod tests {
         assert_eq!(result.bars_processed, 0);
         assert_eq!(result.orders_submitted, 0);
         assert!(kernel.journal().is_empty());
+    }
+
+    #[test]
+    fn test_progress_cb_reports_start_and_every_frame() {
+        let bars = BTreeMap::from([(
+            "BTC/USDT".to_string(),
+            vec![
+                Some(bar(START)),
+                Some(bar(START + ONE_MIN)),
+                Some(bar(START + 2 * ONE_MIN)),
+            ],
+        )]);
+        let frames = build_frames(&bars, &InstrumentMode::Spot, None).expect("网格应能展平成帧");
+
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let mut kernel = empty_kernel();
+        let sink = reports.clone();
+        kernel.set_progress_cb(Arc::new(move |current, total| {
+            sink.lock().unwrap().push((current, total));
+        }));
+        kernel.run_history(frames).expect("回测应跑通");
+
+        // 启动先报 (0, 3) 让前端立即看到总帧数，随后每帧推进，末尾不重复
+        assert_eq!(
+            *reports.lock().unwrap(),
+            vec![(0, 3), (1, 3), (2, 3), (3, 3)]
+        );
+    }
+
+    #[test]
+    fn test_progress_cb_dense_frames_not_throttled() {
+        // 40 帧：旧 5% 阈值实现只报 3 次，每帧粒度应报 41 次（含启动）
+        let bars = BTreeMap::from([(
+            "BTC/USDT".to_string(),
+            (0..40)
+                .map(|i| Some(bar(START + i * ONE_MIN)))
+                .collect::<Vec<_>>(),
+        )]);
+        let frames = build_frames(&bars, &InstrumentMode::Spot, None).expect("网格应能展平成帧");
+
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let mut kernel = empty_kernel();
+        let sink = reports.clone();
+        kernel.set_progress_cb(Arc::new(move |current, total| {
+            sink.lock().unwrap().push((current, total));
+        }));
+        kernel.run_history(frames).expect("回测应跑通");
+
+        let reports = reports.lock().unwrap();
+        assert_eq!(reports.len(), 41, "每帧一次 + 启动一次");
+        assert_eq!(reports.first(), Some(&(0, 40)));
+        assert_eq!(reports.last(), Some(&(40, 40)));
     }
 
     #[test]

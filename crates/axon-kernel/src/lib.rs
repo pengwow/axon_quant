@@ -86,7 +86,7 @@ pub use core::{InstrumentMode, KernelConfig, KernelCore, SeedLiquidity};
 pub use event::{BarClosedEvent, close_time, interval_to_nanos};
 pub use host::{HostCtx, OrderId, OrderIntent, OrderSpec, StrategyHost};
 pub use journal::{Journal, JournalEntry};
-pub use kernel_loop::{Kernel, KernelResult};
+pub use kernel_loop::{Kernel, KernelResult, ProgressCb};
 pub use lifecycle::BarLifecycle;
 pub use persist::{ManifestPosition, ModelArtifact, RunManifest};
 pub use pump::{BarGridBarrier, GridFrame, build_frames};

@@ -153,6 +153,11 @@ fn ensure_action_keys(probs: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
         .collect()
 }
 
+/// 错误详情按 char 截断到 200，防超长消息撑爆 fallback_reason（按 char 计，避免 UTF-8 字节边界 panic）
+fn truncate_detail(s: &str) -> String {
+    s.chars().take(200).collect()
+}
+
 /// SDM（快决策）+ 兜底的级联层，返回统一出口
 pub struct SdmCascadeDecisionLayer {
     backend: Arc<dyn DecisionBackend>,
@@ -185,7 +190,7 @@ impl SdmCascadeDecisionLayer {
                 return self
                     .use_fallback(
                         req,
-                        format!("sdm_error: {}", e.kind()),
+                        format!("sdm_error: {}: {}", e.kind(), truncate_detail(&e.detail())),
                         None,
                         BTreeMap::new(),
                     )
@@ -225,7 +230,7 @@ impl SdmCascadeDecisionLayer {
             return self
                 .use_fallback(
                     req,
-                    format!("low_confidence: {}={}", action.as_str(), confidence),
+                    format!("low_confidence: {}: {}", action.as_str(), confidence),
                     Some(usage),
                     sub_signals,
                 )
@@ -272,7 +277,11 @@ impl SdmCascadeDecisionLayer {
                     source: DecisionSource::Fallback,
                     confidence: 0.0,
                     probabilities,
-                    fallback_reason: Some(format!("fallback_error: {}", e.kind())),
+                    fallback_reason: Some(format!(
+                        "fallback_error: {}: {}",
+                        e.kind(),
+                        truncate_detail(&e.detail())
+                    )),
                     sdm_usage: usage,
                     sub_signals,
                 }
@@ -368,7 +377,11 @@ mod tests {
         let d = layer.decide(&req).await;
         assert_eq!(d.source, DecisionSource::Fallback);
         assert_eq!(d.action, Action::Buy); // 规则：sma>0 且 ret>0
-        assert!(d.fallback_reason.unwrap().starts_with("low_confidence"));
+        // 三段式「类别: 细分: 详情」：前端按冒号取前两段聚合依赖此格式
+        assert_eq!(
+            d.fallback_reason.as_deref(),
+            Some("low_confidence: buy: 0.5")
+        );
         assert_eq!(d.sdm_usage.unwrap().input_tokens, 5);
     }
 
@@ -382,7 +395,10 @@ mod tests {
         );
         let d = layer.decide(&req).await;
         assert_eq!(d.source, DecisionSource::Fallback);
-        assert_eq!(d.fallback_reason.as_deref(), Some("sdm_error: Network"));
+        assert_eq!(
+            d.fallback_reason.as_deref(),
+            Some("sdm_error: Network: boom")
+        );
         assert!(d.sdm_usage.is_none());
     }
 
@@ -419,10 +435,18 @@ mod tests {
             SdmCascadeDecisionLayer::new(b, Arc::new(FailingFallback), CascadeConfig::default());
         let d = layer.decide(&req).await;
         assert_eq!(d.action, Action::Hold);
+        // 旧：Some("fallback_error: Backend")
         assert_eq!(
             d.fallback_reason.as_deref(),
-            Some("fallback_error: Backend")
+            Some("fallback_error: Backend: down")
         );
+    }
+
+    #[test]
+    fn truncate_detail_caps_at_200_chars() {
+        // 300 个多字节字符：按 char 截断不 panic 且不超过 200
+        let long = "你".repeat(300);
+        assert_eq!(truncate_detail(&long).chars().count(), 200);
     }
 
     /// choice_resp + v1 3 子信号 + v2 2 新增子信号（volatility_regime + drawdown_risk）

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -27,12 +28,11 @@ use crate::types::Message;
 
 use super::helpers::pythonize;
 
-/// Python 侧决策后端包装（持有 trait 对象 + 独占 tokio runtime）
+/// Python 侧决策后端包装（持有 trait 对象，runtime 由全局共享 runtime 管理）
 #[pyclass(name = "DecisionBackend", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDecisionBackend {
     pub(crate) inner: Arc<dyn DecisionBackend>,
-    pub(crate) runtime: Arc<tokio::runtime::Runtime>,
 }
 
 /// Python 侧规则兜底
@@ -114,7 +114,6 @@ impl FallbackDecider for PyLlmFallbackAdapter {
 #[pyclass(name = "SdmCascadeDecisionLayer", skip_from_py_object)]
 pub struct PyCascadeLayer {
     shared: Arc<SdmCascadeDecisionLayer>,
-    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 fn map_decision_err(e: DecisionError) -> PyErr {
@@ -166,11 +165,21 @@ pub fn make_decision_backend(config: &Bound<'_, PyDict>) -> PyResult<PyDecisionB
         }
     };
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(PyDecisionBackend {
-        inner,
-        runtime: Arc::new(runtime),
+    // runtime 由全局共享 runtime 统一管理，不再随 backend 走
+    Ok(PyDecisionBackend { inner })
+}
+
+/// 全局共享 runtime：所有 cascade layer 共用。
+/// 用 OnceLock 懒初始化，进程内只建一次；返回 Arc 以便多个 backend 克隆共享。
+fn shared_runtime() -> &'static Arc<tokio::runtime::Runtime> {
+    static RT: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+    RT.get_or_init(|| {
+        Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create global tokio runtime for axon-llm"),
+        )
     })
 }
 
@@ -244,7 +253,6 @@ impl PyCascadeLayer {
         );
         Self {
             shared: Arc::new(layer),
-            runtime: backend.runtime.clone(),
         }
     }
 
@@ -266,11 +274,15 @@ impl PyCascadeLayer {
         );
         Self {
             shared: Arc::new(layer),
-            runtime: backend.runtime.clone(),
         }
     }
 
     /// 同步决策：state/questions 为 dict，返回结果 dict
+    ///
+    /// 嵌套 runtime（kernel 回测）下由 `block_on_compat` 把 decide future
+    /// spawn 到共享 runtime 驱动，避免嵌套 panic 与 reactor 不驱动的 hang；
+    /// 等待期间 `detach` 释放 GIL，避免 S1 http 决策耗时卡住其他
+    /// Python 线程（进度查询等接口曾被拖慢到秒级）。
     fn decide<'py>(
         &self,
         py: Python<'py>,
@@ -278,7 +290,12 @@ impl PyCascadeLayer {
         questions: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let req = parse_request(py, state, questions)?;
-        let d = self.runtime.block_on(self.shared.decide(&req));
+        let shared = self.shared.clone();
+        let d = py.detach(move || {
+            crate::decision::backend::block_on_compat(shared_runtime().as_ref(), async move {
+                shared.decide(&req).await
+            })
+        });
         decision_to_dict(py, &d)
     }
 
