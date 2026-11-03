@@ -714,6 +714,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "ark-ff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1302,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "axon-backtest"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1326,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "axon-cli"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1334,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "axon-compliance"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1353,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "axon-core"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "bincode",
  "chrono",
@@ -1372,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "axon-data"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1403,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "axon-defi"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -1425,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "axon-distributed"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1439,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "axon-ensemble"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1454,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "axon-exchange"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1485,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "axon-explain"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1501,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "axon-harness"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "blake3",
@@ -1515,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "axon-hpo"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1529,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "axon-inference"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "candle-core",
@@ -1553,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "axon-integration-tests"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-trait",
  "axon-backtest",
@@ -1584,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "axon-kernel"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1598,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "axon-llm"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1639,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "axon-monitor"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -1651,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "axon-oms"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1670,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "axon-python"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-backtest",
  "axon-compliance",
@@ -1699,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "axon-registry"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1719,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "axon-risk"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-core",
  "axon-monitor",
@@ -1738,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "axon-rl"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1754,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "axon-strategy"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1769,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "axon-tracker"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1788,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "axon-walk-forward"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1802,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "axon-worker"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "async-trait",
  "axon-backtest",
@@ -2181,9 +2190,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.10.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0"
+checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2492,9 +2501,9 @@ checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
 ]
@@ -4031,9 +4040,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.38"
+version = "0.2.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
+checksum = "3ac703058abac89e5c39b0b879dce2b6b14a4ba36600c7e7e3d0c60a6883ef3c"
 dependencies = [
  "defmt",
  "jiff-core",
@@ -4048,9 +4057,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+checksum = "aee43309eb53bafb8c36d35d6e444769c8f8e6206a9fbf7546f5db9d7d4a0e93"
 dependencies = [
  "defmt",
  "log",
@@ -4058,9 +4067,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.38"
+version = "0.2.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
+checksum = "6dc32470c67eb7d0e9ccb74303fa925313dc04cecb1aa048beaa6f391e36a93d"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -4681,6 +4690,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4833,7 +4851,7 @@ dependencies = [
  "snap",
  "thrift",
  "twox-hash",
- "zstd 0.13.3",
+ "zstd 0.13.4",
 ]
 
 [[package]]
@@ -4890,9 +4908,9 @@ dependencies = [
 
 [[package]]
 name = "pest_stack_guard"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97e6cd2217057fa86b6eaa512917e58089d875b957a31e35e7ab729977e0a5f2"
+checksum = "9ac6154fd4418b8f0b82532c59c26f303f9ca59a64c883e8ce3971fd82733439"
 dependencies = [
  "psm",
  "stacker",
@@ -5132,10 +5150,11 @@ dependencies = [
 
 [[package]]
 name = "psm"
-version = "0.1.24"
+version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
+ "ar_archive_writer",
  "cc",
 ]
 
@@ -7054,9 +7073,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
-version = "3.5.0"
+version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde93ff05758a36a851a398a772b0b79a82fbe3c186a46f2696baaeaf84c966b"
+checksum = "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d"
 dependencies = [
  "base64 0.23.1",
  "log",
@@ -7070,9 +7089,9 @@ dependencies = [
 
 [[package]]
 name = "ureq-proto"
-version = "0.6.5"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
+checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
 dependencies = [
  "base64 0.23.1",
  "http",
@@ -7723,11 +7742,11 @@ dependencies = [
 
 [[package]]
 name = "zstd"
-version = "0.13.3"
+version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
 dependencies = [
- "zstd-safe 7.3.0",
+ "zstd-safe 7.4.0",
 ]
 
 [[package]]
@@ -7742,9 +7761,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "7.3.0"
+version = "7.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
 dependencies = [
  "zstd-sys",
 ]
