@@ -15,7 +15,7 @@ use crate::prompt::PromptTemplate;
 use crate::types::Message;
 
 use super::backend::DecisionError;
-use super::cascade::FallbackDecider;
+use super::cascade::{FallbackDecider, FallbackOutcome};
 use super::types::Action;
 
 /// LLM 兜底决策器
@@ -109,10 +109,7 @@ pub(crate) fn parse_llm_content(
 
 #[async_trait]
 impl FallbackDecider for LlmFallback {
-    async fn decide(
-        &self,
-        state: &serde_json::Value,
-    ) -> Result<(Action, BTreeMap<String, f64>, f64), DecisionError> {
+    async fn decide(&self, state: &serde_json::Value) -> Result<FallbackOutcome, DecisionError> {
         let state_str = state.to_string();
         let vars = HashMap::from([("state", state_str.as_str())]);
         let user = self.prompt.render_user(&vars);
@@ -125,10 +122,18 @@ impl FallbackDecider for LlmFallback {
             .complete(&messages)
             .await
             .map_err(map_llm_error)?;
+        let thinking = resp.reasoning_content.clone();
         let content = resp
             .content
             .ok_or_else(|| DecisionError::Parse("llm returned empty content".into()))?;
-        parse_llm_content(&content)
+        let (action, probabilities, confidence) = parse_llm_content(&content)?;
+        Ok(FallbackOutcome {
+            action,
+            probabilities,
+            confidence,
+            raw: Some(content),
+            thinking,
+        })
     }
 }
 
@@ -162,11 +167,12 @@ mod tests {
             "{\"action\":\"buy\",\"confidence\":0.66}",
         ));
         let fb = LlmFallback::new(llm);
-        let (a, _p, c) = fb
+        let outcome = fb
             .decide(&serde_json::json!({"features": {}}))
             .await
             .unwrap();
-        assert_eq!(a, Action::Buy);
-        assert!((c - 0.66).abs() < 1e-9);
+        assert_eq!(outcome.action, Action::Buy);
+        assert!((outcome.confidence - 0.66).abs() < 1e-9);
+        assert!(outcome.raw.is_some());
     }
 }
