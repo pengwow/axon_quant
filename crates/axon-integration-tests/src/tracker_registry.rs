@@ -296,3 +296,53 @@ pub async fn test_get_latest_returns_unpromoted_staging() {
         latest.version
     );
 }
+
+/// 测试：unpromote 把当前 Production 版本还原回 Staging（Python 绑定 unpromote 的语义契约）
+///
+/// Python 绑定层的 `ModelRegistry.unpromote` 直接透传 `registry.unpromote(name)`，
+/// 此处守护该接线行为：晋升后取消，stage 变回 Staging，且不再有生产版本。
+pub async fn test_unpromote_returns_to_staging() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage =
+        Arc::new(LocalStorage::new(tmp.path().join("models")).expect("create local storage"));
+    let registry = ModelRegistry::new(storage);
+
+    let artifact = tmp.path().join("unpromote.bin");
+    std::fs::write(&artifact, b"weights").unwrap();
+    let mv = registry
+        .register(
+            "unpromote-model",
+            &artifact,
+            ModelMetadata {
+                description: "v1".to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    registry
+        .transition_stage("unpromote-model", &mv.version, ModelStage::Production)
+        .await
+        .unwrap();
+
+    let unp = registry.unpromote("unpromote-model").await.unwrap();
+    assert_eq!(unp.version, mv.version);
+    assert_eq!(unp.stage, ModelStage::Staging);
+
+    // 生产位已空，版本回到待验证态
+    assert!(registry.get_production("unpromote-model").await.is_err());
+
+    // 无生产版本时 unpromote 直接报错
+    match registry.unpromote("unpromote-model").await {
+        Err(axon_registry::RegistryError::NoProductionVersion(name)) => {
+            assert_eq!(name, "unpromote-model");
+        }
+        other => panic!("expected NoProductionVersion, got {:?}", other.map(|_| ())),
+    }
+
+    println!(
+        "[Tracker+Registry] unpromote of unpromote-model -> v{} (back to Staging, production miss as expected)",
+        unp.version
+    );
+}

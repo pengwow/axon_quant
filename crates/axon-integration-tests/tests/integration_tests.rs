@@ -71,6 +71,11 @@ async fn tracker_registry_get_latest_returns_unpromoted_staging() {
     tracker_registry::test_get_latest_returns_unpromoted_staging().await;
 }
 
+#[tokio::test]
+async fn tracker_registry_unpromote_returns_to_staging() {
+    tracker_registry::test_unpromote_returns_to_staging().await;
+}
+
 // 多目标 HPO + Pareto + Tracker
 #[tokio::test]
 async fn multi_objective_pareto_tracker() {

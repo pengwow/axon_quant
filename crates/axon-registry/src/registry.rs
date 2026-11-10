@@ -271,6 +271,19 @@ impl ModelRegistry {
             .await
     }
 
+    /// 取消晋升:把当前 Production 版本还原回 Staging。
+    ///
+    /// 为什么两段流转:状态机无 production→staging 直连(晋升刻意单向),
+    /// production→archived→staging 是合法的等效路径;首次晋升后取消与
+    /// rollback 不同——没有上一个 production 版本可回,只能回到待验证态。
+    pub async fn unpromote(&self, name: &str) -> RegistryResult<ModelVersion> {
+        let current = self.get_production(name).await?;
+        self.transition_stage(name, &current.version, ModelStage::Archived)
+            .await?;
+        self.transition_stage(name, &current.version, ModelStage::Staging)
+            .await
+    }
+
     /// 下载模型产物
     pub async fn download_artifact(
         &self,
@@ -461,6 +474,32 @@ mod tests {
         // v2 应被标记为 RolledBack
         let v2_now = registry.get("ppo", Some(&v2.version)).await.unwrap();
         assert_eq!(v2_now.stage, ModelStage::RolledBack);
+    }
+
+    #[tokio::test]
+    async fn test_unpromote_returns_to_staging() {
+        let dir = TempDir::new().unwrap();
+        let (_tmp, registry) = make_registry(dir.path());
+
+        let src = make_artifact(dir.path(), "m1.bin", b"a").await;
+        let v1 = registry
+            .register("ppo", &src, ModelMetadata::default(), None)
+            .await
+            .unwrap();
+        registry
+            .transition_stage("ppo", &v1.version, ModelStage::Production)
+            .await
+            .unwrap();
+
+        let unp = registry.unpromote("ppo").await.unwrap();
+        assert_eq!(unp.version, v1.version);
+        assert_eq!(unp.stage, ModelStage::Staging);
+
+        // 查证持久化后的状态也回到 Staging，且不再有生产版本
+        let now = registry.get("ppo", Some(&v1.version)).await.unwrap();
+        assert_eq!(now.stage, ModelStage::Staging);
+        let r = registry.get_production("ppo").await.unwrap_err();
+        assert!(matches!(r, RegistryError::NoProductionVersion(_)));
     }
 
     #[tokio::test]

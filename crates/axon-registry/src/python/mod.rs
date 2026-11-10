@@ -132,6 +132,19 @@ impl PyModelRegistry {
         model_version_to_dict(py, &mv)
     }
 
+    /// 取消晋升:把当前 Production 版本还原回 Staging（无生产版本时报错）
+    fn unpromote<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
+        let registry = self.registry.clone();
+        let name_owned = name.to_string();
+
+        let mv = self
+            .inner
+            .block_on(async move { registry.unpromote(&name_owned).await })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+
+        model_version_to_dict(py, &mv)
+    }
+
     /// 获取最新版本（不限 stage），未晋升 Production 的记录也可查到
     fn get_latest<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
         let registry = self.registry.clone();
