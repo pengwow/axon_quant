@@ -235,3 +235,64 @@ pub async fn test_tracker_flush_independent_from_registry() {
     assert_eq!(staged[0].stage, ModelStage::Staging);
     assert_eq!(staged[0].version, mv.version);
 }
+
+/// 测试：get(name, None) 取最新版本且不限 stage（Python 绑定 get_latest 的语义契约）
+///
+/// Python 绑定层的 `ModelRegistry.get_latest` 直接透传 `registry.get(name, None)`，
+/// 此处守护该透传的行为：未晋升 Production 的 Staging 记录也能查到，
+/// 名字不存在时按 ModelNotFound 报错。
+pub async fn test_get_latest_returns_unpromoted_staging() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage =
+        Arc::new(LocalStorage::new(tmp.path().join("models")).expect("create local storage"));
+    let registry = ModelRegistry::new(storage);
+
+    // 注册两个版本，全程不晋升，停留在 Staging
+    let artifact = tmp.path().join("latest.bin");
+    std::fs::write(&artifact, b"weights").unwrap();
+    registry
+        .register(
+            "latest-model",
+            &artifact,
+            ModelMetadata {
+                description: "v1".to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let v2 = registry
+        .register(
+            "latest-model",
+            &artifact,
+            ModelMetadata {
+                description: "v2".to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    // get(None) 返回最新版本，即使从未晋升 Production
+    let latest = registry.get("latest-model", None).await.unwrap();
+    assert_eq!(latest.version, v2.version);
+    assert_eq!(latest.stage, ModelStage::Staging);
+
+    // 对照：get_production 查不到未晋升的模型
+    assert!(registry.get_production("latest-model").await.is_err());
+
+    // 不存在的名字报 ModelNotFound
+    match registry.get("no-such-model", None).await {
+        Err(axon_registry::RegistryError::ModelNotFound(name)) => {
+            assert_eq!(name, "no-such-model");
+        }
+        other => panic!("expected ModelNotFound, got {:?}", other.map(|_| ())),
+    }
+
+    println!(
+        "[Tracker+Registry] get latest of latest-model -> v{} (Staging, production miss as expected)",
+        latest.version
+    );
+}

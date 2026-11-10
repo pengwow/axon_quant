@@ -132,6 +132,19 @@ impl PyModelRegistry {
         model_version_to_dict(py, &mv)
     }
 
+    /// 获取最新版本（不限 stage），未晋升 Production 的记录也可查到
+    fn get_latest<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
+        let registry = self.registry.clone();
+        let name_owned = name.to_string();
+
+        let mv = self
+            .inner
+            .block_on(async move { registry.get(&name_owned, None).await })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+
+        model_version_to_dict(py, &mv)
+    }
+
     fn list_models(&self) -> Vec<String> {
         self.registry.list_models()
     }
