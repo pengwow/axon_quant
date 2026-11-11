@@ -12,5 +12,6 @@ from axon_quant._native import rl as _native_rl  # noqa: E402
 TradingEnv = _native_rl.TradingEnv
 
 from .evaluation import compute_metrics, evaluate  # noqa: E402
+from .kernel_backtest import run_kernel_backtest  # noqa: E402
 
-__all__ = ["TradingEnv", "compute_metrics", "evaluate"]
+__all__ = ["TradingEnv", "compute_metrics", "evaluate", "run_kernel_backtest"]
