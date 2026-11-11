@@ -10,8 +10,11 @@ Python 端扩展（evaluate / compute_metrics，从 QuantCell backend 下沉）�
 from axon_quant._native import rl as _native_rl  # noqa: E402
 
 TradingEnv = _native_rl.TradingEnv
+# native rl 子模块的完整导出面 = TradingEnv + VERSION；backend axon_bridge 从
+# axon_quant.rl import VERSION，包装必须 re-export 全部 native 符号
+VERSION = _native_rl.VERSION
 
 from .evaluation import compute_metrics, evaluate  # noqa: E402
 from .kernel_backtest import run_kernel_backtest  # noqa: E402
 
-__all__ = ["TradingEnv", "compute_metrics", "evaluate", "run_kernel_backtest"]
+__all__ = ["TradingEnv", "VERSION", "compute_metrics", "evaluate", "run_kernel_backtest"]

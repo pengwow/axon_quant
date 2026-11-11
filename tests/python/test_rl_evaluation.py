@@ -118,3 +118,15 @@ def test_compute_metrics_pure_stats():
     assert raw["total_pnl"] == 6.59
     assert raw["total_return_pct"] == pytest.approx(round(6.59, 4), abs=1e-6)
     assert raw["turnover"] == 0.5  # 不 round
+
+
+def test_rl_package_reexports_full_native_surface():
+    # 守护：rl .py 包装必须 re-export native 子模块的完整导出面。
+    # 2026-11-11 踩坑：包装初版漏了 VERSION，backend axon_bridge 的
+    # `from axon_quant.rl import VERSION` 直接断链（契约门禁 collection 报错）。
+    from axon_quant import rl
+    from axon_quant._native import rl as _native_rl
+
+    assert rl.VERSION == _native_rl.VERSION
+    assert rl.TradingEnv is _native_rl.TradingEnv
+    assert set(rl.__all__) >= {"TradingEnv", "VERSION"}
