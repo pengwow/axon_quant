@@ -132,9 +132,8 @@ if "ORT_DYLIB_PATH" not in _os.environ:
 from ._native import *  # noqa: F401, F403
 
 # 重新导出原生子模块（由 Rust PyO3 注册）
-# 注意:`llm` 和 `trading` 是从纯 Python `axon_quant.{llm,trading}` 模块导出(见下方),
-# 因为我们对它们做了 Python 端的封装(类型别名 + dataclass),
-# 不直接 re-export 原生的 `_native.llm` / `_native.trading`。
+# 注意:`llm` / `trading` / `rl` 从纯 Python 包装导出（re-export native 符号 +
+# Python 端扩展）,不直接 re-export native 子模块。
 from ._native import (  # noqa: F401
     __version__,  # noqa: F401
     backtest,      # Stage 2:axon-backtest 暴露
@@ -146,24 +145,26 @@ from ._native import (  # noqa: F401
     inference,      # Stage 6:axon-inference 暴露
     oms,            # Stage 4:axon-oms 暴露
     registry,
-    rl,
     risk,           # Stage 3:axon-risk 暴露
     tracker,
     walk_forward,
 )
 
 # 将 PyO3 native-only 子模块注册到 sys.modules。
-# 否则 `from axon_quant.rl import TradingEnv` 之类的导入会因 sys.modules
+# 否则 `from axon_quant.<subname> import ...` 之类的导入会因 sys.modules
 # 缺少 `axon_quant.<subname>` 缓存、Python import 系统无法定位 spec 而
 # ModuleNotFoundError。
 #
 # 注意:backtest/data/risk/oms/exchange/inference/explain/ensemble/compliance
-#      /llm/trading 都有同名 .py 包装,Python import 系统会从 .py 加载,
+#      /llm/trading/rl 都有同名 .py 包装,Python import 系统会从 .py 加载,
 #      sys.modules 也会被自动设置,这里不重复处理(否则会覆盖 .py 包装)。
+#      rl 已是 .py 包装(`python/axon_quant/rl/`,re-export native TradingEnv +
+#      Python 端 evaluation 设施),目录创建后 import 系统自动从 .py 解析,
+#      无法也不需在此循环注册。
 #      defi 同样有 .py 包装,见 `python/axon_quant/defi.py`。
 import sys as _sys
 for _sub_name in (
-    "rl", "hpo", "registry", "distributed", "tracker", "walk_forward",
+    "hpo", "registry", "distributed", "tracker", "walk_forward",
 ):
     _sub_mod = globals().get(_sub_name)
     if _sub_mod is not None:
