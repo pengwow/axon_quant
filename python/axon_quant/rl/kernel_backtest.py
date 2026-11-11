@@ -47,7 +47,7 @@ def run_kernel_backtest(
         symbol,
         stats=stats,
     )
-    result = kernel.run(bars_by_symbol={symbol: [dict(b) for b in bars]})
+    result = kernel.run(bars_by_symbol={symbol: bars})
 
     # 15 字段契约与 backend 原实现逐字段一致（含 profit_factor=None、
     # turnover=fills_detail 累加 Σ|price×qty|、缺失置 None）

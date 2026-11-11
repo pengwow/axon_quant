@@ -130,3 +130,20 @@ def test_rl_package_reexports_full_native_surface():
     assert rl.VERSION == _native_rl.VERSION
     assert rl.TradingEnv is _native_rl.TradingEnv
     assert set(rl.__all__) >= {"TradingEnv", "VERSION"}
+    # 动态包含断言：native rl 新增公开符号而包装层漏 re-export 时在此报警
+    assert {n for n in dir(_native_rl) if not n.startswith("_")} <= set(rl.__all__)
+
+
+def test_compute_metrics_zero_vol_and_saturated_win_rate():
+    # flat NAV：len(returns)>1 且 std=0 → sharpe guard 记 0.0；增量全零 → win_rate 0.0
+    flat = compute_metrics([100.0] * 5, num_trades=0, turnover=1.0)
+    assert flat["sharpe_ratio"] == 0.0
+    assert flat["win_rate"] == 0.0
+    assert flat["total_pnl"] == 0.0
+    assert flat["profit_factor"] == 0.0  # 无盈利无亏损不判优
+    assert flat["turnover"] == 1.0       # turnover 不参与早退/统计衰减
+
+    # 单调上涨：win_rate 饱和 1.0、无亏损 → 哨兵
+    rising = compute_metrics([100.0, 101.0, 102.0, 103.0], num_trades=3)
+    assert rising["win_rate"] == 1.0
+    assert rising["profit_factor"] == 999.99

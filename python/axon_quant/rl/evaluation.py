@@ -99,7 +99,7 @@ def evaluate(
     None 或 0 反推无效，turnover 记 0.0（backend 原口径）。
     """
     obs, reset_info = env.reset()
-    initial_nav = float(reset_info.get("portfolio_value", _DEFAULT_INITIAL_NAV))
+    initial_nav = reset_info.get("portfolio_value", _DEFAULT_INITIAL_NAV)
     nav_history = [initial_nav]
     num_trades = 0
     info: dict = {}
