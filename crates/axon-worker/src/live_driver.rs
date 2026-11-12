@@ -445,6 +445,11 @@ impl LiveDriver {
                 "恢复守卫拒绝继续交易，请人工核对持仓与资金后重试 resume: {reason}{retry}"
             ));
         }
+        // 成功对账同样落盘（P1-02）：ok 报告按 journal 文件名区分（多 worker
+        // 同目录不互踩），供 Python 侧对账读取器/审计消费。落盘失败静默——
+        // 报告仍在返回值里，文件缺失即读取器可观测的"未落盘"信号
+        let ok_path = journal_path.with_extension("reconcile_last_ok.json");
+        let _ = report.write_json(&ok_path);
         Ok((kernel, report))
     }
 
@@ -1000,6 +1005,13 @@ mod tests {
             .resume(&journal, vec![Box::new(CycleHost::new())])
             .expect("resume 应守卫放行");
         assert!(report.is_clean(), "恢复对账应 clean: {report:?}");
+
+        // P1-02：resume 成功也落盘 ok 报告（与 journal 同名区分、多 worker 不互踩）
+        let ok_path = journal.with_extension("reconcile_last_ok.json");
+        let ok_json = std::fs::read_to_string(&ok_path)
+            .unwrap_or_else(|e| panic!("ok 报告应落盘 {}: {e}", ok_path.display()));
+        let parsed: ReconcileReport = serde_json::from_str(&ok_json).expect("ok 报告应为合法 JSON");
+        assert!(parsed.is_clean(), "落盘的 ok 报告应 clean: {parsed:?}");
 
         // ── 续跑：bar1 加仓 0.6 → bar2 清零 ──
         handle_b.push_message(kline_closed(1));
