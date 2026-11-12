@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "axon-backtest"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1335,7 +1335,7 @@ dependencies = [
 
 [[package]]
 name = "axon-cli"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "axon-compliance"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "axon-core"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "bincode",
  "chrono",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "axon-data"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "axon-defi"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "axon-distributed"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "axon-ensemble"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "axon-exchange"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "axon-explain"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "axon-harness"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "blake3",
@@ -1524,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "axon-hpo"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1538,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "axon-inference"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "candle-core",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "axon-integration-tests"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "axon-backtest",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "axon-kernel"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "axon-llm"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "axon-monitor"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "axon-oms"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "chrono",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "axon-python"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-backtest",
  "axon-compliance",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "axon-registry"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "axon-risk"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-core",
  "axon-monitor",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "axon-rl"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "axon-backtest",
  "axon-core",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "axon-strategy"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "axon-core",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "axon-tracker"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "axon-walk-forward"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "pretty_assertions",
  "proptest",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "axon-worker"
-version = "0.24.1"
+version = "0.25.0"
 dependencies = [
  "async-trait",
  "axon-backtest",

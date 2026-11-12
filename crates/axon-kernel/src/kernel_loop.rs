@@ -15,6 +15,10 @@ use std::time::{Duration, Instant};
 /// Rust 闭包（跨线程安全），而 Kernel 本身不依赖 pyo3。
 pub type ProgressCb = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
+/// 进度回调时间节流间隔：前端轮询是秒级，逐帧跨 FFI 回调纯属开销；
+/// 启动帧与末帧必报，中间上报每 200ms 最多一次
+const PROGRESS_CB_MIN_INTERVAL: Duration = Duration::from_millis(200);
+
 use axon_backtest::engine::RunResult;
 use axon_core::portfolio::{FillRecord, TradeRecord};
 use axon_core::{
@@ -76,6 +80,8 @@ pub struct Kernel {
     total_frames: u64,
     /// 上次已上报的帧数，避免同帧重复触发
     last_reported_processed: u64,
+    /// 上次进度上报时刻（时间节流用，见 [`Self::maybe_report_progress`]）
+    last_report_at: Option<Instant>,
 }
 
 impl Kernel {
@@ -103,6 +109,7 @@ impl Kernel {
             progress_cb: None,
             total_frames: 0,
             last_reported_processed: 0,
+            last_report_at: None,
         }
     }
 
@@ -119,7 +126,10 @@ impl Kernel {
         self.progress_cb = Some(cb);
     }
 
-    /// 内部辅助：每处理完一帧触发一次回调（同一帧数不重复上报）
+    /// 内部辅助：每处理完一帧触发一次回调（同帧数不重复上报）
+    ///
+    /// 时间节流见 [`PROGRESS_CB_MIN_INTERVAL`]：末帧必报保证进度到 100%，
+    /// 中间帧距上次上报不足 200ms 直接跳过。
     #[inline]
     fn maybe_report_progress(&mut self) {
         let Some(cb) = &self.progress_cb else {
@@ -130,6 +140,14 @@ impl Kernel {
         }
         let processed = self.lifecycle.bars_processed;
         if processed > self.last_reported_processed {
+            // 末帧必报；中间帧按时间节流
+            if processed < self.total_frames {
+                let now = Instant::now();
+                match self.last_report_at {
+                    Some(last) if now.duration_since(last) < PROGRESS_CB_MIN_INTERVAL => return,
+                    _ => self.last_report_at = Some(now),
+                }
+            }
             self.last_reported_processed = processed;
             cb(processed, self.total_frames);
         }
@@ -205,12 +223,13 @@ impl Kernel {
     ///
     /// 屏障期望集合为空时用本批帧的品种并集补齐。
     pub fn load_frames(&mut self, frames: Vec<GridFrame>) -> Result<(), KernelError> {
-        // 记录总量供进度百分比计算；每 run 开头重置上报游标
+        // 记录总量供进度百分比计算；每 run 开头重置上报游标与节流时刻
         self.total_frames = frames.len() as u64;
         self.last_reported_processed = 0;
         // 启动即报 (0, total)：慢决策场景下第一帧可能要数秒，
         // 调用方不应等到第一帧结束才能看到总帧数
         if let Some(cb) = &self.progress_cb {
+            self.last_report_at = Some(Instant::now());
             cb(0, self.total_frames);
         }
 
@@ -718,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_progress_cb_reports_start_and_every_frame() {
+    fn test_progress_cb_reports_start_and_final() {
         let bars = BTreeMap::from([(
             "BTC/USDT".to_string(),
             vec![
@@ -737,16 +756,14 @@ mod tests {
         }));
         kernel.run_history(frames).expect("回测应跑通");
 
-        // 启动先报 (0, 3) 让前端立即看到总帧数，随后每帧推进，末尾不重复
-        assert_eq!(
-            *reports.lock().unwrap(),
-            vec![(0, 3), (1, 3), (2, 3), (3, 3)]
-        );
+        // 启动先报 (0, 3) 让前端立即看到总帧数；3 帧瞬间跑完，中间帧被
+        // 200ms 时间节流吞掉，末帧必报保证到达 100%
+        assert_eq!(*reports.lock().unwrap(), vec![(0, 3), (3, 3)]);
     }
 
     #[test]
-    fn test_progress_cb_dense_frames_not_throttled() {
-        // 40 帧：旧 5% 阈值实现只报 3 次，每帧粒度应报 41 次（含启动）
+    fn test_progress_cb_dense_frames_time_throttled() {
+        // 40 帧瞬间跑完：时间节流下只剩启动帧与末帧，中间逐帧上报全部吞掉
         let bars = BTreeMap::from([(
             "BTC/USDT".to_string(),
             (0..40)
@@ -764,7 +781,7 @@ mod tests {
         kernel.run_history(frames).expect("回测应跑通");
 
         let reports = reports.lock().unwrap();
-        assert_eq!(reports.len(), 41, "每帧一次 + 启动一次");
+        assert_eq!(reports.len(), 2, "仅启动帧 + 末帧");
         assert_eq!(reports.first(), Some(&(0, 40)));
         assert_eq!(reports.last(), Some(&(40, 40)));
     }
