@@ -29,10 +29,14 @@ def run_kernel_backtest(
     stats: Any | None = None,
     model_id: str = "rl_model",
 ) -> dict:
-    """bars + predict_fn → 统一内核 RL 回测，返回 15 字段响应 dict。
+    """bars + predict_fn → 统一内核 RL 回测，返回 19 字段响应 dict。
 
     spec 四键（与 add_rl_strategy 形参对齐）：spec_version / window_size /
     features / action_space。stats 为观测统计（RunningStats 实例，原样透传）。
+
+    末尾 4 字段为逐 bar 曲线与逐笔产物 pass-through（bar_nav_curve /
+    bar_balance_curve 为 (ns, float) 对，trades / fills_detail 为 dict 列表），
+    引擎侧不组装 datetime 等应用口径，由调用方按自家契约转换。
     """
     kernel = worker.Kernel(
         initial_cash=initial_capital, interval=interval, fee_rate=fee_rate,
@@ -49,7 +53,7 @@ def run_kernel_backtest(
     )
     result = kernel.run(bars_by_symbol={symbol: bars})
 
-    # 15 字段契约与 backend 原实现逐字段一致（含 profit_factor=None、
+    # 前 15 字段契约与 backend 原实现逐字段一致（含 profit_factor=None、
     # turnover=fills_detail 累加 Σ|price×qty|、缺失置 None）
     fills_detail = getattr(result, "fills_detail", None)
     turnover = (
@@ -76,4 +80,15 @@ def run_kernel_backtest(
         "total_funding": float(result.total_funding_pnl),
         "turnover": turnover,
         "engine": "kernel",
+        # 逐 bar 曲线与逐笔产物 pass-through：引擎侧保持原始 ns/float 形状，
+        # datetime 格式化等应用口径由调用方按自家契约组装
+        "bar_nav_curve": [
+            [int(ts), float(nav)] for ts, nav in (getattr(result, "bar_nav_curve", None) or [])
+        ],
+        "bar_balance_curve": [
+            [int(ts), float(bal)]
+            for ts, bal in (getattr(result, "bar_balance_curve", None) or [])
+        ],
+        "trades": [dict(t) for t in (getattr(result, "trades", None) or [])],
+        "fills_detail": [dict(f) for f in (fills_detail or [])],
     }

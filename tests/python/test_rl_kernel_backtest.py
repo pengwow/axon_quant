@@ -1,4 +1,4 @@
-"""rl.kernel_backtest 设施验证 — 假 predict_fn 跑统一内核，断言 15 字段响应契约。
+"""rl.kernel_backtest 设施验证 — 假 predict_fn 跑统一内核，断言响应字段契约。
 
 参照 test_kernel_rl.py 的构造惯例（_bars / FEATURES / 恒定 0.5 action）。
 """
@@ -43,6 +43,9 @@ RESPONSE_KEYS = {
     "total_return_pct", "sharpe_ratio", "max_drawdown_pct", "win_rate",
     "num_trades", "profit_factor", "total_fees", "total_funding",
     "turnover", "engine",
+    # 2026-11-13 契约扩展：逐 bar 曲线与逐笔产物 pass-through，
+    # 供应用侧（QuantCell RL 任务化回测）组装详情落盘
+    "bar_nav_curve", "bar_balance_curve", "trades", "fills_detail",
 }
 
 
@@ -71,6 +74,15 @@ def test_run_kernel_backtest_response_contract():
     assert isinstance(raw["total_pnl"], float)
     assert isinstance(raw["sharpe_ratio"], float)
     assert isinstance(raw["max_drawdown_pct"], float)
+    # 逐 bar 曲线与逐 bar 对齐（(ns, float) 对），balance 与 nav 同长度
+    assert len(raw["bar_nav_curve"]) == 3
+    assert len(raw["bar_balance_curve"]) == len(raw["bar_nav_curve"])
+    for ts, nav in raw["bar_nav_curve"]:
+        assert isinstance(ts, int) and isinstance(nav, float)
+    # 0.5 权益占比成交后逐笔产物非空且为 dict 列表
+    assert len(raw["fills_detail"]) == raw["num_trades"] >= 1
+    assert all(isinstance(f, dict) for f in raw["fills_detail"])
+    assert isinstance(raw["trades"], list)
 
 
 def test_run_kernel_backtest_respects_fee_rate():
