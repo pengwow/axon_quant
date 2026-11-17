@@ -1208,8 +1208,8 @@ mod tests {
             "{label}: liquidation_count"
         );
         assert_eq!(
-            x.margin_shortfall_count, y.margin_shortfall_count,
-            "{label}: margin_shortfall_count"
+            x.shortfall_count, y.shortfall_count,
+            "{label}: shortfall_count"
         );
         assert_eq!(x.price_basis, y.price_basis, "{label}: price_basis");
 

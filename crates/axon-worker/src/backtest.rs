@@ -451,7 +451,7 @@ impl BacktestRunner {
             margin_applied: run_result.margin_applied,
             margin_specs_effective: run_result.margin_specs_effective,
             liquidation_count: run_result.liquidation_count,
-            margin_shortfall_count: run_result.margin_shortfall_count,
+            shortfall_count: run_result.shortfall_count,
         }
     }
 }
@@ -566,7 +566,7 @@ pub struct BacktestResult {
     /// 强平事件条数（= `liquidation_events.len()`）
     pub liquidation_count: u32,
     /// 因可用保证金不足而被缩量的开仓次数
-    pub margin_shortfall_count: u32,
+    pub shortfall_count: u32,
 }
 
 /// 单 bar × 单策略的决策记录
@@ -922,7 +922,7 @@ mod tests {
         assert!(!result.margin_applied);
         assert!(result.margin_specs_effective.is_empty());
         assert_eq!(result.liquidation_count, 0);
-        assert_eq!(result.margin_shortfall_count, 0);
+        assert_eq!(result.shortfall_count, 0);
         assert!(result.liquidation_events.is_empty());
     }
 

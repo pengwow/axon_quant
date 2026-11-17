@@ -491,8 +491,8 @@ fn assert_parity(
         "{label}: liquidation_count"
     );
     assert_eq!(
-        a.margin_shortfall_count, br.margin_shortfall_count,
-        "{label}: margin_shortfall_count"
+        a.shortfall_count, br.shortfall_count,
+        "{label}: shortfall_count"
     );
     assert_eq!(a.price_basis, br.price_basis, "{label}: price_basis");
 }
