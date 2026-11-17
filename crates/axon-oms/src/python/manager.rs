@@ -190,6 +190,7 @@ impl PyOrderManager {
         &self,
         order_id: &str,
         fill_id: String,
+        // Python-facing 参数名保持 `symbol`(backend 调用方约定);映射到 Rust Fill.instrument_id
         symbol: String,
         price: &Bound<'_, pyo3::types::PyAny>,
         quantity: &Bound<'_, pyo3::types::PyAny>,
@@ -206,7 +207,7 @@ impl PyOrderManager {
         };
         let fill = crate::types::Fill {
             fill_id,
-            symbol,
+            instrument_id: symbol,
             instrument: None,
             price: price_dec,
             quantity: qty_dec,

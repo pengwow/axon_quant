@@ -50,7 +50,7 @@ fn new_snapshot_round_trip_preserves_portfolio() {
         id,
         Fill {
             fill_id: "f1".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(50000),
             quantity: dec!(0.5),
@@ -68,4 +68,27 @@ fn new_snapshot_round_trip_preserves_portfolio() {
 
     assert_eq!(oms2.snapshot_balance().cash, oms.snapshot_balance().cash);
     assert_eq!(oms2.snapshot_positions(), oms.snapshot_positions());
+}
+
+#[test]
+fn legacy_fill_with_symbol_key_deserializes() {
+    // Fill.symbol → instrument_id 改名的兼容保证:老 snapshot / journal JSON 里
+    // fill 的键是 "symbol",serde alias 必须读回;新 JSON 只输出 "instrument_id"。
+    // 经 Value 往返构造旧键,不依赖 Decimal 的字符串表示细节。
+    let fill = Fill {
+        fill_id: "f1".into(),
+        instrument_id: "BTC-USDT".into(),
+        instrument: None,
+        price: dec!(50000),
+        quantity: dec!(0.5),
+        fee: dec!(0),
+        timestamp: chrono::Utc::now(),
+    };
+    let mut v = serde_json::to_value(&fill).unwrap();
+    let obj = v.as_object_mut().unwrap();
+    let val = obj.remove("instrument_id").expect("new key must exist");
+    obj.insert("symbol".into(), val);
+    let back: Fill =
+        serde_json::from_value(v).expect("legacy symbol key must deserialize via alias");
+    assert_eq!(back.instrument_id, "BTC-USDT");
 }

@@ -219,10 +219,14 @@ impl Order {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
     pub fill_id: String,
-    /// 交易 symbol(如 "BTC-USDT"),由 fill event 携带
-    pub symbol: String,
-    /// 0.6.0 新增:结构化 instrument(spot / swap),与 `symbol` 字符串并存。
-    /// 老 fill 事件无此字段时 = `None`,路由 / 风险约束用 `symbol` 字符串作 fallback。
+    /// 交易标的 ID(如 "BTC-USDT"),由 fill event 携带。
+    /// 命名语义统一:原字段名 `symbol` 改为 `instrument_id`,与 `Order::instrument_id` 对齐;
+    /// `alias = "symbol"` 让老 snapshot / journal JSON(键为 "symbol")仍可反序列化,
+    /// 序列化则输出新键 "instrument_id"。
+    #[serde(alias = "symbol")]
+    pub instrument_id: String,
+    /// 0.6.0 新增:结构化 instrument(spot / swap),与 `instrument_id` 字符串并存。
+    /// 老 fill 事件无此字段时 = `None`,路由 / 风险约束用 `instrument_id` 字符串作 fallback。
     #[serde(default)]
     pub instrument: Option<Instrument>,
     pub price: Decimal,

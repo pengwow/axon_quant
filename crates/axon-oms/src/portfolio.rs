@@ -223,9 +223,10 @@ impl Portfolio {
         //    Wallet 模式的现金流要用它,所以先算再动 cash。
         let pos = self
             .positions
-            .entry(fill.symbol.clone())
+            .entry(fill.instrument_id.clone())
             .or_insert(Position {
-                symbol: fill.symbol.clone(),
+                // Position 键仍叫 symbol:持仓簿的 symbol 命名不在本次 Fill 改名范围
+                symbol: fill.instrument_id.clone(),
                 quantity: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
                 realized_pnl: Decimal::ZERO,
@@ -299,7 +300,7 @@ mod tests {
     fn usdt_fill(fill_id: &str, qty: i64, price: i64, fee: i64) -> Fill {
         Fill {
             fill_id: fill_id.into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: Decimal::new(price, 2),
             quantity: Decimal::from(qty),
@@ -602,7 +603,7 @@ mod tests {
         // 注:ETH-USDT 也只走 USDT cash(quote hardcode),positions 分别跟踪
         p.apply_fill(&Fill {
             fill_id: "f2".into(),
-            symbol: "ETH-USDT".into(),
+            instrument_id: "ETH-USDT".into(),
             instrument: None,
             price: dec!(3000),
             quantity: dec!(1),
@@ -663,7 +664,7 @@ mod proptests {
             p.deposit("USDT", dec!(10_000_000_000));
             p.apply_fill(&Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: Decimal::from(price_a),
                 quantity: Decimal::from(qty_a),
@@ -672,7 +673,7 @@ mod proptests {
             }).unwrap();
             p.apply_fill(&Fill {
                 fill_id: "f2".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: Decimal::from(price_b),
                 quantity: Decimal::from(qty_b),
@@ -707,7 +708,7 @@ mod proptests {
             p.deposit("USDT", dec!(10_000_000_000));
             p.apply_fill(&Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: Decimal::from(initial_price),
                 quantity: Decimal::from(initial_qty),
@@ -717,7 +718,7 @@ mod proptests {
             let avg_before = p.positions.get("BTC-USDT").unwrap().avg_price;
             p.apply_fill(&Fill {
                 fill_id: "f2".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: dec!(99999),
                 quantity: -Decimal::from(sell_qty),
