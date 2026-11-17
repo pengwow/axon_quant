@@ -155,9 +155,9 @@ impl Strategy for AbsoluteStrategy {
             Some(quantity) => {
                 // A 路语义：`target_position` 是绝对数量，Action 只决定方向
                 let action = if quantity > 0.0 {
-                    Action::Buy
+                    Action::Long
                 } else {
-                    Action::Sell
+                    Action::Short
                 };
                 Ok(StrategyDecision::from_rule(action).with_target_position(quantity))
             }

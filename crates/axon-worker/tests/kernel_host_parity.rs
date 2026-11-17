@@ -72,9 +72,9 @@ impl Strategy for StateAbsoluteStrategy {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         if sma > 0.0 {
-            Ok(StrategyDecision::from_rule(Action::Buy).with_target_position(0.5))
+            Ok(StrategyDecision::from_rule(Action::Long).with_target_position(0.5))
         } else if sma < 0.0 {
-            Ok(StrategyDecision::from_rule(Action::Sell).with_target_position(-0.3))
+            Ok(StrategyDecision::from_rule(Action::Short).with_target_position(-0.3))
         } else {
             Ok(StrategyDecision::from_rule(Action::Hold))
         }

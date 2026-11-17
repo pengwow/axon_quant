@@ -102,7 +102,7 @@ impl Strategy for AbsoluteStrategy {
         match target_quantity(ctx.bar) {
             Some(q) => {
                 // A 路语义：`target_position` 是绝对数量，Action 只决定方向
-                let action = if q > 0.0 { Action::Buy } else { Action::Sell };
+                let action = if q > 0.0 { Action::Long } else { Action::Short };
                 Ok(StrategyDecision::from_rule(action).with_target_position(q))
             }
             None => Ok(StrategyDecision::from_rule(Action::Hold)),

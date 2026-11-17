@@ -11,8 +11,8 @@ use crate::action::converter::{
 use crate::action::error::{ActionError, ActionResult};
 use crate::action::state::PortfolioState;
 use crate::action::types::{
-    Action, ActionSpace, ActionType, ContinuousActionSpace, DiscreteAction, DiscreteActionSpace,
-    QuantityBin, TradingDirection, apply_action_mask,
+    Action, ActionSpace, ActionSpaceKind, ContinuousActionSpace, DiscreteAction,
+    DiscreteActionSpace, QuantityBin, TradingDirection, apply_action_mask,
 };
 
 // ── PortfolioState 测试 ──────────────────────────────────
@@ -216,19 +216,19 @@ fn test_action_space_gymnasium_continuous() {
     assert_eq!(s.gymnasium_high(), vec![1.0]);
 }
 
-// ── Action / ActionType 测试 ───────────────────────────
+// ── Action / ActionSpaceKind 测试 ───────────────────────────
 
 #[test]
 fn test_action_discrete() {
     let a = Action::discrete(3);
-    assert_eq!(a.action_type, ActionType::Discrete(3));
+    assert_eq!(a.action_type, ActionSpaceKind::Discrete(3));
     assert_eq!(a.raw, vec![3.0]);
 }
 
 #[test]
 fn test_action_continuous() {
     let a = Action::continuous(vec![0.5, -0.3]);
-    assert_eq!(a.action_type, ActionType::Continuous(vec![0.5, -0.3]));
+    assert_eq!(a.action_type, ActionSpaceKind::Continuous(vec![0.5, -0.3]));
     assert_eq!(a.raw, vec![0.5, -0.3]);
 }
 

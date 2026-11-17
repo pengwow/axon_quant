@@ -64,7 +64,7 @@ pub mod python;
 pub use engine::InferenceEngine;
 pub use error::{
     Action, ActionType, BatchConfig, Device, InferenceBackend, InferenceError, InferenceStats,
-    ModelConfig, Observation,
+    ModelConfig, Observation, TradeAction,
 };
 pub use hot_reload::ModelHotReloader;
 pub use pipeline::batch::BatchInferencePipeline;

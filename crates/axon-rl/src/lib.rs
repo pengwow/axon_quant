@@ -34,8 +34,8 @@ pub use action::error::{ActionError, ActionResult, validate_action};
 pub use action::smoother::ActionSmoother;
 pub use action::state::PortfolioState;
 pub use action::types::{
-    Action, ActionSpace, ActionType, ContinuousActionSpace, DiscreteAction, DiscreteActionSpace,
-    QuantityBin, TradingDirection, apply_action_mask,
+    Action, ActionSpace, ActionSpaceKind, ContinuousActionSpace, DiscreteAction,
+    DiscreteActionSpace, QuantityBin, TradingDirection, apply_action_mask,
 };
 pub use env::action_decoder::ActionDecoder;
 pub use env::config::EnvConfig;

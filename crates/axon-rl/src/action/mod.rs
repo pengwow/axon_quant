@@ -33,6 +33,6 @@ pub use error::{ActionError, ActionResult, validate_action};
 pub use smoother::ActionSmoother;
 pub use state::PortfolioState;
 pub use types::{
-    Action, ActionSpace, ActionType, ContinuousActionSpace, DiscreteAction, DiscreteActionSpace,
-    QuantityBin, TradingDirection, apply_action_mask,
+    Action, ActionSpace, ActionSpaceKind, ContinuousActionSpace, DiscreteAction,
+    DiscreteActionSpace, QuantityBin, TradingDirection, apply_action_mask,
 };

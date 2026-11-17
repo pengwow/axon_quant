@@ -11,32 +11,43 @@ use serde::{Deserialize, Serialize};
 use super::backend::DecisionError;
 
 /// 三种交易动作；概率 dict 的键恒为这三个
+///
+/// 命名语义：Long/Short 表示「持仓方向」（做多/做空），与下单动作（买入/卖出）解耦 ——
+/// 平多仓是 Buy 操作但从方向看是 Short（减少多头）。SDM / LLM 兜底的 wire 词表仍是
+/// `buy/sell/hold`（见 quant_questions / llm_fallback 的 prompt），由 [`Action::from_name`]
+/// 与 cascade 的键归一桥接。
+///
+/// serde 反序列化兼容历史录制：旧值 `buy/sell` 经 alias 仍可还原为新变体，
+/// 序列化输出恒为新值 `long/short`（录制 JSONL 回放以此跨版本兼容）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     /// 做多
-    Buy,
+    #[serde(alias = "buy")]
+    Long,
     /// 做空
-    Sell,
+    #[serde(alias = "sell")]
+    Short,
     /// 观望
     Hold,
 }
 
 impl Action {
-    /// 协议字符串
+    /// 动作键（CascadeDecision 概率三键 / Python 出口统一词表）
     pub fn as_str(&self) -> &'static str {
         match self {
-            Action::Buy => "buy",
-            Action::Sell => "sell",
+            Action::Long => "long",
+            Action::Short => "short",
             Action::Hold => "hold",
         }
     }
 
-    /// 从协议字符串解析
+    /// 从字符串解析；同时接受动作键（long/short/hold）
+    /// 与 S1/S2 协议词表旧值（buy/sell，历史录制与存量 prompt 回放兼容）
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
-            "buy" => Action::Buy,
-            "sell" => Action::Sell,
+            "long" | "buy" => Action::Long,
+            "short" | "sell" => Action::Short,
             "hold" => Action::Hold,
             _ => return None,
         })
@@ -194,7 +205,7 @@ pub struct CascadeDecision {
     pub source: DecisionSource,
     /// 置信度
     pub confidence: f64,
-    /// buy/sell/hold 三键恒在
+    /// long/short/hold 三键恒在
     pub probabilities: BTreeMap<String, f64>,
     /// source=Fallback 时必填原因
     pub fallback_reason: Option<String>,
@@ -265,9 +276,19 @@ mod tests {
 
     #[test]
     fn action_roundtrip_and_serde_source() {
-        assert_eq!(Action::Buy.as_str(), "buy");
-        assert_eq!(Action::from_name("sell"), Some(Action::Sell));
+        assert_eq!(Action::Long.as_str(), "long");
+        assert_eq!(Action::from_name("short"), Some(Action::Short));
         assert_eq!(Action::from_name("nope"), None);
+        // S1/S2 协议词表旧值兼容：from_name 与 serde 都接受 buy/sell
+        assert_eq!(Action::from_name("buy"), Some(Action::Long));
+        assert_eq!(Action::from_name("sell"), Some(Action::Short));
+        assert_eq!(
+            serde_json::from_str::<Action>("\"buy\"").unwrap(),
+            Action::Long
+        );
+        // 序列化恒为新值
+        assert_eq!(serde_json::to_string(&Action::Long).unwrap(), "\"long\"");
+        assert_eq!(serde_json::to_string(&Action::Short).unwrap(), "\"short\"");
         assert_eq!(
             serde_json::to_string(&DecisionSource::SdmDirect).unwrap(),
             "\"sdm_direct\""

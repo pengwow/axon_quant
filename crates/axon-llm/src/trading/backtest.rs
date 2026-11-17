@@ -33,7 +33,7 @@ use axon_core::types::{Price, Quantity, Symbol};
 use crate::trading::backend::{TradingBackend, TradingError};
 use crate::trading::book_snapshot_tool::{OrderBookLevel, OrderBookSnapshot};
 use crate::trading::types::{
-    BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderSide, OrderStatus, PlaceOrderArgs,
+    BalanceSnapshot, CurrencyBalance, OrderAck, OrderKind, OrderStatus, PlaceOrderArgs,
     PositionSnapshot,
 };
 
@@ -128,16 +128,14 @@ pub(crate) fn split_symbol(symbol: &Symbol) -> (Symbol, Symbol) {
 /// - `Market` + `price=None` → `OrderType::Market`
 /// - `Market` + `price=Some(_)` → 忽略 price,强制 `OrderType::Market`
 ///
-/// Side 翻译:`OrderSide::Buy` → `Side::Buy`,`Sell` → `Side::Sell`。
+/// Side 直接透传:`OrderSide` re-export 自 `axon_core::market::Side`，两者同类型。
 pub(crate) fn args_to_backtest_order(
     args: &PlaceOrderArgs,
     symbol: Symbol,
     order_id: u64,
 ) -> Result<Order, TradingError> {
-    let side = match args.side {
-        OrderSide::Buy => Side::Buy,
-        OrderSide::Sell => Side::Sell,
-    };
+    // OrderSide re-export 自 axon_core::market::Side，与 Order::side 同类型
+    let side = args.side;
     let order_type = match (args.order_type, args.price) {
         (OrderKind::Limit, Some(p)) => OrderType::Limit {
             price: Price::from_f64(p),

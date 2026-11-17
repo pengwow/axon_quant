@@ -66,6 +66,17 @@ pub enum TradeSide {
     Sell,
 }
 
+/// core 订单方向 → 审计成交方向（同值域，单向转换即可；与 core 的 Rust
+/// 枚举打通，避免审计边界手工 match 漏译）。
+impl From<axon_core::Side> for TradeSide {
+    fn from(s: axon_core::Side) -> Self {
+        match s {
+            axon_core::Side::Buy => TradeSide::Buy,
+            axon_core::Side::Sell => TradeSide::Sell,
+        }
+    }
+}
+
 /// 交易状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TradeStatus {

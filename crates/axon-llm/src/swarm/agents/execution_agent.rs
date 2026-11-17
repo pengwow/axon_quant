@@ -26,11 +26,12 @@ use crate::swarm::message::{AgentMessage, MessageContent, TradeOrder, TradeResul
 use crate::tools::Tool;
 use crate::trading::place_order_tool::PlaceOrderTool;
 use crate::trading::query_portfolio_tool::QueryPortfolioTool;
-use crate::trading::types::OrderSide as TradingOrderSide;
 use crate::trading::types::{
     OrderAck, OrderKind, PlaceOrderArgs, PortfolioSnapshot, QueryPortfolioArgs, TimeInForce,
 };
 
+// OrderSide 的别名仅在测试中直接引用（main 路径已透传同类型值）
+#[cfg(test)]
 use crate::swarm::message::OrderSide as SwarmOrderSide;
 
 /// ExecutionAgent 工具集合(Stage K 工具 + 可选 CancelOrderTool 预留)
@@ -175,10 +176,8 @@ impl ExecutionAgent {
             // 未知 / "limit" 一律视为 Limit
             _ => OrderKind::Limit,
         };
-        let side = match order.side {
-            SwarmOrderSide::Buy => TradingOrderSide::Buy,
-            SwarmOrderSide::Sell => TradingOrderSide::Sell,
-        };
+        // SwarmOrderSide 与 TradingOrderSide 都 re-export 自 axon_core::market::Side，直接透传
+        let side = order.side;
         PlaceOrderArgs {
             symbol: order.symbol.clone(),
             side,

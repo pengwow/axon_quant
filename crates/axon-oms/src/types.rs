@@ -46,11 +46,12 @@ impl std::str::FromStr for OrderId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Side {
-    Buy,
-    Sell,
-}
+/// 订单方向
+///
+/// canonical 定义在 [`axon_core::market::Side`]（serde 值同为 "Buy"/"Sell"），
+/// 直接 re-export 统一实现；exchange 侧因 lowercase wire 契约
+///（"buy"/"sell"）保留独立定义，通过 From 互转。
+pub use axon_core::Side;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderType {

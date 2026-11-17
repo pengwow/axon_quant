@@ -64,11 +64,11 @@ pub struct StrategyDecision {
     pub action: Action,
     /// 置信度（SDM 校准值；规则策略为 0.0）
     pub confidence: f64,
-    /// 目标仓位（-1.0 ~ 1.0；None 时由 BacktestRunner 按 action 推导：Buy→1.0, Sell→-1.0, Hold→0.0）
+    /// 目标仓位（-1.0 ~ 1.0；None 时由 BacktestRunner 按 action 推导：Long→1.0, Short→-1.0, Hold→0.0）
     pub target_position: Option<f64>,
     /// 决策来源（sdm_direct / fallback / rule）
     pub source: String,
-    /// 买入/卖出/观望三键概率分布（规则策略为 None）
+    /// 做多/做空/观望三键概率分布（规则策略为 None）
     pub probabilities: Option<BTreeMap<String, f64>>,
     /// 子信号（volatility_regime / drawdown_risk 等，纯归因，不参与门控）
     pub sub_signals: BTreeMap<String, f64>,

@@ -13,9 +13,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::error::{
-    Action as RustAction, ActionType as RustActionType, BatchConfig as RustBatchConfig,
-    Device as RustDevice, InferenceBackend as RustBackend, InferenceStats as RustStats,
-    ModelConfig as RustModelConfig, Observation as RustObs,
+    Action as RustAction, BatchConfig as RustBatchConfig, Device as RustDevice,
+    InferenceBackend as RustBackend, InferenceStats as RustStats, ModelConfig as RustModelConfig,
+    Observation as RustObs, TradeAction as RustTradeAction,
 };
 
 // ─── InferenceBackend ────────────────────────────────────
@@ -296,18 +296,18 @@ pub enum PyActionType {
     ReduceShort,
 }
 
-impl From<RustActionType> for PyActionType {
-    fn from(a: RustActionType) -> Self {
+impl From<RustTradeAction> for PyActionType {
+    fn from(a: RustTradeAction) -> Self {
         match a {
-            RustActionType::Hold => Self::Hold,
-            RustActionType::Buy => Self::Buy,
-            RustActionType::Sell => Self::Sell,
-            RustActionType::ReduceLong => Self::ReduceLong,
-            RustActionType::ReduceShort => Self::ReduceShort,
+            RustTradeAction::Hold => Self::Hold,
+            RustTradeAction::Buy => Self::Buy,
+            RustTradeAction::Sell => Self::Sell,
+            RustTradeAction::ReduceLong => Self::ReduceLong,
+            RustTradeAction::ReduceShort => Self::ReduceShort,
         }
     }
 }
-impl From<PyActionType> for RustActionType {
+impl From<PyActionType> for RustTradeAction {
     fn from(a: PyActionType) -> Self {
         match a {
             PyActionType::Hold => Self::Hold,
@@ -360,17 +360,17 @@ impl PyAction {
         // `Action(ActionType.Buy, …)` 若构造直接 TypeError，Python 策略
         // 在内核里就会决策失败被吞成 Hold（零成交、无报错），故双入口。
         let at = if let Ok(a) = action_type.extract::<PyActionType>() {
-            RustActionType::from(a)
+            RustTradeAction::from(a)
         } else {
             let s: String = action_type.extract()?;
             // 字符串 → ActionType 解析("buy" / "sell" / "hold" / "reduce_long" / "reduce_short")
             match s.as_str() {
-                "buy" => RustActionType::Buy,
-                "sell" => RustActionType::Sell,
-                "hold" => RustActionType::Hold,
-                "reduce_long" => RustActionType::ReduceLong,
-                "reduce_short" => RustActionType::ReduceShort,
-                _ => RustActionType::Hold, // 默认 Hold
+                "buy" => RustTradeAction::Buy,
+                "sell" => RustTradeAction::Sell,
+                "hold" => RustTradeAction::Hold,
+                "reduce_long" => RustTradeAction::ReduceLong,
+                "reduce_short" => RustTradeAction::ReduceShort,
+                _ => RustTradeAction::Hold, // 默认 Hold
             }
         };
         Ok(Self(RustAction {

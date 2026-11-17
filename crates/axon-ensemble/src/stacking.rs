@@ -3,7 +3,7 @@
 //! 用元学习器（线性 + softmax）组合多个基模型的预测。
 
 use crate::traits::{Ensemble, Policy};
-use crate::types::{Action, ActionProbabilities, ActionType, ModelPrediction, Observation};
+use crate::types::{Action, ActionProbabilities, EnsembleAction, ModelPrediction, Observation};
 
 /// 元模型（线性层 + softmax）
 #[derive(Debug, Clone)]
@@ -128,7 +128,7 @@ impl Ensemble for StackingEnsemble {
     fn predict(&self, observation: &Observation) -> Action {
         if self.base_models.is_empty() {
             return Action {
-                action_type: ActionType::Hold,
+                action_type: EnsembleAction::Hold,
                 symbol: None,
                 quantity: None,
                 confidence: 0.0,
@@ -153,11 +153,11 @@ impl Ensemble for StackingEnsemble {
         let probs = self.meta_model.predict(&features);
 
         let action_type = if probs.buy > probs.sell && probs.buy > probs.hold {
-            ActionType::Buy
+            EnsembleAction::Buy
         } else if probs.sell > probs.buy && probs.sell > probs.hold {
-            ActionType::Sell
+            EnsembleAction::Sell
         } else {
-            ActionType::Hold
+            EnsembleAction::Hold
         };
 
         let first = &base_predictions[0].action;

@@ -1,6 +1,6 @@
 //! 集成相关核心类型
 //!
-//! 定义 `Action` / `Observation` / `ActionType` 等基础数据模型。
+//! 定义 `Action` / `Observation` / `EnsembleAction` 等基础数据模型。
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +15,12 @@ pub enum ModelType {
 }
 
 /// 动作类型（买入 / 卖出 / 持有）
+///
+/// 原名 `ActionType` 拆名而来：它与 inference 的 `TradeAction`（五值交易
+/// 动作）、rl 的 `ActionSpaceKind`（动作空间类别）语义各不相同，改名消除
+/// 三处同名枚举的混淆。Python 绑定对外的类名仍为 "ActionType"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ActionType {
+pub enum EnsembleAction {
     Buy,
     Sell,
     Hold,
@@ -53,7 +57,7 @@ pub struct Observation {
 /// 动作（模型输出）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Action {
-    pub action_type: ActionType,
+    pub action_type: EnsembleAction,
     pub symbol: Option<String>,
     pub quantity: Option<f64>,
     pub confidence: f64,
@@ -105,7 +109,7 @@ pub enum EnsembleStrategy {
 /// 动作快照（不可变快照，用于报告/解释）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionSnapshot {
-    pub action_type: ActionType,
+    pub action_type: EnsembleAction,
     pub symbol: Option<String>,
     pub quantity: Option<f64>,
     pub confidence: f64,

@@ -25,7 +25,7 @@ use crate::trading::types::{
 };
 
 #[cfg(feature = "trading-oms")]
-use axon_oms::{OrderType as OmsOrderType, Side as OmsSide};
+use axon_oms::OrderType as OmsOrderType;
 
 /// 当前 unix epoch 毫秒数。
 #[cfg(feature = "trading-oms")]
@@ -82,10 +82,8 @@ fn args_to_oms_order(args: &PlaceOrderArgs) -> Result<axon_oms::Order, axon_oms:
 
     let oms_order = axon_oms::Order::new(
         args.symbol.clone(),
-        match args.side {
-            OrderSide::Buy => OmsSide::Buy,
-            OrderSide::Sell => OmsSide::Sell,
-        },
+        // OrderSide re-export 自 axon_core::Side，与 oms::Side 同类型，直接传
+        args.side,
         match args.order_type {
             OrderKind::Limit => OmsOrderType::Limit,
             OrderKind::Market => OmsOrderType::Market,
