@@ -83,9 +83,9 @@ class BacktestEnv(gym.Env):
             self.engine = BacktestEngine(initial_cash=self.initial_cash).with_seed(seed)
         else:
             self.engine = BacktestEngine(initial_cash=self.initial_cash)
-        self._prev_nav: float = self.initial_cash
+        self._prev_equity: float = self.initial_cash
         obs = self._build_obs()
-        info: dict[str, Any] = {"nav": self.initial_cash, "position": 0.0}
+        info: dict[str, Any] = {"equity": self.initial_cash, "position": 0.0}
         return obs, info
 
     def step(
@@ -100,17 +100,17 @@ class BacktestEnv(gym.Env):
         """
         target_qty = float(action[0])  # 已经在 [-1, 1]
         self.engine.set_target_position(self.instrument, target_qty)
-        # 触发 1 个空 bar(价格用初始 NAV 代替,实际 demo 中是动态的)
-        self.engine.begin_bar(self._prev_nav, self.instrument)
+        # 触发 1 个空 bar(价格用内核口径的账户净值代替,实际 demo 中是动态的)
+        self.engine.begin_bar(self._prev_equity, self.instrument)
         result = self.engine.run()
-        nav = result.final_nav
-        reward = (nav - self._prev_nav) / self.initial_cash  # 相对收益
-        self._prev_nav = nav
+        equity = result.final_nav
+        reward = (equity - self._prev_equity) / self.initial_cash  # 相对收益
+        self._prev_equity = equity
         obs = self._build_obs()
         terminated = bool(result.events_processed == 0)  # 事件耗尽
         truncated = False
         info: dict[str, Any] = {
-            "nav": nav,
+            "equity": equity,
             "position": 0.0,  # 0.9.0 简化:实际应读 engine state
             "fills": result.fills,
         }
@@ -189,16 +189,16 @@ class MultiLegBacktestEnv(BacktestEnv):
             target_qty = float(action[i]) * leg.target_qty_scale
             self.engine.set_target_position(leg.instrument, target_qty)
         # 同步推进(用 primary instrument 价格驱动)
-        self.engine.begin_bar(self._prev_nav, self.legs[0].instrument)
+        self.engine.begin_bar(self._prev_equity, self.legs[0].instrument)
         result = self.engine.run()
-        nav = result.final_nav
-        reward = (nav - self._prev_nav) / self.initial_cash
-        self._prev_nav = nav
+        equity = result.final_nav
+        reward = (equity - self._prev_equity) / self.initial_cash
+        self._prev_equity = equity
         obs = self._build_obs()
         terminated = bool(result.events_processed == 0)
         truncated = False
         info: dict[str, Any] = {
-            "nav": nav,
+            "equity": equity,
             "fills": result.fills,
         }
         return obs, float(reward), terminated, truncated, info
