@@ -451,7 +451,7 @@ impl BacktestRunner {
             margin_applied: run_result.margin_applied,
             margin_specs_effective: run_result.margin_specs_effective,
             liquidation_count: run_result.liquidation_count,
-            margin_shortfall_count: run_result.margin_shortfall_count,
+            shortfall_count: run_result.shortfall_count,
         }
     }
 }
@@ -460,13 +460,13 @@ impl BacktestRunner {
 
 /// SDM/Cascade Action → BacktestEngine target_position（f64，+1.0 = 全多仓，-1.0 = 全空仓）
 ///
-/// ponytail: Phase 2 只用 Buy/Sell/Hold 三态映射 +-1/0；
+/// ponytail: Phase 2 只用 Long/Short/Hold 三态映射 +-1/0；
 /// 未来接入 SDM position_size 答案后会做分档（0pct/25pct/50pct/100pct）。
 fn action_to_target(act: axon_llm::decision::Action) -> f64 {
     use axon_llm::decision::Action::*;
     match act {
-        Buy => 1.0,
-        Sell => -1.0,
+        Long => 1.0,
+        Short => -1.0,
         Hold => 0.0,
     }
 }
@@ -566,7 +566,7 @@ pub struct BacktestResult {
     /// 强平事件条数（= `liquidation_events.len()`）
     pub liquidation_count: u32,
     /// 因可用保证金不足而被缩量的开仓次数
-    pub margin_shortfall_count: u32,
+    pub shortfall_count: u32,
 }
 
 /// 单 bar × 单策略的决策记录
@@ -922,7 +922,7 @@ mod tests {
         assert!(!result.margin_applied);
         assert!(result.margin_specs_effective.is_empty());
         assert_eq!(result.liquidation_count, 0);
-        assert_eq!(result.margin_shortfall_count, 0);
+        assert_eq!(result.shortfall_count, 0);
         assert!(result.liquidation_events.is_empty());
     }
 
@@ -1054,7 +1054,7 @@ mod tests {
             ) -> Result<StrategyDecision, axon_strategy::trait_::StrategyError> {
                 use axon_llm::decision::Action;
                 if ctx.bar_index == 0 {
-                    Ok(StrategyDecision::from_rule(Action::Buy).with_target_position(50.0))
+                    Ok(StrategyDecision::from_rule(Action::Long).with_target_position(50.0))
                 } else {
                     Ok(StrategyDecision::from_rule(Action::Hold))
                 }

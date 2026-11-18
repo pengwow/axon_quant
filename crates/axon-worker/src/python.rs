@@ -134,7 +134,7 @@ pub struct PyBacktestResult {
     pub liquidation_count: u32,
     /// 因可用保证金不足而被缩量的开仓次数
     #[pyo3(get)]
-    pub margin_shortfall_count: u32,
+    pub shortfall_count: u32,
 }
 
 impl From<&BacktestResult> for PyBacktestResult {
@@ -184,7 +184,7 @@ impl From<&BacktestResult> for PyBacktestResult {
             margin_applied: r.margin_applied,
             margin_specs_effective: r.margin_specs_effective.clone(),
             liquidation_count: r.liquidation_count,
-            margin_shortfall_count: r.margin_shortfall_count,
+            shortfall_count: r.shortfall_count,
         }
     }
 }
@@ -245,7 +245,7 @@ impl PyBacktestResult {
             margin_applied: run.margin_applied,
             margin_specs_effective: run.margin_specs_effective.clone(),
             liquidation_count: run.liquidation_count,
-            margin_shortfall_count: run.margin_shortfall_count,
+            shortfall_count: run.shortfall_count,
         }
     }
 }

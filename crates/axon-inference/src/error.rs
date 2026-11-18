@@ -66,7 +66,7 @@ pub struct Observation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Action {
-    pub action_type: ActionType,
+    pub action_type: TradeAction,
     pub confidence: f32,
     pub target_position: f32,
     pub model_id: String,
@@ -75,13 +75,21 @@ pub struct Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ActionType {
+pub enum TradeAction {
     Hold,
     Buy,
     Sell,
     ReduceLong,
     ReduceShort,
 }
+
+/// [`TradeAction`] 的历史名（deprecated 别名，1 个 minor 后移除）。
+///
+/// 拆名背景：`ActionType` 曾同时指代三种不同语义（inference 的交易动作、
+/// RL 的动作空间类别、ensemble 的集成动作）。本类型是 inference 的"交易
+/// 动作"，故更名 `TradeAction`。注意 Python 绑定对外的类名仍为
+/// "ActionType"（见 `python/config.rs` 的 pyclass name），Python API 不受影响。
+pub type ActionType = TradeAction;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InferenceStats {

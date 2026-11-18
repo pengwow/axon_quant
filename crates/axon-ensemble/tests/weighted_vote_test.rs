@@ -1,7 +1,7 @@
 //! WeightedVoteStrategy 单元测试
 
 use axon_ensemble::{
-    Action, ActionProbabilities, ActionType, ModelPrediction, ModelType, VotingStrategy,
+    Action, ActionProbabilities, EnsembleAction, ModelPrediction, ModelType, VotingStrategy,
     WeightedVoteStrategy,
 };
 
@@ -10,7 +10,7 @@ fn make_pred(buy: f64, sell: f64, hold: f64, name: &str) -> ModelPrediction {
         model_name: name.to_string(),
         model_type: ModelType::PPO,
         action: Action {
-            action_type: ActionType::Hold,
+            action_type: EnsembleAction::Hold,
             symbol: Some("BTC".to_string()),
             quantity: Some(1.0),
             confidence: 0.5,
@@ -33,7 +33,7 @@ fn test_weighted_vote_basic() {
     ];
     let strategy = WeightedVoteStrategy::new(vec![0.7, 0.3]).unwrap();
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Buy);
+    assert_eq!(result.action_type, EnsembleAction::Buy);
     assert!(
         (result.confidence - 0.48).abs() < 1e-9,
         "期望 0.48, 实际 {}",
@@ -60,7 +60,7 @@ fn test_weighted_vote_uniform_constructor() {
         make_pred(0.5, 0.3, 0.2, "m3"),
     ];
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Buy);
+    assert_eq!(result.action_type, EnsembleAction::Buy);
 }
 
 #[test]
@@ -69,14 +69,14 @@ fn test_weighted_vote_size_mismatch_returns_hold() {
     let preds = vec![make_pred(0.5, 0.3, 0.2, "m1")];
     let strategy = WeightedVoteStrategy::new(vec![0.5, 0.3, 0.2]).unwrap();
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Hold);
+    assert_eq!(result.action_type, EnsembleAction::Hold);
 }
 
 #[test]
 fn test_weighted_vote_empty_returns_hold() {
     let strategy = WeightedVoteStrategy::uniform(0);
     let result = strategy.combine(&[]);
-    assert_eq!(result.action_type, ActionType::Hold);
+    assert_eq!(result.action_type, EnsembleAction::Hold);
     assert_eq!(result.confidence, 0.0);
 }
 
@@ -95,6 +95,6 @@ fn test_weighted_vote_zero_weight_ignored() {
     ];
     let strategy = WeightedVoteStrategy::new(vec![1.0, 0.0]).unwrap();
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Buy);
+    assert_eq!(result.action_type, EnsembleAction::Buy);
     assert!((result.confidence - 0.7).abs() < 1e-9);
 }

@@ -191,6 +191,20 @@ impl TrajectoryRecorder {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// 唯一临时文件路径：固定名（如 /tmp/test_trajectory.json）在 cargo test 全量并发
+    /// 跑多个测试二进制时会互相覆盖，replay 竞态读到半行 JSON 报 EOF（曾致全量偶挂）
+    fn unique_temp_path(name: &str) -> PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "test_trajectory_{}_{}_{}.json",
+            std::process::id(),
+            seq,
+            name
+        ))
+    }
 
     #[test]
     fn trajectory_recorder_new_has_correct_version() {
@@ -236,7 +250,7 @@ mod tests {
             consensus: None,
         });
 
-        let temp_path = PathBuf::from("/tmp/test_trajectory.json");
+        let temp_path = unique_temp_path("flush_replay");
         recorder.flush(&temp_path).unwrap();
 
         let replayed = TrajectoryRecorder::replay(&temp_path).unwrap();
@@ -304,8 +318,8 @@ mod tests {
             });
         }
 
-        let temp_path1 = PathBuf::from("/tmp/test_trajectory_det1.json");
-        let temp_path2 = PathBuf::from("/tmp/test_trajectory_det2.json");
+        let temp_path1 = unique_temp_path("det1");
+        let temp_path2 = unique_temp_path("det2");
         recorder1.flush(&temp_path1).unwrap();
         recorder2.flush(&temp_path2).unwrap();
 

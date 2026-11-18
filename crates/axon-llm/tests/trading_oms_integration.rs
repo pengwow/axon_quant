@@ -69,7 +69,7 @@ async fn e2e_oms_backend_place_query_full_flow() {
             order_id,
             axon_oms::Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
                 instrument: None,
                 price: dec!(50000),
@@ -121,7 +121,7 @@ async fn e2e_oms_backend_full_fill_success_path() {
             order_id,
             axon_oms::Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 // 0.6.0 新增:可选 instrument 字段,老路径无 instrument 时 = None
                 instrument: None,
                 price: dec!(50000),

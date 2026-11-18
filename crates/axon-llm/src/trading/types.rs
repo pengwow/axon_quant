@@ -40,14 +40,10 @@ pub struct PlaceOrderArgs {
 }
 
 /// 买卖方向
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "PascalCase")]
-pub enum OrderSide {
-    /// 买入
-    Buy,
-    /// 卖出
-    Sell,
-}
+///
+/// re-export [`axon_core::market::Side`]（serde 值同为 "Buy"/"Sell"，与原
+/// PascalCase 定义逐字节一致），不再本地重复定义。
+pub use axon_core::market::Side as OrderSide;
 
 /// 订单类型
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]

@@ -102,7 +102,7 @@ impl Strategy for AbsoluteStrategy {
         match target_quantity(ctx.bar) {
             Some(q) => {
                 // A 路语义：`target_position` 是绝对数量，Action 只决定方向
-                let action = if q > 0.0 { Action::Buy } else { Action::Sell };
+                let action = if q > 0.0 { Action::Long } else { Action::Short };
                 Ok(StrategyDecision::from_rule(action).with_target_position(q))
             }
             None => Ok(StrategyDecision::from_rule(Action::Hold)),
@@ -480,8 +480,8 @@ fn assert_parity(label: &str, a: &BacktestResult, b: &KernelResult, hosts: usize
         "{label}: liquidation_count"
     );
     assert_eq!(
-        a.margin_shortfall_count, br.margin_shortfall_count,
-        "{label}: margin_shortfall_count"
+        a.shortfall_count, br.shortfall_count,
+        "{label}: shortfall_count"
     );
     assert_eq!(a.price_basis, br.price_basis, "{label}: price_basis");
 }

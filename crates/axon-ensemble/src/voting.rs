@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::traits::VotingStrategy;
-use crate::types::{Action, ActionType, ModelPrediction};
+use crate::types::{Action, EnsembleAction, ModelPrediction};
 
 /// 硬投票：多数表决
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,7 +17,7 @@ impl VotingStrategy for HardVoteStrategy {
     fn combine(&self, predictions: &[ModelPrediction]) -> Action {
         if predictions.is_empty() {
             return Action {
-                action_type: ActionType::Hold,
+                action_type: EnsembleAction::Hold,
                 symbol: None,
                 quantity: None,
                 confidence: 0.0,
@@ -25,22 +25,24 @@ impl VotingStrategy for HardVoteStrategy {
         }
 
         // 统计每个 action_type 的票数
-        let mut votes: HashMap<ActionType, usize> = HashMap::new();
+        let mut votes: HashMap<EnsembleAction, usize> = HashMap::new();
         for pred in predictions {
             *votes.entry(pred.action.action_type).or_insert(0) += 1;
         }
 
         // 选取得票最多的动作；平票时按 Hold > Sell > Buy 优先
-        let priority = |a: &ActionType| match a {
-            ActionType::Hold => 2,
-            ActionType::Sell => 1,
-            ActionType::Buy => 0,
+        let priority = |a: &EnsembleAction| match a {
+            EnsembleAction::Hold => 2,
+            EnsembleAction::Sell => 1,
+            EnsembleAction::Buy => 0,
         };
-        let mut entries: Vec<(ActionType, usize)> = votes.into_iter().collect();
+        let mut entries: Vec<(EnsembleAction, usize)> = votes.into_iter().collect();
         entries
             .sort_by(|(a1, c1), (a2, c2)| c2.cmp(c1).then_with(|| priority(a2).cmp(&priority(a1))));
-        let (majority_action, winning_votes) =
-            entries.into_iter().next().unwrap_or((ActionType::Hold, 0));
+        let (majority_action, winning_votes) = entries
+            .into_iter()
+            .next()
+            .unwrap_or((EnsembleAction::Hold, 0));
 
         // 置信度 = 得票比例
         let confidence = winning_votes as f64 / predictions.len() as f64;
@@ -69,7 +71,7 @@ impl VotingStrategy for SoftVoteStrategy {
     fn combine(&self, predictions: &[ModelPrediction]) -> Action {
         if predictions.is_empty() {
             return Action {
-                action_type: ActionType::Hold,
+                action_type: EnsembleAction::Hold,
                 symbol: None,
                 quantity: None,
                 confidence: 0.0,
@@ -128,7 +130,7 @@ impl VotingStrategy for WeightedVoteStrategy {
     fn combine(&self, predictions: &[ModelPrediction]) -> Action {
         if predictions.is_empty() || self.weights.len() != predictions.len() {
             return Action {
-                action_type: ActionType::Hold,
+                action_type: EnsembleAction::Hold,
                 symbol: None,
                 quantity: None,
                 confidence: 0.0,
@@ -163,13 +165,13 @@ impl VotingStrategy for WeightedVoteStrategy {
 }
 
 /// 选择 (buy, sell, hold) 中最大值对应的 action
-fn argmax_action(buy: f64, sell: f64, hold: f64) -> ActionType {
+fn argmax_action(buy: f64, sell: f64, hold: f64) -> EnsembleAction {
     if buy >= sell && buy >= hold {
-        ActionType::Buy
+        EnsembleAction::Buy
     } else if sell >= buy && sell >= hold {
-        ActionType::Sell
+        EnsembleAction::Sell
     } else {
-        ActionType::Hold
+        EnsembleAction::Hold
     }
 }
 
@@ -179,8 +181,8 @@ mod tests {
 
     #[test]
     fn test_argmax_action() {
-        assert_eq!(argmax_action(0.5, 0.3, 0.2), ActionType::Buy);
-        assert_eq!(argmax_action(0.2, 0.5, 0.3), ActionType::Sell);
-        assert_eq!(argmax_action(0.3, 0.3, 0.4), ActionType::Hold);
+        assert_eq!(argmax_action(0.5, 0.3, 0.2), EnsembleAction::Buy);
+        assert_eq!(argmax_action(0.2, 0.5, 0.3), EnsembleAction::Sell);
+        assert_eq!(argmax_action(0.3, 0.3, 0.4), EnsembleAction::Hold);
     }
 }

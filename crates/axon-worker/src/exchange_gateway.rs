@@ -553,7 +553,7 @@ mod tests {
             order: order.clone(),
             fills: vec![OmsFill {
                 fill_id: "t-1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: Decimal::from(100),
                 quantity: Decimal::from(-30),

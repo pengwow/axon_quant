@@ -91,13 +91,19 @@ pub(crate) fn parse_llm_content(
         .and_then(|x| x.as_f64())
         .unwrap_or(0.0)
         .clamp(0.0, 1.0);
-    // 胜选项给置信度，其余概率均分剩余质量，保证三键齐全且和为 1
+    // 胜选项给置信度，其余概率均分剩余质量，保证三键齐全且和为 1。
+    // 键用 as_str() 动作词表（CascadeDecision 出口统一词表）；
+    // LLM 输出的旧词表 action（buy/sell）由 from_name 双入口解析。
     let rest = (1.0 - confidence).max(0.0) / 2.0;
     let mut probs = BTreeMap::new();
-    for name in ["buy", "sell", "hold"] {
+    for action_key in [
+        Action::Long.as_str(),
+        Action::Short.as_str(),
+        Action::Hold.as_str(),
+    ] {
         probs.insert(
-            name.to_string(),
-            if Action::from_name(name) == Some(action) {
+            action_key.to_string(),
+            if Action::from_name(action_key) == Some(action) {
                 confidence
             } else {
                 rest
@@ -143,12 +149,13 @@ mod tests {
 
     #[test]
     fn parse_valid_json_inside_fence() {
+        // LLM 输出旧协议词表 sell（S2 prompt 仍是 buy|sell|hold），动作解析走 from_name 兼容入口
         let text = "好的，结果是：\n```json\n{\"action\":\"sell\",\"confidence\":0.8}\n```";
         let (a, probs, c) = parse_llm_content(text).unwrap();
-        assert_eq!(a, Action::Sell);
+        assert_eq!(a, Action::Short);
         assert!((c - 0.8).abs() < 1e-9);
-        assert!((probs["buy"] - 0.1).abs() < 1e-9);
-        assert!((probs["sell"] - 0.8).abs() < 1e-9);
+        assert!((probs["long"] - 0.1).abs() < 1e-9);
+        assert!((probs["short"] - 0.8).abs() < 1e-9);
         assert!((probs["hold"] - 0.1).abs() < 1e-9);
     }
 
@@ -164,6 +171,7 @@ mod tests {
     async fn end_to_end_with_mock_backend() {
         use crate::backends::MockBackend;
         let llm: Arc<dyn LLMBackend> = Arc::new(MockBackend::text_only(
+            // 故意用旧协议词表 buy，验证 S2 兼容解析
             "{\"action\":\"buy\",\"confidence\":0.66}",
         ));
         let fb = LlmFallback::new(llm);
@@ -171,7 +179,7 @@ mod tests {
             .decide(&serde_json::json!({"features": {}}))
             .await
             .unwrap();
-        assert_eq!(outcome.action, Action::Buy);
+        assert_eq!(outcome.action, Action::Long);
         assert!((outcome.confidence - 0.66).abs() < 1e-9);
         assert!(outcome.raw.is_some());
     }

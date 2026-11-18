@@ -57,7 +57,7 @@ def test_margin_fields_default_when_disabled():
     assert result.margin_applied is False
     assert result.margin_specs_effective == []
     assert result.liquidation_count == 0
-    assert result.margin_shortfall_count == 0
+    assert result.shortfall_count == 0
     assert not hasattr(result, "capital_budget_disabled")
 
 
@@ -105,5 +105,5 @@ def test_result_exposes_effective_specs_and_counts():
     assert result.margin_applied is False
     assert result.margin_specs_effective == []
     assert result.liquidation_count == 0
-    assert result.margin_shortfall_count == 0
+    assert result.shortfall_count == 0
     assert not hasattr(result, "capital_budget_disabled")

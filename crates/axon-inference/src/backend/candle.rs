@@ -30,7 +30,7 @@ use candle_nn::{Linear, Module, VarBuilder, linear, ops};
 use parking_lot::Mutex;
 
 use crate::engine::InferenceEngine;
-use crate::error::{Action, ActionType, InferenceError, ModelConfig, Observation};
+use crate::error::{Action, InferenceError, ModelConfig, Observation, TradeAction};
 
 /// Candle 后端(纯 Rust 推理,基于 `candle-core 0.10` + `candle-nn 0.10`)
 ///
@@ -163,15 +163,15 @@ fn action_from_logits(
         .ok_or_else(|| InferenceError::InferenceFailed {
             reason: "empty logits".into(),
         })?;
-    // ActionType 映射(按 argmax_idx 顺序)
+    // TradeAction 映射(按 argmax_idx 顺序)
     let action_type = match argmax_idx {
-        0 => ActionType::Hold,
-        1 => ActionType::Buy,
-        2 => ActionType::Sell,
-        3 => ActionType::ReduceLong,
-        4 => ActionType::ReduceShort,
+        0 => TradeAction::Hold,
+        1 => TradeAction::Buy,
+        2 => TradeAction::Sell,
+        3 => TradeAction::ReduceLong,
+        4 => TradeAction::ReduceShort,
         // 越界 fallback 到 Hold(防御性)
-        _ => ActionType::Hold,
+        _ => TradeAction::Hold,
     };
     Ok(Action {
         action_type,
@@ -312,14 +312,14 @@ impl InferenceEngine for CandleBackend {
                 .ok_or_else(|| InferenceError::InferenceFailed {
                     reason: "empty logits row".into(),
                 })?;
-            // ActionType 映射
+            // TradeAction 映射
             let action_type = match argmax_idx {
-                0 => ActionType::Hold,
-                1 => ActionType::Buy,
-                2 => ActionType::Sell,
-                3 => ActionType::ReduceLong,
-                4 => ActionType::ReduceShort,
-                _ => ActionType::Hold,
+                0 => TradeAction::Hold,
+                1 => TradeAction::Buy,
+                2 => TradeAction::Sell,
+                3 => TradeAction::ReduceLong,
+                4 => TradeAction::ReduceShort,
+                _ => TradeAction::Hold,
             };
             actions.push(Action {
                 action_type,
@@ -587,7 +587,7 @@ mod tests {
             features: vec![0.0; 4],
         };
         let action = backend.infer(&obs).expect("infer ok");
-        assert_eq!(action.action_type, ActionType::Hold);
+        assert_eq!(action.action_type, TradeAction::Hold);
         assert!(
             action.confidence > 0.5,
             "Hold 概率应 > 0.5,实际 {}",
@@ -619,7 +619,7 @@ mod tests {
         let actions = backend.infer_batch(&obs).expect("batch ok");
         assert_eq!(actions.len(), 3);
         for a in &actions {
-            assert_eq!(a.action_type, ActionType::Hold);
+            assert_eq!(a.action_type, TradeAction::Hold);
         }
     }
 
@@ -658,7 +658,7 @@ mod tests {
             features: vec![0.0; 4],
         };
         let action = backend.infer(&obs).expect("infer ok");
-        assert_eq!(action.action_type, ActionType::ReduceLong);
+        assert_eq!(action.action_type, TradeAction::ReduceLong);
     }
 
     /// input features 维度与 config 不匹配时返回 DimensionMismatch

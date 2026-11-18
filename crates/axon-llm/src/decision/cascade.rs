@@ -16,13 +16,13 @@ use super::types::{
     DecisionUsage,
 };
 
-/// 动作键固定顺序
-pub const ACTIONS: [&str; 3] = ["buy", "sell", "hold"];
+/// 动作键固定顺序（CascadeDecision.probabilities 的键恒为这三个）
+pub const ACTIONS: [&str; 3] = ["long", "short", "hold"];
 
 /// 非对称门控：开仓阈值高于观望阈值（开仓判错代价更高）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CascadeConfig {
-    /// buy/sell 放行阈值
+    /// long/short 放行阈值
     pub open_threshold: f64,
     /// hold 放行阈值
     pub hold_threshold: f64,
@@ -40,7 +40,7 @@ impl Default for CascadeConfig {
 /// 置信度是否达到该动作的放行阈值（边界值放行）
 pub fn gate_allows(action: Action, confidence: f64, config: &CascadeConfig) -> bool {
     let threshold = match action {
-        Action::Buy | Action::Sell => config.open_threshold,
+        Action::Long | Action::Short => config.open_threshold,
         Action::Hold => config.hold_threshold,
     };
     confidence >= threshold
@@ -50,7 +50,7 @@ pub fn gate_allows(action: Action, confidence: f64, config: &CascadeConfig) -> b
 pub struct FallbackOutcome {
     /// 最终动作
     pub action: Action,
-    /// buy/sell/hold 概率分布
+    /// long/short/hold 概率分布
     pub probabilities: BTreeMap<String, f64>,
     /// 置信度
     pub confidence: f64,
@@ -96,29 +96,30 @@ impl FallbackDecider for RuleFallback {
         let sma = feat("sma5_vs_sma20")?;
         let ret = feat("ret_1")?;
         let action = if sma > 0.0 && ret > 0.0 {
-            Action::Buy
+            Action::Long
         } else if sma < 0.0 && ret < 0.0 {
-            Action::Sell
+            Action::Short
         } else {
             Action::Hold
         };
+        // 键直接用 as_str() 动作词表，与 probs[action.as_str()] 取值强耦合保持一致
         let mut probs = BTreeMap::new();
         let (win, other) = (0.7_f64, 0.1_f64);
         match action {
-            Action::Buy => {
-                probs.insert("buy".to_string(), win);
-                probs.insert("sell".to_string(), other);
+            Action::Long => {
+                probs.insert("long".to_string(), win);
+                probs.insert("short".to_string(), other);
                 probs.insert("hold".to_string(), 0.2);
             }
-            Action::Sell => {
-                probs.insert("sell".to_string(), win);
-                probs.insert("buy".to_string(), other);
+            Action::Short => {
+                probs.insert("short".to_string(), win);
+                probs.insert("long".to_string(), other);
                 probs.insert("hold".to_string(), 0.2);
             }
             Action::Hold => {
                 probs.insert("hold".to_string(), 0.5);
-                probs.insert("buy".to_string(), 0.25);
-                probs.insert("sell".to_string(), 0.25);
+                probs.insert("long".to_string(), 0.25);
+                probs.insert("short".to_string(), 0.25);
             }
         }
         let confidence = probs[action.as_str()];
@@ -158,7 +159,25 @@ fn extract_sub_signals(resp: &DecisionResponse) -> BTreeMap<String, f64> {
     sub
 }
 
-/// 补齐 buy/sell/hold 三键；保持原始概率不归一化（校准值不可篡改）
+/// 把 SDM 协议词表的概率键（buy/sell/hold）归一为动作键（long/short/hold）；其余键原样保留
+///
+/// SDM 的 probabilities 是模型输出（协议词表恒为 buy/sell/hold），不得直接透传 ——
+/// CascadeDecision.probabilities 的键必须与 [`ACTIONS`] 一致，否则下游按动作键取值会错位。
+fn normalize_sdm_prob_keys(probs: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
+    probs
+        .iter()
+        .map(|(k, v)| {
+            let nk = match k.as_str() {
+                "buy" => "long",
+                "sell" => "short",
+                other => other,
+            };
+            (nk.to_string(), *v)
+        })
+        .collect()
+}
+
+/// 补齐 long/short/hold 三键；保持原始概率不归一化（校准值不可篡改）
 fn ensure_action_keys(probs: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
     ACTIONS
         .iter()
@@ -255,12 +274,12 @@ impl SdmCascadeDecisionLayer {
                 .await;
         }
 
-        // 直出：概率只补缺键不归一化，保留 SDM 原始校准分布
+        // 直出：先归一协议词表键，再补缺键不归一化，保留 SDM 原始校准分布
         CascadeDecision {
             action,
             source: DecisionSource::SdmDirect,
             confidence,
-            probabilities: ensure_action_keys(&probabilities),
+            probabilities: ensure_action_keys(&normalize_sdm_prob_keys(&probabilities)),
             fallback_reason: None,
             sdm_usage: Some(usage),
             sub_signals,
@@ -295,8 +314,8 @@ impl SdmCascadeDecisionLayer {
             Err(e) => {
                 let mut probabilities = BTreeMap::new();
                 probabilities.insert("hold".to_string(), 1.0);
-                probabilities.insert("buy".to_string(), 0.0);
-                probabilities.insert("sell".to_string(), 0.0);
+                probabilities.insert("long".to_string(), 0.0);
+                probabilities.insert("short".to_string(), 0.0);
                 CascadeDecision {
                     action: Action::Hold,
                     source: DecisionSource::Fallback,
@@ -350,6 +369,7 @@ mod tests {
             Answer::Choice {
                 choice: choice.to_string(),
                 confidence: conf,
+                // 键用 SDM 协议词表（模型输出），模拟真实响应；cascade 出口负责归一为动作键
                 probabilities: BTreeMap::from([
                     ("buy".to_string(), 0.1),
                     ("sell".to_string(), 0.1),
@@ -392,6 +412,10 @@ mod tests {
         for k in ACTIONS {
             assert!(d.probabilities.contains_key(k));
         }
+        // SDM 协议词表键 buy/sell 已归一为动作键 long/short（概率值保留）
+        assert_eq!(d.probabilities.get("long"), Some(&0.1));
+        assert_eq!(d.probabilities.get("short"), Some(&0.1));
+        assert!(!d.probabilities.contains_key("buy"));
     }
 
     #[tokio::test]
@@ -404,11 +428,11 @@ mod tests {
         );
         let d = layer.decide(&req).await;
         assert_eq!(d.source, DecisionSource::Fallback);
-        assert_eq!(d.action, Action::Buy); // 规则：sma>0 且 ret>0
+        assert_eq!(d.action, Action::Long); // 规则：sma>0 且 ret>0
         // 三段式「类别: 细分: 详情」：前端按冒号取前两段聚合依赖此格式
         assert_eq!(
             d.fallback_reason.as_deref(),
-            Some("low_confidence: buy: 0.5")
+            Some("low_confidence: long: 0.5")
         );
         assert_eq!(d.sdm_usage.unwrap().input_tokens, 5);
     }
@@ -554,5 +578,8 @@ mod tests {
         // v2 新增的 volatility_regime 和 drawdown_risk 也在
         assert_eq!(d.sub_signals.get("volatility_regime"), Some(&1.0));
         assert_eq!(d.sub_signals.get("drawdown_risk"), Some(&0.25));
+        // 直出路径概率键归一：choice="buy" 的 0.7 落在动作键 long 上
+        assert_eq!(d.probabilities.get("long"), Some(&0.7));
+        assert_eq!(d.probabilities.get("short"), Some(&0.1));
     }
 }

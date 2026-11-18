@@ -3,7 +3,7 @@
 //! 统一管理多个模型，提供统一预测接口和多样性度量。
 
 use crate::traits::{Ensemble, Policy, VotingStrategy};
-use crate::types::{Action, ActionType, ModelPrediction, ModelWeight, Observation};
+use crate::types::{Action, EnsembleAction, ModelPrediction, ModelWeight, Observation};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 集成管理器：统一管理所有模型和投票策略
@@ -119,7 +119,7 @@ impl EnsembleManager {
         let mut total = 0usize;
 
         for obs in observations {
-            let predictions: Vec<ActionType> = self
+            let predictions: Vec<EnsembleAction> = self
                 .models
                 .iter()
                 .map(|m| m.predict(obs).action_type)

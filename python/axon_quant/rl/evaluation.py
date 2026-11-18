@@ -92,14 +92,16 @@ def evaluate(
     env: Any,
     transaction_cost: float | None = None,
 ) -> dict:
-    """逐 step 驱动 env（Gymnasium 风格 5-tuple），收集 NAV 轨迹后转指标 dict。
+    """逐 step 驱动 env（Gymnasium 风格 5-tuple），收集账户净值（equity）轨迹后转指标 dict。
 
+    info 键按环境实现取值：Rust TradingEnv 暴露 portfolio_value，
+    Python BacktestEnv 暴露 equity（账户域 canonical 词）。
     transaction_cost 为环境实际费率（TradingEnv 成本定义即 notional × fee_rate），
     传入时用累计 transaction_costs / fee_rate 反推成交名义总额——是恒等式不是估算；
     None 或 0 反推无效，turnover 记 0.0（backend 原口径）。
     """
     obs, reset_info = env.reset()
-    initial_nav = reset_info.get("portfolio_value", _DEFAULT_INITIAL_NAV)
+    initial_nav = reset_info.get("portfolio_value", reset_info.get("equity", _DEFAULT_INITIAL_NAV))
     nav_history = [initial_nav]
     num_trades = 0
     info: dict = {}
@@ -109,8 +111,8 @@ def evaluate(
         action = predict_fn(obs)
         obs, _reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
-        # 原口径：portfolio_value → nav → 0.0 双回退；成交笔数取环境语义的 trades_executed
-        nav = info.get("portfolio_value", info.get("nav", 0.0))
+        # 原口径：portfolio_value → equity → 0.0 双回退；成交笔数取环境语义的 trades_executed
+        nav = info.get("portfolio_value", info.get("equity", 0.0))
         nav_history.append(nav)
         num_trades = int(info.get("trades_executed", 0))
 

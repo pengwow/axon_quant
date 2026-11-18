@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 
 use crate::traits::Policy;
-use crate::types::{Action, ActionType, ModelType, Observation};
+use crate::types::{Action, EnsembleAction, ModelType, Observation};
 
 /// Python 可调用对象适配 `Policy` trait
 pub struct PyPolicy {
@@ -32,7 +32,7 @@ impl Policy for PyPolicy {
                 Err(e) => {
                     tracing::error!("Failed to convert observation: {}", e);
                     return Action {
-                        action_type: ActionType::Hold,
+                        action_type: EnsembleAction::Hold,
                         symbol: None,
                         quantity: None,
                         confidence: 0.0,
@@ -51,11 +51,11 @@ impl Policy for PyPolicy {
                             .flatten()
                             .and_then(|v| v.extract::<String>().ok())
                             .map(|s| match s.as_str() {
-                                "buy" | "Buy" => ActionType::Buy,
-                                "sell" | "Sell" => ActionType::Sell,
-                                _ => ActionType::Hold,
+                                "buy" | "Buy" => EnsembleAction::Buy,
+                                "sell" | "Sell" => EnsembleAction::Sell,
+                                _ => EnsembleAction::Hold,
                             })
-                            .unwrap_or(ActionType::Hold);
+                            .unwrap_or(EnsembleAction::Hold);
 
                         let symbol = dict
                             .get_item("symbol")
@@ -84,7 +84,7 @@ impl Policy for PyPolicy {
                         }
                     } else {
                         Action {
-                            action_type: ActionType::Hold,
+                            action_type: EnsembleAction::Hold,
                             symbol: None,
                             quantity: None,
                             confidence: 0.5,
@@ -94,7 +94,7 @@ impl Policy for PyPolicy {
                 Err(e) => {
                     tracing::error!("Python predict call failed: {}", e);
                     Action {
-                        action_type: ActionType::Hold,
+                        action_type: EnsembleAction::Hold,
                         symbol: None,
                         quantity: None,
                         confidence: 0.0,

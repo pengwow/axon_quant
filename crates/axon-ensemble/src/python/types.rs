@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::types::{
-    Action, ActionProbabilities, ActionType, EnsembleStrategy, ModelType, Observation,
+    Action, ActionProbabilities, EnsembleAction, EnsembleStrategy, ModelType, Observation,
     PortfolioState,
 };
 
@@ -66,16 +66,19 @@ impl From<PyModelType> for ModelType {
 }
 
 /// 动作类型枚举
+///
+/// Rust 类型已拆名为 [`EnsembleAction`]；Python 对外类名仍为 "ActionType"
+///（历史 API，重命名会破坏下游策略脚本）。
 #[pyclass(name = "ActionType", eq, from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PyActionType {
+pub enum PyEnsembleAction {
     Buy,
     Sell,
     Hold,
 }
 
 #[pymethods]
-impl PyActionType {
+impl PyEnsembleAction {
     fn __str__(&self) -> &'static str {
         match self {
             Self::Buy => "buy",
@@ -89,22 +92,22 @@ impl PyActionType {
     }
 }
 
-impl From<ActionType> for PyActionType {
-    fn from(t: ActionType) -> Self {
+impl From<EnsembleAction> for PyEnsembleAction {
+    fn from(t: EnsembleAction) -> Self {
         match t {
-            ActionType::Buy => Self::Buy,
-            ActionType::Sell => Self::Sell,
-            ActionType::Hold => Self::Hold,
+            EnsembleAction::Buy => Self::Buy,
+            EnsembleAction::Sell => Self::Sell,
+            EnsembleAction::Hold => Self::Hold,
         }
     }
 }
 
-impl From<PyActionType> for ActionType {
-    fn from(t: PyActionType) -> Self {
+impl From<PyEnsembleAction> for EnsembleAction {
+    fn from(t: PyEnsembleAction) -> Self {
         match t {
-            PyActionType::Buy => Self::Buy,
-            PyActionType::Sell => Self::Sell,
-            PyActionType::Hold => Self::Hold,
+            PyEnsembleAction::Buy => Self::Buy,
+            PyEnsembleAction::Sell => Self::Sell,
+            PyEnsembleAction::Hold => Self::Hold,
         }
     }
 }
@@ -212,7 +215,7 @@ pub struct PyAction {
 impl PyAction {
     #[new]
     fn new(
-        action_type: PyActionType,
+        action_type: PyEnsembleAction,
         symbol: Option<String>,
         quantity: Option<f64>,
         confidence: f64,
@@ -228,7 +231,7 @@ impl PyAction {
     }
 
     #[getter]
-    fn action_type(&self) -> PyActionType {
+    fn action_type(&self) -> PyEnsembleAction {
         self.inner.action_type.into()
     }
 
@@ -250,9 +253,9 @@ impl PyAction {
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         let action_type_str = match self.inner.action_type {
-            ActionType::Buy => "buy",
-            ActionType::Sell => "sell",
-            ActionType::Hold => "hold",
+            EnsembleAction::Buy => "buy",
+            EnsembleAction::Sell => "sell",
+            EnsembleAction::Hold => "hold",
         };
         dict.set_item("action_type", action_type_str)?;
         dict.set_item("symbol", &self.inner.symbol)?;
@@ -263,9 +266,9 @@ impl PyAction {
 
     fn __repr__(&self) -> String {
         let action_type_str = match self.inner.action_type {
-            ActionType::Buy => "buy",
-            ActionType::Sell => "sell",
-            ActionType::Hold => "hold",
+            EnsembleAction::Buy => "buy",
+            EnsembleAction::Sell => "sell",
+            EnsembleAction::Hold => "hold",
         };
         format!(
             "Action(type='{}', symbol={:?}, qty={:?}, conf={:.4})",
@@ -395,7 +398,7 @@ impl From<crate::types::ModelWeight> for PyModelWeight {
 /// 注册类型到 Python 模块
 pub fn register(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     parent.add_class::<PyModelType>()?;
-    parent.add_class::<PyActionType>()?;
+    parent.add_class::<PyEnsembleAction>()?;
     parent.add_class::<PyEnsembleStrategy>()?;
     parent.add_class::<PyActionProbabilities>()?;
     parent.add_class::<PyAction>()?;

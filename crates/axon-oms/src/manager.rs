@@ -379,7 +379,7 @@ mod tests {
 
         let fill = Fill {
             fill_id: "f1".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(65000),
             quantity: dec!(0.1),
@@ -402,7 +402,7 @@ mod tests {
 
         let fill = Fill {
             fill_id: "f-over".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(65000),
             quantity: dec!(0.12),
@@ -434,7 +434,7 @@ mod tests {
 
         let fill = Fill {
             fill_id: "f-replay".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(65000),
             quantity: dec!(0.12),
@@ -476,7 +476,7 @@ mod tests {
 
         let fill = Fill {
             fill_id: "f-sell".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(65000),
             quantity: dec!(-0.1),
@@ -505,7 +505,7 @@ mod tests {
 
         let fill = Fill {
             fill_id: "f-sell-over".into(),
-            symbol: "BTC-USDT".into(),
+            instrument_id: "BTC-USDT".into(),
             instrument: None,
             price: dec!(65000),
             quantity: dec!(-0.12),
@@ -676,7 +676,7 @@ mod tests {
             id,
             Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: dec!(50000),
                 quantity: dec!(1),
@@ -706,7 +706,7 @@ mod tests {
             id,
             Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: dec!(50000),
                 quantity: dec!(0.5),
@@ -741,7 +741,7 @@ mod tests {
                 id,
                 Fill {
                     fill_id: "f1".into(),
-                    symbol: "BTC-USDT".into(),
+                    instrument_id: "BTC-USDT".into(),
                     instrument: None,
                     price: dec!(50000),
                     quantity: dec!(1),
@@ -775,7 +775,7 @@ mod tests {
             id,
             Fill {
                 fill_id: "f1".into(),
-                symbol: "BTC-USDT".into(),
+                instrument_id: "BTC-USDT".into(),
                 instrument: None,
                 price: dec!(50000),
                 quantity: dec!(1),
@@ -860,7 +860,7 @@ mod tests {
                     id,
                     Fill {
                         fill_id: format!("f{}", i),
-                        symbol: "BTC-USDT".into(),
+                        instrument_id: "BTC-USDT".into(),
                         instrument: None,
                         price: Decimal::from(50000 + i),
                         quantity: dec!(1),
