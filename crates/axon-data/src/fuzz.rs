@@ -190,10 +190,10 @@ proptest! {
         if count > 0 {
             // 首 ts = 0
             prop_assert_eq!(mock.rows[0].timestamp.nanos, 0);
-            // 等差
-            for i in 0..count {
+            // 等差（len == count 已在上文断言，直接枚举）
+            for (i, row) in mock.rows.iter().enumerate() {
                 let expected = i as i64 * nanos_step;
-                prop_assert_eq!(mock.rows[i].timestamp.nanos, expected);
+                prop_assert_eq!(row.timestamp.nanos, expected);
             }
         }
     }
