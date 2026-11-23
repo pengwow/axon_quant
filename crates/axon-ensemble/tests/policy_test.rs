@@ -2,7 +2,7 @@
 //!
 //! 验证自定义策略实现能被集成框架使用。
 
-use axon_ensemble::{Action, ActionProbabilities, ActionType, ModelType, Observation, Policy};
+use axon_ensemble::{Action, ActionProbabilities, EnsembleAction, ModelType, Observation, Policy};
 
 /// 简单规则策略：所有观测都返回 Buy
 struct AlwaysBuyPolicy {
@@ -13,7 +13,7 @@ struct AlwaysBuyPolicy {
 impl Policy for AlwaysBuyPolicy {
     fn predict(&self, _observation: &Observation) -> Action {
         Action {
-            action_type: ActionType::Buy,
+            action_type: EnsembleAction::Buy,
             symbol: Some("BTC".to_string()),
             quantity: Some(1.0),
             confidence: self.confidence,
@@ -41,7 +41,7 @@ fn test_policy_predict_returns_action() {
     };
     let obs = Observation::default();
     let action = policy.predict(&obs);
-    assert_eq!(action.action_type, ActionType::Buy);
+    assert_eq!(action.action_type, EnsembleAction::Buy);
     assert_eq!(action.symbol.as_deref(), Some("BTC"));
     assert_eq!(action.quantity, Some(1.0));
     assert!((action.confidence - 0.9).abs() < 1e-9);
@@ -64,7 +64,7 @@ fn test_policy_action_probs_optional() {
     impl Policy for DefaultPolicy {
         fn predict(&self, _observation: &Observation) -> Action {
             Action {
-                action_type: ActionType::Hold,
+                action_type: EnsembleAction::Hold,
                 symbol: None,
                 quantity: None,
                 confidence: 0.0,

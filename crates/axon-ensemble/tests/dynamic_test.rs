@@ -1,13 +1,13 @@
 //! DynamicWeightedEnsemble 单元测试
 
 use axon_ensemble::{
-    Action, ActionProbabilities, ActionType, DynamicWeightedEnsemble, Ensemble, ModelPerformance,
-    ModelType, Observation, Policy,
+    Action, ActionProbabilities, DynamicWeightedEnsemble, Ensemble, EnsembleAction,
+    ModelPerformance, ModelType, Observation, Policy,
 };
 
 struct FixedPolicy {
     name: String,
-    action_type: ActionType,
+    action_type: EnsembleAction,
     probs: ActionProbabilities,
 }
 
@@ -35,12 +35,12 @@ impl Policy for FixedPolicy {
 fn test_dynamic_initial_weights_are_uniform() {
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let ens = DynamicWeightedEnsemble::new(vec![Box::new(p1), Box::new(p2)], 0.95, 0.1);
@@ -58,17 +58,17 @@ fn test_dynamic_initial_weights_are_uniform() {
 fn test_dynamic_predict_with_uniform_weights() {
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.6, 0.2, 0.2),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.4, 0.4, 0.2),
     };
     let ens = DynamicWeightedEnsemble::new(vec![Box::new(p1), Box::new(p2)], 0.95, 0.1);
     let action = ens.predict(&Observation::default());
-    assert_eq!(action.action_type, ActionType::Buy);
+    assert_eq!(action.action_type, EnsembleAction::Buy);
 }
 
 #[test]
@@ -76,12 +76,12 @@ fn test_dynamic_weights_shift_toward_better_performers() {
     // 模型 1 表现好 (高 sharpe)，模型 2 表现差 (负 sharpe)
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let mut ens = DynamicWeightedEnsemble::new(vec![Box::new(p1), Box::new(p2)], 0.95, 0.1);
@@ -125,12 +125,12 @@ fn test_dynamic_weights_shift_toward_better_performers() {
 fn test_dynamic_update_weights_via_performances_array() {
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let mut ens = DynamicWeightedEnsemble::new(vec![Box::new(p1), Box::new(p2)], 0.95, 0.0);
@@ -154,7 +154,7 @@ fn test_dynamic_update_weights_via_performances_array() {
 fn test_dynamic_history_capped_at_1000() {
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let mut ens = DynamicWeightedEnsemble::new(vec![Box::new(p1)], 0.95, 0.1);
@@ -177,12 +177,12 @@ fn test_dynamic_history_capped_at_1000() {
 fn test_dynamic_all_zero_sharpe_falls_back_to_uniform() {
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(0.5, 0.3, 0.2),
     };
     let mut ens = DynamicWeightedEnsemble::new(vec![Box::new(p1), Box::new(p2)], 0.95, 0.0);
@@ -218,12 +218,12 @@ fn test_dynamic_predict_uses_weighted_action_probs() {
     // 初始均匀 → 接近 0.5/0.5 → 平票
     let p1 = FixedPolicy {
         name: "m1".to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
         probs: ActionProbabilities::new(1.0, 0.0, 0.0),
     };
     let p2 = FixedPolicy {
         name: "m2".to_string(),
-        action_type: ActionType::Sell,
+        action_type: EnsembleAction::Sell,
         probs: ActionProbabilities::new(0.0, 1.0, 0.0),
     };
     // m1 权重 0.8, m2 权重 0.2 → Buy 应胜出
@@ -232,6 +232,6 @@ fn test_dynamic_predict_uses_weighted_action_probs() {
     let action = ens.predict(&Observation::default());
     // 加权 buy = 0.8*1 + 0.2*0 = 0.8
     // 加权 sell = 0.8*0 + 0.2*1 = 0.2
-    assert_eq!(action.action_type, ActionType::Buy);
+    assert_eq!(action.action_type, EnsembleAction::Buy);
     assert!((action.confidence - 0.8).abs() < 1e-9);
 }

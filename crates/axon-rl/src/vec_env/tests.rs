@@ -411,8 +411,8 @@ fn test_async_concurrent_reset_and_step() {
 
     // 验证所有环境的 step_count 累加到 100
     let stats = envs.statistics();
-    for i in 0..8 {
-        assert_eq!(stats.step_counts[i], 100, "env {i} 应累计 100 步");
+    for (i, count) in stats.step_counts.iter().enumerate() {
+        assert_eq!(*count, 100, "env {i} 应累计 100 步");
     }
 
     // 注意：AsyncVecEnv 是串行派发 + worker 线程并行执行 env.step。
@@ -540,12 +540,12 @@ fn test_async_auto_reset_under_load() {
     }
 
     let stats = envs.statistics();
-    for i in 0..N_ENVS {
+    for count in stats.step_counts.iter() {
         // episode_count 在 reset_all 时已 +1（每 env 1 个 episode）
         // 之后每次自动重置 +1
         // 跑 2 个 episode 后每个 env 应至少经历 1 次 episode 完成
         // 由于 done 阈值是 5 步 ⇒ 跑 10 步可能触发 1-2 次 done
         // 这里只验证 step_count 累加正确
-        assert!(stats.step_counts[i] >= MAX_STEPS);
+        assert!(*count >= MAX_STEPS);
     }
 }

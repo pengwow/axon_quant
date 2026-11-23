@@ -72,9 +72,9 @@ impl Strategy for StateAbsoluteStrategy {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         if sma > 0.0 {
-            Ok(StrategyDecision::from_rule(Action::Buy).with_target_position(0.5))
+            Ok(StrategyDecision::from_rule(Action::Long).with_target_position(0.5))
         } else if sma < 0.0 {
-            Ok(StrategyDecision::from_rule(Action::Sell).with_target_position(-0.3))
+            Ok(StrategyDecision::from_rule(Action::Short).with_target_position(-0.3))
         } else {
             Ok(StrategyDecision::from_rule(Action::Hold))
         }
@@ -491,8 +491,8 @@ fn assert_parity(
         "{label}: liquidation_count"
     );
     assert_eq!(
-        a.margin_shortfall_count, br.margin_shortfall_count,
-        "{label}: margin_shortfall_count"
+        a.shortfall_count, br.shortfall_count,
+        "{label}: shortfall_count"
     );
     assert_eq!(a.price_basis, br.price_basis, "{label}: price_basis");
 }

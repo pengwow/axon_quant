@@ -354,7 +354,7 @@ pub struct RunResult {
     /// 强平事件条数（= `liquidation_events.len()`）
     pub liquidation_count: u32,
     /// 因可用自由余额不足而被缩量的开仓次数
-    pub margin_shortfall_count: u32,
+    pub shortfall_count: u32,
 }
 
 impl Default for RunResult {
@@ -401,7 +401,7 @@ impl Default for RunResult {
             margin_applied: false,
             margin_specs_effective: Vec::new(),
             liquidation_count: 0,
-            margin_shortfall_count: 0,
+            shortfall_count: 0,
         }
     }
 }
@@ -699,7 +699,7 @@ pub struct BacktestEngine {
     /// 只统计"想开但开不起"的次数,用于结果回显（前端提示"部分开仓受
     /// 可用保证金限制"）；不影响已成交部分的口径。逐仓看自由现金，
     /// 全仓看 NAV − 已占用初始保证金。
-    margin_shortfall_count: u32,
+    shortfall_count: u32,
     /// 上一次 `check_margin` 中被强平的品种（"BASE/QUOTE"）
     ///
     /// `check_margin` 每次开头清空,只保留"最近一次检查"的结果；worker 在
@@ -815,7 +815,7 @@ impl BacktestEngine {
             insurance_fund_loss: 0.0,
             frozen: false,
             liquidation_events: Vec::new(),
-            margin_shortfall_count: 0,
+            shortfall_count: 0,
             liquidated_last_bar: HashSet::new(),
         }
     }
@@ -2419,8 +2419,8 @@ impl BacktestEngine {
     }
 
     /// 因可用保证金不足而被缩量的开仓次数（供结果层 Task 6 透出）
-    pub fn margin_shortfall_count(&self) -> u32 {
-        self.margin_shortfall_count
+    pub fn shortfall_count(&self) -> u32 {
+        self.shortfall_count
     }
 
     /// 账户是否已穿仓冻结（保险基金兜底后置位，冻结后只允许减仓）
@@ -2615,7 +2615,7 @@ impl BacktestEngine {
                         };
                         if qty > affordable {
                             qty = affordable.max(0.0);
-                            self.margin_shortfall_count += 1;
+                            self.shortfall_count += 1;
                         }
                     }
                 }
@@ -2806,7 +2806,7 @@ impl BacktestEngine {
             margin_applied: self.margin.is_some(),
             margin_specs_effective: self.margin_specs_effective(),
             liquidation_count: self.liquidation_events.len() as u32,
-            margin_shortfall_count: self.margin_shortfall_count,
+            shortfall_count: self.shortfall_count,
         }
     }
 
@@ -6136,7 +6136,7 @@ mod tests {
         assert!(!result.margin_applied);
         assert!(result.margin_specs_effective.is_empty());
         assert_eq!(result.liquidation_count, 0);
-        assert_eq!(result.margin_shortfall_count, 0);
+        assert_eq!(result.shortfall_count, 0);
         // 行为与旧版一致:无持仓、无事件时 NAV = initial_cash
         assert_eq!(result.final_nav, 100_000.0);
         assert!(engine.margin.is_none(), "空 specs 不应构造 tracker");
@@ -6208,7 +6208,7 @@ mod tests {
             result.liquidation_count,
             result.liquidation_events.len() as u32
         );
-        assert_eq!(result.margin_shortfall_count, 0);
+        assert_eq!(result.shortfall_count, 0);
     }
 
     // ── 保证金账务（cash 只记自由余额）测试辅助 ─────────────
@@ -6307,7 +6307,7 @@ mod tests {
             "全仓开仓必须按可用保证金缩量,pos={}",
             engine.get_position(&inst)
         );
-        assert_eq!(engine.margin_shortfall_count(), 1);
+        assert_eq!(engine.shortfall_count(), 1);
     }
 
     /// 穿仓后保险基金兜底 → 冻结；冻结后目标再调大也不会开仓
@@ -6360,7 +6360,7 @@ mod tests {
         engine.set_target_position(inst.clone(), 10.0); // 10 张 = 1000 名义，但只有 100 现金
         engine.rebalance_to_target(Some(1e-6));
         assert!(engine.get_position(&inst) <= 1.05);
-        assert_eq!(engine.margin_shortfall_count(), 1);
+        assert_eq!(engine.shortfall_count(), 1);
         assert!(engine.cash_for_test() >= 0.0);
     }
 

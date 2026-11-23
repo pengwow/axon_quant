@@ -1,7 +1,7 @@
 //! SoftVoteStrategy 单元测试
 
 use axon_ensemble::{
-    Action, ActionProbabilities, ActionType, ModelPrediction, ModelType, SoftVoteStrategy,
+    Action, ActionProbabilities, EnsembleAction, ModelPrediction, ModelType, SoftVoteStrategy,
     VotingStrategy,
 };
 
@@ -10,7 +10,7 @@ fn make_pred(buy: f64, sell: f64, hold: f64, name: &str) -> ModelPrediction {
         model_name: name.to_string(),
         model_type: ModelType::PPO,
         action: Action {
-            action_type: ActionType::Hold,
+            action_type: EnsembleAction::Hold,
             symbol: Some("ETH".to_string()),
             quantity: Some(2.0),
             confidence: 0.5,
@@ -31,7 +31,7 @@ fn test_soft_vote_averages_probabilities() {
     ];
     let strategy = SoftVoteStrategy;
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Buy);
+    assert_eq!(result.action_type, EnsembleAction::Buy);
     assert!((result.confidence - 0.5).abs() < 1e-9);
 }
 
@@ -46,14 +46,14 @@ fn test_soft_vote_picks_highest_avg() {
     ];
     let strategy = SoftVoteStrategy;
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Sell);
+    assert_eq!(result.action_type, EnsembleAction::Sell);
 }
 
 #[test]
 fn test_soft_vote_empty_returns_hold() {
     let strategy = SoftVoteStrategy;
     let result = strategy.combine(&[]);
-    assert_eq!(result.action_type, ActionType::Hold);
+    assert_eq!(result.action_type, EnsembleAction::Hold);
     assert_eq!(result.confidence, 0.0);
 }
 
@@ -77,6 +77,6 @@ fn test_soft_vote_handles_unnormalized_inputs() {
     let preds = vec![make_pred(2.0, 4.0, 4.0, "m1")];
     let strategy = SoftVoteStrategy;
     let result = strategy.combine(&preds);
-    assert_eq!(result.action_type, ActionType::Sell);
+    assert_eq!(result.action_type, EnsembleAction::Sell);
     assert!((result.confidence - 0.4).abs() < 1e-9);
 }

@@ -151,8 +151,9 @@ impl PyPortfolio {
 
     /// 应用一个 fill 事件
     ///
-    /// **签名与 Rust 端对应**:`Fill` 字段是 `fill_id` / `symbol` / `price` /
-    /// `quantity` / `fee` / `timestamp`。`quantity` 正=buy,负=sell
+    /// **签名与 Rust 端对应**:`Fill` 字段是 `fill_id` / `instrument_id` /
+    /// `price` / `quantity` / `fee` / `timestamp`(Python 参数名仍为 `symbol`,
+    /// 映射到 `Fill.instrument_id`)。`quantity` 正=buy,负=sell
     /// (与 Rust 端 `apply_fill` 行为一致)。
     ///
     /// `timestamp=None` 时用 `Utc::now()`。
@@ -160,6 +161,7 @@ impl PyPortfolio {
     fn apply_fill(
         &self,
         fill_id: String,
+        // Python-facing 参数名保持 `symbol`(backend 调用方约定);映射到 Rust Fill.instrument_id
         symbol: String,
         price: &Bound<'_, pyo3::types::PyAny>,
         quantity: &Bound<'_, pyo3::types::PyAny>,
@@ -181,7 +183,7 @@ impl PyPortfolio {
         };
         let fill = RustFill {
             fill_id,
-            symbol,
+            instrument_id: symbol,
             // 0.6.0 新增:Python 端 `apply_fill` 路径暂未携带结构化 instrument,
             // 留 None 让老路径继续走字符串 `symbol` 兜底
             instrument: None,

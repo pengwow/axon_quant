@@ -1,8 +1,8 @@
 //! StackingEnsemble 单元测试
 
 use axon_ensemble::{
-    Action, ActionProbabilities, ActionType, Ensemble, MetaModel, ModelType, Observation, Policy,
-    StackingEnsemble,
+    Action, ActionProbabilities, Ensemble, EnsembleAction, MetaModel, ModelType, Observation,
+    Policy, StackingEnsemble,
 };
 
 struct FixedPolicy {
@@ -13,7 +13,7 @@ struct FixedPolicy {
 impl Policy for FixedPolicy {
     fn predict(&self, _observation: &Observation) -> Action {
         Action {
-            action_type: ActionType::Hold,
+            action_type: EnsembleAction::Hold,
             symbol: Some("BTC".to_string()),
             quantity: Some(1.0),
             confidence: 0.5,
@@ -73,7 +73,7 @@ fn test_stacking_ensemble_predict_uses_meta_model() {
     // 元模型 softmax 应选择某 action
     assert!(matches!(
         action.action_type,
-        ActionType::Buy | ActionType::Sell | ActionType::Hold
+        EnsembleAction::Buy | EnsembleAction::Sell | EnsembleAction::Hold
     ));
 }
 
@@ -83,7 +83,7 @@ fn test_stacking_ensemble_requires_at_least_one_model() {
     let stacking = StackingEnsemble::new(vec![], meta);
     let action = stacking.predict(&Observation::default());
     // 0 模型时回退到 Hold
-    assert_eq!(action.action_type, ActionType::Hold);
+    assert_eq!(action.action_type, EnsembleAction::Hold);
 }
 
 #[test]

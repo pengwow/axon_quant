@@ -4,7 +4,7 @@
 //! - `DiscreteActionSpace`：离散动作空间配置（n 个动作 + 交易方向）
 //! - `ContinuousActionSpace`：连续动作空间（目标仓位比例）
 //! - `ActionSpace`：离散 / 连续的枚举
-//! - `Action` / `ActionType`：RL 智能体输出的统一动作表示
+//! - `Action` / `ActionSpaceKind`：RL 智能体输出的统一动作表示
 //! - `TradingDirection`：LongOnly / ShortOnly / Both
 
 use serde::{Deserialize, Serialize};
@@ -223,11 +223,15 @@ impl ActionSpace {
     }
 }
 
-// ── Action / ActionType ──────────────────────────────────
+// ── Action / ActionSpaceKind ──────────────────────────────────
 
 /// 动作类型标记
+///
+/// 原名 `ActionType` 拆名而来：它标记的是动作空间的类别（离散/连续），
+/// 与 inference 的"交易动作"`TradeAction`、ensemble 的"集成动作"
+/// `EnsembleAction` 是三种不同语义，改名消除三处同名枚举的混淆。
 #[derive(Debug, Clone, PartialEq)]
-pub enum ActionType {
+pub enum ActionSpaceKind {
     /// 离散动作（选中的 index）
     Discrete(usize),
     /// 连续动作（值向量）
@@ -242,7 +246,7 @@ pub struct Action {
     /// 处理后的合法值（clip / mask 后）
     pub processed: Vec<f64>,
     /// 动作类型
-    pub action_type: ActionType,
+    pub action_type: ActionSpaceKind,
 }
 
 impl Action {
@@ -251,7 +255,7 @@ impl Action {
         Self {
             raw: vec![index as f64],
             processed: vec![index as f64],
-            action_type: ActionType::Discrete(index),
+            action_type: ActionSpaceKind::Discrete(index),
         }
     }
 
@@ -260,7 +264,7 @@ impl Action {
         Self {
             raw: values.clone(),
             processed: values.clone(),
-            action_type: ActionType::Continuous(values),
+            action_type: ActionSpaceKind::Continuous(values),
         }
     }
 }

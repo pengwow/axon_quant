@@ -18,9 +18,9 @@ pub use manager::{EnsembleManager, HistoryRecord};
 pub use stacking::{MetaModel, StackingEnsemble};
 pub use traits::{Ensemble, Policy, VotingStrategy};
 pub use types::{
-    Action, ActionProbabilities, ActionSnapshot, ActionType, EnsembleStrategy, ModelPerformance,
-    ModelPrediction, ModelType, ModelWeight, Observation, PortfolioState, Position,
-    StackingFeatures,
+    Action, ActionProbabilities, ActionSnapshot, EnsembleAction, EnsembleStrategy,
+    ModelPerformance, ModelPrediction, ModelType, ModelWeight, Observation, PortfolioState,
+    Position, StackingFeatures,
 };
 pub use voting::{HardVoteStrategy, SoftVoteStrategy, WeightedVoteStrategy};
 

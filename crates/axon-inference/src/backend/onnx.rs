@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::engine::InferenceEngine;
-use crate::error::{Action, ActionType, InferenceError, ModelConfig, Observation};
+use crate::error::{Action, InferenceError, ModelConfig, Observation, TradeAction};
 use crate::types::MultiLegAction;
 
 pub struct OnnxBackend {
@@ -31,19 +31,19 @@ impl OnnxBackend {
                 .map(|(i, _)| i)
                 .unwrap_or(2);
             let action_type = match max_idx {
-                0 => ActionType::Buy,
-                1 => ActionType::Sell,
-                _ => ActionType::Hold,
+                0 => TradeAction::Buy,
+                1 => TradeAction::Sell,
+                _ => TradeAction::Hold,
             };
             (action_type, probs[max_idx])
         } else {
             let target = probs.first().copied().unwrap_or(0.0).clamp(-1.0, 1.0);
             let action_type = if target > 0.1 {
-                ActionType::Buy
+                TradeAction::Buy
             } else if target < -0.1 {
-                ActionType::Sell
+                TradeAction::Sell
             } else {
-                ActionType::Hold
+                TradeAction::Hold
             };
             (action_type, target.abs())
         };

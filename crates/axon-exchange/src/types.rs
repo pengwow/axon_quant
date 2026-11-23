@@ -66,6 +66,29 @@ pub enum Side {
     Sell,
 }
 
+/// 方向转换：core（canonical，serde "Buy"/"Sell"）→ 执行侧 wire。
+///
+/// 保留独立定义的原因：交易所 REST/WS 的 wire 契约是小写 "buy"/"sell"
+///（`rename_all = "lowercase"`），与 core 的 serde 值不同，不能直接
+/// re-export；From 互转防止边界处漏译。
+impl From<axon_core::Side> for Side {
+    fn from(s: axon_core::Side) -> Self {
+        match s {
+            axon_core::Side::Buy => Side::Buy,
+            axon_core::Side::Sell => Side::Sell,
+        }
+    }
+}
+
+impl From<Side> for axon_core::Side {
+    fn from(s: Side) -> Self {
+        match s {
+            Side::Buy => axon_core::Side::Buy,
+            Side::Sell => axon_core::Side::Sell,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderType {

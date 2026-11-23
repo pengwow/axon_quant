@@ -7,20 +7,16 @@
 use crate::action::error::{ActionError, ActionResult};
 use crate::action::state::PortfolioState;
 use crate::action::types::{
-    Action, ActionSpace, ActionType, ContinuousActionSpace, DiscreteAction as DiscreteActionEnum,
-    DiscreteActionSpace, QuantityBin,
+    Action, ActionSpace, ActionSpaceKind, ContinuousActionSpace,
+    DiscreteAction as DiscreteActionEnum, DiscreteActionSpace, QuantityBin,
 };
 
-// ── 简化订单类型（不依赖 axon-core::order 以保持解耦）──
+// ── 简化订单类型 ─────────────────────────────────────────
+// 仍不依赖 `axon_core::order` 的 Order/OrderType 结构（保持 RL 环境的独立
+// 可测性），但订单方向复用 canonical 枚举，避免第四份 Side 重复定义。
 
-/// 订单方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderSide {
-    /// 买入
-    Buy,
-    /// 卖出
-    Sell,
-}
+/// 订单方向（re-export [`axon_core::market::Side`]）
+pub use axon_core::market::Side as OrderSide;
 
 /// 订单类型（简化版）
 #[derive(Debug, Clone, PartialEq)]
@@ -93,8 +89,8 @@ impl DiscreteActionConverter {
 impl ActionConverter for DiscreteActionConverter {
     fn to_order(&self, action: &Action, state: &PortfolioState) -> ActionResult<Option<Order>> {
         let index = match action.action_type {
-            ActionType::Discrete(i) => i,
-            ActionType::Continuous(_) => {
+            ActionSpaceKind::Discrete(i) => i,
+            ActionSpaceKind::Continuous(_) => {
                 return Err(ActionError::OutOfRange {
                     value: action.raw.first().copied().unwrap_or(0.0),
                     min: 0.0,
@@ -186,7 +182,7 @@ impl ContinuousActionConverter {
 impl ActionConverter for ContinuousActionConverter {
     fn to_order(&self, action: &Action, state: &PortfolioState) -> ActionResult<Option<Order>> {
         let target_ratio = match action.action_type {
-            ActionType::Continuous(ref vals) if !vals.is_empty() => self.space.clip(vals[0]),
+            ActionSpaceKind::Continuous(ref vals) if !vals.is_empty() => self.space.clip(vals[0]),
             _ => {
                 return Err(ActionError::OutOfRange {
                     value: action.raw.first().copied().unwrap_or(0.0),

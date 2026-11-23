@@ -127,13 +127,10 @@ pub struct TradeOrder {
 }
 
 /// 订单方向
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OrderSide {
-    /// 买入
-    Buy,
-    /// 卖出
-    Sell,
-}
+///
+/// re-export [`axon_core::market::Side`]（serde 值同为 "Buy"/"Sell"），
+/// 与 trading 侧 `OrderSide` 同类型，避免两份同名枚举手工转换漂移。
+pub use axon_core::market::Side as OrderSide;
 
 /// 交易结果
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -733,7 +733,7 @@ impl LiveSink {
         };
         let fill = Fill {
             fill_id: trade_id.clone(),
-            symbol,
+            instrument_id: symbol,
             instrument: Some(instrument),
             price: update.fill_price,
             quantity: signed_quantity,

@@ -10,7 +10,7 @@
 //! 运行:`cargo test -p axon-ensemble --test e2e_ensemble_pipeline`
 
 use axon_ensemble::{
-    Action, ActionProbabilities, ActionType, EnsembleManager, HardVoteStrategy, Observation,
+    Action, ActionProbabilities, EnsembleAction, EnsembleManager, HardVoteStrategy, Observation,
     Policy, SoftVoteStrategy, WeightedVoteStrategy,
 };
 
@@ -18,7 +18,7 @@ use axon_ensemble::{
 
 struct FixedPolicy {
     name: String,
-    action_type: ActionType,
+    action_type: EnsembleAction,
 }
 
 impl Policy for FixedPolicy {
@@ -38,9 +38,9 @@ impl Policy for FixedPolicy {
     }
     fn action_probs(&self, _observation: &Observation) -> ActionProbabilities {
         match self.action_type {
-            ActionType::Buy => ActionProbabilities::new(0.8, 0.1, 0.1),
-            ActionType::Sell => ActionProbabilities::new(0.1, 0.8, 0.1),
-            ActionType::Hold => ActionProbabilities::new(0.1, 0.1, 0.8),
+            EnsembleAction::Buy => ActionProbabilities::new(0.8, 0.1, 0.1),
+            EnsembleAction::Sell => ActionProbabilities::new(0.1, 0.8, 0.1),
+            EnsembleAction::Hold => ActionProbabilities::new(0.1, 0.1, 0.8),
         }
     }
 }
@@ -48,21 +48,21 @@ impl Policy for FixedPolicy {
 fn buy_policy(name: &str) -> Box<dyn Policy> {
     Box::new(FixedPolicy {
         name: name.to_string(),
-        action_type: ActionType::Buy,
+        action_type: EnsembleAction::Buy,
     })
 }
 
 fn sell_policy(name: &str) -> Box<dyn Policy> {
     Box::new(FixedPolicy {
         name: name.to_string(),
-        action_type: ActionType::Sell,
+        action_type: EnsembleAction::Sell,
     })
 }
 
 fn hold_policy(name: &str) -> Box<dyn Policy> {
     Box::new(FixedPolicy {
         name: name.to_string(),
-        action_type: ActionType::Hold,
+        action_type: EnsembleAction::Hold,
     })
 }
 
@@ -82,7 +82,7 @@ fn ensemble_hard_vote_pipeline() {
     assert_eq!(manager.model_count(), 3);
 
     let action = manager.predict(&test_observation(), 1000);
-    assert_eq!(action.action_type, ActionType::Buy);
+    assert_eq!(action.action_type, EnsembleAction::Buy);
     assert_eq!(manager.history_len(), 1);
 }
 
@@ -97,7 +97,7 @@ fn ensemble_soft_vote_weighted() {
 
     let action = manager.predict(&test_observation(), 2000);
     // 2 Buy vs 1 Sell → Buy 胜出
-    assert_eq!(action.action_type, ActionType::Buy);
+    assert_eq!(action.action_type, EnsembleAction::Buy);
     assert!(action.confidence > 0.0);
 }
 

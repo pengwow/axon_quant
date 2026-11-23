@@ -198,9 +198,9 @@ impl Strategy for RuleStrategyImpl {
         let sma = feat("sma5_vs_sma20");
         let ret = feat("ret_1");
         let action = if sma > 0.0 && ret > 0.0 {
-            Action::Buy
+            Action::Long
         } else if sma < 0.0 && ret < 0.0 {
-            Action::Sell
+            Action::Short
         } else {
             Action::Hold
         };
@@ -385,9 +385,11 @@ impl Strategy for PythonStrategyImpl {
             let confidence = get_f64("confidence").unwrap_or(0.0);
             let target = get_f64("target_position").unwrap_or(0.0);
 
+            // Python 策略的 action_type 是 inference TradeAction 协议词表（buy/sell/hold），
+            // 映射到方向语义的 decision::Action（Long/Short/Hold）
             let action = match action_type.as_str() {
-                "buy" => Action::Buy,
-                "sell" => Action::Sell,
+                "buy" => Action::Long,
+                "sell" => Action::Short,
                 _ => Action::Hold,
             };
 
@@ -436,16 +438,16 @@ mod tests {
     async fn rule_strategy_follows_sma_ret_direction() {
         let s = RuleStrategyImpl::new("rule1", "BTCUSDT");
 
-        // 同向正 → buy
+        // 同向正 → long
         let state = json!({"features": {"sma5_vs_sma20": 0.02, "ret_1": 0.01}});
         let d = s.decide(&sample_ctx(&state)).await.unwrap();
-        assert_eq!(d.action, Action::Buy);
+        assert_eq!(d.action, Action::Long);
         assert_eq!(d.source, "rule");
 
-        // 同向负 → sell
+        // 同向负 → short
         let state = json!({"features": {"sma5_vs_sma20": -0.02, "ret_1": -0.01}});
         let d = s.decide(&sample_ctx(&state)).await.unwrap();
-        assert_eq!(d.action, Action::Sell);
+        assert_eq!(d.action, Action::Short);
 
         // 矛盾 → hold
         let state = json!({"features": {"sma5_vs_sma20": 0.02, "ret_1": -0.01}});
@@ -478,7 +480,7 @@ mod tests {
             }
         }
 
-        // slow: 永远返回 buy
+        // slow: 永远返回 long
         struct AlwaysBuy;
         #[async_trait]
         impl Strategy for AlwaysBuy {
@@ -489,7 +491,7 @@ mod tests {
                 "X"
             }
             async fn decide(&self, _: &BarContext<'_>) -> Result<StrategyDecision, StrategyError> {
-                Ok(StrategyDecision::from_rule(Action::Buy))
+                Ok(StrategyDecision::from_rule(Action::Long))
             }
         }
 
@@ -504,7 +506,7 @@ mod tests {
         let d = route.decide(&sample_ctx(&state)).await.unwrap();
         assert_eq!(
             d.action,
-            Action::Buy,
+            Action::Long,
             "should have upgraded to slow strategy"
         );
     }
@@ -522,7 +524,7 @@ mod tests {
             }
             async fn decide(&self, _: &BarContext<'_>) -> Result<StrategyDecision, StrategyError> {
                 Ok(StrategyDecision {
-                    action: Action::Sell,
+                    action: Action::Short,
                     confidence: 0.95,
                     target_position: None,
                     source: "high".into(),
@@ -555,6 +557,6 @@ mod tests {
         );
         let state = json!({"features": {}});
         let d = route.decide(&sample_ctx(&state)).await.unwrap();
-        assert_eq!(d.action, Action::Sell);
+        assert_eq!(d.action, Action::Short);
     }
 }

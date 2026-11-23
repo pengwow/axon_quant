@@ -73,8 +73,8 @@ pub fn validate_action(
     match space {
         ActionSpace::Discrete(d) => {
             let index = match action.action_type {
-                ActionType::Discrete(i) => i,
-                ActionType::Continuous(_) => {
+                ActionSpaceKind::Discrete(i) => i,
+                ActionSpaceKind::Continuous(_) => {
                     return Err(ActionError::OutOfRange {
                         value: 0.0,
                         min: 0.0,
@@ -108,4 +108,4 @@ pub fn validate_action(
     }
 }
 
-use crate::action::types::ActionType;
+use crate::action::types::ActionSpaceKind;

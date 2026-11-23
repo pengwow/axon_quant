@@ -39,10 +39,7 @@ impl PositionGuard {
         }
         // 检查总仓位限制
         let total: f64 = existing_positions.values().sum();
-        if total + delta_pct > self.max_total_utilization_pct {
-            return false;
-        }
-        true
+        total + delta_pct <= self.max_total_utilization_pct
     }
 
     /// 当前允许的最大新增仓位

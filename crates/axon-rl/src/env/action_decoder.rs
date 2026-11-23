@@ -4,7 +4,9 @@ use crate::action::converter::{
     ActionConverter, ContinuousActionConverter, DiscreteActionConverter, Order, OrderType,
 };
 use crate::action::state::PortfolioState;
-use crate::action::types::{Action, ActionSpace, ActionType, DiscreteAction as DiscreteActionEnum};
+use crate::action::types::{
+    Action, ActionSpace, ActionSpaceKind, DiscreteAction as DiscreteActionEnum,
+};
 use crate::env::error::{EnvError, EnvResult};
 
 /// 动作解码器：包装 `ActionConverter` 并处理环境特定的状态查询
@@ -66,14 +68,14 @@ impl ActionDecoder {
     pub fn decode_target_ratio(&self, action: &Action) -> f64 {
         let ratio = match self.action_space() {
             ActionSpace::Continuous(space) => match &action.action_type {
-                ActionType::Continuous(values) => values
+                ActionSpaceKind::Continuous(values) => values
                     .first()
                     .map(|value| space.clip(*value))
                     .unwrap_or(0.0),
-                ActionType::Discrete(_) => 0.0,
+                ActionSpaceKind::Discrete(_) => 0.0,
             },
             ActionSpace::Discrete(space) => match action.action_type {
-                ActionType::Discrete(index) => match space.index_to_action(index) {
+                ActionSpaceKind::Discrete(index) => match space.index_to_action(index) {
                     Ok(DiscreteActionEnum::Hold) => 0.0,
                     Ok(DiscreteActionEnum::Buy(bin)) => bin.to_fraction(space.n_quantity_bins),
                     Ok(DiscreteActionEnum::Sell(bin)) => -bin.to_fraction(space.n_quantity_bins),
@@ -85,7 +87,7 @@ impl ActionDecoder {
                         0.0
                     }
                 },
-                ActionType::Continuous(_) => 0.0,
+                ActionSpaceKind::Continuous(_) => 0.0,
             },
         };
         // 无论动作空间边界如何配置，`SetTarget` 契约只接受 [-1, 1]
