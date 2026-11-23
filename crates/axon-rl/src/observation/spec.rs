@@ -413,9 +413,9 @@ mod tests {
         let mut space = DefaultObservationSpace::new(window, features()).unwrap();
         // 两侧灌同一组运行时统计，让 Z-Score / Min-Max 真正参与计算，
         // 否则空统计下归一化恒为 0 / 0.5，逐位相等没有力度
-        for idx in 0..features().len() {
+        for (idx, stat) in spec.normalizer.stats.iter_mut().enumerate() {
             for value in [95.0, 100.0, 105.0] {
-                spec.normalizer.stats[idx].update(value);
+                stat.update(value);
                 space.running_stats_mut(idx).update(value);
             }
         }
