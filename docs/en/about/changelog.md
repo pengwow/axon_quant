@@ -4,9 +4,10 @@ AXON's complete changelog is maintained in the repository root's [`CHANGELOG.md`
 
 ## Current Version
 
-- **Latest stable:** [`v0.22.1`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0221---2026-10-26) — CI wheel publish matrix for py3.13/3.14 + fixed retry chain
-- **Previous:** [`v0.22.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0220---2026-10-26) — Unified trading kernel (`axon-kernel`/`axon-worker`) + testnet futures live pipeline + crash recovery
-- **Earlier:** [`v0.21.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0210---2026-10-22) — Margin trading engine (isolated margin) + fill linkage + bar_balance_curve
+- **Latest stable:** [`v0.25.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0250---2026-11-10) — OMS naming semantics unified (BREAKING) + RL kernel-backtest/evaluation facilities moved down + registry `unpromote` + MSRV raised to 1.100.0
+- **Previous:** [`v0.24.1`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0241---2026-11-04) — Cascade decisions retain raw S1/S2 outputs (`s1_raw`/`s2_raw`/`s2_thinking`)
+- **Earlier:** [`v0.24.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0240---2026-11-03) — Kernel progress callback + `axon-llm` nested-runtime fix
+- **Earlier:** [`v0.23.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0230---2026-10-30) — Runtime risk hot-reload + live position adoption + resume reconciliation false-positive fixes
 
 ## Versioning
 
