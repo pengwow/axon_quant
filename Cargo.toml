@@ -35,7 +35,7 @@ members = [
 [workspace.package]
 version = "0.25.0"
 edition = "2024"
-rust-version = "1.97.0"
+rust-version = "1.100.0"
 license = "Apache-2.0"
 repository = "https://github.com/pengwow/axon_quant"
 homepage = "https://github.com/pengwow/axon_quant"
