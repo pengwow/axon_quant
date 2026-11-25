@@ -6,11 +6,23 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.26.0] - 2026-11-25
+
+### Added
+
+- **workspace 级 lint 纪律**：根 `Cargo.toml` 新增 `[workspace.lints.clippy]`（`todo` / `unimplemented` deny），全部 member crate 以 `[lints] workspace = true` 继承；`axon-kernel` 生产代码追加 `#![cfg_attr(not(test), deny(clippy::unwrap_used))]`；`clippy.toml` 骨架为后续复杂度阈值预留
+- **canonical golden 指纹护栏**（`axon-integration-tests`）：单品种四负载（`replay_only` / `scheduled_market_orders` / `passive_limit_orders` / `ema_cross`）+ 多品种同帧 rebalance 负载（`multi_symbol_rebalance`）。逐字段比对（标量 / 结构全等，曲线 1e-9 相对容差），指纹文件带 `reasoning` 字段记录"为何更新"；`AXON_CANONICAL_UPDATE=<workload|all>` 就地重写，保留已有理由
+- **数据质量门**：历史 OHLC 违例 fail-fast（`KernelError::Pump` 带 symbol / ts / 违规字段），实时路径改为丢弃 + `warn`；新增 `QualityReport`（`invalid_qty_dropped` / `ohlc_rejected` / `duplicates_missed`），随 `KernelResult` 输出并在 run 结束落 `<stem>.quality.json` 侧车（**不进** `RunManifest`）
 
 ### Changed
 
-- **多品种帧的确定性执行序（0.26.0 O1/C4）**：同帧 rebalance 的 order id 分配与成交执行序改为确定性字典序（修复 `HashMap` 迭代序非确定性导致的同负载重复运行结果漂移）。统一排序键 = 品种标签 `"BASE/QUOTE"` 字典序（同一 `BASE/QUOTE` 的 spot / swap 再按变体序兜底），覆盖 rebalance 下单、EOD 强平、逐仓划转与逐仓强平计划四处收集循环。**多品种回测的逐仓划转 / 强平结果数值可能变化**（现金不足时的划转夹小按品种序分配）；单品种回测与 canonical 单品种指纹零影响。
+- **多品种帧的确定性执行序（O1）**：同帧 rebalance 的 order id 分配与成交执行序改为确定性字典序（修复 `HashMap` 迭代序非确定性导致的同负载重复运行结果漂移）。统一排序键 = 品种标签 `"BASE/QUOTE"` 字典序（同一 `BASE/QUOTE` 的 spot / swap 再按变体序兜底），覆盖 rebalance 下单、EOD 强平、逐仓划转、逐仓强平计划与资金费率事件等处收集循环。**多品种回测的逐仓划转 / 强平结果数值可能变化**（现金不足时的划转夹小按品种序分配）；单品种回测与 canonical 单品种指纹零影响
+- **数据治理分层**：历史入库路径严格拒绝非法 OHLC（fail-fast），实时路径降级为丢弃 + `warn` + 计数——同一份脏数据在两个入口的可见性一致，但阻断强度按"能否重放"区分
+
+### Fixed
+
+- 聚合器去重桶随回放长度无界增长：按连续收市水位线剪枝，`SEEN_PER_KEY` 降级为上限兜底（长回放内存占用稳定）
+- 超窗迟到重复 bar 被静默二次放行：现在 `warn` + `duplicates_missed` 计数（放行形态不变，只补可观测性）
 
 ## [0.25.0] - 2026-11-10
 

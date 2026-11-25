@@ -3,27 +3,30 @@
 //! 设计依据：`docs/superpowers/specs/2026-11-25-axon-quant-0.26.0-accuracy-hardening-design.md`
 //! §3.3（C3/C7），实施计划同名 plan 的 C3 节。
 //!
-//! 目的：给撮合 / 聚合语义变更建立**数值指纹护栏**——四个单品种 canonical 负载
+//! 目的：给撮合 / 聚合语义变更建立**数值指纹护栏**——五个 canonical 负载
 //! 各自跑一遍统一内核（`Kernel` + `BacktestSink`），把 `RunResult` 序列化结果与
 //! `crates/axon-integration-tests/tests/fixtures/canonical/<workload>.json` 逐字段
 //! 比对；数值走 1e-9 相对容差，其余字段全等。
 //!
-//! # 为什么是单品种
+//! # 单品种四负载与多品种负载的时序
 //!
-//! 单品种负载天然确定性（不依赖多品种同帧 HashMap 迭代序），因此指纹可以建在
-//! 0.26.0 的行为修复（C4 sort-on-collect）**之前**，修复后被同一批指纹接住。
-//! 多品种负载属于 C7，本模块只做单品种。
+//! C3 的四个单品种负载天然确定性（不依赖多品种同帧 `HashMap` 迭代序），因此
+//! 指纹建在 0.26.0 的行为修复（C4 sort-on-collect）**之前**，修复后被同一批
+//! 指纹接住。C7 追加的 `MultiSymbolRebalance` 则相反：它**必须**建在 C4 之后，
+//! 用来把"同帧多品种决策 / 成交按品种标签字典序执行"这一新语义锁存为基线。
 //!
 //! # 负载构造
 //!
 //! 蓝本：`crates/axon-kernel/src/kernel_loop.rs` 的 `frames_3bars` / `TargetHost`
-//! 测试模板 + `lifecycle.rs` 九步编排契约。四个 Host 在本文件内自写，
-//! 其中 EMA 交叉在 Host 的 `on_event(BarClosedEvent)` 里自算 EMA——刻意不依赖
-//! `axon-strategy`，避免为测试引入跨 crate 依赖。
+//! / `PairTargetHost` 测试模板 + `lifecycle.rs` 九步编排契约。五个 Host 在本文件
+//! 内自写，其中 EMA 交叉在 Host 的 `on_event(BarClosedEvent)` 里自算 EMA——刻意
+//! 不依赖 `axon-strategy`，避免为测试引入跨 crate 依赖。
 //!
 //! # 合成数据
 //!
-//! 12 根 1m bar（`CLOSES` / `VOLUMES` 手写常量 + 固定公式派生 OHLC），
+//! 单品种：12 根 1m bar（`CLOSES` / `VOLUMES` 手写常量 + 固定公式派生 OHLC）。
+//! 多品种：`MULTI_A_*` / `MULTI_B_*` 各 10 根 bar，同帧双品种
+//! `SetTarget` → `engine.rs::rebalance_to_target` 的多 legs 收集路径。
 //! `initial_cash = 10_000.0`，种子流动性 `half_spread = 0.5 / depth = 3 /
 //! size_per_level = 10`。**不使用 `rand`**，没有任何随机源。
 //!
@@ -57,6 +60,9 @@ use sha2::{Digest, Sha256};
 /// 首选基线 `reasoning`（首版指纹固定值）
 pub const BASELINE_REASONING: &str =
     "0.26.0 initial baseline: single-symbol canonical workloads (spec 2026-11-25 C3)";
+
+/// 多品种负载的基线 `reasoning`（C7 锁存 C4 的字典序执行语义）
+pub const MULTI_SYMBOL_REASONING: &str = "lock deterministic lexicographic ordering introduced in C4 (same-frame multi-instrument decisions execute in instrument-label lexicographic order)";
 
 /// 指纹更新开关的环境变量名
 ///
@@ -123,7 +129,39 @@ const EMA_SLOW: usize = 7;
 /// 快线在上时的目标权益占比（否则空仓 0.0）
 const EMA_LONG_RATIO: f64 = 0.5;
 
-/// canonical 单品种负载集（C3 四个；多品种负载属 C7，不在此列）
+/// 多品种 canonical 的一号品种（交易所写法）
+const MULTI_A_SYMBOL: &str = "BTCUSDT";
+/// 多品种 canonical 的二号品种（交易所写法）
+const MULTI_B_SYMBOL: &str = "ETHUSDT";
+/// 多品种一号品种收盘价序列（确定性；上涨 → 回调 → 反弹）
+const MULTI_A_CLOSES: [f64; 10] = [
+    100.0, 102.0, 101.0, 104.0, 99.0, 97.0, 100.0, 101.0, 103.0, 105.0,
+];
+/// 多品种二号品种收盘价序列（确定性；形态与一号品种错位）
+const MULTI_B_CLOSES: [f64; 10] = [50.0, 49.5, 51.0, 52.5, 51.0, 48.0, 49.0, 50.5, 49.5, 52.0];
+/// 多品种一号品种成交量序列
+const MULTI_A_VOLUMES: [f64; 10] = [
+    1_200.0, 1_300.0, 1_100.0, 900.0, 1_400.0, 1_500.0, 1_200.0, 1_000.0, 1_600.0, 1_300.0,
+];
+/// 多品种二号品种成交量序列
+const MULTI_B_VOLUMES: [f64; 10] = [
+    8_000.0, 7_500.0, 9_000.0, 7_000.0, 8_500.0, 9_500.0, 8_000.0, 7_000.0, 9_000.0, 10_000.0,
+];
+
+/// 多品种目标权益占比计划（逐 bar；两个品种每帧同时出 `SetTarget`）
+///
+/// 形态刻意让两品种**永远同帧有决策**，且含有多次"同帧双向调仓"
+/// （如 bar 2：一号品种减仓 + 二号品种加仓）与"同帧两个品种都新开仓"
+/// （bar 0 / bar 8）——这正是 `engine.rs::rebalance_to_target` 的多 legs
+/// 收集路径，也是 C4 字典序语义的着力点。
+///
+/// 占比都压得足够小（< 0.25），保证单笔市价数量不超过种子盘口
+/// （`depth_levels × size_per_level = 30`），避免部分成交掩盖执行序。
+const MULTI_A_RATIOS: [f64; 10] = [0.20, 0.20, 0.10, 0.10, 0.25, 0.25, 0.00, 0.00, 0.15, 0.15];
+/// 多品种二号品种目标权益占比计划（字段说明见 [`MULTI_A_RATIOS`]）
+const MULTI_B_RATIOS: [f64; 10] = [0.10, 0.10, 0.12, 0.12, 0.00, 0.00, 0.10, 0.10, 0.12, 0.12];
+
+/// canonical 负载集（C3 四个单品种 + C7 一个多品种）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CanonicalWorkload {
     /// 纯行情回放：Host 永不下单（把撮合 / 账务空跑的基线锁死）
@@ -134,15 +172,21 @@ pub enum CanonicalWorkload {
     PassiveLimitOrders,
     /// EMA 快慢线交叉 → `SetTarget` 权益占比切换
     EmaCross,
+    /// 双品种（BTC/USDT + ETH/USDT）同帧 `SetTarget` rebalance
+    ///
+    /// 走 `engine.rs::rebalance_to_target` 的多 legs 收集路径；指纹锁存 C4 之后
+    /// 的"品种标签字典序执行"语义。
+    MultiSymbolRebalance,
 }
 
 impl CanonicalWorkload {
-    /// 全部 C3 负载（指纹矩阵的遍历顺序，也是输出顺序）
-    pub const ALL: [CanonicalWorkload; 4] = [
+    /// 全部负载（指纹矩阵的遍历顺序，也是输出顺序）
+    pub const ALL: [CanonicalWorkload; 5] = [
         CanonicalWorkload::ReplayOnly,
         CanonicalWorkload::ScheduledMarketOrders,
         CanonicalWorkload::PassiveLimitOrders,
         CanonicalWorkload::EmaCross,
+        CanonicalWorkload::MultiSymbolRebalance,
     ];
 
     /// 指纹文件 / 环境变量使用的稳定名字（snake_case）
@@ -152,7 +196,21 @@ impl CanonicalWorkload {
             CanonicalWorkload::ScheduledMarketOrders => "scheduled_market_orders",
             CanonicalWorkload::PassiveLimitOrders => "passive_limit_orders",
             CanonicalWorkload::EmaCross => "ema_cross",
+            CanonicalWorkload::MultiSymbolRebalance => "multi_symbol_rebalance",
         }
+    }
+
+    /// 首次生成指纹时的默认 `reasoning`（已有指纹就地重写时保留原文）
+    pub fn default_reasoning(self) -> &'static str {
+        match self {
+            CanonicalWorkload::MultiSymbolRebalance => MULTI_SYMBOL_REASONING,
+            _ => BASELINE_REASONING,
+        }
+    }
+
+    /// 是否多品种负载（决定配置与帧表）
+    pub fn is_multi_symbol(self) -> bool {
+        matches!(self, CanonicalWorkload::MultiSymbolRebalance)
     }
 
     /// 按名字解析（供 `AXON_CANONICAL_UPDATE` 使用）
@@ -251,6 +309,77 @@ pub fn canonical_frames() -> Vec<GridFrame> {
         .collect()
 }
 
+/// 多品种二号品种：`ETH/USDT` 现货
+pub fn multi_symbol_instrument_b() -> Instrument {
+    Instrument::Spot(SpotInstrument {
+        base: Symbol::from("ETH"),
+        quote: Symbol::from("USDT"),
+    })
+}
+
+/// `close` 指定、OHLC 合法的 bar（high/low 环绕 close，open = close）
+fn bar_with_close(ts: i64, close: f64, volume: f64) -> Bar {
+    Bar {
+        timestamp: Timestamp::from_nanos(ts),
+        open: Price::from_f64(close),
+        high: Price::from_f64(close * 1.01),
+        low: Price::from_f64(close * 0.99),
+        close: Price::from_f64(close),
+        volume: Quantity::from_f64(volume),
+    }
+}
+
+/// 多品种 10 帧网格：每帧两个品种各一根 bar（同帧双 legs）
+pub fn multi_symbol_frames() -> Vec<GridFrame> {
+    let a = canonical_instrument();
+    let b = multi_symbol_instrument_b();
+    (0..MULTI_A_CLOSES.len())
+        .map(|idx| {
+            let ts = START_NS + idx as i64 * ONE_MIN;
+            GridFrame {
+                ts: Timestamp::from_nanos(ts),
+                bars: vec![
+                    (
+                        a.clone(),
+                        bar_with_close(ts, MULTI_A_CLOSES[idx], MULTI_A_VOLUMES[idx]),
+                    ),
+                    (
+                        b.clone(),
+                        bar_with_close(ts, MULTI_B_CLOSES[idx], MULTI_B_VOLUMES[idx]),
+                    ),
+                ],
+                states: HashMap::new(),
+            }
+        })
+        .collect()
+}
+
+/// 按负载给出内核配置（单品种四负载共用一份，多品种单独一份）
+pub fn canonical_config_for(workload: CanonicalWorkload) -> KernelConfig {
+    if workload.is_multi_symbol() {
+        multi_symbol_config()
+    } else {
+        canonical_config()
+    }
+}
+
+/// 多品种内核配置（不启用保证金 / 资金费 / EOD 强平，差异只在两个 leg）
+pub fn multi_symbol_config() -> KernelConfig {
+    KernelConfig {
+        expected_instruments: HashSet::from([canonical_instrument(), multi_symbol_instrument_b()]),
+        ..canonical_config()
+    }
+}
+
+/// 按负载给出帧表
+pub fn canonical_frames_for(workload: CanonicalWorkload) -> Vec<GridFrame> {
+    if workload.is_multi_symbol() {
+        multi_symbol_frames()
+    } else {
+        canonical_frames()
+    }
+}
+
 /// canonical 内核配置（四个负载共用同一份，差异只在 Host）
 pub fn canonical_config() -> KernelConfig {
     KernelConfig {
@@ -278,6 +407,11 @@ pub fn canonical_config() -> KernelConfig {
 /// 下单计划按负载分别收录：改市价计划只让市价负载的指纹变红，不会牵连
 /// `replay_only` / `ema_cross`。
 fn config_hash(workload: CanonicalWorkload, config: &KernelConfig) -> String {
+    // 多品种负载的输入集（两份 bar 表 + 两份占比计划）与单品种结构不同，
+    // 走独立分支；单品种分支保持原格式，已入库的四份指纹 config_hash 不变。
+    if workload.is_multi_symbol() {
+        return multi_symbol_config_hash(config);
+    }
     let closes: Vec<String> = CLOSES.iter().map(|c| format!("{c:.6}")).collect();
     let volumes: Vec<String> = VOLUMES.iter().map(|v| format!("{v:.6}")).collect();
     let plan = match workload {
@@ -287,6 +421,8 @@ fn config_hash(workload: CanonicalWorkload, config: &KernelConfig) -> String {
         CanonicalWorkload::EmaCross => {
             format!("plan=ema(fast={EMA_FAST},slow={EMA_SLOW},long_ratio={EMA_LONG_RATIO:.6})")
         }
+        // 多品种在上方提前返回，这里仅为 match 完备性
+        CanonicalWorkload::MultiSymbolRebalance => "plan=multi-symbol".to_string(),
     };
     let description = format!(
         "workload={};symbol={};bars={};start_ns={};step_ns={};closes=[{}];volumes=[{}];\
@@ -309,6 +445,50 @@ fn config_hash(workload: CanonicalWorkload, config: &KernelConfig) -> String {
         config.seed.size_per_level,
         config.capital_budget,
         plan,
+    );
+    let digest = Sha256::digest(description.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+/// 多品种负载的配置指纹：两份 bar 表 + 两份占比计划 + 共用内核参数
+fn multi_symbol_config_hash(config: &KernelConfig) -> String {
+    let closes_a: Vec<String> = MULTI_A_CLOSES.iter().map(|c| format!("{c:.6}")).collect();
+    let closes_b: Vec<String> = MULTI_B_CLOSES.iter().map(|c| format!("{c:.6}")).collect();
+    let volumes_a: Vec<String> = MULTI_A_VOLUMES.iter().map(|v| format!("{v:.6}")).collect();
+    let volumes_b: Vec<String> = MULTI_B_VOLUMES.iter().map(|v| format!("{v:.6}")).collect();
+    let ratios_a: Vec<String> = MULTI_A_RATIOS.iter().map(|r| format!("{r:.6}")).collect();
+    let ratios_b: Vec<String> = MULTI_B_RATIOS.iter().map(|r| format!("{r:.6}")).collect();
+    let description = format!(
+        "workload={};symbol_a={};symbol_b={};bars={};start_ns={};step_ns={};\
+         closes_a=[{}];volumes_a=[{}];ratios_a=[{}];\
+         closes_b=[{}];volumes_b=[{}];ratios_b=[{}];\
+         initial_cash={:.6};fee_rate={:.6};force_liquidate={};interval={};rebalance_threshold={:.6};\
+         seed=(half_spread={:.6},depth_levels={},size_per_level={:.6});capital_budget={:?}",
+        CanonicalWorkload::MultiSymbolRebalance.name(),
+        MULTI_A_SYMBOL,
+        MULTI_B_SYMBOL,
+        MULTI_A_CLOSES.len(),
+        START_NS,
+        ONE_MIN,
+        closes_a.join(","),
+        volumes_a.join(","),
+        ratios_a.join(","),
+        closes_b.join(","),
+        volumes_b.join(","),
+        ratios_b.join(","),
+        config.initial_cash,
+        config.fee_rate,
+        config.force_liquidate,
+        config.interval,
+        config.rebalance_threshold,
+        config.seed.half_spread,
+        config.seed.depth_levels,
+        config.seed.size_per_level,
+        config.capital_budget,
     );
     let digest = Sha256::digest(description.as_bytes());
     let mut hex = String::with_capacity(digest.len() * 2);
@@ -494,6 +674,48 @@ impl StrategyHost for EmaCrossHost {
     }
 }
 
+/// 双品种同帧 rebalance Host
+///
+/// 每帧对两个品种各吐一个 `SetTarget`（`lifecycle` 逐 bar 逐品种调用
+/// `on_event`），目标由 `MULTI_A_RATIOS` / `MULTI_B_RATIOS` 按 bar 序号给出。
+/// 两个 leg 的目标在同一 `finish_bar` 落地 → 单次
+/// `engine.rs::rebalance_to_target` 同时处理两个品种。
+pub struct MultiSymbolRebalanceHost {
+    a: Instrument,
+    b: Instrument,
+    bars_seen: u64,
+}
+
+impl MultiSymbolRebalanceHost {
+    /// 构造
+    pub fn new(a: Instrument, b: Instrument) -> Self {
+        Self { a, b, bars_seen: 0 }
+    }
+}
+
+impl StrategyHost for MultiSymbolRebalanceHost {
+    fn name(&self) -> &str {
+        "canonical_multi_symbol_rebalance"
+    }
+
+    fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
+        // `on_event` 每帧被两个品种各调用一次；bar 序号只在二号品种（每帧最后
+        // 一次调用）推进。这样两个品种读到的是同一个 bar 序号。
+        let (instrument, ratio) = if ev.instrument == &self.a {
+            (self.a.clone(), MULTI_A_RATIOS[self.bars_seen as usize])
+        } else {
+            debug_assert_eq!(ev.instrument, &self.b, "canonical 多品种只有两个 leg");
+            let ratio = MULTI_B_RATIOS[self.bars_seen as usize];
+            self.bars_seen += 1;
+            (self.b.clone(), ratio)
+        };
+        vec![OrderIntent::SetTarget {
+            instrument,
+            target_ratio: ratio,
+        }]
+    }
+}
+
 /// 按负载装配 Host
 fn host_for(workload: CanonicalWorkload) -> Box<dyn StrategyHost> {
     let instrument = canonical_instrument();
@@ -502,6 +724,10 @@ fn host_for(workload: CanonicalWorkload) -> Box<dyn StrategyHost> {
         CanonicalWorkload::ScheduledMarketOrders => Box::new(ScheduledMarketHost::new(instrument)),
         CanonicalWorkload::PassiveLimitOrders => Box::new(PassiveLimitHost::new(instrument)),
         CanonicalWorkload::EmaCross => Box::new(EmaCrossHost::new(instrument)),
+        CanonicalWorkload::MultiSymbolRebalance => Box::new(MultiSymbolRebalanceHost::new(
+            canonical_instrument(),
+            multi_symbol_instrument_b(),
+        )),
     }
 }
 
@@ -514,12 +740,12 @@ fn host_for(workload: CanonicalWorkload) -> Box<dyn StrategyHost> {
 /// 内核装配：`Kernel::new(CanonicalConfig, BacktestSink::new())` + 对应 Host，
 /// 12 帧一次性 `run_history`。无需 journal / progress 回调。
 pub fn run_report(workload: CanonicalWorkload) -> CanonicalReport {
-    let config = canonical_config();
+    let config = canonical_config_for(workload);
     let hash = config_hash(workload, &config);
     let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
     kernel.add_host(host_for(workload));
     let result = kernel
-        .run_history(canonical_frames())
+        .run_history(canonical_frames_for(workload))
         .unwrap_or_else(|err| panic!("canonical workload {} 必须跑通: {err}", workload.name()));
 
     let run_metrics = serde_json::to_value(&result.run)
@@ -568,13 +794,17 @@ pub fn fingerprint_source(workload: CanonicalWorkload) -> &'static str {
             include_str!("../tests/fixtures/canonical/passive_limit_orders.json")
         }
         CanonicalWorkload::EmaCross => include_str!("../tests/fixtures/canonical/ema_cross.json"),
+        CanonicalWorkload::MultiSymbolRebalance => {
+            include_str!("../tests/fixtures/canonical/multi_symbol_rebalance.json")
+        }
     }
 }
 
 /// 就地重写指纹文件（`AXON_CANONICAL_UPDATE` 通道）
 ///
-/// 保留原文件的 `reasoning`（若已有且非空），否则用 [`BASELINE_REASONING`]：
-/// 重生成指标不等于"为何更新"，理由必须由人填写。
+/// 保留原文件的 `reasoning`（若已有且非空），否则用
+/// [`CanonicalWorkload::default_reasoning`]：重生成指标不等于"为何更新"，
+/// 理由必须由人填写。
 fn write_fingerprint(report: &CanonicalReport, workload: CanonicalWorkload) {
     let previous = std::fs::read_to_string(fingerprint_path(workload))
         .ok()
@@ -582,7 +812,7 @@ fn write_fingerprint(report: &CanonicalReport, workload: CanonicalWorkload) {
     let reasoning = previous
         .map(|fp| fp.reasoning)
         .filter(|reasoning| !reasoning.trim().is_empty())
-        .unwrap_or_else(|| BASELINE_REASONING.to_string());
+        .unwrap_or_else(|| workload.default_reasoning().to_string());
     let fingerprint = CanonicalFingerprint::from_report(report, &reasoning);
     let text = serde_json::to_string_pretty(&fingerprint).expect("指纹必须可序列化");
     let path = fingerprint_path(workload);
@@ -775,7 +1005,7 @@ pub fn run_matrix() {
 mod tests {
     use super::*;
 
-    /// 四个负载都要在 12 帧内真的动起来（否则指纹是"空转基线"）
+    /// 五个负载都要在窗口内真的动起来（否则指纹是"空转基线"）
     #[test]
     fn canonical_workloads_are_not_degenerate() {
         let replay = run_report(CanonicalWorkload::ReplayOnly);
@@ -791,6 +1021,7 @@ mod tests {
             CanonicalWorkload::ScheduledMarketOrders,
             CanonicalWorkload::PassiveLimitOrders,
             CanonicalWorkload::EmaCross,
+            CanonicalWorkload::MultiSymbolRebalance,
         ] {
             let report = run_report(workload);
             assert!(
@@ -804,6 +1035,38 @@ mod tests {
                 workload.name()
             );
         }
+    }
+
+    /// 多品种负载必须真的走到 `engine.rs::rebalance_to_target` 的多 legs 路径：
+    /// 两个品种在同一帧都有 `SetTarget`，成交也必须覆盖两个品种（单品种成交
+    /// 说明配置退化成了单 leg，指纹就锁不住同帧执行序）。
+    #[test]
+    fn multi_symbol_workload_fills_both_instruments() {
+        let report = run_report(CanonicalWorkload::MultiSymbolRebalance);
+        let mut bases: BTreeMap<String, u64> = BTreeMap::new();
+        for fill in report.run_metrics["fills_detail"]
+            .as_array()
+            .expect("fills_detail 必须是数组")
+        {
+            let base = fill["instrument"]["details"]["base"]
+                .as_str()
+                .unwrap_or_else(|| panic!("fill 缺少 instrument.base: {fill}"));
+            *bases.entry(base.to_string()).or_default() += 1;
+        }
+        assert!(
+            bases.len() >= 2,
+            "多品种负载的成交必须覆盖 ≥2 个品种，实际 {bases:?}"
+        );
+        assert!(bases.contains_key("BTC"), "缺少 BTC 成交: {bases:?}");
+        assert!(bases.contains_key("ETH"), "缺少 ETH 成交: {bases:?}");
+        assert!(
+            report.run_metrics["rebalances_triggered"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 2,
+            "同帧多 legs rebalance 至少应发 2 单: {}",
+            report.run_metrics["rebalances_triggered"]
+        );
     }
 
     /// 同负载双跑必须逐字段一致（duration 已被 serde skip，天然排除墙钟抖动）
