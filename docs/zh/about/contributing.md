@@ -56,6 +56,12 @@
 - Property-based 测试用 `proptest`,覆盖核心 impact / engine 模块
 - 性能敏感代码有 benchmark + 内存影响分析
 
+### 回归与修复约定
+
+- **Fix 挂 issue**:行为修复在 CHANGELOG 的 `Fixed` 中引用 issue/报告者
+- **`Regression:` 测试注释**:回归修复对应的测试,其文档注释以 `Regression:` 开头,写明复现条件与根因
+- **golden 指纹变更须带 reasoning**:`crates/axon-integration-tests/tests/fixtures/canonical/*.json` 的 `reasoning` 字段必须写明变更意图与对应 issue;无理由的指标变更视为违规
+
 ### Python 绑定层（编译校验）
 
 绑定代码（`crates/*/src/python/`）由 `#[cfg(feature = "python")]` 门控，普通

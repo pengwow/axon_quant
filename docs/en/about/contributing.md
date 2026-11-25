@@ -141,6 +141,12 @@ proptest! {
 }
 ```
 
+### Regression & Fix Conventions
+
+- **Link fixes to issues**: reference the issue/reporter in the CHANGELOG `Fixed` entries for behavior fixes
+- **`Regression:` test comments**: docs-comment the test covering a regression fix with a `Regression:` prefix, stating reproduction conditions and root cause
+- **Golden fingerprint changes require reasoning**: the `reasoning` field of `crates/axon-integration-tests/tests/fixtures/canonical/*.json` must state the change intent and the related issue; unexplained metric changes are treated as violations
+
 ## Documentation
 
 - Update documentation for any user-facing changes
