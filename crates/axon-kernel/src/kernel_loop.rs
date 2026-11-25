@@ -647,6 +647,9 @@ mod tests {
     use axon_core::types::{SpotInstrument, Symbol};
     use axon_core::{Bar, Instrument, Price, Quantity, SystemAction, SystemEvent, Tick};
 
+    use axon_backtest::{Bracket, MarginMode, MarginSpec};
+    use proptest::prelude::*;
+
     use super::*;
     use crate::InstrumentMode;
     use crate::event::BarClosedEvent;
@@ -1274,6 +1277,366 @@ mod tests {
             x.margin_specs_effective, y.margin_specs_effective,
             "{label}: margin_specs_effective"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 多品种同帧执行序的确定性（0.26.0 C4 / O1）
+    //
+    // 背景:`BacktestEngine` 内部的 `bt_state.legs` / `position_states` 是
+    // `HashMap`,迭代序由每个引擎实例随机化的 `RandomState` 决定。0.26.0 前
+    // 同帧 rebalance 的执行序、order id 分配、逐仓划转与 EOD 强平都按迭代序
+    // 消费 → 同负载两次运行结果可能不同。修复后这些循环一律按品种标签
+    // 字典序(`engine.rs::instrument_order_key`)执行,以下用例即护栏。
+    // ─────────────────────────────────────────────────────────────────
+
+    fn eth() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    /// 指定收盘价的 bar(high/low 环绕 close,满足 OHLC 合法性)
+    fn bar_with_close(start: i64, close: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(start),
+            open: Price::from_f64(close),
+            high: Price::from_f64(close * 1.01),
+            low: Price::from_f64(close * 0.99),
+            close: Price::from_f64(close),
+            volume: Quantity::from_f64(10_000.0),
+        }
+    }
+
+    /// 双品种同帧网格:每帧两个品种各一根 bar → 同帧两笔 rebalance
+    fn pair_frames(
+        a: &Instrument,
+        a_closes: &[f64],
+        b: &Instrument,
+        b_closes: &[f64],
+    ) -> Vec<GridFrame> {
+        assert_eq!(a_closes.len(), b_closes.len(), "两品种 bar 数必须一致");
+        (0..a_closes.len())
+            .map(|idx| {
+                let ts = START + idx as i64 * ONE_MIN;
+                GridFrame {
+                    ts: Timestamp::from_nanos(ts),
+                    bars: vec![
+                        (a.clone(), bar_with_close(ts, a_closes[idx])),
+                        (b.clone(), bar_with_close(ts, b_closes[idx])),
+                    ],
+                    states: Default::default(),
+                }
+            })
+            .collect()
+    }
+
+    /// 每个品种各自固定权益占比的 Host(双品种同帧都出 `SetTarget`)
+    struct PairTargetHost {
+        a: Instrument,
+        a_ratio: f64,
+        b: Instrument,
+        b_ratio: f64,
+    }
+
+    impl StrategyHost for PairTargetHost {
+        fn name(&self) -> &str {
+            "pair-target"
+        }
+
+        fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
+            let ratio = if ev.instrument == &self.a {
+                self.a_ratio
+            } else if ev.instrument == &self.b {
+                self.b_ratio
+            } else {
+                return Vec::new();
+            };
+            vec![OrderIntent::SetTarget {
+                instrument: ev.instrument.clone(),
+                target_ratio: ratio,
+            }]
+        }
+    }
+
+    /// 双品种同帧 rebalance 负载的配置(不启用保证金、不启用 EOD 强平)
+    fn pair_config(a: &Instrument, b: &Instrument) -> KernelConfig {
+        KernelConfig {
+            initial_cash: 10_000.0,
+            expected_instruments: [a.clone(), b.clone()].into_iter().collect(),
+            ..KernelConfig::default()
+        }
+    }
+
+    /// 逐仓保证金规格(档位表单档,C4 用)
+    fn isolated_spec(leverage: f64) -> MarginSpec {
+        MarginSpec {
+            leverage,
+            mode: MarginMode::Isolated,
+            brackets: vec![Bracket {
+                notional_floor: 0.0,
+                notional_cap: None,
+                mmr: 0.005,
+                cum: 0.0,
+                liquidation_fee_rate: 0.004,
+                max_leverage: 125.0,
+            }],
+            bracket_source: "test".to_string(),
+        }
+    }
+
+    fn run_pair_workload(
+        config: KernelConfig,
+        frames: Vec<GridFrame>,
+        host: PairTargetHost,
+    ) -> KernelResult {
+        let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+        kernel.add_host(Box::new(host));
+        kernel.run_history(frames).expect("双品种回测应跑通")
+    }
+
+    /// 某品种的成交序列(方向 / 价格 / 数量),丢弃执行序相关的 id 字段
+    fn fills_of(run: &RunResult, instrument: &Instrument) -> Vec<(Side, f64, f64)> {
+        run.fills_detail
+            .iter()
+            .filter(|f| &f.instrument == instrument)
+            .map(|f| (f.taker_side, f.price.as_f64(), f.quantity.as_f64()))
+            .collect()
+    }
+
+    fn assert_fill_seq_close(label: &str, a: &[(Side, f64, f64)], b: &[(Side, f64, f64)]) {
+        assert_eq!(a.len(), b.len(), "{label}: 成交笔数不一致");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.0, y.0, "{label}: 第 {i} 笔方向不一致");
+            assert!(
+                f64_close(x.1, y.1),
+                "{label}: 第 {i} 笔价格 {} vs {}",
+                x.1,
+                y.1
+            );
+            assert!(
+                f64_close(x.2, y.2),
+                "{label}: 第 {i} 笔数量 {} vs {}",
+                x.2,
+                y.2
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 96,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Regression: 0.26.0 C4(O1 迭代序修复)。
+        ///
+        /// 复现条件:双品种同帧 rebalance + 可选逐仓保证金 / EOD 强平。两个
+        /// `Kernel::new` 各自新建引擎,`legs` / `position_states` 的
+        /// `RandomState` 种子不同 → 0.26.0 前 order id ↔ 品种分配与逐仓划转
+        /// 实得金额随运行漂移,`assert_same_run` 必红;修复后恒等。
+        ///
+        /// 修复点:`axon-backtest::engine::instrument_order_key` 排序,见
+        /// `liquidate_eod` / `sync_isolated_margins` / `rebalance_to_target`
+        /// 三处 collect 后 sort。
+        #[test]
+        fn prop_multi_symbol_same_workload_runs_identically(
+            p1 in 40.0f64..160.0,
+            p2 in 40.0f64..160.0,
+            r1 in 0.10f64..0.80,
+            r2 in 0.10f64..0.80,
+            force_liquidate in any::<bool>(),
+            use_margin in any::<bool>(),
+        ) {
+            let btc = btc();
+            let eth = eth();
+            let btc_closes = [p1, p1 * 1.01, p1 * 0.99];
+            let eth_closes = [p2, p2 * 0.99, p2 * 1.02];
+            let frames = pair_frames(&btc, &btc_closes, &eth, &eth_closes);
+
+            // 每次新建 config/host:两份负载在数值上完全同构,唯一变量是
+            // 两个引擎实例的 HashMap 随机种子
+            let mk_config = || KernelConfig {
+                initial_cash: 10_000.0,
+                force_liquidate,
+                margin_specs: if use_margin {
+                    HashMap::from([
+                        ("BTC/USDT".to_string(), isolated_spec(1.0)),
+                        ("ETH/USDT".to_string(), isolated_spec(1.0)),
+                    ])
+                } else {
+                    HashMap::new()
+                },
+                ..pair_config(&btc, &eth)
+            };
+            let mk_host = || PairTargetHost {
+                a: btc.clone(),
+                a_ratio: r1,
+                b: eth.clone(),
+                b_ratio: r2,
+            };
+
+            let first = run_pair_workload(mk_config(), frames.clone(), mk_host());
+            let second = run_pair_workload(mk_config(), frames, mk_host());
+
+            prop_assert!(
+                first.run.fills > 0,
+                "负载必须真的成交,否则执行序无从暴露"
+            );
+            assert_same_run("多品种同负载双跑", &first, &second);
+        }
+    }
+
+    /// symbol 改名置换等值(0.26.0 C4 / O1)。
+    ///
+    /// 同一份行情与目标分别在两个品种名下跑:把两组 (bar 序列, 目标占比)
+    /// 对调后重跑。字典序排序把品种标签纳入了执行全序,因此两次运行「同帧
+    /// 第 k 个单」属于不同品种;但每个品种拿到的数据是同一份 —— 除标签外
+    /// 运行结果必须等值。
+    ///
+    /// 比较口径:
+    /// - 聚合标量 / 曲线:与标签无关,逐字段(浮点容差)等值;
+    /// - 逐品种成交:`order id` / `fill_id` 记录的是执行序,而执行序本身按
+    ///   品种标签排序,改名后同一份数据的 id 序列必然不同,故按「同一品种内
+    ///   的 (side, price, qty) 序列」比较,不比较 id;
+    /// - 持仓:按改名映射后逐品种比较。
+    #[test]
+    fn test_multi_symbol_results_are_equivariant_under_symbol_rename() {
+        let btc = btc();
+        let eth = eth();
+        let btc_closes = [100.0, 101.0, 103.0];
+        let eth_closes = [50.0, 49.0, 48.0];
+        let (btc_ratio, eth_ratio) = (0.30, 0.15);
+
+        let run_a = run_pair_workload(
+            pair_config(&btc, &eth),
+            pair_frames(&btc, &btc_closes, &eth, &eth_closes),
+            PairTargetHost {
+                a: btc.clone(),
+                a_ratio: btc_ratio,
+                b: eth.clone(),
+                b_ratio: eth_ratio,
+            },
+        );
+        // 语义相同,仅把「BTC 的数据 / 目标」与「ETH 的数据 / 目标」对调
+        let run_b = run_pair_workload(
+            pair_config(&btc, &eth),
+            pair_frames(&btc, &eth_closes, &eth, &btc_closes),
+            PairTargetHost {
+                a: btc.clone(),
+                a_ratio: eth_ratio,
+                b: eth.clone(),
+                b_ratio: btc_ratio,
+            },
+        );
+
+        assert!(run_a.run.fills >= 2, "负载必须双品种都成交");
+        assert!(run_b.run.fills >= 2, "负载必须双品种都成交");
+
+        // 1) 聚合标量:与品种标签无关
+        let (x, y) = (&run_a.run, &run_b.run);
+        assert_eq!(
+            run_a.bars_processed, run_b.bars_processed,
+            "bars_processed 不一致"
+        );
+        assert_eq!(run_a.orders_submitted, run_b.orders_submitted);
+        for (name, left, right) in [
+            (
+                "events_processed",
+                x.events_processed as f64,
+                y.events_processed as f64,
+            ),
+            (
+                "orders_accepted",
+                x.orders_accepted as f64,
+                y.orders_accepted as f64,
+            ),
+            ("fills", x.fills as f64, y.fills as f64),
+            (
+                "rebalances_triggered",
+                x.rebalances_triggered as f64,
+                y.rebalances_triggered as f64,
+            ),
+            ("total_pnl", x.total_pnl, y.total_pnl),
+            ("final_nav", x.final_nav, y.final_nav),
+            ("total_fees", x.total_fees, y.total_fees),
+            ("max_drawdown", x.max_drawdown, y.max_drawdown),
+            ("win_rate", x.win_rate, y.win_rate),
+        ] {
+            assert!(
+                f64_close(left, right),
+                "改名置换后 {name} 应等值: {left} vs {right}"
+            );
+        }
+
+        // 2) bar 级曲线逐点等值(采样点在 `begin_bar_multi`,先于本帧成交,
+        //    与执行序无关)
+        for (name, left, right) in [
+            ("bar_nav_curve", &x.bar_nav_curve, &y.bar_nav_curve),
+            (
+                "bar_balance_curve",
+                &x.bar_balance_curve,
+                &y.bar_balance_curve,
+            ),
+        ] {
+            assert_eq!(left.len(), right.len(), "{name} 长度不一致");
+            for (i, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+                assert_eq!(l.0, r.0, "{name}[{i}] 时间戳不一致");
+                assert!(
+                    f64_close(l.1, r.1),
+                    "{name}[{i}] 值不一致: {} vs {}",
+                    l.1,
+                    r.1
+                );
+            }
+        }
+
+        // 2b) `equity_curve` 是「每笔 fill 后」采样,改名后同帧两笔单的执行序
+        //     按设计对调 → 中间点必然不同(首笔的手续费归属不同品种)。此处只
+        //     校验样本数与末点(终态),终态与执行序无关。
+        assert_eq!(
+            x.equity_curve.len(),
+            y.equity_curve.len(),
+            "equity_curve 样本数应一致(执行结构相同)"
+        );
+        let (last_a, last_b) = (
+            x.equity_curve.last().expect("equity_curve 非空"),
+            y.equity_curve.last().expect("equity_curve 非空"),
+        );
+        assert_eq!(last_a.0, last_b.0, "equity_curve 末点时间戳不一致");
+        assert!(
+            f64_close(last_a.1, last_b.1),
+            "equity_curve 末点值不一致: {} vs {}",
+            last_a.1,
+            last_b.1
+        );
+
+        // 3) 逐品种成交语义等值:run_a 的 BTC 数据 = run_b 的 ETH 数据
+        assert_fill_seq_close(
+            "改名置换 BTC→ETH",
+            &fills_of(&run_a.run, &btc),
+            &fills_of(&run_b.run, &eth),
+        );
+        assert_fill_seq_close(
+            "改名置换 ETH→BTC",
+            &fills_of(&run_a.run, &eth),
+            &fills_of(&run_b.run, &btc),
+        );
+
+        // 4) 终态持仓按改名映射等值
+        for (label, left, right) in [
+            ("BTC→ETH", x.positions.get(&btc), y.positions.get(&eth)),
+            ("ETH→BTC", x.positions.get(&eth), y.positions.get(&btc)),
+        ] {
+            match (left, right) {
+                (Some(l), Some(r)) => assert!(
+                    f64_close(*l, *r),
+                    "改名置换 {label} 终态持仓不一致: {l} vs {r}"
+                ),
+                (None, None) => {}
+                _ => panic!("改名置换 {label} 终态持仓存在性不一致: {left:?} vs {right:?}"),
+            }
+        }
     }
 
     #[test]

@@ -6,6 +6,12 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **多品种帧的确定性执行序（0.26.0 O1/C4）**：同帧 rebalance 的 order id 分配与成交执行序改为确定性字典序（修复 `HashMap` 迭代序非确定性导致的同负载重复运行结果漂移）。统一排序键 = 品种标签 `"BASE/QUOTE"` 字典序（同一 `BASE/QUOTE` 的 spot / swap 再按变体序兜底），覆盖 rebalance 下单、EOD 强平、逐仓划转与逐仓强平计划四处收集循环。**多品种回测的逐仓划转 / 强平结果数值可能变化**（现金不足时的划转夹小按品种序分配）；单品种回测与 canonical 单品种指纹零影响。
+
 ## [0.25.0] - 2026-11-10
 
 ### Added

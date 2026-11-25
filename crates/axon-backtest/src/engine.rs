@@ -1224,11 +1224,14 @@ impl BacktestEngine {
     ///   调 `push_funding(&mut self)` 的 borrow 冲突
     fn run_funding_schedule_for_bar(&mut self) {
         let bar_ts = self.config.clock.now();
-        let schedules: Vec<(Instrument, FundingSchedule)> = self
+        // 0.26.0 起：同帧多品种决策/强平序 = 品种标签字典序（与 rebalance/EOD/划转
+        // 共用 [`Self::instrument_order_key`]，见其文档；消除 HashMap 迭代序漂移）。
+        let mut schedules: Vec<(Instrument, FundingSchedule)> = self
             .funding_schedules
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        schedules.sort_by_key(|(inst, _)| instrument_order_key(inst));
         for (instrument, schedule) in schedules {
             let prev_ts = self
                 .last_funding_ts
@@ -1503,13 +1506,18 @@ impl BacktestEngine {
         // T3.5 改:position_states key 直接是 `Instrument`,不再走
         // `key_to_instrument` 解析;`to_liquidate` 直接拿 `&Instrument` 副本
         // 用于构造 `Order::spot(..., instrument.base, instrument.quote, ...)`。
-        let to_liquidate: Vec<(Instrument, f64)> = self
+        let mut to_liquidate: Vec<(Instrument, f64)> = self
             .bt_state
             .position_states
             .iter()
             .filter(|(_, p)| p.quantity.abs() > 1e-9)
             .map(|(inst, p)| (inst.clone(), p.quantity))
             .collect();
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`position_states` 是 HashMap,迭代序由
+        // 随机化的 `RandomState` 决定;不排序会让下方 `EOD_LIQUIDATE_ID_BASE + idx`
+        // 的 order id ↔ 品种分配随运行漂移,且强平顺序影响账务。单品种时排序是恒等。
+        to_liquidate.sort_by_key(|(inst, _)| instrument_order_key(inst));
         if to_liquidate.is_empty() {
             return;
         }
@@ -2341,6 +2349,11 @@ impl BacktestEngine {
                 targets.push((inst.clone(), required, sym));
             }
         }
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`position_states` 是 HashMap,而下方
+        // `deposit_isolated` 在自由余额不足时会被夹小(见循环末尾注释),因此
+        // 划转顺序直接决定各品种实得保证金金额 —— 必须与执行序解耦。
+        targets.sort_by_key(|(inst, _, _)| instrument_order_key(inst));
         for (inst, required, sym) in targets {
             let held = self.isolated_balance(&inst);
             if required > held {
@@ -2573,12 +2586,17 @@ impl BacktestEngine {
         // 收集要 rebalance 的 leg(避免 borrow/mut borrow 冲突:先 copy 一份)
         // 复制为 (instrument, target) 元组列表;后续用 instrument 直接查
         // position_states 拿 current。
-        let legs: Vec<(Instrument, f64)> = self
+        let mut legs: Vec<(Instrument, f64)> = self
             .bt_state
             .legs
             .iter()
             .map(|(inst, leg)| (inst.clone(), leg.target_position))
             .collect();
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`bt_state.legs` 是 HashMap,迭代序不稳定:
+        // 不排序会让下方 `rebalance_next_id.fetch_add` 的 order id ↔ 品种分配
+        // 以及逐笔成交顺序随运行漂移(多品种回测曾因此不可复现)。单品种恒等。
+        legs.sort_by_key(|(inst, _)| instrument_order_key(inst));
 
         let mut triggered = 0u64;
         // 用 rebalance_next_id 原子计数器确保多次 rebalance 调用 id 唯一
@@ -2903,6 +2921,35 @@ fn instrument_key(inst: &Instrument) -> String {
         Instrument::Spot(s) => format!("{}/{}", s.base.as_str(), s.quote.as_str()),
         Instrument::Swap(s) => format!("{}/{}", s.base.as_str(), s.quote.as_str()),
     }
+}
+
+/// 同帧多品种决策 / 强平序的统一排序键(0.26.0 C4 新增)
+///
+/// # 为什么需要
+///
+/// `BacktestState.legs` / `position_states` 是 `HashMap`,迭代序由每个实例
+/// 随机化的 `RandomState` 决定。同一帧内按迭代序消费这些集合的四处循环
+/// (rebalance 下单、EOD 强平、逐仓划转、逐仓强平 plan)会让运行结果不可复现:
+/// order id 与品种的对应关系漂移,现金不足时各品种实得保证金金额也会变化。
+///
+/// # 定义
+///
+/// **0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序。**
+///
+/// - 主键 = [`instrument_key`] 的 `"BASE/QUOTE"`,与 `margin.rs` 全仓段
+///   (`order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)))`)
+///   的 symbol 字符串键同一口径,也与 `axon-kernel` 的 `symbol_key` 逐字一致;
+/// - 次键 = 变体序(spot = 0,swap = 1)。`Instrument` 未实现 `Ord`(`Swap`
+///   含 `f64` 合约乘数),而同一 `BASE/QUOTE` 的 spot / swap 可以同时作 leg,
+///   故用变体序补成全序,保证 sort 结果唯一、无并列。
+///
+/// 单品种(或单键集合)时排序恒等,不改变既有单品种回测数值。
+fn instrument_order_key(inst: &Instrument) -> (String, u8) {
+    let variant_rank = match inst {
+        Instrument::Spot(_) => 0,
+        Instrument::Swap(_) => 1,
+    };
+    (instrument_key(inst), variant_rank)
 }
 
 /// 计算 `MatchFill` 对 taker 的 PnL 影响

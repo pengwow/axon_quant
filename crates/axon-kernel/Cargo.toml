@@ -23,6 +23,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 # journal 落盘测试（创建 / 读回 / 损坏行）用临时文件
 tempfile = { workspace = true }
+# 多品种同帧执行序的确定性回归（0.26.0 C4 同负载双跑）
+proptest = { workspace = true }
 
 [lints]
 workspace = true

@@ -1599,6 +1599,7 @@ dependencies = [
  "axon-backtest",
  "axon-core",
  "axon-rl",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
