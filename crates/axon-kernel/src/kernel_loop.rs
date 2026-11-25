@@ -41,11 +41,17 @@ use crate::sink::ExecutionSink;
 /// `run` 是账务引擎的聚合结果（PnL / 成交 / NAV / 回撤 / 持仓），字段口径与
 /// `axon_worker::BacktestResult` 一致；`duration` 由内核自己的墙钟起点重算
 /// （引擎 `run()` 内部的 `started.elapsed()` 只覆盖收尾瞬间）。
-#[derive(Debug, Clone)]
+///
+/// `Serialize` 供 golden 指纹基础设施（`axon-integration-tests::canonical`）导出；
+/// 墙钟 `duration` 非确定性，`#[serde(skip)]` 不进指纹。
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct KernelResult {
     /// 账务引擎的完整运行结果
     pub run: RunResult,
     /// 整跑墙钟耗时（内核起点 → finalize）
+    ///
+    /// 非确定性字段：序列化时跳过（不进 golden 指纹）。
+    #[serde(skip)]
     pub duration: Duration,
     /// 已处理的网格帧数
     pub bars_processed: u64,

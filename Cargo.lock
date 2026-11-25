@@ -1571,6 +1571,7 @@ dependencies = [
  "axon-exchange",
  "axon-hpo",
  "axon-inference",
+ "axon-kernel",
  "axon-monitor",
  "axon-oms",
  "axon-registry",

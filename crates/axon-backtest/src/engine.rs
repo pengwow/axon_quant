@@ -45,6 +45,40 @@ use crate::margin::{
 use crate::matching::MatchingEngine;
 use crate::streaming::l3_diff::{L3BookDiff, L3BookSubscriber, SubscriberKind};
 
+/// `HashMap<Instrument, f64>` 的 serde 辅助（0.26.0 指纹基础设施引入）
+///
+/// `serde_json` 的 object key 只接受字符串/数字，而 [`Instrument`] 是带
+/// struct 载荷的枚举（序列化成 `{kind, details}`），直接当 map key 会报
+/// "key must be a string"。这里统一转成以 [`Instrument`] 的 `Display`
+/// 标签（`"BTC/USDT"` / `"BTC/USDT:SWAP"`）为键的 `BTreeMap`：
+///
+/// - 满足 JSON 约束；
+/// - 字典序键序让 golden 指纹文件内容稳定（`HashMap` 迭代序不保证）；
+/// - 只影响序列化，字段语义与内存表示不变。
+///
+/// 反序列化不做对称处理：`RunResult` 只导出，没有 JSON → `RunResult` 的需求。
+mod instrument_f64_map_serde {
+    use std::collections::{BTreeMap, HashMap};
+
+    use axon_core::Instrument;
+    use serde::{Serialize, Serializer};
+
+    /// 把 `instrument -> f64` 转成 `label -> f64` 后序列化
+    pub(super) fn serialize<S>(
+        map: &HashMap<Instrument, f64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let labelled: BTreeMap<String, f64> = map
+            .iter()
+            .map(|(instrument, value)| (instrument.to_string(), *value))
+            .collect();
+        labelled.serialize(serializer)
+    }
+}
+
 /// 回测引擎配置
 ///
 /// - `clock`：模拟时钟（可设置结束时间；为 None 时引擎按事件自然耗尽退出）
@@ -136,13 +170,18 @@ const REBALANCE_ID_BASE: u64 = 3_000_000_000;
 // 留 0.8.0:跨 instrument 协方差 / vol-based vega / contract_size 修正。
 
 /// 组合级风险敞口报告
+///
+/// 0.26.0 起 `per_leg_*` 两个 map 序列化成以品种标签为键的对象（见
+/// `instrument_f64_map_serde`），可直接导出 JSON 指纹。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RiskMetricsReport {
     /// 每个 instrument 的 delta 暴露(`instrument -> delta`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub per_leg_delta: HashMap<Instrument, f64>,
     /// 组合总 delta(Σ per-leg delta)
     pub portfolio_delta: f64,
     /// 每个 instrument 的 gamma 暴露(`instrument -> gamma`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub per_leg_gamma: HashMap<Instrument, f64>,
     /// 组合总 gamma
     pub total_gamma: f64,
@@ -221,7 +260,17 @@ pub struct EffectiveMarginSpec {
 ///   让 baseline 失真;推到 0.9.0 统一改用 `bar_nav_curve`
 /// - 0.8.0 期间 `equity_curve` 标 doc-level **DEPRECATED** 警告(非 attribute
 ///   警告,避免 45 处内部访问触发 `-D warnings` 失败),0.9.0 真删
-#[derive(Debug, Clone, PartialEq)]
+///
+/// ## 序列化(0.26.0 新增,纯 additive)
+///
+/// `Serialize` 供 golden 指纹基础设施(`axon-integration-tests::canonical`)导出
+/// 运行结果。两条约定:
+/// - `duration` 是墙钟耗时,**非确定性**,`#[serde(skip)]` 不进指纹;
+/// - `positions` / `leg_targets` / `marks` 等 `HashMap<Instrument, f64>` 转成以
+///   品种标签为键的字典序对象(`instrument_f64_map_serde`)。
+///
+/// 字段语义与派生前的运行行为完全不变。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunResult {
     /// 已处理事件总数（含 MarketData/Order/Fill/System）
     pub events_processed: u64,
@@ -254,6 +303,9 @@ pub struct RunResult {
     /// 最终净资产（初始资金 + 累计 PnL）
     pub final_nav: f64,
     /// 运行耗时（墙钟时间）
+    ///
+    /// 非确定性字段:不进 golden 指纹(`#[serde(skip)]`)。
+    #[serde(skip)]
     pub duration: Duration,
     /// 引擎最终时间（最后一个事件的时间戳）
     pub final_time: Timestamp,
@@ -315,10 +367,15 @@ pub struct RunResult {
     ///
     /// 只保留非零持仓(浮点容差 1e-9),便于 Python 端报告/对账
     /// 直接拿 `run_result.positions[instrument]`。
+    ///
+    /// 序列化:键转为品种标签字符串(见 `instrument_f64_map_serde`)。
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub positions: HashMap<Instrument, f64>,
     /// T3.5 新增:leg 目标仓位快照(`instrument -> target_position`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub leg_targets: HashMap<Instrument, f64>,
     /// T3.5 新增:每 instrument 最新 mark 价格(`instrument -> mark_price`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub marks: HashMap<Instrument, f64>,
     /// 0.5.0 新增(Phase C):累计 funding 结算 PnL(正=收,负=付)
     ///

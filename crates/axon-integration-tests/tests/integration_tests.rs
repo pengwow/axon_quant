@@ -4,6 +4,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use axon_integration_tests::canonical;
 use axon_integration_tests::contract;
 use axon_integration_tests::distributed_flow;
 use axon_integration_tests::e2e_pipeline;
@@ -454,4 +455,14 @@ fn distributed_flow_config() {
 #[test]
 fn distributed_flow_invalid_config() {
     distributed_flow::run_invalid_config_rejected();
+}
+
+// ── Canonical golden 指纹矩阵（0.26.0 C3） ──
+//
+// 逐负载跑统一内核 → 与 `tests/fixtures/canonical/*.json` 比对（数值 1e-9
+// 相对容差）。更新通道：`AXON_CANONICAL_UPDATE=<workload>|all`，重生成后必须
+// 在指纹的 `reasoning` 里写明为何更新（见 docs/zh/about/contributing.md）。
+#[test]
+fn canonical_workload_matrix() {
+    canonical::run_matrix();
 }
