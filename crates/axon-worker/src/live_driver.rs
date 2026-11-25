@@ -468,6 +468,9 @@ impl LiveDriver {
         for event in batch.events {
             kernel.enqueue_external(event, None).map_err(kerr)?;
         }
+        // 泵侧质量计数逐拍同步给内核（绝对值覆盖，幂等）：随 KernelResult 上浮、
+        // run 结束时写 quality 侧车。纯观测，不影响事件流。
+        kernel.set_quality_report(self.pump.quality());
         // 2. 断线补齐：行情断流期间的缺口由泵记录，REST 拉回历史 bar 灌进
         //    同一条管道（EventQueue 按收市时刻插到正确历史位置）
         for gap in self.pump.gaps().to_vec() {

@@ -259,6 +259,8 @@ impl PaperDriver {
             for event in pump.drain().events {
                 kernel.enqueue_external(event, None).map_err(kerr)?;
             }
+            // 泵侧质量计数逐拍同步给内核（绝对值覆盖，幂等）：纯观测，不影响事件流
+            kernel.set_quality_report(pump.quality());
         }
         // 3. 断线补齐：缺口快照 → 反查品种 → fetch 历史 bar → 灌回同一条管道
         if let (Some(pump), Some(gateway)) = (self.pump.as_mut(), self.gateway.as_ref()) {

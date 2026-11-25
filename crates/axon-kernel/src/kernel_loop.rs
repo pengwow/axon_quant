@@ -5,7 +5,7 @@
 //! 是 Rust 关键字。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,7 @@ use crate::journal::{Journal, JournalEntry};
 use crate::lifecycle::BarLifecycle;
 use crate::persist::{JOURNAL_FORMAT_VERSION, RunManifest};
 use crate::pump::{BarGridBarrier, GridFrame};
+use crate::quality::QualityReport;
 use crate::sink::ExecutionSink;
 
 /// 一次运行的完整结果
@@ -57,6 +58,12 @@ pub struct KernelResult {
     pub bars_processed: u64,
     /// 提交给 sink 的意图总数（不是成交数）
     pub orders_submitted: u64,
+    /// 数据质量计数（全 0 = 输入干净）
+    ///
+    /// 历史路径 OHLC 非法直接 fail-fast（不产生报告）；实时路径的拒收 / 丢弃 /
+    /// 漏判计数由装配方经 `Kernel::set_quality_report` 注入。**不进**
+    /// `RunManifest`：统计字段随运行变化会破坏 manifest 的等值语义。
+    pub quality: QualityReport,
 }
 
 /// 交易内核
@@ -68,8 +75,12 @@ pub struct Kernel {
     hosts: Vec<Box<dyn StrategyHost>>,
     sink: Box<dyn ExecutionSink>,
     journal: Journal,
+    /// journal 落盘路径（`attach_journal` 记录；run 结束时把质量侧车写到同目录）
+    journal_path: Option<PathBuf>,
     lifecycle: BarLifecycle,
     manifest: RunManifest,
+    /// 装配方注入的数据质量计数（live / paper 从 `KernelPump` 取；回测为默认 0）
+    quality: QualityReport,
     /// 每帧逐品种 state 预注册表(key = 网格时间戳纳秒)
     ///
     /// state 不进 `MarketDataPayload`(市场数据契约),屏障攒齐后由 [`Self::dispatch`]
@@ -105,8 +116,10 @@ impl Kernel {
             hosts: Vec::new(),
             sink,
             journal: Journal::new(),
+            journal_path: None,
             lifecycle: BarLifecycle::new(),
             manifest: RunManifest::default(),
+            quality: QualityReport::default(),
             frame_states: Default::default(),
             ctx: HostCtx::default(),
             started: Instant::now(),
@@ -193,7 +206,22 @@ impl Kernel {
         // 重演会因逐字段比对失败被误拒
         self.manifest.journal_format = JOURNAL_FORMAT_VERSION;
         self.journal = Journal::create(path, &self.manifest)?;
+        self.journal_path = Some(path.to_path_buf());
         Ok(())
+    }
+
+    /// 注入数据质量计数（live / paper 装配方从 `KernelPump` 取绝对值推入）
+    ///
+    /// 计数是累计值而非增量：每次调用**替换**当前报告，因此重复推同一份报告
+    /// 是幂等的。报告随 [`KernelResult::quality`] 上浮，并在 run 结束时写成
+    /// journal 同目录的 `<stem>.quality.json` 侧车。
+    pub fn set_quality_report(&mut self, report: QualityReport) {
+        self.quality = report;
+    }
+
+    /// 当前数据质量计数（只读观测口）
+    pub fn quality(&self) -> &QualityReport {
+        &self.quality
     }
 
     /// 记录一条**外部输入**（含当帧逐 bar state）并压入主队列
@@ -537,8 +565,19 @@ impl Kernel {
     /// 构造都在 `run()` 内（设计文档 4.6），所以这里必须显式调一次。
     fn finalize(&mut self) -> KernelResult {
         let run = self.core.run();
+        // run 结束把数据质量计数写到 journal 旁的 `<stem>.quality.json` 侧车。
+        // 质量报告是旁路观测，落盘失败只告警，不影响账务结果的返回。
+        if let Some(path) = &self.journal_path {
+            match self.quality.write_sidecar(path) {
+                Ok(sidecar) => {
+                    tracing::debug!(path = %sidecar.display(), "kernel: quality 侧车已写出")
+                }
+                Err(e) => tracing::warn!(error = %e, "kernel: quality 侧车写出失败"),
+            }
+        }
         KernelResult {
             run,
+            quality: self.quality.clone(),
             duration: self.started.elapsed(),
             bars_processed: self.lifecycle.bars_processed,
             orders_submitted: self.lifecycle.orders_submitted(),

@@ -62,6 +62,8 @@ pub struct BarAggregator {
     barriers: HashMap<(Instrument, String), i64>,
     /// 越过水位线、无法判定为重复而放行的迟到 bar 计数
     duplicates_missed: u64,
+    /// 负成交量 tick 被夹紧丢弃的数量（既有 `.max(0.0)` 行为的计数化）
+    invalid_qty_dropped: u64,
 }
 
 impl BarAggregator {
@@ -90,6 +92,12 @@ impl BarAggregator {
         // 向下取整到周期边界 = tick 所属 bar 的起始时间
         let bar_start = tick.timestamp.nanos.div_euclid(interval_ns) * interval_ns;
         let key = (instrument.clone(), interval.to_string());
+
+        // 负成交量 tick 是脏数据：累加 / 开新 bar 时按 0 夹紧（行为不变），
+        // 这里只把它计数化，供数据质量报告消费（不做拦截）
+        if tick.quantity.as_f64() < 0.0 {
+            self.invalid_qty_dropped += 1;
+        }
 
         match self.open.get(&key).map(|bar| bar.timestamp.nanos) {
             Some(current_start) if current_start == bar_start => {
@@ -218,6 +226,14 @@ impl BarAggregator {
     /// 每次放行这样的 bar 都会同时 `warn!`；计数用于数据质量报告。
     pub fn duplicates_missed(&self) -> u64 {
         self.duplicates_missed
+    }
+
+    /// 负成交量 tick 被夹紧丢弃的数量
+    ///
+    /// 与 [`Self::duplicates_missed`] 一样是只读观测值：放行 / 丢弃形态与计数前
+    /// 完全一致，数字只进数据质量报告。
+    pub fn invalid_qty_dropped(&self) -> u64 {
+        self.invalid_qty_dropped
     }
 
     /// 判重并让漏判可见：与 [`Self::is_duplicate`] 同义（返回值完全相同），
@@ -404,6 +420,30 @@ mod tests {
         assert_eq!(closed.close.as_f64(), 98.0);
         assert!((closed.volume.as_f64() - 6.0).abs() < 1e-9, "成交量累加");
         assert_eq!(ts.nanos, MIN, "事件时间戳必须是收市时刻");
+    }
+
+    /// 负量 tick 是脏数据：既有行为是按 0 夹紧（不参与累加），C6 只把它计数化
+    #[test]
+    fn test_negative_tick_quantity_is_counted_and_clamped() {
+        let mut agg = BarAggregator::new();
+        assert_eq!(agg.invalid_qty_dropped(), 0, "干净 tick 不计数");
+
+        agg.observe_tick(&btc(), "1m", &tick(0, 100.0, 2.0));
+        agg.observe_tick(&btc(), "1m", &tick(10 * SEC, 100.0, -5.0));
+        assert_eq!(agg.invalid_qty_dropped(), 1, "负量 tick 必须计数");
+
+        // 跨周期收市：负量不参与累加（行为与计数前完全一致）
+        let events = agg.observe_tick(&btc(), "1m", &tick(MIN, 101.0, 1.0));
+        let (_, _, closed, _) = bar_closed_of(&events[0]).expect("必须收市");
+        assert!(
+            (closed.volume.as_f64() - 2.0).abs() < 1e-9,
+            "负量被夹紧后不累加: {}",
+            closed.volume.as_f64()
+        );
+
+        // 零量既不夹紧也不算脏：不计入 invalid_qty_dropped
+        agg.observe_tick(&btc(), "1m", &tick(MIN, 101.0, 0.0));
+        assert_eq!(agg.invalid_qty_dropped(), 1, "零量不是负量");
     }
 
     #[test]

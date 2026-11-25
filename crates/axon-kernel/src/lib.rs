@@ -14,6 +14,7 @@
 //! | [`aggregator`] | [`BarAggregator`]（tick / kline → 收市 `BarClosed` + 去重） |
 //! | [`core`] | [`KernelCore`]（`BacktestEngine` 的内核侧代理）+ [`KernelConfig`] |
 //! | [`pump`] | [`HistoryPump`](pump::build_frames) 帧构造 + [`BarGridBarrier`] |
+//! | [`quality`] | [`QualityReport`] 数据质量计数（历史严格 / 实时降级共用的观测出口） |
 //! | [`host`] | [`StrategyHost`] 同步决策接口 + `OrderIntent` / `HostCtx` |
 //! | [`risk`] | [`RiskCheck`] pre-trade 风控接缝（paper / live 共用） |
 //! | [`sink`] | [`ExecutionSink`] 执行出口（M1: `NullSink` / `BacktestSink`） |
@@ -78,6 +79,7 @@ pub mod kernel_loop;
 pub mod lifecycle;
 pub mod persist;
 pub mod pump;
+pub mod quality;
 pub mod risk;
 pub mod rl;
 pub mod sink;
@@ -91,6 +93,7 @@ pub use kernel_loop::{Kernel, KernelResult, ProgressCb};
 pub use lifecycle::BarLifecycle;
 pub use persist::{ManifestPosition, ModelArtifact, RunManifest};
 pub use pump::{BarGridBarrier, GridFrame, build_frames};
+pub use quality::QualityReport;
 pub use risk::{AllowAllRisk, RiskCheck};
 pub use rl::{InferenceBackend, RLStrategyHost};
 pub use sink::{BacktestSink, ExecutionSink, NullSink, PaperSink};

@@ -40,6 +40,9 @@ pub struct GridFrame {
 /// # 规则(与 `BacktestRunner::run()` 对齐)
 ///
 /// - 所有 symbol 的向量必须等长,不等长返回错误而不是 panic;
+/// - 逐根做 OHLC 校验:任一 bar 的 OHLC 非法(high < low / open、close 越过
+///   high / low)整帧失败、回测不启动——历史数据必须 fail-fast,脏 bar 不得
+///   直达撮合;
 /// - `ts` 取该网格点上按 `BTreeMap` 顺序第一个有真实 bar 的 symbol 的
 ///   `bar.timestamp`;
 /// - `None` 不产生 bar(价格前向填充由内核的 `last_price` 负责);
@@ -85,6 +88,19 @@ pub fn build_frames(
             let Some(bar) = column[grid_idx].as_ref() else {
                 continue;
             };
+            // 历史路径的 OHLC 门：脏 bar 必须 fail-fast 拒绝。`Bar::from_ticks`
+            // 里的 `debug_assert!` 在 release 下不生效，调用侧校验才是真门禁；
+            // 错误串带 symbol + bar 起始时间 + 四个价格，便于定位脏数据源头。
+            if let Err(e) = bar.validate_ohlc() {
+                return Err(KernelError::Pump(format!(
+                    "symbol={symbol} ts={} OHLC 非法(open={} high={} low={} close={}): {e}",
+                    bar.timestamp.nanos,
+                    bar.open.as_f64(),
+                    bar.high.as_f64(),
+                    bar.low.as_f64(),
+                    bar.close.as_f64(),
+                )));
+            }
             let instrument = instruments[symbol].clone();
             bars.push((instrument.clone(), *bar));
             // 逐 bar state:下标取不到(长度不足)就是 Null,与 BacktestRunner
@@ -299,6 +315,135 @@ mod tests {
         );
         let err = build_frames(&bars, &InstrumentMode::Spot, None);
         assert!(matches!(err, Err(KernelError::Pump(_))), "不等长必须报错");
+    }
+
+    // ── C6：历史路径 OHLC 门（严格拒绝）──────────────────────────────
+
+    /// 显式 OHLC 的 bar（脏数据矩阵用；不做任何合法性假设）
+    fn bar_ohlc(ts: i64, open: f64, high: f64, low: f64, close: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(ts),
+            open: Price::from_f64(open),
+            high: Price::from_f64(high),
+            low: Price::from_f64(low),
+            close: Price::from_f64(close),
+            volume: Quantity::from_f64(1.0),
+        }
+    }
+
+    fn single_symbol_grid(bar: Bar) -> BTreeMap<String, Vec<Option<Bar>>> {
+        let mut bars = BTreeMap::new();
+        bars.insert("BTC/USDT".to_string(), vec![Some(bar)]);
+        bars
+    }
+
+    /// 五类 OHLC 违例都必须 fail-fast，错误串带 symbol + bar 起始时间
+    #[test]
+    fn test_build_frames_rejects_each_ohlc_violation() {
+        const TS: i64 = 1_234_567;
+        // (违例, (open, high, low, close))
+        let cases = [
+            ("high<low", (100.0, 99.0, 101.0, 100.0)),
+            ("open>high", (102.0, 101.0, 99.0, 100.0)),
+            ("close>high", (100.0, 101.0, 99.0, 102.0)),
+            ("open<low", (98.0, 101.0, 99.0, 100.0)),
+            ("close<low", (100.0, 101.0, 99.0, 98.0)),
+        ];
+        for (label, (open, high, low, close)) in cases {
+            let bars = single_symbol_grid(bar_ohlc(TS, open, high, low, close));
+            let err = build_frames(&bars, &InstrumentMode::Spot, None).expect_err(label);
+            let msg = err.to_string();
+            assert!(msg.contains("BTC/USDT"), "{label}: 错误串缺 symbol: {msg}");
+            assert!(msg.contains(&TS.to_string()), "{label}: 错误串缺 ts: {msg}");
+            assert!(
+                msg.contains("OHLC"),
+                "{label}: 错误串必须说明 OHLC 违例: {msg}"
+            );
+        }
+    }
+
+    /// 网格中段一根脏 bar 也要整帧失败：历史路径不提供「跳过脏 bar 继续跑」
+    #[test]
+    fn test_build_frames_dirty_bar_aborts_whole_grid() {
+        let mut bars = BTreeMap::new();
+        bars.insert(
+            "BTC/USDT".to_string(),
+            vec![
+                Some(bar(0, 100.0)),
+                // high < low 的脏 bar 夹在中间
+                Some(bar_ohlc(60, 100.0, 90.0, 99.0, 100.0)),
+                Some(bar(120, 100.0)),
+            ],
+        );
+        assert!(
+            build_frames(&bars, &InstrumentMode::Spot, None).is_err(),
+            "任一 bar 违例必须 fail-fast"
+        );
+    }
+
+    /// 历史门只覆盖 OHLC：乱序 ts / 重复 ts / 缺口照旧交给屏障与事件队列
+    #[test]
+    fn test_build_frames_gate_only_covers_ohlc() {
+        let mut bars = BTreeMap::new();
+        bars.insert(
+            "BTC/USDT".to_string(),
+            vec![
+                Some(bar(120, 100.0)), // 乱序（比下一格晚）
+                Some(bar(0, 100.0)),
+                None,                // 缺口
+                Some(bar(0, 100.0)), // 与上一根同 ts（窗口内重复）
+            ],
+        );
+        // 第二品种在缺口处有真实 bar，保证该网格点不空
+        bars.insert(
+            "ETH/USDT".to_string(),
+            vec![
+                Some(bar(120, 10.0)),
+                Some(bar(0, 10.0)),
+                Some(bar(60, 10.0)),
+                Some(bar(0, 10.0)),
+            ],
+        );
+        let frames =
+            build_frames(&bars, &InstrumentMode::Spot, None).expect("非 OHLC 异常不应拒收历史门");
+        assert_eq!(
+            frames.iter().map(|f| f.ts.nanos).collect::<Vec<_>>(),
+            vec![120, 0, 60, 0],
+            "缺口的品种不产 bar，乱序 / 重复 ts 原样通过"
+        );
+    }
+
+    /// 零量 / 负量不是 OHLC 违例：历史门不拦（计数由聚合器 tick 路径负责）
+    #[test]
+    fn test_build_frames_accepts_non_positive_volume() {
+        let mut zero = bar(0, 100.0);
+        zero.volume = Quantity::from_f64(0.0);
+        let mut negative = bar(60, 100.0);
+        negative.volume = Quantity::from_f64(-1.0);
+
+        let mut bars = BTreeMap::new();
+        bars.insert("BTC/USDT".to_string(), vec![Some(zero), Some(negative)]);
+        let frames = build_frames(&bars, &InstrumentMode::Spot, None)
+            .expect("量不是 OHLC 门的一部分，零/负量不得拒收");
+        assert_eq!(frames.len(), 2);
+    }
+
+    /// 干净矩阵零扰动：与不设门时的帧结构完全一致
+    #[test]
+    fn test_build_frames_clean_grid_is_unchanged() {
+        let mut bars = BTreeMap::new();
+        bars.insert(
+            "BTC/USDT".to_string(),
+            vec![Some(bar(0, 100.0)), Some(bar(60, 101.0))],
+        );
+        bars.insert(
+            "ETH/USDT".to_string(),
+            vec![Some(bar(0, 10.0)), Some(bar(60, 11.0))],
+        );
+        let frames = build_frames(&bars, &InstrumentMode::Spot, None).expect("干净网格应通过");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].ts.nanos, 60);
+        assert_eq!(frames[1].bars.len(), 2);
     }
 
     #[test]
