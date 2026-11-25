@@ -32,3 +32,6 @@ proptest = { workspace = true }
 # 仅 rlib：Python 绑定统一由 axon-python（module-name = "axon_quant._native"）暴露
 [lib]
 crate-type = ["rlib"]
+
+[lints]
+workspace = true

@@ -44,3 +44,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "core_bench"
 path = "../../benches/core_bench.rs"
 harness = false
+
+[lints]
+workspace = true

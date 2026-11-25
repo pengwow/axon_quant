@@ -37,3 +37,6 @@ tempfile = { workspace = true }
 
 [lib]
 crate-type = ["rlib", "cdylib"]
+
+[lints]
+workspace = true

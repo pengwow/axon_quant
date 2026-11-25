@@ -63,3 +63,6 @@ path = "tests/integration_tests.rs"
 [lib]
 # 集成测试 crate 以 lib + tests/ 形式组织
 crate-type = ["rlib"]
+
+[lints]
+workspace = true

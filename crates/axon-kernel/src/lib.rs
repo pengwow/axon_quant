@@ -66,6 +66,7 @@
 //! - RL 观测统计量的落盘（训练期统计 vs 推理期统计的一致性尚无文件级证据）。
 
 #![deny(unsafe_code)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![warn(missing_docs)]
 
 pub mod aggregator;

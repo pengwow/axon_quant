@@ -41,6 +41,7 @@
 **footer**:`BREAKING CHANGE:` / `Closes #123` / `Refs #456`
 
 ### 代码风格
+- Lint 纪律（0.26.0 起）：workspace 统一 `[workspace.lints]`；`clippy::todo`/`clippy::unimplemented` 全仓 deny（测试桩模块内显式 allow）；axon-kernel 生产代码裸 `unwrap` deny。
 
 - **Rust**:`cargo fmt --all` + `cargo clippy --workspace --all-targets -- -D warnings`
 - **Python**:`ruff check` + `ruff format`(`axon_quant/__init__.py` 等)

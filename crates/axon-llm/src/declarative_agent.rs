@@ -289,6 +289,7 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::todo, clippy::unimplemented)]
     use super::*;
 
     #[test]

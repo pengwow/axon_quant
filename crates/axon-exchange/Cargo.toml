@@ -48,3 +48,6 @@ python = ["dep:pyo3", "axon-core/python-utils"]
 version = "0.28"
 optional = true
 features = ["auto-initialize"]
+
+[lints]
+workspace = true

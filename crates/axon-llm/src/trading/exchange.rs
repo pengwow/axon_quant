@@ -395,6 +395,7 @@ impl TradingBackend for ExchangeTradingBackend {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::todo, clippy::unimplemented)]
     use super::*;
 
     #[test]

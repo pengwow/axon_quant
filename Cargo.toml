@@ -133,6 +133,11 @@ tempfile = "3"
 arrow = "57"
 parquet = { version = "57", default-features = false, features = ["arrow", "snap", "brotli", "flate2", "flate2-rust_backened", "lz4", "zstd"] }
 
+# Workspace 级 lint 纪律(0.26.0 起;只放已验证零违规项)
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+
 # Workspace 级 profile 配置
 [profile.release]
 lto = "thin"

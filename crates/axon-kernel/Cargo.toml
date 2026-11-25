@@ -23,3 +23,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 # journal 落盘测试（创建 / 读回 / 损坏行）用临时文件
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

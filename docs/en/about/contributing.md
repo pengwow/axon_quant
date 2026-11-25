@@ -33,6 +33,7 @@ make verify
 ```
 
 ## Code Style
+- Lint discipline (0.26.0+): workspace-wide `[workspace.lints]`; `clippy::todo`/`clippy::unimplemented` are denied except explicit allows in test stub modules; bare `unwrap` is denied on axon-kernel production code.
 
 ### Rust
 
