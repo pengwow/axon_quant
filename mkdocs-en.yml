@@ -170,6 +170,7 @@ nav:
       - Changelog: about/changelog.md
       - License: about/license.md
       - Testing Plan: about/testing-plan.md
+      - Engine Accuracy Benchmark: about/engine-accuracy-benchmark.md
       - PyPI Publishing: about/pypi-publishing.md
       - FAQ: about/faq.md
 

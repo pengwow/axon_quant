@@ -176,6 +176,7 @@ nav:
       - 更新日志: about/changelog.md
       - 许可证: about/license.md
       - 测试计划: about/testing-plan.md
+      - 引擎准确性基准: about/engine-accuracy-benchmark.md
       - PyPI 发布: about/pypi-publishing.md
       - 常见问题: about/faq.md
 
