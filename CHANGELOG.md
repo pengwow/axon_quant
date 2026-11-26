@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- 聚合器去重桶随回放长度无界增长：按连续收市水位线剪枝，`SEEN_PER_KEY` 降级为上限兜底（长回放内存占用稳定）
-- 超窗迟到重复 bar 被静默二次放行：现在 `warn` + `duplicates_missed` 计数（放行形态不变，只补可观测性）
+- 聚合器去重桶随回放长度无界增长：按连续收市水位线剪枝，`SEEN_PER_KEY` 降级为上限兜底（长回放内存占用稳定；去重回溯窗 = 最近 16 个收市戳）
+- 超窗迟到重复 bar 被静默二次放行：现在 `warn` + `duplicates_missed` 计数（去重窗口内行为不变；窗口边界外按迟到放行 + 计数）
 
 ## [0.25.0] - 2026-11-10
 

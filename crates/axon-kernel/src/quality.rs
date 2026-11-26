@@ -9,6 +9,8 @@
 //! - `invalid_qty_dropped`：负成交量 tick 被夹紧丢弃的数量（聚合器既有
 //!   `.max(0.0)` 行为的计数化，不新增拦截）；
 //! - `duplicates_missed`：越过去重水位线、无法判重而放行的迟到 bar 数（C5）。
+//!   口径 = **按放行的消息数**计数（同一 bar 的 `unclosed` 后跟 `closed`、
+//!   tick 后跟 `closed` 各计一次），不做按 bar 去重。
 //!
 //! 报告**不进** `RunManifest`：manifest 是重演等值语义的指纹，统计字段随运行
 //! 变化会让「同配置两次运行 manifest 相同」不再成立。它在 run 结束时随
@@ -34,6 +36,11 @@ pub struct QualityReport {
     #[serde(default)]
     pub invalid_qty_dropped: u64,
     /// 越过去重水位线、无法判重而放行的迟到 bar 数
+    ///
+    /// 口径 = **按放行消息数**：一条迟到 bar 被重复推送 N 次就计 N 次
+    /// （`unclosed` 之后跟一个 `closed`、tick 聚合之后又收到 `closed` 这类
+    /// "同 bar 两种消息"也各算一次），本字段不做按 bar 去重，只反映"有多少条
+    /// 消息没被判重"。
     #[serde(default)]
     pub duplicates_missed: u64,
 }

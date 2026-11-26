@@ -19,14 +19,20 @@
 //! # 去重
 //!
 //! 同一 `(instrument, interval, bar.timestamp)` 只放行一次。已收市时间戳按 key
-//! 分桶，并维护该 key 的**水位线**（迄今最大的收市时刻，单调推进）：
+//! 分桶，并维护该 key 的**水位线**（迄今最大的收市时刻，单调推进）。两层机制
+//! 主次分明：
 //!
-//! - `BarAggregator::mark_seen` 推进水位线后，剪掉水位线以下
-//!   `WATERMARK_LAG` 根周期之外的历史戳；`SEEN_PER_KEY` 保留为桶长的硬上限
-//!   兜底，因此桶长是稳态常数（不随回放长度增长）；
-//! - 超出窗口的迟到重复（`is_duplicate = false` 且起始时间已在水位线之下）
-//!   无法判定为重复，**照旧放行**（放行形态与事件流不变），但会 `warn!` 并累加
-//!   [`BarAggregator::duplicates_missed`]，供后续数据质量报告消费。
+//! - **去重回溯窗 = 最近 `SEEN_PER_KEY`（16）个收市戳**，这是判断"重复"的
+//!   实际依据：重发的戳只要还在桶里，就照旧拦截（`is_duplicate = true`）；
+//! - **水位线剪枝只负责长回放的内存上界**：`mark_seen` 推进水位线后剪掉
+//!   `< barrier - WATERMARK_LAG * interval` 的旧戳。`WATERMARK_LAG`（64）远大于
+//!   `SEEN_PER_KEY`（16），常态下剪枝不会先于桶长淘汰生效；只有**单次 barrier
+//!   大幅跳变（> 48 个周期）**时才会一次性批量剪掉旧戳。
+//!
+//! 因此：**去重窗口内**的放行 / 拦截形态不变；窗口边界外（被水位线剪掉或被桶长
+//! 淘汰后重发）的 bar 按迟到处理——`is_duplicate = false` 且起始时间已在水位线
+//! 之下时无法判重，**照旧放行**，但会 `warn!` 并按放行消息数累加
+//! [`BarAggregator::duplicates_missed`]，供数据质量报告消费。
 //!
 //! 交易所的 Kline 消息没有 `seq` 字段，只有时间戳，因此无法做序号去重；水位线
 //! 是「无 `seq`」前提下可做到的最强近似。
@@ -39,14 +45,20 @@ use axon_core::{
 
 use crate::event::{close_time, interval_to_nanos};
 
-/// 每个 `(instrument, interval)` 保留的去重时间戳个数（桶长硬上限）
+/// 去重回溯窗 = 每个 `(instrument, interval)` 保留的最近收市戳个数
+/// （同时是桶长的硬上限）
 const SEEN_PER_KEY: usize = 16;
 
 /// 水位线以下的保留窗口，单位 = 周期数
 ///
 /// 水位线为「迄今最大的收市时刻」；`mark_seen` 会剪掉
-/// `< barrier - WATERMARK_LAG * interval` 的历史戳。取值参照「重连补发通常只覆盖
-/// 最近数十根」的交易所行为，同时远大于 `SEEN_PER_KEY`。
+/// `< barrier - WATERMARK_LAG * interval` 的历史戳。
+///
+/// 定位：**只负责长回放的内存上界，不是去重窗口本身**。真正的去重回溯窗是
+/// [`SEEN_PER_KEY`]（16 个收市戳）；`WATERMARK_LAG`（64）远大于它，所以只有
+/// 单次 barrier 跳变超过 `WATERMARK_LAG - SEEN_PER_KEY = 48` 个周期时，剪枝才会
+/// 先于桶长淘汰生效（一次性批量剪掉旧戳）。取值参照「重连补发通常只覆盖最近
+/// 数十根」的交易所行为。
 const WATERMARK_LAG: i64 = 64;
 
 /// 逐品种、逐周期的 K 线聚合器
@@ -216,9 +228,18 @@ impl BarAggregator {
 
     /// 该 `(instrument, interval, bar.timestamp)` 是否已经收市过
     pub fn is_duplicate(&self, key: &(Instrument, String, i64)) -> bool {
+        self.seen_contains(&(key.0.clone(), key.1.clone()), key.2)
+    }
+
+    /// 按引用查询去重桶(内部热路径入口)
+    ///
+    /// 调用方(如 [`Self::check_duplicate`])已持有拼好的 key 时用它,避免为了
+    /// [`Self::is_duplicate`] 的三元组签名再 clone 一份 `instrument` /
+    /// `interval`。公开 API 与查询结果都和 `is_duplicate` 完全一致。
+    fn seen_contains(&self, key: &(Instrument, String), bar_start: i64) -> bool {
         self.seen
-            .get(&(key.0.clone(), key.1.clone()))
-            .is_some_and(|stamps| stamps.contains(&key.2))
+            .get(key)
+            .is_some_and(|stamps| stamps.contains(&bar_start))
     }
 
     /// 越过水位线、无法判定为重复而放行的迟到 bar 计数
@@ -241,9 +262,12 @@ impl BarAggregator {
     ///
     /// 无 `seq` 时这是近似判断：缺口回补（此前从未收到的旧 bar）也会命中，
     /// 但那同样是「迟到数据被放行」，值得进质量报告。
+    ///
+    /// 热路径：key 只拼一次（`instrument` clone + `interval` 转 `String` 各一份），
+    /// 去重桶与水位线都用这同一份 key 查询。
     fn check_duplicate(&mut self, instrument: &Instrument, interval: &str, bar_start: i64) -> bool {
         let key = (instrument.clone(), interval.to_string());
-        if self.is_duplicate(&(key.0.clone(), key.1.clone(), bar_start)) {
+        if self.seen_contains(&key, bar_start) {
             return true;
         }
         let Some(&barrier) = self.barriers.get(&key) else {
@@ -297,6 +321,11 @@ impl BarAggregator {
 
     /// 登记一个已收市时间戳：推进水位线、按水位线剪枝、超出 `SEEN_PER_KEY` 时
     /// 弹出最旧的
+    ///
+    /// 先剪枝再压入。剪枝阈值 `barrier - WATERMARK_LAG * interval`（见
+    /// [`WATERMARK_LAG`]）比 `SEEN_PER_KEY` 的桶长宽一倍以上，因此常态下桶里始终
+    /// 留着最近 `SEEN_PER_KEY` 个收市戳（**去重窗口 = 最近 16 个收市戳**）；水位线
+    /// 只在单次大幅跳变（> 48 周期）时批量清掉更旧的戳，把长回放的内存钉在上界。
     fn mark_seen(
         &mut self,
         instrument: &Instrument,

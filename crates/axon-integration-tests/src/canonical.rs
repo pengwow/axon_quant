@@ -895,6 +895,15 @@ pub fn diff_fingerprint(
 fn diff_value(path: &str, expected: &Value, actual: &Value, out: &mut Vec<String>) {
     match (expected, actual) {
         (Value::Number(left), Value::Number(right)) => {
+            // `ts` 存纳秒时间戳（~1.7e18）：1e-9 相对容差能吸收约 ±1.7e9 ns
+            // （≈1.7s）的漂移，对时间轴字段绝不能容忍。按 Number 精确相等比对，
+            // 其余数值字段仍走 float_close。
+            if is_timestamp_path(path) {
+                if left != right {
+                    out.push(format!("{path}: 期望 {left}, 实际 {right}"));
+                }
+                return;
+            }
             let (Some(left), Some(right)) = (left.as_f64(), right.as_f64()) else {
                 if left != right {
                     out.push(format!("{path}: 期望 {left}, 实际 {right}"));
@@ -939,6 +948,14 @@ fn diff_value(path: &str, expected: &Value, actual: &Value, out: &mut Vec<String
 /// 1e-9 相对容差（与 `kernel_loop.rs::f64_close` 同口径）
 fn float_close(left: f64, right: f64) -> bool {
     left == right || (left - right).abs() <= REL_TOL * left.abs().max(right.abs())
+}
+
+/// `path` 末段是否是纳秒时间戳字段 `ts`
+///
+/// 曲线点形如 `$.curves.bar_nav[3].ts`，数组下标先剥掉再比字段名。
+fn is_timestamp_path(path: &str) -> bool {
+    let last = path.rsplit('.').next().unwrap_or(path);
+    last.split('[').next().unwrap_or(last) == "ts"
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1110,6 +1127,55 @@ mod tests {
         assert!(
             diff_fingerprint(&tolerated, &report).is_empty(),
             "1e-12 偏差应在 1e-9 容差内"
+        );
+    }
+
+    /// `ts` 是纳秒时间戳：纳秒级漂移必须被抓到
+    ///
+    /// 1e-9 相对容差在 ~1.7e18 上等于 ±1.7e9 ns（≈1.7s），时间轴字段绝不能
+    /// 走容差，否则「曲线整体后移 1 秒」这类语义漂移会被静默放行。
+    #[test]
+    fn diff_detects_nanosecond_timestamp_drift() {
+        let expected = json!({
+            "curves": {
+                "bar_nav": [
+                    { "ts": 1_700_000_000_000_000_000i64, "value": 100_000.0 },
+                ],
+            },
+        });
+
+        let mut drifted = expected.clone();
+        drifted["curves"]["bar_nav"][0]["ts"] = json!(1_700_000_000_000_000_001i64);
+        let diff = diff_json(&expected, &drifted);
+        assert!(!diff.is_empty(), "1ns 的 ts 漂移必须让比对变红");
+        assert!(
+            diff.to_message().contains("ts"),
+            "diff 必须定位到 ts 字段: {}",
+            diff.to_message()
+        );
+        assert!(
+            diff.to_message().contains("1700000000000000001"),
+            "diff 必须给出实际值: {}",
+            diff.to_message()
+        );
+
+        // 同一纳秒值（指纹文件按整数、报告按 i64 序列化）必须判等
+        let mut same = expected.clone();
+        same["curves"]["bar_nav"][0]["ts"] = json!(1_700_000_000_000_000_000u64);
+        assert!(
+            diff_json(&expected, &same).is_empty(),
+            "同一纳秒值不应产生 diff"
+        );
+    }
+
+    /// 非 `ts` 的浮点字段仍走 1e-9 相对容差（既有行为回归）
+    #[test]
+    fn diff_keeps_float_tolerance_for_non_timestamp_fields() {
+        let expected = json!({ "metrics": { "final_nav": 100_000.0 } });
+        let actual = json!({ "metrics": { "final_nav": 100_000.0 * (1.0 + 1e-12) } });
+        assert!(
+            diff_json(&expected, &actual).is_empty(),
+            "1e-12 相对偏差应在 1e-9 容差内（非 ts 字段口径不变）"
         );
     }
 }

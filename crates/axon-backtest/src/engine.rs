@@ -2513,6 +2513,10 @@ impl BacktestEngine {
     ///
     /// 只从 `position_states` 找:强平只针对有持仓的品种,已清仓的条目
     /// 仍留在 map 里(quantity=0),但不会产生新的强平动作。
+    ///
+    /// 逆查按 `HashMap` 迭代序取第一条匹配,因此同一 `"BASE/QUOTE"` 同时存在
+    /// spot + swap 时结果不确定(既有缺陷)。该组合在 0.26.0 被
+    /// `margin_snapshot` 的 `debug_assert!` 直接拒绝(见该函数内的语义边界注释)。
     fn instrument_for_symbol(&self, symbol: &str) -> Option<Instrument> {
         self.bt_state
             .position_states
@@ -2535,6 +2539,21 @@ impl BacktestEngine {
                 continue; // 已清仓,不参与名义 / 维持保证金求和
             }
             let sym = instrument_key(inst);
+            // 0.26.0 语义边界(F4):保证金账本 / 强平逆查都以 `"BASE/QUOTE"`
+            // 为键。同一 BASE/QUOTE 的 spot + swap 同时持仓时,本快照会把两条
+            // 持仓合并成一条(后插入静默覆盖),强平执行侧
+            // `instrument_for_symbol` 的反查也会随 HashMap 迭代序漂移。
+            // 这是既有缺陷,0.26.0 不做键域传播,改为「文档声明不支持 + 断言拦截」:
+            // debug 直接打断,release 告警一次防静默。
+            if positions.contains_key(&sym) {
+                debug_assert!(
+                    false,
+                    "0.26.0 语义边界:同一 BASE/QUOTE 的 spot+swap 同时配 margin 不支持\
+                     (保证金快照按 \"BASE/QUOTE\" 合并键、强平逆查歧义);\
+                     请只保留一个 margined leg,或改用不同 BASE/QUOTE"
+                );
+                warn_once_symbol_collision(&sym);
+            }
             // 判定价复用 `judged_price`:保证金核定与强平判定必须用同一套兜底顺序
             let price = self.judged_price(inst, pos.avg_cost);
             positions.insert(sym.clone(), pos.quantity);
@@ -2923,6 +2942,23 @@ fn instrument_key(inst: &Instrument) -> String {
     }
 }
 
+/// 同一 `"BASE/QUOTE"` 下 spot + swap 同持(见 [`instrument_key`] 的键合并)的
+/// 告警去重(0.26.0 F4)
+///
+/// debug 构建由 `margin_snapshot` 里的 `debug_assert!` 直接打断;release 构建
+/// 断言被编译掉,所以这里补一次进程级 `warn!`,避免"静默互相覆盖"没有痕迹。
+/// 用 `Once` 而不是每 bar 每品种告警:该组合应被彻底禁止,刷屏没有额外信息量。
+fn warn_once_symbol_collision(symbol: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            symbol,
+            "0.26.0 语义边界:同一 BASE/QUOTE 的 spot+swap 同时配 margin 不支持\
+             (保证金快照合并键 / 强平逆查歧义),结果不可依赖;本进程仅告警一次"
+        );
+    });
+}
+
 /// 同帧多品种决策 / 强平序的统一排序键(0.26.0 C4 新增)
 ///
 /// # 为什么需要
@@ -2941,7 +2977,23 @@ fn instrument_key(inst: &Instrument) -> String {
 ///   的 symbol 字符串键同一口径,也与 `axon-kernel` 的 `symbol_key` 逐字一致;
 /// - 次键 = 变体序(spot = 0,swap = 1)。`Instrument` 未实现 `Ord`(`Swap`
 ///   含 `f64` 合约乘数),而同一 `BASE/QUOTE` 的 spot / swap 可以同时作 leg,
-///   故用变体序补成全序,保证 sort 结果唯一、无并列。
+///   故用变体序把这两个变体区分开。
+///
+/// # 并列(已知边界,**不是**全序)
+///
+/// 主键 + 变体序只能区分 spot / swap 两个变体:同一 `BASE/QUOTE` 的两个不同
+/// `Swap`(settle / `contract_size` 不同)仍会得到相同键 → 退化为 `sort_by_key`
+/// 的稳定排序,相对顺序 = 收集序(`bt_state.legs` / `position_states` 的
+/// `HashMap` 迭代序),那部分 order id / 成交序仍可能随运行漂移。
+///
+/// 0.26.0 **不做键域扩展**(后续 issue 再扩到 变体 + settle + contract_size):
+/// 同 `BASE/QUOTE` 的 spot + swap 同时配 margin 这种更常见的歧义组合,由
+/// `margin_snapshot` 的 `debug_assert!` 在保证金层拦截(该层账本与强平逆查都用
+/// `"BASE/QUOTE"` 键,见 [`instrument_key`])。
+///
+/// 同类限制也存在于内核侧:`KernelCore::instruments` 是
+/// `BTreeMap<"BASE/QUOTE", Instrument>`,同 pair 再次注册会覆盖前一条(同样
+/// 不区分 spot / swap)——本项只做文档声明,不改该结构。
 ///
 /// 单品种(或单键集合)时排序恒等,不改变既有单品种回测数值。
 fn instrument_order_key(inst: &Instrument) -> (String, u8) {
