@@ -46,3 +46,6 @@ python = ["dep:pyo3", "onnx", "hot-reload", "axon-core/python-utils"]
 pretty_assertions = "1"
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

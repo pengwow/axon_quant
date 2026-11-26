@@ -6,6 +6,89 @@ All notable changes to AXON will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-11-25
+
+### Added
+
+- **workspace 级 lint 纪律**：根 `Cargo.toml` 新增 `[workspace.lints.clippy]`（`todo` / `unimplemented` deny），全部 member crate 以 `[lints] workspace = true` 继承；`axon-kernel` 生产代码追加 `#![cfg_attr(not(test), deny(clippy::unwrap_used))]`；`clippy.toml` 骨架为后续复杂度阈值预留
+- **canonical golden 指纹护栏**（`axon-integration-tests`）：单品种四负载（`replay_only` / `scheduled_market_orders` / `passive_limit_orders` / `ema_cross`）+ 多品种同帧 rebalance 负载（`multi_symbol_rebalance`）。逐字段比对（标量 / 结构全等，曲线 1e-9 相对容差），指纹文件带 `reasoning` 字段记录"为何更新"；`AXON_CANONICAL_UPDATE=<workload|all>` 就地重写，保留已有理由
+- **数据质量门**：历史 OHLC 违例 fail-fast（`KernelError::Pump` 带 symbol / ts / 违规字段），实时路径改为丢弃 + `warn`；新增 `QualityReport`（`invalid_qty_dropped` / `ohlc_rejected` / `duplicates_missed`），随 `KernelResult` 输出并在 run 结束落 `<stem>.quality.json` 侧车（**不进** `RunManifest`）
+
+### Changed
+
+- **多品种帧的确定性执行序（O1）**：同帧 rebalance 的 order id 分配与成交执行序改为确定性字典序（修复 `HashMap` 迭代序非确定性导致的同负载重复运行结果漂移）。统一排序键 = 品种标签 `"BASE/QUOTE"` 字典序（同一 `BASE/QUOTE` 的 spot / swap 再按变体序兜底），覆盖 rebalance 下单、EOD 强平、逐仓划转、逐仓强平计划与资金费率事件等处收集循环。**多品种回测的逐仓划转 / 强平结果数值可能变化**（现金不足时的划转夹小按品种序分配）；单品种回测与 canonical 单品种指纹零影响
+- **数据治理分层**：历史入库路径严格拒绝非法 OHLC（fail-fast），实时路径降级为丢弃 + `warn` + 计数——同一份脏数据在两个入口的可见性一致，但阻断强度按"能否重放"区分
+
+### Fixed
+
+- 聚合器去重桶随回放长度无界增长：按连续收市水位线剪枝，`SEEN_PER_KEY` 降级为上限兜底（长回放内存占用稳定；去重回溯窗 = 最近 16 个收市戳）
+- 超窗迟到重复 bar 被静默二次放行：现在 `warn` + `duplicates_missed` 计数（去重窗口内行为不变；窗口边界外按迟到放行 + 计数）
+
+## [0.25.0] - 2026-11-10
+
+### Added
+
+- **`axon-registry` 晋升回退**：新增 `unpromote`（production 还原回 staging）；Python 绑定补 `get_latest`，透传最新记录查询
+- **RL 内核回测 / 评估设施下沉**
+  - `run_kernel_backtest`：`worker.Kernel` 构造 + `add_rl_strategy`，15 字段响应契约逐字段对齐原实现；fee_rate / stats / spec 全透传，不内置应用默认数字
+  - 通用评估 `evaluate(predict_fn, env, transaction_cost)`：用异构模型协议替代 SB3 `model.predict`，年化 / `max_drawdown`（负号）/ `profit_factor`（收益率分母）口径与 QuantCell 原实现逐行对齐
+  - `rl` 子模块由 native-only 注册改为 `.py` 包装（同 llm/trading 模式），`from axon_quant.rl import TradingEnv` 既有路径不变
+  - 内核回测响应扩至 19 字段：新增 `bar_nav_curve` / `bar_balance_curve` / `trades` / `fills_detail` 透传，保持原始 `(ns, float)` 对与 dict 列表形状，展示口径由调用方组装
+- **resume 对账留痕**：成功路径落盘 `*.reconcile_last_ok.json`（按 journal 文件名派生，多 worker 同目录互不覆盖）；落盘失败不阻断放行，文件缺失即读取侧可观测信号
+
+### Changed
+
+- **BREAKING**：`OrderSide` / `ActionType` 命名语义统一 —— `axon-oms` 统一 re-export 与 `From` 互转，llm / swarm / rl 侧 `Side` 收敛；`ActionType` 拆名对齐 Python 侧 `Action` 契约（QuantCell 后端已同步适配）
+- `Fill.symbol` 更名 `instrument_id`（serde `alias = "symbol"` 保持旧 snapshot / journal 可读，新 JSON 只写 `instrument_id`；Python 侧参数名仍为 `symbol`）
+- `BacktestEnv` 的 `info["nav"]` 改为 `info["equity"]`（绝对资金值语义归账户域；`evaluate` 读取顺序为 `portfolio_value` → `equity` 双回退）
+- 引擎受限缩量统计 `margin_shortfall_count` 更名 `shortfall_count`
+- 内核进度回调按 200ms 时间节流（启动 / 末帧必报）
+- MSRV 由 1.97.0 提升至 1.100.0，CI msrv job 与 README / docs 版本标注同步
+
+### Fixed
+
+- `pyproject.toml` `cache-keys` 由非法 `glob` 字段改为 `file`（`file` 本身支持 glob 语义），修复 uv 解析报 `unknown field 'glob'` 导致 `uv sync` 失败
+- 适配 clippy 1.100 新增 lint：`needless_range_loop`（axon-rl 3 处、axon-data `mock_tick_series`）与 `needless_bool`（axon-harness），恢复双 Clippy job 绿灯
+- RL 包装补齐 native `VERSION` re-export 守护（完整导出面）；NAV 收集去 float 宽松比较，kernel bars 去浅复制
+
+## [0.24.1] - 2026-11-04
+
+### Added
+
+- **`axon-llm` cascade 决策原始输出保留**：新增 `s1_raw` / `s2_raw` / `s2_thinking`，可回溯两级决策的原始返回
+
+## [0.24.0] - 2026-11-03
+
+### Added
+
+- **内核进度回调**：Python 端可传入进度通知回调，Rust 内核逐帧上报，启动先报 `(0, total)`
+
+### Changed
+
+- `axon-llm` 兜底原因 `fallback_reason` 携带错误详情，并细分低置信度场景
+
+### Fixed
+
+- `axon-llm` decision layer 兼容嵌套 tokio runtime：`_block_on` 改用 `futures::executor::block_on`，`decide` spawn 到共享 runtime，修复内核回测在已有 runtime 内 panic（`Cannot start a runtime from within a runtime`）与 hang
+
+## [0.23.0] - 2026-10-30
+
+> 含 0.22.2 – 0.22.5 中间版本迭代，未单独发版。
+
+### Added
+
+- **风控运行时热更**：`SharedRiskState`（`max_position_value` RwLock + `bypass` AtomicBool）由 `EngineRiskCheck` 与 `RiskHandle` 共享；`update_config` 热替换整段引擎配置（阈值替换不追溯已激活熔断态），`set_enabled` 置 bypass 后 `check()` 顶层短路全放行；Python 绑定新增 `risk_assembled` / `update_risk_config` / `set_risk_enabled`
+- **paper / live pre-trade 风控接线**
+- **live 持仓接管（adopt）**：`OrderManager::seed_initial_positions` 注入初始持仓，`RunManifest` 新增 `initial_positions` 单元，resume 重演按 manifest 播种起始持仓；Python 绑定透传
+- **paper 成交增量读取**：`fills_since(cursor)` 四层读取链（engine → core → kernel_loop → paper_driver），游标为 `fills_detail` 全局单调下标，越界安全返回空；`PyPaperDriver::fills_since` 暴露；`PaperDriver` 增量露出配对交易 `trades_since`
+
+### Fixed
+
+- live kline 订阅周期按内核 `interval` 参数化，修复 1h 策略被 1m bar 触发
+- live start 影子基线钉住交易所钱包余额，守卫干净起点
+- resume 对账三处误报源：重演成交烧结（`add_fill_replay` 扩容订单镜像，实时路径保持钳制语义）、未验证挂单集合跳过差集比对（`open_orders_verified` / `open_orders_unverified`）、fill 对账窗口改从 journal 首条记录时间起拉取；恢复守卫拒绝时对账报告落盘 journal 旁并附现金明细
+- 单笔最小名义价值 `min_notional` 预检（0 = 关闭；resume 不透传，避免重演过滤决策单导致与首跑账目不一致）
+
 ## [0.22.1] - 2026-10-26
 
 ### Fixed

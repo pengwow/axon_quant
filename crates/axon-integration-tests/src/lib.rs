@@ -28,6 +28,9 @@
 /// 共享的测试辅助函数与 fixture
 pub mod fixtures;
 
+/// Canonical golden 指纹负载（0.26.0 C3；单品种确定性负载 + 指纹比对）
+pub mod canonical;
+
 /// 错误恢复与并发场景的集成测试
 pub mod error_recovery_and_concurrency;
 

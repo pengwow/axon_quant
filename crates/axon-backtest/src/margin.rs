@@ -255,10 +255,18 @@ impl MarginTracker {
         let mut actions: Vec<LiquidateAction> = Vec::new();
 
         // 逐仓：只看自己的子账户，与其他品种互不影响
-        for (sym, spec) in &self.specs {
-            if spec.mode != MarginMode::Isolated {
-                continue;
-            }
+        //
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序。
+        // `specs` 是 HashMap,迭代序不稳定,而 plan 的动作顺序决定引擎按什么
+        // 次序减仓(order id 也随之漂移);这里与下方全仓段统一按 symbol
+        // 字典序收集,口径与 `engine.rs::instrument_order_key` 一致。
+        let mut isolated_specs: Vec<(&String, &MarginSpec)> = self
+            .specs
+            .iter()
+            .filter(|(_, s)| s.mode == MarginMode::Isolated)
+            .collect();
+        isolated_specs.sort_by(|a, b| a.0.cmp(b.0));
+        for (sym, spec) in isolated_specs {
             let notional = snap.notional(sym);
             if notional <= 0.0 {
                 continue;

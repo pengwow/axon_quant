@@ -29,7 +29,7 @@ use axon_core::{
     Price, Quantity, Side, SystemAction, SystemEvent, Tick, Timestamp,
 };
 use axon_exchange::types::{Kline, Side as WsSide, Symbol as ExchangeSymbol, WsMessage};
-use axon_kernel::{BarAggregator, InstrumentMode, interval_to_nanos};
+use axon_kernel::{BarAggregator, InstrumentMode, QualityReport, interval_to_nanos};
 use tokio::sync::mpsc;
 
 use crate::backtest::instrument_key_for;
@@ -73,6 +73,8 @@ pub struct KernelPump {
     replayed: HashMap<(Instrument, String), HashSet<i64>>,
     gaps: Vec<Gap>,
     next_seq: u64,
+    /// OHLC 非法被丢弃的收市 kline 数（实时路径宽容降级，历史路径不经过这里）
+    ohlc_rejected: u64,
 }
 
 impl KernelPump {
@@ -95,6 +97,7 @@ impl KernelPump {
             replayed: HashMap::new(),
             gaps: Vec::new(),
             next_seq: 0,
+            ohlc_rejected: 0,
         }
     }
 
@@ -156,6 +159,18 @@ impl KernelPump {
         &self.gaps
     }
 
+    /// 累计数据质量计数（本泵拒收的 OHLC 非法 bar + 聚合器侧负量 / 漏判计数）
+    ///
+    /// 纯观测口：不改变事件流。装配方（`LiveDriver` / `PaperDriver`）把它推给
+    /// `Kernel::set_quality_report`，随 `KernelResult` 上浮并落 quality 侧车。
+    pub fn quality(&self) -> QualityReport {
+        QualityReport {
+            ohlc_rejected: self.ohlc_rejected,
+            invalid_qty_dropped: self.aggregator.invalid_qty_dropped(),
+            duplicates_missed: self.aggregator.duplicates_missed(),
+        }
+    }
+
     /// 按到达顺序重编号事件的 seq（`drain` 与 `replay_bars` 共用）
     fn renumber(&mut self, events: &mut [Event]) {
         for event in events {
@@ -175,10 +190,11 @@ impl KernelPump {
 
     /// 断线补齐：把 `fetch_ohlcv` 拉回的历史 bar 灌回同一条事件管道
     ///
-    /// 走与实时 kline 相同的聚合 / 去重路径（重复 bar 只计数不重放）；事件按
-    /// 补灌到达顺序重编号，随缺口一并清除后由调用方 `enqueue_external` 进内核
-    /// （与 `drain` 的下游约定一致）。事件时间戳是收市时刻，EventQueue 会把它们
-    /// 排到正确的历史位置，调用方无需关心补灌顺序与实时 bar 的交错。
+    /// 走与实时 kline 相同的聚合 / 去重 / OHLC 门路径（重复 bar 只计数不重放，
+    /// 脏 bar 丢弃 + 计数且不打断补灌循环）；事件按补灌到达顺序重编号，随缺口
+    /// 一并清除后由调用方 `enqueue_external` 进内核（与 `drain` 的下游约定一致）。
+    /// 事件时间戳是收市时刻，EventQueue 会把它们排到正确的历史位置，调用方无需
+    /// 关心补灌顺序与实时 bar 的交错。
     pub fn replay_bars(
         &mut self,
         symbol: &ExchangeSymbol,
@@ -203,6 +219,11 @@ impl KernelPump {
         }
         let mut events = Vec::with_capacity(bars.len());
         for bar in bars {
+            // REST 补灌与实时 WS 走同一个 OHLC 门：脏 bar 丢弃 + 计数，补灌循环
+            // 继续下一根（不中断缺口处理）。来源字段区分实时 / 补灌。
+            if !self.gate_bar(bar, symbol.0.as_str(), "rest_backfill") {
+                continue;
+            }
             // 与实时路径同一判重来源（BarAggregator），重复补灌只计数
             if self.aggregator.is_duplicate(&(
                 instrument.clone(),
@@ -268,6 +289,30 @@ impl KernelPump {
         }
     }
 
+    /// 统一 OHLC 门（实时 WS 与 REST 补灌共用）
+    ///
+    /// 违例只旁路丢弃：`tracing::warn!` + `ohlc_rejected += 1` + 返回 false，
+    /// 调用方据此跳过该 bar 并继续处理后续数据。`source` 区分 `"ws"` /
+    /// `"rest_backfill"`，便于排障时分辨脏数据来自实时流还是断线补灌。
+    fn gate_bar(&mut self, bar: &Bar, symbol: &str, source: &'static str) -> bool {
+        if let Err(e) = bar.validate_ohlc() {
+            self.ohlc_rejected += 1;
+            tracing::warn!(
+                symbol,
+                source,
+                timestamp = bar.timestamp.nanos,
+                open = bar.open.as_f64(),
+                high = bar.high.as_f64(),
+                low = bar.low.as_f64(),
+                close = bar.close.as_f64(),
+                error = %e,
+                "kernel pump: OHLC 非法，丢弃 bar"
+            );
+            return false;
+        }
+        true
+    }
+
     /// 单条 kline：未收市只更新聚合器，收市产出 `BarClosed` 并做缺口检测
     fn on_kline(&mut self, kline: &Kline, skipped_duplicates: &mut usize) -> Vec<Event> {
         // 先按交易所原始写法归一化成带分隔符的 key（复用 `instrument_key_for`，
@@ -291,6 +336,12 @@ impl KernelPump {
             close: Price::from_f64(kline.close.as_f64()),
             volume: Quantity::from_f64(kline.volume.as_f64()),
         };
+        // 实时路径的 OHLC 门：与历史路径（fail-fast）分层——脏 bar 只丢弃并
+        // 旁路告警 + 计数，主回路照常处理后续 bar。与 REST 补灌共用 `gate_bar`，
+        // 不让单根脏数据打挂实时链路。
+        if !self.gate_bar(&bar, kline.symbol.0.as_str(), "ws") {
+            return Vec::new();
+        }
         if kline.is_closed
             && self.aggregator.is_duplicate(&(
                 instrument.clone(),
@@ -449,6 +500,99 @@ mod tests {
         .expect("Kline 消息应能反序列化")
     }
 
+    /// 指定 OHLC 的收市 kline（脏数据矩阵用；量固定 10.0）
+    fn kline_ohlc(start_ms: i64, open: f64, high: f64, low: f64, close: f64) -> WsMessage {
+        serde_json::from_value(serde_json::json!({
+            "type": "Kline",
+            "data": {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "open": open.to_string(),
+                "high": high.to_string(),
+                "low": low.to_string(),
+                "close": close.to_string(),
+                "volume": "10.0",
+                "timestamp": rfc3339(start_ms),
+                "is_closed": true,
+            }
+        }))
+        .expect("Kline 消息应能反序列化")
+    }
+
+    // ── C6：实时路径 OHLC 门（宽容降级：丢弃 + 计数，不打断主回路）──
+
+    /// 五类 OHLC 违例都只丢旁路并计数，后续正常 bar 不受牵连
+    #[test]
+    fn test_invalid_ohlc_kline_is_dropped_and_counted() {
+        let (tx, mut pump) = pump_channel();
+        let cases = [
+            (100.0, 99.0, 101.0, 100.0), // high < low
+            (102.0, 101.0, 99.0, 100.0), // open > high
+            (100.0, 101.0, 99.0, 102.0), // close > high
+            (98.0, 101.0, 99.0, 100.0),  // open < low
+            (100.0, 101.0, 99.0, 98.0),  // close < low
+        ];
+        for (i, (open, high, low, close)) in cases.iter().enumerate() {
+            tx.try_send(kline_ohlc(i as i64 * MIN_MS, *open, *high, *low, *close))
+                .expect("channel 容量足够");
+        }
+        // 脏 bar 之后紧跟一根干净 bar：实时路径不丢正常 bar
+        tx.try_send(kline(6 * MIN_MS, true))
+            .expect("channel 容量足够");
+
+        let batch = pump.drain();
+        assert_eq!(batch.events.len(), 1, "五根脏 bar 全丢，只放行干净 bar");
+        assert_eq!(
+            batch.events[0].timestamp().nanos,
+            7 * MIN_NS,
+            "干净 bar 的事件时间戳仍是收市时刻"
+        );
+
+        let quality = pump.quality();
+        assert_eq!(quality.ohlc_rejected, 5, "五类违例各计一次");
+        assert_eq!(quality.invalid_qty_dropped, 0);
+        assert_eq!(quality.duplicates_missed, 0);
+    }
+
+    /// 干净输入的报告为零（不产生假阳性计数）
+    #[test]
+    fn test_clean_klines_report_clean_quality() {
+        let (tx, mut pump) = pump_channel();
+        for i in 0..3 {
+            tx.try_send(kline(i * MIN_MS, true))
+                .expect("channel 容量足够");
+        }
+
+        let batch = pump.drain();
+        assert_eq!(batch.events.len(), 3);
+        assert!(
+            pump.quality().is_clean(),
+            "干净输入必须全 0: {:?}",
+            pump.quality()
+        );
+    }
+
+    /// 乱序 / 窗口内重复不是 OHLC 拒收：沿用既有语义（放行 + skipped 计数）
+    #[test]
+    fn test_out_of_order_and_duplicate_bars_are_not_ohlc_rejections() {
+        let (tx, mut pump) = pump_channel();
+        tx.try_send(kline(2 * MIN_MS, true))
+            .expect("channel 容量足够");
+        tx.try_send(kline(0, true)).expect("channel 容量足够"); // 乱序补发
+        tx.try_send(kline(2 * MIN_MS, true))
+            .expect("channel 容量足够"); // 窗口内重复
+
+        let batch = pump.drain();
+        assert_eq!(batch.events.len(), 2, "乱序 bar 照旧放行，重复 bar 丢弃");
+        assert_eq!(batch.skipped_duplicates, 1);
+        let quality = pump.quality();
+        assert_eq!(quality.ohlc_rejected, 0, "乱序/重复不是 OHLC 违例");
+        assert_eq!(
+            quality.duplicates_missed, 1,
+            "水位线之下的迟到 bar 计入漏判"
+        );
+    }
+
     #[test]
     fn test_duplicate_bar_is_dropped_and_counted() {
         let (tx, mut pump) = pump_channel();
@@ -541,6 +685,25 @@ mod tests {
         assert_eq!(batch.events.len(), 1);
         assert_eq!(batch.skipped_duplicates, 0);
         assert!(pump.gaps().is_empty());
+    }
+
+    /// REST 补灌同样过 OHLC 门：脏 bar 丢弃+计数，循环继续灌后续干净 bar
+    #[test]
+    fn test_replay_bars_rejects_invalid_ohlc_and_continues() {
+        let (_tx, mut pump) = pump_channel();
+        let dirty = Bar {
+            timestamp: Timestamp::from_nanos(MIN_NS),
+            open: Price::from_f64(100.0),
+            high: Price::from_f64(90.0), // 非法：high < low
+            low: Price::from_f64(99.0),
+            close: Price::from_f64(100.0),
+            volume: Quantity::from_f64(10.0),
+        };
+        let batch = replay_btc(&mut pump, &[dirty, bar(2 * MIN_NS, 100.5)]);
+        assert_eq!(batch.events.len(), 1, "脏 bar 丢弃，干净 bar 必须继续放行");
+        let quality = pump.quality();
+        assert_eq!(quality.ohlc_rejected, 1, "补灌脏 bar 也必须计数");
+        assert_eq!(batch.skipped_duplicates, 0);
     }
 
     #[test]

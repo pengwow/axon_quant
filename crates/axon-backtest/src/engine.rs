@@ -45,6 +45,40 @@ use crate::margin::{
 use crate::matching::MatchingEngine;
 use crate::streaming::l3_diff::{L3BookDiff, L3BookSubscriber, SubscriberKind};
 
+/// `HashMap<Instrument, f64>` 的 serde 辅助（0.26.0 指纹基础设施引入）
+///
+/// `serde_json` 的 object key 只接受字符串/数字，而 [`Instrument`] 是带
+/// struct 载荷的枚举（序列化成 `{kind, details}`），直接当 map key 会报
+/// "key must be a string"。这里统一转成以 [`Instrument`] 的 `Display`
+/// 标签（`"BTC/USDT"` / `"BTC/USDT:SWAP"`）为键的 `BTreeMap`：
+///
+/// - 满足 JSON 约束；
+/// - 字典序键序让 golden 指纹文件内容稳定（`HashMap` 迭代序不保证）；
+/// - 只影响序列化，字段语义与内存表示不变。
+///
+/// 反序列化不做对称处理：`RunResult` 只导出，没有 JSON → `RunResult` 的需求。
+mod instrument_f64_map_serde {
+    use std::collections::{BTreeMap, HashMap};
+
+    use axon_core::Instrument;
+    use serde::{Serialize, Serializer};
+
+    /// 把 `instrument -> f64` 转成 `label -> f64` 后序列化
+    pub(super) fn serialize<S>(
+        map: &HashMap<Instrument, f64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let labelled: BTreeMap<String, f64> = map
+            .iter()
+            .map(|(instrument, value)| (instrument.to_string(), *value))
+            .collect();
+        labelled.serialize(serializer)
+    }
+}
+
 /// 回测引擎配置
 ///
 /// - `clock`：模拟时钟（可设置结束时间；为 None 时引擎按事件自然耗尽退出）
@@ -136,13 +170,18 @@ const REBALANCE_ID_BASE: u64 = 3_000_000_000;
 // 留 0.8.0:跨 instrument 协方差 / vol-based vega / contract_size 修正。
 
 /// 组合级风险敞口报告
+///
+/// 0.26.0 起 `per_leg_*` 两个 map 序列化成以品种标签为键的对象（见
+/// `instrument_f64_map_serde`），可直接导出 JSON 指纹。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RiskMetricsReport {
     /// 每个 instrument 的 delta 暴露(`instrument -> delta`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub per_leg_delta: HashMap<Instrument, f64>,
     /// 组合总 delta(Σ per-leg delta)
     pub portfolio_delta: f64,
     /// 每个 instrument 的 gamma 暴露(`instrument -> gamma`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub per_leg_gamma: HashMap<Instrument, f64>,
     /// 组合总 gamma
     pub total_gamma: f64,
@@ -221,7 +260,17 @@ pub struct EffectiveMarginSpec {
 ///   让 baseline 失真;推到 0.9.0 统一改用 `bar_nav_curve`
 /// - 0.8.0 期间 `equity_curve` 标 doc-level **DEPRECATED** 警告(非 attribute
 ///   警告,避免 45 处内部访问触发 `-D warnings` 失败),0.9.0 真删
-#[derive(Debug, Clone, PartialEq)]
+///
+/// ## 序列化(0.26.0 新增,纯 additive)
+///
+/// `Serialize` 供 golden 指纹基础设施(`axon-integration-tests::canonical`)导出
+/// 运行结果。两条约定:
+/// - `duration` 是墙钟耗时,**非确定性**,`#[serde(skip)]` 不进指纹;
+/// - `positions` / `leg_targets` / `marks` 等 `HashMap<Instrument, f64>` 转成以
+///   品种标签为键的字典序对象(`instrument_f64_map_serde`)。
+///
+/// 字段语义与派生前的运行行为完全不变。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunResult {
     /// 已处理事件总数（含 MarketData/Order/Fill/System）
     pub events_processed: u64,
@@ -254,6 +303,9 @@ pub struct RunResult {
     /// 最终净资产（初始资金 + 累计 PnL）
     pub final_nav: f64,
     /// 运行耗时（墙钟时间）
+    ///
+    /// 非确定性字段:不进 golden 指纹(`#[serde(skip)]`)。
+    #[serde(skip)]
     pub duration: Duration,
     /// 引擎最终时间（最后一个事件的时间戳）
     pub final_time: Timestamp,
@@ -315,10 +367,15 @@ pub struct RunResult {
     ///
     /// 只保留非零持仓(浮点容差 1e-9),便于 Python 端报告/对账
     /// 直接拿 `run_result.positions[instrument]`。
+    ///
+    /// 序列化:键转为品种标签字符串(见 `instrument_f64_map_serde`)。
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub positions: HashMap<Instrument, f64>,
     /// T3.5 新增:leg 目标仓位快照(`instrument -> target_position`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub leg_targets: HashMap<Instrument, f64>,
     /// T3.5 新增:每 instrument 最新 mark 价格(`instrument -> mark_price`)
+    #[serde(serialize_with = "instrument_f64_map_serde::serialize")]
     pub marks: HashMap<Instrument, f64>,
     /// 0.5.0 新增(Phase C):累计 funding 结算 PnL(正=收,负=付)
     ///
@@ -1167,11 +1224,14 @@ impl BacktestEngine {
     ///   调 `push_funding(&mut self)` 的 borrow 冲突
     fn run_funding_schedule_for_bar(&mut self) {
         let bar_ts = self.config.clock.now();
-        let schedules: Vec<(Instrument, FundingSchedule)> = self
+        // 0.26.0 起：同帧多品种决策/强平序 = 品种标签字典序（与 rebalance/EOD/划转
+        // 共用 [`Self::instrument_order_key`]，见其文档；消除 HashMap 迭代序漂移）。
+        let mut schedules: Vec<(Instrument, FundingSchedule)> = self
             .funding_schedules
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        schedules.sort_by_key(|(inst, _)| instrument_order_key(inst));
         for (instrument, schedule) in schedules {
             let prev_ts = self
                 .last_funding_ts
@@ -1446,13 +1506,18 @@ impl BacktestEngine {
         // T3.5 改:position_states key 直接是 `Instrument`,不再走
         // `key_to_instrument` 解析;`to_liquidate` 直接拿 `&Instrument` 副本
         // 用于构造 `Order::spot(..., instrument.base, instrument.quote, ...)`。
-        let to_liquidate: Vec<(Instrument, f64)> = self
+        let mut to_liquidate: Vec<(Instrument, f64)> = self
             .bt_state
             .position_states
             .iter()
             .filter(|(_, p)| p.quantity.abs() > 1e-9)
             .map(|(inst, p)| (inst.clone(), p.quantity))
             .collect();
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`position_states` 是 HashMap,迭代序由
+        // 随机化的 `RandomState` 决定;不排序会让下方 `EOD_LIQUIDATE_ID_BASE + idx`
+        // 的 order id ↔ 品种分配随运行漂移,且强平顺序影响账务。单品种时排序是恒等。
+        to_liquidate.sort_by_key(|(inst, _)| instrument_order_key(inst));
         if to_liquidate.is_empty() {
             return;
         }
@@ -2284,6 +2349,11 @@ impl BacktestEngine {
                 targets.push((inst.clone(), required, sym));
             }
         }
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`position_states` 是 HashMap,而下方
+        // `deposit_isolated` 在自由余额不足时会被夹小(见循环末尾注释),因此
+        // 划转顺序直接决定各品种实得保证金金额 —— 必须与执行序解耦。
+        targets.sort_by_key(|(inst, _, _)| instrument_order_key(inst));
         for (inst, required, sym) in targets {
             let held = self.isolated_balance(&inst);
             if required > held {
@@ -2443,6 +2513,10 @@ impl BacktestEngine {
     ///
     /// 只从 `position_states` 找:强平只针对有持仓的品种,已清仓的条目
     /// 仍留在 map 里(quantity=0),但不会产生新的强平动作。
+    ///
+    /// 逆查按 `HashMap` 迭代序取第一条匹配,因此同一 `"BASE/QUOTE"` 同时存在
+    /// spot + swap 时结果不确定(既有缺陷)。该组合在 0.26.0 被
+    /// `margin_snapshot` 的 `debug_assert!` 直接拒绝(见该函数内的语义边界注释)。
     fn instrument_for_symbol(&self, symbol: &str) -> Option<Instrument> {
         self.bt_state
             .position_states
@@ -2465,6 +2539,21 @@ impl BacktestEngine {
                 continue; // 已清仓,不参与名义 / 维持保证金求和
             }
             let sym = instrument_key(inst);
+            // 0.26.0 语义边界(F4):保证金账本 / 强平逆查都以 `"BASE/QUOTE"`
+            // 为键。同一 BASE/QUOTE 的 spot + swap 同时持仓时,本快照会把两条
+            // 持仓合并成一条(后插入静默覆盖),强平执行侧
+            // `instrument_for_symbol` 的反查也会随 HashMap 迭代序漂移。
+            // 这是既有缺陷,0.26.0 不做键域传播,改为「文档声明不支持 + 断言拦截」:
+            // debug 直接打断,release 告警一次防静默。
+            if positions.contains_key(&sym) {
+                debug_assert!(
+                    false,
+                    "0.26.0 语义边界:同一 BASE/QUOTE 的 spot+swap 同时配 margin 不支持\
+                     (保证金快照按 \"BASE/QUOTE\" 合并键、强平逆查歧义);\
+                     请只保留一个 margined leg,或改用不同 BASE/QUOTE"
+                );
+                warn_once_symbol_collision(&sym);
+            }
             // 判定价复用 `judged_price`:保证金核定与强平判定必须用同一套兜底顺序
             let price = self.judged_price(inst, pos.avg_cost);
             positions.insert(sym.clone(), pos.quantity);
@@ -2516,12 +2605,17 @@ impl BacktestEngine {
         // 收集要 rebalance 的 leg(避免 borrow/mut borrow 冲突:先 copy 一份)
         // 复制为 (instrument, target) 元组列表;后续用 instrument 直接查
         // position_states 拿 current。
-        let legs: Vec<(Instrument, f64)> = self
+        let mut legs: Vec<(Instrument, f64)> = self
             .bt_state
             .legs
             .iter()
             .map(|(inst, leg)| (inst.clone(), leg.target_position))
             .collect();
+        // 0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序(键定义见
+        // [`instrument_order_key`])。`bt_state.legs` 是 HashMap,迭代序不稳定:
+        // 不排序会让下方 `rebalance_next_id.fetch_add` 的 order id ↔ 品种分配
+        // 以及逐笔成交顺序随运行漂移(多品种回测曾因此不可复现)。单品种恒等。
+        legs.sort_by_key(|(inst, _)| instrument_order_key(inst));
 
         let mut triggered = 0u64;
         // 用 rebalance_next_id 原子计数器确保多次 rebalance 调用 id 唯一
@@ -2846,6 +2940,68 @@ fn instrument_key(inst: &Instrument) -> String {
         Instrument::Spot(s) => format!("{}/{}", s.base.as_str(), s.quote.as_str()),
         Instrument::Swap(s) => format!("{}/{}", s.base.as_str(), s.quote.as_str()),
     }
+}
+
+/// 同一 `"BASE/QUOTE"` 下 spot + swap 同持(见 [`instrument_key`] 的键合并)的
+/// 告警去重(0.26.0 F4)
+///
+/// debug 构建由 `margin_snapshot` 里的 `debug_assert!` 直接打断;release 构建
+/// 断言被编译掉,所以这里补一次进程级 `warn!`,避免"静默互相覆盖"没有痕迹。
+/// 用 `Once` 而不是每 bar 每品种告警:该组合应被彻底禁止,刷屏没有额外信息量。
+fn warn_once_symbol_collision(symbol: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            symbol,
+            "0.26.0 语义边界:同一 BASE/QUOTE 的 spot+swap 同时配 margin 不支持\
+             (保证金快照合并键 / 强平逆查歧义),结果不可依赖;本进程仅告警一次"
+        );
+    });
+}
+
+/// 同帧多品种决策 / 强平序的统一排序键(0.26.0 C4 新增)
+///
+/// # 为什么需要
+///
+/// `BacktestState.legs` / `position_states` 是 `HashMap`,迭代序由每个实例
+/// 随机化的 `RandomState` 决定。同一帧内按迭代序消费这些集合的四处循环
+/// (rebalance 下单、EOD 强平、逐仓划转、逐仓强平 plan)会让运行结果不可复现:
+/// order id 与品种的对应关系漂移,现金不足时各品种实得保证金金额也会变化。
+///
+/// # 定义
+///
+/// **0.26.0 起:同帧多品种决策 / 强平序 = 品种标签字典序。**
+///
+/// - 主键 = [`instrument_key`] 的 `"BASE/QUOTE"`,与 `margin.rs` 全仓段
+///   (`order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)))`)
+///   的 symbol 字符串键同一口径,也与 `axon-kernel` 的 `symbol_key` 逐字一致;
+/// - 次键 = 变体序(spot = 0,swap = 1)。`Instrument` 未实现 `Ord`(`Swap`
+///   含 `f64` 合约乘数),而同一 `BASE/QUOTE` 的 spot / swap 可以同时作 leg,
+///   故用变体序把这两个变体区分开。
+///
+/// # 并列(已知边界,**不是**全序)
+///
+/// 主键 + 变体序只能区分 spot / swap 两个变体:同一 `BASE/QUOTE` 的两个不同
+/// `Swap`(settle / `contract_size` 不同)仍会得到相同键 → 退化为 `sort_by_key`
+/// 的稳定排序,相对顺序 = 收集序(`bt_state.legs` / `position_states` 的
+/// `HashMap` 迭代序),那部分 order id / 成交序仍可能随运行漂移。
+///
+/// 0.26.0 **不做键域扩展**(后续 issue 再扩到 变体 + settle + contract_size):
+/// 同 `BASE/QUOTE` 的 spot + swap 同时配 margin 这种更常见的歧义组合,由
+/// `margin_snapshot` 的 `debug_assert!` 在保证金层拦截(该层账本与强平逆查都用
+/// `"BASE/QUOTE"` 键,见 [`instrument_key`])。
+///
+/// 同类限制也存在于内核侧:`KernelCore::instruments` 是
+/// `BTreeMap<"BASE/QUOTE", Instrument>`,同 pair 再次注册会覆盖前一条(同样
+/// 不区分 spot / swap)——本项只做文档声明,不改该结构。
+///
+/// 单品种(或单键集合)时排序恒等,不改变既有单品种回测数值。
+fn instrument_order_key(inst: &Instrument) -> (String, u8) {
+    let variant_rank = match inst {
+        Instrument::Spot(_) => 0,
+        Instrument::Swap(_) => 1,
+    };
+    (instrument_key(inst), variant_rank)
 }
 
 /// 计算 `MatchFill` 对 taker 的 PnL 影响

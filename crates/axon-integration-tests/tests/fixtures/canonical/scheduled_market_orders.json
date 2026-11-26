@@ -1,0 +1,363 @@
+{
+  "reasoning": "0.26.0 initial baseline: single-symbol canonical workloads (spec 2026-11-25 C3)",
+  "workload": "scheduled_market_orders",
+  "config_hash": "982c73f5eb0f5e1fcca427e44b9d7eca8045181ca7a741bb32dbaad525721615",
+  "metrics": {
+    "bar_balance_curve": [
+      [
+        1700000000000000000,
+        10000.0
+      ],
+      [
+        1700000060000000000,
+        10000.0
+      ],
+      [
+        1700000120000000000,
+        10000.0
+      ],
+      [
+        1700000180000000000,
+        9999.586
+      ],
+      [
+        1700000240000000000,
+        9999.586
+      ],
+      [
+        1700000300000000000,
+        9999.586
+      ],
+      [
+        1700000360000000000,
+        9975.196
+      ],
+      [
+        1700000420000000000,
+        9975.196
+      ],
+      [
+        1700000480000000000,
+        9975.196
+      ],
+      [
+        1700000540000000000,
+        9974.6735
+      ],
+      [
+        1700000600000000000,
+        9974.6735
+      ],
+      [
+        1700000660000000000,
+        9974.6735
+      ]
+    ],
+    "bar_nav_curve": [
+      [
+        1700000000000000000,
+        10000.0
+      ],
+      [
+        1700000060000000000,
+        10000.0
+      ],
+      [
+        1700000120000000000,
+        10000.0
+      ],
+      [
+        1700000180000000000,
+        9989.586
+      ],
+      [
+        1700000240000000000,
+        9983.586
+      ],
+      [
+        1700000300000000000,
+        9977.586
+      ],
+      [
+        1700000360000000000,
+        9975.196
+      ],
+      [
+        1700000420000000000,
+        9975.196
+      ],
+      [
+        1700000480000000000,
+        9975.196
+      ],
+      [
+        1700000540000000000,
+        9982.1735
+      ],
+      [
+        1700000600000000000,
+        9969.6735
+      ],
+      [
+        1700000660000000000,
+        9977.1735
+      ]
+    ],
+    "equity_curve": [
+      [
+        1700000120000000000,
+        9997.586
+      ],
+      [
+        1700000300000000000,
+        9975.196
+      ],
+      [
+        1700000480000000000,
+        9972.1735
+      ],
+      [
+        1700000660000000000,
+        9975.9645
+      ]
+    ],
+    "events_processed": 4,
+    "fills": 4,
+    "fills_detail": [
+      {
+        "fill_id": 0,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000012,
+        "price": 103.5,
+        "quantity": 4.0,
+        "taker_order_id": 1,
+        "taker_side": "Buy",
+        "timestamp": 1700000120000000000
+      },
+      {
+        "fill_id": 1,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000033,
+        "price": 97.5,
+        "quantity": 4.0,
+        "taker_order_id": 2,
+        "taker_side": "Sell",
+        "timestamp": 1700000300000000000
+      },
+      {
+        "fill_id": 2,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000048,
+        "price": 104.5,
+        "quantity": 5.0,
+        "taker_order_id": 3,
+        "taker_side": "Buy",
+        "timestamp": 1700000480000000000
+      },
+      {
+        "fill_id": 3,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000069,
+        "price": 104.5,
+        "quantity": 2.0,
+        "taker_order_id": 4,
+        "taker_side": "Sell",
+        "timestamp": 1700000660000000000
+      }
+    ],
+    "final_nav": 9977.1735,
+    "final_time": 1700000660000000000,
+    "insurance_fund_loss": 0.0,
+    "leg_targets": {},
+    "liquidation_count": 0,
+    "liquidation_events": [],
+    "margin_applied": false,
+    "margin_specs_effective": [],
+    "marks": {},
+    "max_drawdown": 30.326499999999214,
+    "max_drawdown_pct": 0.0030326499999999215,
+    "nav_peak": 10000.0,
+    "orders_accepted": 4,
+    "orders_cancelled": 0,
+    "orders_modified": 0,
+    "orders_rejected": 0,
+    "positions": {
+      "BTC/USDT": 3.0
+    },
+    "price_basis": "close",
+    "rebalances_triggered": 0,
+    "risk_metrics": {
+      "per_leg_delta": {
+        "BTC/USDT": 3.0
+      },
+      "per_leg_gamma": {
+        "BTC/USDT": 0.0
+      },
+      "portfolio_delta": 3.0,
+      "sharpe_with_legs": -121.6303365237065,
+      "total_gamma": 0.0,
+      "vega": 0.0
+    },
+    "sharpe_ratio": -121.6303365237065,
+    "shortfall_count": 0,
+    "total_fees": 1.5355,
+    "total_funding_pnl": 0.0,
+    "total_pnl": -22.826499999999214,
+    "trades": [
+      {
+        "commission": 390000,
+        "entry_fill_ids": [
+          0
+        ],
+        "entry_price": 103500000,
+        "entry_time_ns": 1700000120000000000,
+        "exit_fill_ids": [
+          1
+        ],
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "net_quantity": -4000000,
+        "realized_pnl": -24000000,
+        "trade": {
+          "buyer_order_id": 2,
+          "price": 97.5,
+          "quantity": 4.0,
+          "seller_order_id": 1000000033,
+          "timestamp": 1700000300000000000
+        }
+      }
+    ],
+    "win_rate": 0.0
+  },
+  "curves": {
+    "bar_balance": [
+      {
+        "ts": 1700000000000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000060000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000120000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000180000000000,
+        "value": 9999.586
+      },
+      {
+        "ts": 1700000240000000000,
+        "value": 9999.586
+      },
+      {
+        "ts": 1700000300000000000,
+        "value": 9999.586
+      },
+      {
+        "ts": 1700000360000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000420000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000480000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000540000000000,
+        "value": 9974.6735
+      },
+      {
+        "ts": 1700000600000000000,
+        "value": 9974.6735
+      },
+      {
+        "ts": 1700000660000000000,
+        "value": 9974.6735
+      }
+    ],
+    "bar_nav": [
+      {
+        "ts": 1700000000000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000060000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000120000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000180000000000,
+        "value": 9989.586
+      },
+      {
+        "ts": 1700000240000000000,
+        "value": 9983.586
+      },
+      {
+        "ts": 1700000300000000000,
+        "value": 9977.586
+      },
+      {
+        "ts": 1700000360000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000420000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000480000000000,
+        "value": 9975.196
+      },
+      {
+        "ts": 1700000540000000000,
+        "value": 9982.1735
+      },
+      {
+        "ts": 1700000600000000000,
+        "value": 9969.6735
+      },
+      {
+        "ts": 1700000660000000000,
+        "value": 9977.1735
+      }
+    ]
+  }
+}

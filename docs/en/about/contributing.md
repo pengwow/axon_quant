@@ -33,6 +33,7 @@ make verify
 ```
 
 ## Code Style
+- Lint discipline (0.26.0+): workspace-wide `[workspace.lints]`; `clippy::todo`/`clippy::unimplemented` are denied except explicit allows in test stub modules; bare `unwrap` is denied on axon-kernel production code.
 
 ### Rust
 
@@ -139,6 +140,12 @@ proptest! {
     }
 }
 ```
+
+### Regression & Fix Conventions
+
+- **Link fixes to issues**: reference the issue/reporter in the CHANGELOG `Fixed` entries for behavior fixes
+- **`Regression:` test comments**: docs-comment the test covering a regression fix with a `Regression:` prefix, stating reproduction conditions and root cause
+- **Golden fingerprint changes require reasoning**: the `reasoning` field of `crates/axon-integration-tests/tests/fixtures/canonical/*.json` must state the change intent and the related issue; unexplained metric changes are treated as violations
 
 ## Documentation
 

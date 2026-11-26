@@ -754,7 +754,7 @@ let splits = TimeSeriesSplitter::new(cfg).split(start, end);
 ```bash
 $ cargo run -p axon-cli
 axon 0.6.0
-Rust 1.97.0 (aarch64-apple-darwin)
+Rust 1.100.0 (aarch64-apple-darwin)
 阶段：Phase 0 — 架构与基础设施
 ```
 

@@ -45,3 +45,6 @@ serde_json = { workspace = true }
 name = "phase4_bench"
 path = "../../benches/phase4_bench.rs"
 harness = false
+
+[lints]
+workspace = true

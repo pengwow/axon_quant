@@ -750,7 +750,7 @@ The `axon` command-line entry point (Phase 0 only prints a banner; later stages 
 ```bash
 $ cargo run -p axon-cli
 axon 0.6.0
-Rust 1.97.0 (aarch64-apple-darwin)
+Rust 1.100.0 (aarch64-apple-darwin)
 Stage: Phase 0 — Architecture & Infrastructure
 ```
 

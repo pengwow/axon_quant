@@ -107,7 +107,39 @@ impl Bar {
     }
 
     /// 验证 OHLC 一致性
+    ///
+    /// 先拦**非有限值**（NaN / ±inf）再走关系比较：`f64` 与 NaN 的任何比较都
+    /// 返回 false，`high < low` 等检查会被静默穿透（NaN 盲区）。`Price` /
+    /// `Quantity::from_f64` 已过滤非有限值，但 `Serde` 直接反序列化（journal /
+    /// 外部 bar）可绕过构造器，因此这里补最后一道门。
+    ///
+    /// 价格同时拒绝负值：`Price` 的契约是非负，负价只能经 Serde 绕过构造器
+    /// 进入；成交量允许为负（`Quantity` 语义），故只查非有限值。
     pub fn validate_ohlc(&self) -> Result<(), super::MarketDataError> {
+        for (field, price) in [
+            ("open", self.open),
+            ("high", self.high),
+            ("low", self.low),
+            ("close", self.close),
+        ] {
+            let value = price.as_f64();
+            if !value.is_finite() {
+                return Err(super::MarketDataError::InvalidPrice(format!(
+                    "{field} 含非有限值（NaN / ±inf）: {value}"
+                )));
+            }
+            if value < 0.0 {
+                return Err(super::MarketDataError::InvalidPrice(format!(
+                    "{field} 为负价: {value}"
+                )));
+            }
+        }
+        let volume = self.volume.as_f64();
+        if !volume.is_finite() {
+            return Err(super::MarketDataError::InvalidQuantity(format!(
+                "volume 含非有限值（NaN / ±inf）: {volume}"
+            )));
+        }
         if self.high.as_f64() < self.low.as_f64() {
             return Err(super::MarketDataError::OhlcInconsistent {
                 high: self.high,
@@ -138,6 +170,8 @@ impl Bar {
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
+
     use super::*;
     use crate::market::Side;
 
@@ -239,5 +273,81 @@ mod tests {
     fn test_bar_size_is_48_bytes() {
         use std::mem::size_of;
         assert_eq!(size_of::<Bar>(), 48);
+    }
+
+    /// 经 `Serde` 直接注入非有限 / 负值（绕过 `from_f64` 的钳制）构造 Price
+    fn price_via_deserialize(v: f64) -> Price {
+        use serde::de::value::{Error as DeError, F64Deserializer};
+        Price::deserialize(F64Deserializer::<DeError>::new(v)).expect("f64 → Price 反序列化")
+    }
+
+    fn bar_with(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(0),
+            open: price_via_deserialize(open),
+            high: price_via_deserialize(high),
+            low: price_via_deserialize(low),
+            close: price_via_deserialize(close),
+            volume: Quantity::from_f64(volume),
+        }
+    }
+
+    /// NaN 会让所有关系比较返回 false（NaN 盲区），必须由有限性门拦下
+    #[test]
+    fn test_validate_ohlc_rejects_nan_in_each_price_slot() {
+        let cases = [
+            bar_with(f64::NAN, 110.0, 95.0, 105.0, 10.0),
+            bar_with(100.0, f64::NAN, 95.0, 105.0, 10.0),
+            bar_with(100.0, 110.0, f64::NAN, 105.0, 10.0),
+            bar_with(100.0, 110.0, 95.0, f64::NAN, 10.0),
+        ];
+        for (slot, bar) in cases.iter().enumerate() {
+            let err = bar.validate_ohlc().expect_err("NaN 价格必须被拒收");
+            assert!(
+                err.to_string().contains("非有限值"),
+                "slot {slot} 的错误应注明 non-finite: {err}"
+            );
+        }
+    }
+
+    /// ±inf 同样穿透关系比较（对比结果非 true），必须拒收
+    #[test]
+    fn test_validate_ohlc_rejects_infinite_prices() {
+        for bad in [f64::INFINITY, f64::NEG_INFINITY] {
+            let bar = bar_with(100.0, bad, 95.0, 105.0, 10.0);
+            assert!(bar.validate_ohlc().is_err(), "high = {bad} 必须被拒收");
+        }
+    }
+
+    /// 负价只能经 Serde 绕过 `Price::from_f64` 的钳制，必须拒收
+    #[test]
+    fn test_validate_ohlc_rejects_negative_price() {
+        let bar = bar_with(-100.0, 110.0, 95.0, 105.0, 10.0);
+        let err = bar.validate_ohlc().expect_err("负价必须被拒收");
+        assert!(err.to_string().contains("负价"), "错误应注明负价: {err}");
+    }
+
+    /// 成交量非有限值同样拒收
+    #[test]
+    fn test_validate_ohlc_rejects_non_finite_volume() {
+        use serde::de::value::{Error as DeError, F64Deserializer};
+        let volume = Quantity::deserialize(F64Deserializer::<DeError>::new(f64::NAN))
+            .expect("f64 → Quantity 反序列化");
+        let bar = Bar {
+            timestamp: Timestamp::from_nanos(0),
+            open: Price::from_f64(100.0),
+            high: Price::from_f64(110.0),
+            low: Price::from_f64(95.0),
+            close: Price::from_f64(105.0),
+            volume,
+        };
+        assert!(bar.validate_ohlc().is_err(), "NaN 成交量必须被拒收");
+    }
+
+    /// 干净数据零扰动：`from_f64` 构造的常规 OHLCV 仍通过
+    #[test]
+    fn test_validate_ohlc_clean_data_unaffected() {
+        let bar = bar_with(100.0, 110.0, 95.0, 105.0, 1000.0);
+        assert!(bar.validate_ohlc().is_ok());
     }
 }

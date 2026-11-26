@@ -173,3 +173,6 @@ required-features = ["demo"]
 [[example]]
 name = "live_trading_e2e"
 required-features = ["demo", "trading-exchange", "trading-risk-extra"]
+
+[lints]
+workspace = true

@@ -41,6 +41,7 @@
 **footer**:`BREAKING CHANGE:` / `Closes #123` / `Refs #456`
 
 ### 代码风格
+- Lint 纪律（0.26.0 起）：workspace 统一 `[workspace.lints]`；`clippy::todo`/`clippy::unimplemented` 全仓 deny（测试桩模块内显式 allow）；axon-kernel 生产代码裸 `unwrap` deny。
 
 - **Rust**:`cargo fmt --all` + `cargo clippy --workspace --all-targets -- -D warnings`
 - **Python**:`ruff check` + `ruff format`(`axon_quant/__init__.py` 等)
@@ -54,6 +55,12 @@
 - **Breaking change** 必须有 contract test(见 [测试计划](testing-plan.md))
 - Property-based 测试用 `proptest`,覆盖核心 impact / engine 模块
 - 性能敏感代码有 benchmark + 内存影响分析
+
+### 回归与修复约定
+
+- **Fix 挂 issue**:行为修复在 CHANGELOG 的 `Fixed` 中引用 issue/报告者
+- **`Regression:` 测试注释**:回归修复对应的测试,其文档注释以 `Regression:` 开头,写明复现条件与根因
+- **golden 指纹变更须带 reasoning**:`crates/axon-integration-tests/tests/fixtures/canonical/*.json` 的 `reasoning` 字段必须写明变更意图与对应 issue;无理由的指标变更视为违规
 
 ### Python 绑定层（编译校验）
 

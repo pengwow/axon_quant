@@ -130,3 +130,6 @@ axon-strategy = { workspace = true, optional = true, features = ["python"] }
 # 包含 BacktestRunner + BacktestResult。
 # 编排层 Rust 原生，Python 绑定是回测结果 DTO + 配置构造器。
 axon-worker = { workspace = true, optional = true, features = ["python"] }
+
+[lints]
+workspace = true

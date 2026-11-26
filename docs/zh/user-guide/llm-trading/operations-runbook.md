@@ -12,7 +12,7 @@ axon-llm 是 lib,无独立 server 进程。本文档假设应用方用 Rust(或�
 
 ### 1.1 系统要求
 
-- **Rust**:1.97.0+(`rust-toolchain.toml` 强制)
+- **Rust**:1.100.0+(`rust-toolchain.toml` 强制)
 - **Python**:3.14.6(默认,pyenv 管理;仅 Python 绑定需要)
 - **CPU**:至少 4 cores
 - **内存**:开发 4GB / 生产 8GB+

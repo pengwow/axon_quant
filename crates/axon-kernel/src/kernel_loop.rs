@@ -5,7 +5,7 @@
 //! 是 Rust 关键字。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,7 @@ use crate::journal::{Journal, JournalEntry};
 use crate::lifecycle::BarLifecycle;
 use crate::persist::{JOURNAL_FORMAT_VERSION, RunManifest};
 use crate::pump::{BarGridBarrier, GridFrame};
+use crate::quality::QualityReport;
 use crate::sink::ExecutionSink;
 
 /// 一次运行的完整结果
@@ -41,16 +42,28 @@ use crate::sink::ExecutionSink;
 /// `run` 是账务引擎的聚合结果（PnL / 成交 / NAV / 回撤 / 持仓），字段口径与
 /// `axon_worker::BacktestResult` 一致；`duration` 由内核自己的墙钟起点重算
 /// （引擎 `run()` 内部的 `started.elapsed()` 只覆盖收尾瞬间）。
-#[derive(Debug, Clone)]
+///
+/// `Serialize` 供 golden 指纹基础设施（`axon-integration-tests::canonical`）导出；
+/// 墙钟 `duration` 非确定性，`#[serde(skip)]` 不进指纹。
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct KernelResult {
     /// 账务引擎的完整运行结果
     pub run: RunResult,
     /// 整跑墙钟耗时（内核起点 → finalize）
+    ///
+    /// 非确定性字段：序列化时跳过（不进 golden 指纹）。
+    #[serde(skip)]
     pub duration: Duration,
     /// 已处理的网格帧数
     pub bars_processed: u64,
     /// 提交给 sink 的意图总数（不是成交数）
     pub orders_submitted: u64,
+    /// 数据质量计数（全 0 = 输入干净）
+    ///
+    /// 历史路径 OHLC 非法直接 fail-fast（不产生报告）；实时路径的拒收 / 丢弃 /
+    /// 漏判计数由装配方经 `Kernel::set_quality_report` 注入。**不进**
+    /// `RunManifest`：统计字段随运行变化会破坏 manifest 的等值语义。
+    pub quality: QualityReport,
 }
 
 /// 交易内核
@@ -62,8 +75,12 @@ pub struct Kernel {
     hosts: Vec<Box<dyn StrategyHost>>,
     sink: Box<dyn ExecutionSink>,
     journal: Journal,
+    /// journal 落盘路径（`attach_journal` 记录；run 结束时把质量侧车写到同目录）
+    journal_path: Option<PathBuf>,
     lifecycle: BarLifecycle,
     manifest: RunManifest,
+    /// 装配方注入的数据质量计数（live / paper 从 `KernelPump` 取；回测为默认 0）
+    quality: QualityReport,
     /// 每帧逐品种 state 预注册表(key = 网格时间戳纳秒)
     ///
     /// state 不进 `MarketDataPayload`(市场数据契约),屏障攒齐后由 [`Self::dispatch`]
@@ -99,8 +116,10 @@ impl Kernel {
             hosts: Vec::new(),
             sink,
             journal: Journal::new(),
+            journal_path: None,
             lifecycle: BarLifecycle::new(),
             manifest: RunManifest::default(),
+            quality: QualityReport::default(),
             frame_states: Default::default(),
             ctx: HostCtx::default(),
             started: Instant::now(),
@@ -187,7 +206,48 @@ impl Kernel {
         // 重演会因逐字段比对失败被误拒
         self.manifest.journal_format = JOURNAL_FORMAT_VERSION;
         self.journal = Journal::create(path, &self.manifest)?;
+        self.journal_path = Some(path.to_path_buf());
         Ok(())
+    }
+
+    /// 注入数据质量计数（live / paper 装配方从 `KernelPump` 取绝对值推入）
+    ///
+    /// 计数是累计值而非增量：每次调用**替换**当前报告，因此重复推同一份报告
+    /// 是幂等的。报告随 [`KernelResult::quality`] 上浮，并在 run 结束时写成
+    /// journal 同目录的 `<stem>.quality.json` 侧车。
+    pub fn set_quality_report(&mut self, report: QualityReport) {
+        self.quality = report;
+    }
+
+    /// 当前数据质量计数（只读观测口）
+    pub fn quality(&self) -> &QualityReport {
+        &self.quality
+    }
+
+    /// 停机收口：把当前质量计数落盘（或至少落日志）
+    ///
+    /// 与 `finalize` 的侧车命名一致：有 journal 路径时写
+    /// `<stem>.quality.json`（`QualityReport::write_sidecar`）；resume 路径刻意
+    /// 不 attach journal（避免截断既有文件），此时没有落盘路径可依，退化为
+    /// `info` 日志输出最终三计数——不发明新路径约定，但保证计数不随进程消失。
+    ///
+    /// 侧车是旁路观测，写失败只告警，不影响调用方的停机流程。
+    pub fn flush_quality_sidecar(&mut self) {
+        if let Some(path) = &self.journal_path {
+            match self.quality.write_sidecar(path) {
+                Ok(sidecar) => {
+                    tracing::debug!(path = %sidecar.display(), "kernel: quality 侧车已写出")
+                }
+                Err(e) => tracing::warn!(error = %e, "kernel: quality 侧车写出失败"),
+            }
+        } else {
+            tracing::info!(
+                ohlc_rejected = self.quality.ohlc_rejected,
+                invalid_qty_dropped = self.quality.invalid_qty_dropped,
+                duplicates_missed = self.quality.duplicates_missed,
+                "kernel: 无 journal 路径，数据质量计数仅落日志"
+            );
+        }
     }
 
     /// 记录一条**外部输入**（含当帧逐 bar state）并压入主队列
@@ -531,8 +591,19 @@ impl Kernel {
     /// 构造都在 `run()` 内（设计文档 4.6），所以这里必须显式调一次。
     fn finalize(&mut self) -> KernelResult {
         let run = self.core.run();
+        // run 结束把数据质量计数写到 journal 旁的 `<stem>.quality.json` 侧车。
+        // 质量报告是旁路观测，落盘失败只告警，不影响账务结果的返回。
+        if let Some(path) = &self.journal_path {
+            match self.quality.write_sidecar(path) {
+                Ok(sidecar) => {
+                    tracing::debug!(path = %sidecar.display(), "kernel: quality 侧车已写出")
+                }
+                Err(e) => tracing::warn!(error = %e, "kernel: quality 侧车写出失败"),
+            }
+        }
         KernelResult {
             run,
+            quality: self.quality.clone(),
             duration: self.started.elapsed(),
             bars_processed: self.lifecycle.bars_processed,
             orders_submitted: self.lifecycle.orders_submitted(),
@@ -640,6 +711,9 @@ mod tests {
     use axon_core::market::Side;
     use axon_core::types::{SpotInstrument, Symbol};
     use axon_core::{Bar, Instrument, Price, Quantity, SystemAction, SystemEvent, Tick};
+
+    use axon_backtest::{Bracket, MarginMode, MarginSpec};
+    use proptest::prelude::*;
 
     use super::*;
     use crate::InstrumentMode;
@@ -1270,6 +1344,366 @@ mod tests {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // 多品种同帧执行序的确定性（0.26.0 C4 / O1）
+    //
+    // 背景:`BacktestEngine` 内部的 `bt_state.legs` / `position_states` 是
+    // `HashMap`,迭代序由每个引擎实例随机化的 `RandomState` 决定。0.26.0 前
+    // 同帧 rebalance 的执行序、order id 分配、逐仓划转与 EOD 强平都按迭代序
+    // 消费 → 同负载两次运行结果可能不同。修复后这些循环一律按品种标签
+    // 字典序(`engine.rs::instrument_order_key`)执行,以下用例即护栏。
+    // ─────────────────────────────────────────────────────────────────
+
+    fn eth() -> Instrument {
+        Instrument::Spot(SpotInstrument {
+            base: Symbol::from("ETH"),
+            quote: Symbol::from("USDT"),
+        })
+    }
+
+    /// 指定收盘价的 bar(high/low 环绕 close,满足 OHLC 合法性)
+    fn bar_with_close(start: i64, close: f64) -> Bar {
+        Bar {
+            timestamp: Timestamp::from_nanos(start),
+            open: Price::from_f64(close),
+            high: Price::from_f64(close * 1.01),
+            low: Price::from_f64(close * 0.99),
+            close: Price::from_f64(close),
+            volume: Quantity::from_f64(10_000.0),
+        }
+    }
+
+    /// 双品种同帧网格:每帧两个品种各一根 bar → 同帧两笔 rebalance
+    fn pair_frames(
+        a: &Instrument,
+        a_closes: &[f64],
+        b: &Instrument,
+        b_closes: &[f64],
+    ) -> Vec<GridFrame> {
+        assert_eq!(a_closes.len(), b_closes.len(), "两品种 bar 数必须一致");
+        (0..a_closes.len())
+            .map(|idx| {
+                let ts = START + idx as i64 * ONE_MIN;
+                GridFrame {
+                    ts: Timestamp::from_nanos(ts),
+                    bars: vec![
+                        (a.clone(), bar_with_close(ts, a_closes[idx])),
+                        (b.clone(), bar_with_close(ts, b_closes[idx])),
+                    ],
+                    states: Default::default(),
+                }
+            })
+            .collect()
+    }
+
+    /// 每个品种各自固定权益占比的 Host(双品种同帧都出 `SetTarget`)
+    struct PairTargetHost {
+        a: Instrument,
+        a_ratio: f64,
+        b: Instrument,
+        b_ratio: f64,
+    }
+
+    impl StrategyHost for PairTargetHost {
+        fn name(&self) -> &str {
+            "pair-target"
+        }
+
+        fn on_event(&mut self, ev: &BarClosedEvent<'_>, _ctx: &HostCtx) -> Vec<OrderIntent> {
+            let ratio = if ev.instrument == &self.a {
+                self.a_ratio
+            } else if ev.instrument == &self.b {
+                self.b_ratio
+            } else {
+                return Vec::new();
+            };
+            vec![OrderIntent::SetTarget {
+                instrument: ev.instrument.clone(),
+                target_ratio: ratio,
+            }]
+        }
+    }
+
+    /// 双品种同帧 rebalance 负载的配置(不启用保证金、不启用 EOD 强平)
+    fn pair_config(a: &Instrument, b: &Instrument) -> KernelConfig {
+        KernelConfig {
+            initial_cash: 10_000.0,
+            expected_instruments: [a.clone(), b.clone()].into_iter().collect(),
+            ..KernelConfig::default()
+        }
+    }
+
+    /// 逐仓保证金规格(档位表单档,C4 用)
+    fn isolated_spec(leverage: f64) -> MarginSpec {
+        MarginSpec {
+            leverage,
+            mode: MarginMode::Isolated,
+            brackets: vec![Bracket {
+                notional_floor: 0.0,
+                notional_cap: None,
+                mmr: 0.005,
+                cum: 0.0,
+                liquidation_fee_rate: 0.004,
+                max_leverage: 125.0,
+            }],
+            bracket_source: "test".to_string(),
+        }
+    }
+
+    fn run_pair_workload(
+        config: KernelConfig,
+        frames: Vec<GridFrame>,
+        host: PairTargetHost,
+    ) -> KernelResult {
+        let mut kernel = Kernel::new(config, Box::new(BacktestSink::new()));
+        kernel.add_host(Box::new(host));
+        kernel.run_history(frames).expect("双品种回测应跑通")
+    }
+
+    /// 某品种的成交序列(方向 / 价格 / 数量),丢弃执行序相关的 id 字段
+    fn fills_of(run: &RunResult, instrument: &Instrument) -> Vec<(Side, f64, f64)> {
+        run.fills_detail
+            .iter()
+            .filter(|f| &f.instrument == instrument)
+            .map(|f| (f.taker_side, f.price.as_f64(), f.quantity.as_f64()))
+            .collect()
+    }
+
+    fn assert_fill_seq_close(label: &str, a: &[(Side, f64, f64)], b: &[(Side, f64, f64)]) {
+        assert_eq!(a.len(), b.len(), "{label}: 成交笔数不一致");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.0, y.0, "{label}: 第 {i} 笔方向不一致");
+            assert!(
+                f64_close(x.1, y.1),
+                "{label}: 第 {i} 笔价格 {} vs {}",
+                x.1,
+                y.1
+            );
+            assert!(
+                f64_close(x.2, y.2),
+                "{label}: 第 {i} 笔数量 {} vs {}",
+                x.2,
+                y.2
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 96,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Regression: 0.26.0 C4(O1 迭代序修复)。
+        ///
+        /// 复现条件:双品种同帧 rebalance + 可选逐仓保证金 / EOD 强平。两个
+        /// `Kernel::new` 各自新建引擎,`legs` / `position_states` 的
+        /// `RandomState` 种子不同 → 0.26.0 前 order id ↔ 品种分配与逐仓划转
+        /// 实得金额随运行漂移,`assert_same_run` 必红;修复后恒等。
+        ///
+        /// 修复点:`axon-backtest::engine::instrument_order_key` 排序,见
+        /// `liquidate_eod` / `sync_isolated_margins` / `rebalance_to_target`
+        /// 三处 collect 后 sort。
+        #[test]
+        fn prop_multi_symbol_same_workload_runs_identically(
+            p1 in 40.0f64..160.0,
+            p2 in 40.0f64..160.0,
+            r1 in 0.10f64..0.80,
+            r2 in 0.10f64..0.80,
+            force_liquidate in any::<bool>(),
+            use_margin in any::<bool>(),
+        ) {
+            let btc = btc();
+            let eth = eth();
+            let btc_closes = [p1, p1 * 1.01, p1 * 0.99];
+            let eth_closes = [p2, p2 * 0.99, p2 * 1.02];
+            let frames = pair_frames(&btc, &btc_closes, &eth, &eth_closes);
+
+            // 每次新建 config/host:两份负载在数值上完全同构,唯一变量是
+            // 两个引擎实例的 HashMap 随机种子
+            let mk_config = || KernelConfig {
+                initial_cash: 10_000.0,
+                force_liquidate,
+                margin_specs: if use_margin {
+                    HashMap::from([
+                        ("BTC/USDT".to_string(), isolated_spec(1.0)),
+                        ("ETH/USDT".to_string(), isolated_spec(1.0)),
+                    ])
+                } else {
+                    HashMap::new()
+                },
+                ..pair_config(&btc, &eth)
+            };
+            let mk_host = || PairTargetHost {
+                a: btc.clone(),
+                a_ratio: r1,
+                b: eth.clone(),
+                b_ratio: r2,
+            };
+
+            let first = run_pair_workload(mk_config(), frames.clone(), mk_host());
+            let second = run_pair_workload(mk_config(), frames, mk_host());
+
+            prop_assert!(
+                first.run.fills > 0,
+                "负载必须真的成交,否则执行序无从暴露"
+            );
+            assert_same_run("多品种同负载双跑", &first, &second);
+        }
+    }
+
+    /// symbol 改名置换等值(0.26.0 C4 / O1)。
+    ///
+    /// 同一份行情与目标分别在两个品种名下跑:把两组 (bar 序列, 目标占比)
+    /// 对调后重跑。字典序排序把品种标签纳入了执行全序,因此两次运行「同帧
+    /// 第 k 个单」属于不同品种;但每个品种拿到的数据是同一份 —— 除标签外
+    /// 运行结果必须等值。
+    ///
+    /// 比较口径:
+    /// - 聚合标量 / 曲线:与标签无关,逐字段(浮点容差)等值;
+    /// - 逐品种成交:`order id` / `fill_id` 记录的是执行序,而执行序本身按
+    ///   品种标签排序,改名后同一份数据的 id 序列必然不同,故按「同一品种内
+    ///   的 (side, price, qty) 序列」比较,不比较 id;
+    /// - 持仓:按改名映射后逐品种比较。
+    #[test]
+    fn test_multi_symbol_results_are_equivariant_under_symbol_rename() {
+        let btc = btc();
+        let eth = eth();
+        let btc_closes = [100.0, 101.0, 103.0];
+        let eth_closes = [50.0, 49.0, 48.0];
+        let (btc_ratio, eth_ratio) = (0.30, 0.15);
+
+        let run_a = run_pair_workload(
+            pair_config(&btc, &eth),
+            pair_frames(&btc, &btc_closes, &eth, &eth_closes),
+            PairTargetHost {
+                a: btc.clone(),
+                a_ratio: btc_ratio,
+                b: eth.clone(),
+                b_ratio: eth_ratio,
+            },
+        );
+        // 语义相同,仅把「BTC 的数据 / 目标」与「ETH 的数据 / 目标」对调
+        let run_b = run_pair_workload(
+            pair_config(&btc, &eth),
+            pair_frames(&btc, &eth_closes, &eth, &btc_closes),
+            PairTargetHost {
+                a: btc.clone(),
+                a_ratio: eth_ratio,
+                b: eth.clone(),
+                b_ratio: btc_ratio,
+            },
+        );
+
+        assert!(run_a.run.fills >= 2, "负载必须双品种都成交");
+        assert!(run_b.run.fills >= 2, "负载必须双品种都成交");
+
+        // 1) 聚合标量:与品种标签无关
+        let (x, y) = (&run_a.run, &run_b.run);
+        assert_eq!(
+            run_a.bars_processed, run_b.bars_processed,
+            "bars_processed 不一致"
+        );
+        assert_eq!(run_a.orders_submitted, run_b.orders_submitted);
+        for (name, left, right) in [
+            (
+                "events_processed",
+                x.events_processed as f64,
+                y.events_processed as f64,
+            ),
+            (
+                "orders_accepted",
+                x.orders_accepted as f64,
+                y.orders_accepted as f64,
+            ),
+            ("fills", x.fills as f64, y.fills as f64),
+            (
+                "rebalances_triggered",
+                x.rebalances_triggered as f64,
+                y.rebalances_triggered as f64,
+            ),
+            ("total_pnl", x.total_pnl, y.total_pnl),
+            ("final_nav", x.final_nav, y.final_nav),
+            ("total_fees", x.total_fees, y.total_fees),
+            ("max_drawdown", x.max_drawdown, y.max_drawdown),
+            ("win_rate", x.win_rate, y.win_rate),
+        ] {
+            assert!(
+                f64_close(left, right),
+                "改名置换后 {name} 应等值: {left} vs {right}"
+            );
+        }
+
+        // 2) bar 级曲线逐点等值(采样点在 `begin_bar_multi`,先于本帧成交,
+        //    与执行序无关)
+        for (name, left, right) in [
+            ("bar_nav_curve", &x.bar_nav_curve, &y.bar_nav_curve),
+            (
+                "bar_balance_curve",
+                &x.bar_balance_curve,
+                &y.bar_balance_curve,
+            ),
+        ] {
+            assert_eq!(left.len(), right.len(), "{name} 长度不一致");
+            for (i, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+                assert_eq!(l.0, r.0, "{name}[{i}] 时间戳不一致");
+                assert!(
+                    f64_close(l.1, r.1),
+                    "{name}[{i}] 值不一致: {} vs {}",
+                    l.1,
+                    r.1
+                );
+            }
+        }
+
+        // 2b) `equity_curve` 是「每笔 fill 后」采样,改名后同帧两笔单的执行序
+        //     按设计对调 → 中间点必然不同(首笔的手续费归属不同品种)。此处只
+        //     校验样本数与末点(终态),终态与执行序无关。
+        assert_eq!(
+            x.equity_curve.len(),
+            y.equity_curve.len(),
+            "equity_curve 样本数应一致(执行结构相同)"
+        );
+        let (last_a, last_b) = (
+            x.equity_curve.last().expect("equity_curve 非空"),
+            y.equity_curve.last().expect("equity_curve 非空"),
+        );
+        assert_eq!(last_a.0, last_b.0, "equity_curve 末点时间戳不一致");
+        assert!(
+            f64_close(last_a.1, last_b.1),
+            "equity_curve 末点值不一致: {} vs {}",
+            last_a.1,
+            last_b.1
+        );
+
+        // 3) 逐品种成交语义等值:run_a 的 BTC 数据 = run_b 的 ETH 数据
+        assert_fill_seq_close(
+            "改名置换 BTC→ETH",
+            &fills_of(&run_a.run, &btc),
+            &fills_of(&run_b.run, &eth),
+        );
+        assert_fill_seq_close(
+            "改名置换 ETH→BTC",
+            &fills_of(&run_a.run, &eth),
+            &fills_of(&run_b.run, &btc),
+        );
+
+        // 4) 终态持仓按改名映射等值
+        for (label, left, right) in [
+            ("BTC→ETH", x.positions.get(&btc), y.positions.get(&eth)),
+            ("ETH→BTC", x.positions.get(&eth), y.positions.get(&btc)),
+        ] {
+            match (left, right) {
+                (Some(l), Some(r)) => assert!(
+                    f64_close(*l, *r),
+                    "改名置换 {label} 终态持仓不一致: {l} vs {r}"
+                ),
+                (None, None) => {}
+                _ => panic!("改名置换 {label} 终态持仓存在性不一致: {left:?} vs {right:?}"),
+            }
+        }
+    }
+
     #[test]
     fn test_journal_records_only_external_inputs() {
         let dir = tempfile::tempdir().expect("临时目录");
@@ -1547,5 +1981,48 @@ mod tests {
         assert!(full.run.fills >= 1, "用例必须真的成交,否则比较没有力度");
         assert_eq!(resumed.bars_processed, 3, "恢复续跑必须处理完整 3 根 bar");
         assert_same_run("resume", &full, &resumed);
+    }
+
+    /// 停机收口：有 journal 路径时 flush 写 `<stem>.quality.json` 侧车
+    #[test]
+    fn test_flush_quality_sidecar_writes_beside_journal() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let journal_path = dir.path().join("live.journal");
+        let mut kernel = Kernel::new(
+            KernelConfig {
+                initial_cash: 10_000.0,
+                ..KernelConfig::default()
+            },
+            Box::new(BacktestSink::new()),
+        );
+        kernel
+            .attach_journal(&journal_path)
+            .expect("打开落盘 journal");
+        kernel.set_quality_report(QualityReport {
+            ohlc_rejected: 7,
+            invalid_qty_dropped: 3,
+            duplicates_missed: 1,
+        });
+
+        kernel.flush_quality_sidecar();
+
+        let sidecar = journal_path.with_extension("quality.json");
+        let text = std::fs::read_to_string(&sidecar).expect("侧车应写出");
+        let parsed: QualityReport = serde_json::from_str(&text).expect("侧车应是合法 JSON");
+        assert_eq!(parsed.ohlc_rejected, 7);
+        assert_eq!(parsed.invalid_qty_dropped, 3);
+        assert_eq!(parsed.duplicates_missed, 1);
+    }
+
+    /// 无 journal 路径（resume 刻意不 attach）时 flush 只落日志、不 panic
+    #[test]
+    fn test_flush_quality_sidecar_without_journal_is_noop() {
+        let mut kernel = Kernel::new(KernelConfig::default(), Box::new(BacktestSink::new()));
+        kernel.set_quality_report(QualityReport {
+            ohlc_rejected: 5,
+            ..QualityReport::default()
+        });
+        // 只验证不 panic（日志兜底由 tracing 承载，无法在此断言）
+        kernel.flush_quality_sidecar();
     }
 }

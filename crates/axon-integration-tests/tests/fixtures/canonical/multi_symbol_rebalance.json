@@ -1,0 +1,859 @@
+{
+  "reasoning": "lock deterministic lexicographic ordering introduced in C4 (same-frame multi-instrument decisions execute in instrument-label lexicographic order)",
+  "workload": "multi_symbol_rebalance",
+  "config_hash": "ade0115ccc105f374569c97e37e6bcfc66750b7bc1e281d688ddb5f9e5f3916e",
+  "metrics": {
+    "bar_balance_curve": [
+      [
+        1700000000000000000,
+        10000.0
+      ],
+      [
+        1700000060000000000,
+        9996.970000000001
+      ],
+      [
+        1700000120000000000,
+        9997.218371628936
+      ],
+      [
+        1700000180000000000,
+        9993.648178172534
+      ],
+      [
+        1700000240000000000,
+        9994.853012642187
+      ],
+      [
+        1700000300000000000,
+        9976.083526995673
+      ],
+      [
+        1700000360000000000,
+        9976.053750351075
+      ],
+      [
+        1700000420000000000,
+        9947.751983173352
+      ],
+      [
+        1700000480000000000,
+        9947.869344440198
+      ],
+      [
+        1700000540000000000,
+        9946.149701013213
+      ]
+    ],
+    "bar_nav_curve": [
+      [
+        1700000000000000000,
+        10000.0
+      ],
+      [
+        1700000060000000000,
+        9996.970000000001
+      ],
+      [
+        1700000120000000000,
+        10007.314746109032
+      ],
+      [
+        1700000180000000000,
+        10064.690404960547
+      ],
+      [
+        1700000240000000000,
+        9981.35679361255
+      ],
+      [
+        1700000300000000000,
+        9898.20899745424
+      ],
+      [
+        1700000360000000000,
+        9974.559063862856
+      ],
+      [
+        1700000420000000000,
+        9962.751983173352
+      ],
+      [
+        1700000480000000000,
+        9942.678349743255
+      ],
+      [
+        1700000540000000000,
+        10018.509371187462
+      ]
+    ],
+    "equity_curve": [
+      [
+        1700000000000000000,
+        9993.995
+      ],
+      [
+        1700000000000000000,
+        9982.985
+      ],
+      [
+        1700000000000000000,
+        9977.48
+      ],
+      [
+        1700000000000000000,
+        9966.970000000001
+      ],
+      [
+        1700000060000000000,
+        9996.730544029411
+      ],
+      [
+        1700000060000000000,
+        9996.622799584968
+      ],
+      [
+        1700000120000000000,
+        10001.493697550926
+      ],
+      [
+        1700000120000000000,
+        9999.645773296845
+      ],
+      [
+        1700000180000000000,
+        10064.551210404894
+      ],
+      [
+        1700000180000000000,
+        10064.252238211648
+      ],
+      [
+        1700000240000000000,
+        9975.36179361255
+      ],
+      [
+        1700000240000000000,
+        9969.281148139813
+      ],
+      [
+        1700000240000000000,
+        9963.776148139812
+      ],
+      [
+        1700000240000000000,
+        9953.276148139812
+      ],
+      [
+        1700000240000000000,
+        9948.619890351272
+      ],
+      [
+        1700000300000000000,
+        9898.026520068106
+      ],
+      [
+        1700000360000000000,
+        9968.564063862854
+      ],
+      [
+        1700000360000000000,
+        9957.574063862856
+      ],
+      [
+        1700000360000000000,
+        9948.76497344422
+      ],
+      [
+        1700000360000000000,
+        9943.26997344422
+      ],
+      [
+        1700000360000000000,
+        9932.76997344422
+      ],
+      [
+        1700000360000000000,
+        9932.217618692139
+      ],
+      [
+        1700000420000000000,
+        9962.406571492113
+      ],
+      [
+        1700000480000000000,
+        9936.643349743255
+      ],
+      [
+        1700000480000000000,
+        9931.697839697455
+      ],
+      [
+        1700000480000000000,
+        9929.291457193001
+      ],
+      [
+        1700000540000000000,
+        10018.408134109499
+      ],
+      [
+        1700000540000000000,
+        10017.865554260428
+      ]
+    ],
+    "events_processed": 0,
+    "fills": 28,
+    "fills_detail": [
+      {
+        "fill_id": 0,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000000,
+        "price": 100.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000000,
+        "taker_side": "Buy",
+        "timestamp": 1700000000000000000
+      },
+      {
+        "fill_id": 1,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000001,
+        "price": 101.0,
+        "quantity": 10.0,
+        "taker_order_id": 3000000000,
+        "taker_side": "Buy",
+        "timestamp": 1700000000000000000
+      },
+      {
+        "fill_id": 2,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000006,
+        "price": 50.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000001,
+        "taker_side": "Buy",
+        "timestamp": 1700000000000000000
+      },
+      {
+        "fill_id": 3,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000007,
+        "price": 51.0,
+        "quantity": 10.0,
+        "taker_order_id": 3000000001,
+        "taker_side": "Buy",
+        "timestamp": 1700000000000000000
+      },
+      {
+        "fill_id": 4,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000015,
+        "price": 101.5,
+        "quantity": 0.3980980392156823,
+        "taker_order_id": 3000000002,
+        "taker_side": "Sell",
+        "timestamp": 1700000060000000000
+      },
+      {
+        "fill_id": 5,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000018,
+        "price": 50.0,
+        "quantity": 0.19589898989899268,
+        "taker_order_id": 3000000003,
+        "taker_side": "Buy",
+        "timestamp": 1700000060000000000
+      },
+      {
+        "fill_id": 6,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000027,
+        "price": 100.5,
+        "quantity": 9.693669538894188,
+        "taker_order_id": 3000000004,
+        "taker_side": "Sell",
+        "timestamp": 1700000120000000000
+      },
+      {
+        "fill_id": 7,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000030,
+        "price": 51.5,
+        "quantity": 3.3507239421222614,
+        "taker_order_id": 3000000005,
+        "taker_side": "Buy",
+        "timestamp": 1700000120000000000
+      },
+      {
+        "fill_id": 8,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000039,
+        "price": 103.5,
+        "quantity": 0.23064549404345058,
+        "taker_order_id": 3000000006,
+        "taker_side": "Sell",
+        "timestamp": 1700000180000000000
+      },
+      {
+        "fill_id": 9,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000045,
+        "price": 52.0,
+        "quantity": 0.5416162921114314,
+        "taker_order_id": 3000000007,
+        "taker_side": "Sell",
+        "timestamp": 1700000180000000000
+      },
+      {
+        "fill_id": 10,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000048,
+        "price": 99.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000008,
+        "taker_side": "Buy",
+        "timestamp": 1700000240000000000
+      },
+      {
+        "fill_id": 11,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000049,
+        "price": 100.0,
+        "quantity": 5.52785952066986,
+        "taker_order_id": 3000000008,
+        "taker_side": "Buy",
+        "timestamp": 1700000240000000000
+      },
+      {
+        "fill_id": 12,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000057,
+        "price": 50.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000009,
+        "taker_side": "Sell",
+        "timestamp": 1700000240000000000
+      },
+      {
+        "fill_id": 13,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000058,
+        "price": 50.0,
+        "quantity": 10.0,
+        "taker_order_id": 3000000009,
+        "taker_side": "Sell",
+        "timestamp": 1700000240000000000
+      },
+      {
+        "fill_id": 14,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000059,
+        "price": 49.5,
+        "quantity": 3.0050066399098228,
+        "taker_order_id": 3000000009,
+        "taker_side": "Sell",
+        "timestamp": 1700000240000000000
+      },
+      {
+        "fill_id": 15,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000060,
+        "price": 97.5,
+        "quantity": 0.3054014830665537,
+        "taker_order_id": 3000000010,
+        "taker_side": "Buy",
+        "timestamp": 1700000300000000000
+      },
+      {
+        "fill_id": 16,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000075,
+        "price": 99.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000011,
+        "taker_side": "Sell",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 17,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000076,
+        "price": 99.0,
+        "quantity": 10.0,
+        "taker_order_id": 3000000011,
+        "taker_side": "Sell",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 18,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000077,
+        "price": 98.5,
+        "quantity": 5.510847931583093,
+        "taker_order_id": 3000000011,
+        "taker_side": "Sell",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 19,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000078,
+        "price": 49.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000012,
+        "taker_side": "Buy",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 20,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000079,
+        "price": 50.0,
+        "quantity": 10.0,
+        "taker_order_id": 3000000012,
+        "taker_side": "Buy",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 21,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000080,
+        "price": 50.5,
+        "quantity": 0.35624298747521976,
+        "taker_order_id": 3000000012,
+        "taker_side": "Buy",
+        "timestamp": 1700000360000000000
+      },
+      {
+        "fill_id": 22,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000093,
+        "price": 50.0,
+        "quantity": 0.6280212386170945,
+        "taker_order_id": 3000000013,
+        "taker_side": "Sell",
+        "timestamp": 1700000420000000000
+      },
+      {
+        "fill_id": 23,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000096,
+        "price": 103.5,
+        "quantity": 10.0,
+        "taker_order_id": 3000000014,
+        "taker_side": "Buy",
+        "timestamp": 1700000480000000000
+      },
+      {
+        "fill_id": 24,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000097,
+        "price": 104.0,
+        "quantity": 4.479628664674644,
+        "taker_order_id": 3000000014,
+        "taker_side": "Buy",
+        "timestamp": 1700000480000000000
+      },
+      {
+        "fill_id": 25,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000102,
+        "price": 50.0,
+        "quantity": 4.3752409171861295,
+        "taker_order_id": 3000000015,
+        "taker_side": "Buy",
+        "timestamp": 1700000480000000000
+      },
+      {
+        "fill_id": 26,
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000111,
+        "price": 104.5,
+        "quantity": 0.16747242012112906,
+        "taker_order_id": 3000000016,
+        "taker_side": "Sell",
+        "timestamp": 1700000540000000000
+      },
+      {
+        "fill_id": 27,
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "maker_order_id": 1000000117,
+        "price": 51.5,
+        "quantity": 0.9838256556116534,
+        "taker_order_id": 3000000017,
+        "taker_side": "Sell",
+        "timestamp": 1700000540000000000
+      }
+    ],
+    "final_nav": 10018.509371187462,
+    "final_time": 1700000540000000000,
+    "insurance_fund_loss": 0.0,
+    "leg_targets": {
+      "BTC/USDT": 14.312156244553515,
+      "ETH/USDT": 23.1196370104326
+    },
+    "liquidation_count": 0,
+    "liquidation_events": [],
+    "margin_applied": false,
+    "margin_specs_effective": [],
+    "marks": {},
+    "max_drawdown": 166.48140750630773,
+    "max_drawdown_pct": 0.01654113547538975,
+    "nav_peak": 10064.690404960547,
+    "orders_accepted": 28,
+    "orders_cancelled": 0,
+    "orders_modified": 0,
+    "orders_rejected": 0,
+    "positions": {
+      "BTC/USDT": 14.312156244553515,
+      "ETH/USDT": 23.1196370104326
+    },
+    "price_basis": "close",
+    "rebalances_triggered": 28,
+    "risk_metrics": {
+      "per_leg_delta": {
+        "BTC/USDT": 14.312156244553515,
+        "ETH/USDT": 23.1196370104326
+      },
+      "per_leg_gamma": {
+        "BTC/USDT": 0.0,
+        "ETH/USDT": 0.0
+      },
+      "portfolio_delta": 37.43179325498612,
+      "sharpe_with_legs": 4.880749415062415,
+      "total_gamma": 0.0,
+      "vega": 0.0
+    },
+    "sharpe_ratio": 4.880749415062415,
+    "shortfall_count": 0,
+    "total_fees": 12.370345423529724,
+    "total_funding_pnl": 0.0,
+    "total_pnl": 18.50937118746151,
+    "trades": [
+      {
+        "commission": 1181911,
+        "entry_fill_ids": [
+          2,
+          3,
+          5,
+          7
+        ],
+        "entry_price": 50850486,
+        "entry_time_ns": 1700000000000000000,
+        "exit_fill_ids": [
+          9,
+          12,
+          13,
+          14
+        ],
+        "instrument": {
+          "details": {
+            "base": "ETH",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "net_quantity": -23546622,
+        "realized_pnl": -15445356,
+        "trade": {
+          "buyer_order_id": 3000000009,
+          "price": 49.5,
+          "quantity": 3.0050066399098228,
+          "seller_order_id": 1000000059,
+          "timestamp": 1700000240000000000
+        }
+      },
+      {
+        "commission": 3566311,
+        "entry_fill_ids": [
+          0,
+          1,
+          10,
+          11,
+          15
+        ],
+        "entry_price": 100058590,
+        "entry_time_ns": 1700000000000000000,
+        "exit_fill_ids": [
+          4,
+          6,
+          8,
+          16,
+          17,
+          18
+        ],
+        "instrument": {
+          "details": {
+            "base": "BTC",
+            "quote": "USDT"
+          },
+          "kind": "spot"
+        },
+        "net_quantity": -35833261,
+        "realized_pnl": -26251527,
+        "trade": {
+          "buyer_order_id": 3000000011,
+          "price": 98.5,
+          "quantity": 5.510847931583093,
+          "seller_order_id": 1000000077,
+          "timestamp": 1700000360000000000
+        }
+      }
+    ],
+    "win_rate": 0.46153846153846156
+  },
+  "curves": {
+    "bar_balance": [
+      {
+        "ts": 1700000000000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000060000000000,
+        "value": 9996.970000000001
+      },
+      {
+        "ts": 1700000120000000000,
+        "value": 9997.218371628936
+      },
+      {
+        "ts": 1700000180000000000,
+        "value": 9993.648178172534
+      },
+      {
+        "ts": 1700000240000000000,
+        "value": 9994.853012642187
+      },
+      {
+        "ts": 1700000300000000000,
+        "value": 9976.083526995673
+      },
+      {
+        "ts": 1700000360000000000,
+        "value": 9976.053750351075
+      },
+      {
+        "ts": 1700000420000000000,
+        "value": 9947.751983173352
+      },
+      {
+        "ts": 1700000480000000000,
+        "value": 9947.869344440198
+      },
+      {
+        "ts": 1700000540000000000,
+        "value": 9946.149701013213
+      }
+    ],
+    "bar_nav": [
+      {
+        "ts": 1700000000000000000,
+        "value": 10000.0
+      },
+      {
+        "ts": 1700000060000000000,
+        "value": 9996.970000000001
+      },
+      {
+        "ts": 1700000120000000000,
+        "value": 10007.314746109032
+      },
+      {
+        "ts": 1700000180000000000,
+        "value": 10064.690404960547
+      },
+      {
+        "ts": 1700000240000000000,
+        "value": 9981.35679361255
+      },
+      {
+        "ts": 1700000300000000000,
+        "value": 9898.20899745424
+      },
+      {
+        "ts": 1700000360000000000,
+        "value": 9974.559063862856
+      },
+      {
+        "ts": 1700000420000000000,
+        "value": 9962.751983173352
+      },
+      {
+        "ts": 1700000480000000000,
+        "value": 9942.678349743255
+      },
+      {
+        "ts": 1700000540000000000,
+        "value": 10018.509371187462
+      }
+    ]
+  }
+}

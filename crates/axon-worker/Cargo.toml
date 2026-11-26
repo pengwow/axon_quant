@@ -49,3 +49,6 @@ pyo3          = { workspace = true, optional = true }
 [dev-dependencies]
 # 崩溃恢复 mock 演练测试：临时 journal 文件
 tempfile      = { workspace = true }
+
+[lints]
+workspace = true

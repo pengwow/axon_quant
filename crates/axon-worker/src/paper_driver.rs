@@ -259,6 +259,8 @@ impl PaperDriver {
             for event in pump.drain().events {
                 kernel.enqueue_external(event, None).map_err(kerr)?;
             }
+            // 泵侧质量计数逐拍同步给内核（绝对值覆盖，幂等）：纯观测，不影响事件流
+            kernel.set_quality_report(pump.quality());
         }
         // 3. 断线补齐：缺口快照 → 反查品种 → fetch 历史 bar → 灌回同一条管道
         if let (Some(pump), Some(gateway)) = (self.pump.as_mut(), self.gateway.as_ref()) {
@@ -312,8 +314,15 @@ impl PaperDriver {
         Ok(kernel.trades_since(cursor).to_vec())
     }
 
-    /// 收尾：paper 账纯内存、无外部挂起资源，幂等 no-op
+    /// 收尾：paper 账纯内存、无外部挂起资源；停机时把泵的末拍质量计数收进
+    /// 内核并落观测（paper 不挂 journal → 计数仅落 `info` 日志，不发明新路径）。
     pub fn shutdown(&mut self) -> Result<(), String> {
+        if let Some(kernel) = self.kernel.as_mut() {
+            if let Some(pump) = self.pump.as_ref() {
+                kernel.set_quality_report(pump.quality());
+            }
+            kernel.flush_quality_sidecar();
+        }
         Ok(())
     }
 }

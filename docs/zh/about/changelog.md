@@ -4,9 +4,10 @@ AXON 的完整更新日志见仓库根目录的 [`CHANGELOG.md`](https://github.
 
 ## 当前版本
 
-- **最新稳定版:** [`v0.22.1`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0221---2026-10-26) — CI wheel 发布矩阵补齐(py3.13/3.14)与重试链修复
-- **上一版:** [`v0.22.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0220---2026-10-26) — 统一交易内核(`axon-kernel`/`axon-worker`)+ testnet 合约实盘链 + 崩溃恢复
-- **更早:** [`v0.21.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0210---2026-10-22) — 保证金交易引擎(逐仓)+ fill 关联 + 存款曲线
+- **最新稳定版:** [`v0.25.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0250---2026-11-10) — OMS 命名语义统一(BREAKING)+ RL 内核回测/评估设施下沉 + registry `unpromote` + MSRV 升至 1.100.0
+- **上一版:** [`v0.24.1`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0241---2026-11-04) — cascade 决策保留 S1/S2 原始输出(`s1_raw`/`s2_raw`/`s2_thinking`)
+- **更早:** [`v0.24.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0240---2026-11-03) — 内核进度回调 + `axon-llm` 嵌套 runtime 修复
+- **更早:** [`v0.23.0`](https://github.com/pengwow/axon_quant/blob/main/CHANGELOG.md#0230---2026-10-30) — 风控运行时热更 + live 持仓接管 + resume 对账误报修复
 
 ## 历史版本
 

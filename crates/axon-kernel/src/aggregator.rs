@@ -19,12 +19,23 @@
 //! # 去重
 //!
 //! 同一 `(instrument, interval, bar.timestamp)` 只放行一次。已收市时间戳按 key
-//! 分桶只保留最近 `SEEN_PER_KEY` 个：断线重连补发的旧 bar 仍能识别，内存占用
-//! 有上限。
+//! 分桶，并维护该 key 的**水位线**（迄今最大的收市时刻，单调推进）。两层机制
+//! 主次分明：
 //!
-//! ponytail: 分桶只保留最近 16 根，极端乱序（重复 bar 迟到超过 16 个周期）会漏判。
-//! 上限来自「重连补发通常只覆盖最近几根」的交易所行为；升级路径是按水位线剪枝
-//! 或改用交易所自带的 `seq`。
+//! - **去重回溯窗 = 最近 `SEEN_PER_KEY`（16）个收市戳**，这是判断"重复"的
+//!   实际依据：重发的戳只要还在桶里，就照旧拦截（`is_duplicate = true`）；
+//! - **水位线剪枝只负责长回放的内存上界**：`mark_seen` 推进水位线后剪掉
+//!   `< barrier - WATERMARK_LAG * interval` 的旧戳。`WATERMARK_LAG`（64）远大于
+//!   `SEEN_PER_KEY`（16），常态下剪枝不会先于桶长淘汰生效；只有**单次 barrier
+//!   大幅跳变（> 48 个周期）**时才会一次性批量剪掉旧戳。
+//!
+//! 因此：**去重窗口内**的放行 / 拦截形态不变；窗口边界外（被水位线剪掉或被桶长
+//! 淘汰后重发）的 bar 按迟到处理——`is_duplicate = false` 且起始时间已在水位线
+//! 之下时无法判重，**照旧放行**，但会 `warn!` 并按放行消息数累加
+//! [`BarAggregator::duplicates_missed`]，供数据质量报告消费。
+//!
+//! 交易所的 Kline 消息没有 `seq` 字段，只有时间戳，因此无法做序号去重；水位线
+//! 是「无 `seq`」前提下可做到的最强近似。
 
 use std::collections::{HashMap, VecDeque};
 
@@ -34,8 +45,21 @@ use axon_core::{
 
 use crate::event::{close_time, interval_to_nanos};
 
-/// 每个 `(instrument, interval)` 保留的去重时间戳个数
+/// 去重回溯窗 = 每个 `(instrument, interval)` 保留的最近收市戳个数
+/// （同时是桶长的硬上限）
 const SEEN_PER_KEY: usize = 16;
+
+/// 水位线以下的保留窗口，单位 = 周期数
+///
+/// 水位线为「迄今最大的收市时刻」；`mark_seen` 会剪掉
+/// `< barrier - WATERMARK_LAG * interval` 的历史戳。
+///
+/// 定位：**只负责长回放的内存上界，不是去重窗口本身**。真正的去重回溯窗是
+/// [`SEEN_PER_KEY`]（16 个收市戳）；`WATERMARK_LAG`（64）远大于它，所以只有
+/// 单次 barrier 跳变超过 `WATERMARK_LAG - SEEN_PER_KEY = 48` 个周期时，剪枝才会
+/// 先于桶长淘汰生效（一次性批量剪掉旧戳）。取值参照「重连补发通常只覆盖最近
+/// 数十根」的交易所行为。
+const WATERMARK_LAG: i64 = 64;
 
 /// 逐品种、逐周期的 K 线聚合器
 ///
@@ -46,6 +70,12 @@ pub struct BarAggregator {
     open: HashMap<(Instrument, String), Bar>,
     /// 已收市的 bar 起始时间（key = `(instrument, interval)`，按时间升序的环形队列）
     seen: HashMap<(Instrument, String), VecDeque<i64>>,
+    /// 去重水位线 = 该 key 迄今最大的收市时刻（`bar.timestamp + interval`，纳秒）
+    barriers: HashMap<(Instrument, String), i64>,
+    /// 越过水位线、无法判定为重复而放行的迟到 bar 计数
+    duplicates_missed: u64,
+    /// 负成交量 tick 被夹紧丢弃的数量（既有 `.max(0.0)` 行为的计数化）
+    invalid_qty_dropped: u64,
 }
 
 impl BarAggregator {
@@ -75,6 +105,12 @@ impl BarAggregator {
         let bar_start = tick.timestamp.nanos.div_euclid(interval_ns) * interval_ns;
         let key = (instrument.clone(), interval.to_string());
 
+        // 负成交量 tick 是脏数据：累加 / 开新 bar 时按 0 夹紧（行为不变），
+        // 这里只把它计数化，供数据质量报告消费（不做拦截）
+        if tick.quantity.as_f64() < 0.0 {
+            self.invalid_qty_dropped += 1;
+        }
+
         match self.open.get(&key).map(|bar| bar.timestamp.nanos) {
             Some(current_start) if current_start == bar_start => {
                 if let Some(current) = self.open.get_mut(&key) {
@@ -98,7 +134,7 @@ impl BarAggregator {
                     .remove(&key)
                     .expect("已命中进行中 bar，remove 必须成功");
                 let out = vec![self.finish(&key.0, interval, closed, interval_ns)];
-                if !self.is_duplicate(&(instrument.clone(), interval.to_string(), bar_start)) {
+                if !self.check_duplicate(instrument, interval, bar_start) {
                     self.open.insert(key, bar_from_tick(bar_start, tick));
                 }
                 out
@@ -112,7 +148,7 @@ impl BarAggregator {
                 Vec::new()
             }
             None => {
-                if self.is_duplicate(&(instrument.clone(), interval.to_string(), bar_start)) {
+                if self.check_duplicate(instrument, interval, bar_start) {
                     tracing::debug!(
                         instrument = %instrument,
                         interval,
@@ -149,14 +185,9 @@ impl BarAggregator {
             return Vec::new();
         };
         let key = (instrument.clone(), interval.to_string());
-        let dup_key = (
-            instrument.clone(),
-            interval.to_string(),
-            bar.timestamp.nanos,
-        );
 
         if !is_closed {
-            if self.is_duplicate(&dup_key) {
+            if self.check_duplicate(instrument, interval, bar.timestamp.nanos) {
                 tracing::debug!(
                     instrument = %instrument,
                     interval,
@@ -180,7 +211,7 @@ impl BarAggregator {
             return Vec::new();
         }
 
-        if self.is_duplicate(&dup_key) {
+        if self.check_duplicate(instrument, interval, bar.timestamp.nanos) {
             tracing::debug!(
                 instrument = %instrument,
                 interval,
@@ -192,14 +223,67 @@ impl BarAggregator {
         // 收市 kline 覆盖同一周期的进行中 bar（tick 聚合的近似值不再需要）
         self.open.remove(&key);
         let ts = close_time(bar.timestamp, interval).unwrap_or(event_ts);
-        vec![self.finish_at(instrument, interval, bar, ts)]
+        vec![self.finish_at(instrument, interval, bar, ts, interval_ns)]
     }
 
     /// 该 `(instrument, interval, bar.timestamp)` 是否已经收市过
     pub fn is_duplicate(&self, key: &(Instrument, String, i64)) -> bool {
+        self.seen_contains(&(key.0.clone(), key.1.clone()), key.2)
+    }
+
+    /// 按引用查询去重桶(内部热路径入口)
+    ///
+    /// 调用方(如 [`Self::check_duplicate`])已持有拼好的 key 时用它,避免为了
+    /// [`Self::is_duplicate`] 的三元组签名再 clone 一份 `instrument` /
+    /// `interval`。公开 API 与查询结果都和 `is_duplicate` 完全一致。
+    fn seen_contains(&self, key: &(Instrument, String), bar_start: i64) -> bool {
         self.seen
-            .get(&(key.0.clone(), key.1.clone()))
-            .is_some_and(|stamps| stamps.contains(&key.2))
+            .get(key)
+            .is_some_and(|stamps| stamps.contains(&bar_start))
+    }
+
+    /// 越过水位线、无法判定为重复而放行的迟到 bar 计数
+    ///
+    /// 每次放行这样的 bar 都会同时 `warn!`；计数用于数据质量报告。
+    pub fn duplicates_missed(&self) -> u64 {
+        self.duplicates_missed
+    }
+
+    /// 负成交量 tick 被夹紧丢弃的数量
+    ///
+    /// 与 [`Self::duplicates_missed`] 一样是只读观测值：放行 / 丢弃形态与计数前
+    /// 完全一致，数字只进数据质量报告。
+    pub fn invalid_qty_dropped(&self) -> u64 {
+        self.invalid_qty_dropped
+    }
+
+    /// 判重并让漏判可见：与 [`Self::is_duplicate`] 同义（返回值完全相同），
+    /// 只在「未判为重复但起始时间已在水位线之下」时告警并计数。
+    ///
+    /// 无 `seq` 时这是近似判断：缺口回补（此前从未收到的旧 bar）也会命中，
+    /// 但那同样是「迟到数据被放行」，值得进质量报告。
+    ///
+    /// 热路径：key 只拼一次（`instrument` clone + `interval` 转 `String` 各一份），
+    /// 去重桶与水位线都用这同一份 key 查询。
+    fn check_duplicate(&mut self, instrument: &Instrument, interval: &str, bar_start: i64) -> bool {
+        let key = (instrument.clone(), interval.to_string());
+        if self.seen_contains(&key, bar_start) {
+            return true;
+        }
+        let Some(&barrier) = self.barriers.get(&key) else {
+            return false;
+        };
+        if bar_start < barrier {
+            self.duplicates_missed += 1;
+            tracing::warn!(
+                instrument = %instrument,
+                interval,
+                bar_timestamp = bar_start,
+                barrier,
+                "kernel aggregator: 重复 bar 超出去重窗口仍被放行"
+            );
+        }
+        false
     }
 
     /// tick 路径：按周期推导收市时刻后产出事件
@@ -211,7 +295,7 @@ impl BarAggregator {
         interval_ns: i64,
     ) -> Event {
         let ts = Timestamp::from_nanos(bar.timestamp.nanos + interval_ns);
-        self.finish_at(instrument, interval, bar, ts)
+        self.finish_at(instrument, interval, bar, ts, interval_ns)
     }
 
     /// 产出收市事件并登记去重
@@ -221,8 +305,9 @@ impl BarAggregator {
         interval: &str,
         bar: Bar,
         ts: Timestamp,
+        interval_ns: i64,
     ) -> Event {
-        self.mark_seen(instrument, interval, bar.timestamp.nanos);
+        self.mark_seen(instrument, interval, bar.timestamp.nanos, interval_ns);
         Event::MarketData(MarketDataEvent::new(
             0,
             ts,
@@ -234,12 +319,31 @@ impl BarAggregator {
         ))
     }
 
-    /// 登记一个已收市时间戳（超出 [`SEEN_PER_KEY`] 时弹出最旧的）
-    fn mark_seen(&mut self, instrument: &Instrument, interval: &str, bar_start: i64) {
-        let stamps = self
-            .seen
-            .entry((instrument.clone(), interval.to_string()))
-            .or_default();
+    /// 登记一个已收市时间戳：推进水位线、按水位线剪枝、超出 `SEEN_PER_KEY` 时
+    /// 弹出最旧的
+    ///
+    /// 先剪枝再压入。剪枝阈值 `barrier - WATERMARK_LAG * interval`（见
+    /// [`WATERMARK_LAG`]）比 `SEEN_PER_KEY` 的桶长宽一倍以上，因此常态下桶里始终
+    /// 留着最近 `SEEN_PER_KEY` 个收市戳（**去重窗口 = 最近 16 个收市戳**）；水位线
+    /// 只在单次大幅跳变（> 48 周期）时批量清掉更旧的戳，把长回放的内存钉在上界。
+    fn mark_seen(
+        &mut self,
+        instrument: &Instrument,
+        interval: &str,
+        bar_start: i64,
+        interval_ns: i64,
+    ) {
+        let key = (instrument.clone(), interval.to_string());
+        // 水位线 = 迄今最大的收市时刻（bar 起始 + 周期），单调推进
+        let close = bar_start.saturating_add(interval_ns);
+        let barrier = self.barriers.entry(key.clone()).or_insert(close);
+        if close > *barrier {
+            *barrier = close;
+        }
+        // 水位线以下 WATERMARK_LAG 根周期之外的戳不再可能有重连补发
+        let cutoff = barrier.saturating_sub(WATERMARK_LAG.saturating_mul(interval_ns));
+        let stamps = self.seen.entry(key).or_default();
+        stamps.retain(|stamp| *stamp >= cutoff);
         if stamps.contains(&bar_start) {
             return;
         }
@@ -347,6 +451,30 @@ mod tests {
         assert_eq!(ts.nanos, MIN, "事件时间戳必须是收市时刻");
     }
 
+    /// 负量 tick 是脏数据：既有行为是按 0 夹紧（不参与累加），C6 只把它计数化
+    #[test]
+    fn test_negative_tick_quantity_is_counted_and_clamped() {
+        let mut agg = BarAggregator::new();
+        assert_eq!(agg.invalid_qty_dropped(), 0, "干净 tick 不计数");
+
+        agg.observe_tick(&btc(), "1m", &tick(0, 100.0, 2.0));
+        agg.observe_tick(&btc(), "1m", &tick(10 * SEC, 100.0, -5.0));
+        assert_eq!(agg.invalid_qty_dropped(), 1, "负量 tick 必须计数");
+
+        // 跨周期收市：负量不参与累加（行为与计数前完全一致）
+        let events = agg.observe_tick(&btc(), "1m", &tick(MIN, 101.0, 1.0));
+        let (_, _, closed, _) = bar_closed_of(&events[0]).expect("必须收市");
+        assert!(
+            (closed.volume.as_f64() - 2.0).abs() < 1e-9,
+            "负量被夹紧后不累加: {}",
+            closed.volume.as_f64()
+        );
+
+        // 零量既不夹紧也不算脏：不计入 invalid_qty_dropped
+        agg.observe_tick(&btc(), "1m", &tick(MIN, 101.0, 0.0));
+        assert_eq!(agg.invalid_qty_dropped(), 1, "零量不是负量");
+    }
+
     #[test]
     fn test_observe_kline_unclosed_updates_in_progress_only() {
         let mut agg = BarAggregator::new();
@@ -388,6 +516,97 @@ mod tests {
                 .is_empty(),
             "同一 key 的第二个收市 bar 必须被丢弃"
         );
+        assert_eq!(agg.duplicates_missed(), 0, "窗口内重复不算漏判");
+    }
+
+    /// 回放 `0..=last` 的收市 kline，每根都必须产出事件
+    fn replay_closed(agg: &mut BarAggregator, last: i64) {
+        for i in 0..=last {
+            let events = agg.observe_kline(
+                &btc(),
+                "1m",
+                bar(i * MIN, 100.0, 101.0, 99.0, 100.5),
+                true,
+                Timestamp::from_nanos((i + 1) * MIN),
+            );
+            assert_eq!(events.len(), 1, "回放 bar {i} 必须收市");
+        }
+    }
+
+    #[test]
+    fn test_late_duplicate_beyond_bucket_is_released_and_counted() {
+        let mut agg = BarAggregator::new();
+        replay_closed(&mut agg, 20);
+        let key = (btc(), "1m".to_string());
+        assert_eq!(
+            agg.seen.get(&key).expect("桶必须存在").len(),
+            SEEN_PER_KEY,
+            "桶长受 SEEN_PER_KEY 兜底"
+        );
+        assert!(
+            !agg.seen.get(&key).expect("桶必须存在").contains(&(3 * MIN)),
+            "bar 3 已超出桶窗口"
+        );
+        assert_eq!(agg.duplicates_missed(), 0);
+
+        // 迟到 17 个周期的重复（> SEEN_PER_KEY 且 ≤ WATERMARK_LAG）：无法判定为重复，
+        // 仍按现有路径放行，但必须计数（生产环境同时 warn!）
+        let late = bar(3 * MIN, 100.0, 101.0, 99.0, 100.5);
+        let events = agg.observe_kline(&btc(), "1m", late, true, Timestamp::from_nanos(21 * MIN));
+        assert_eq!(
+            events.len(),
+            1,
+            "越过桶窗口的迟到重复仍照旧放行（事件流不变）"
+        );
+        let (_, _, released, ts) = bar_closed_of(&events[0]).expect("必须是 BarClosed");
+        assert_eq!(released.timestamp.nanos, 3 * MIN);
+        assert_eq!(ts.nanos, 4 * MIN, "事件时间戳仍是收市时刻");
+        assert_eq!(agg.duplicates_missed(), 1, "漏判必须可见化");
+    }
+
+    #[test]
+    fn test_duplicate_beyond_watermark_is_pruned_and_released() {
+        let mut agg = BarAggregator::new();
+        replay_closed(&mut agg, 90);
+        let key = (btc(), "1m".to_string());
+        let barrier = *agg.barriers.get(&key).expect("水位线必须存在");
+        assert_eq!(barrier, 91 * MIN, "水位线 = 迄今最大收市时刻");
+        let cutoff = barrier - WATERMARK_LAG * MIN;
+        assert!(
+            agg.seen[&key].iter().all(|stamp| *stamp >= cutoff),
+            "水位线以下 WATERMARK_LAG 根之外的历史戳必须已剪枝"
+        );
+        assert!(
+            !agg.seen[&key].contains(&(2 * MIN)),
+            "88 个周期前的戳不可能还在桶里"
+        );
+
+        // 超过水位线的迟到重复（> WATERMARK_LAG + SEEN_PER_KEY 周期）：剪枝后视为
+        // 新鲜 bar 放行，同时命中漏判可见化
+        let late = bar(2 * MIN, 100.0, 101.0, 99.0, 100.5);
+        let events = agg.observe_kline(&btc(), "1m", late, true, Timestamp::from_nanos(91 * MIN));
+        assert_eq!(events.len(), 1, "剪枝后的迟到 bar 仍放行（事件流不变）");
+        assert_eq!(agg.duplicates_missed(), 1, "水位线之上的迟到仍计数");
+    }
+
+    #[test]
+    fn test_seen_bucket_is_watermark_bounded() {
+        let mut agg = BarAggregator::new();
+        replay_closed(&mut agg, 499);
+        let key = (btc(), "1m".to_string());
+        let barrier = *agg.barriers.get(&key).expect("水位线必须存在");
+        let cutoff = barrier - WATERMARK_LAG * MIN;
+        let bucket = &agg.seen[&key];
+        assert!(
+            bucket.len() <= SEEN_PER_KEY,
+            "长回放后桶长不得增长（实际 {}）",
+            bucket.len()
+        );
+        assert!(
+            bucket.iter().all(|stamp| *stamp >= cutoff),
+            "桶内不得残留水位线以下的历史戳"
+        );
+        assert_eq!(agg.duplicates_missed(), 0, "单调回放不产生漏判");
     }
 
     #[test]

@@ -38,3 +38,6 @@ pyo3 = { version = "0.28", optional = true, features = ["auto-initialize"] }
 pretty_assertions = "1"
 proptest = "1"
 rust_decimal_macros = "1"
+
+[lints]
+workspace = true

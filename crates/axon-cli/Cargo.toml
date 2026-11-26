@@ -23,3 +23,6 @@ backtest = ["dep:axon-backtest"]
 [dependencies]
 axon-core = { workspace = true }
 axon-backtest = { workspace = true, optional = true }
+
+[lints]
+workspace = true

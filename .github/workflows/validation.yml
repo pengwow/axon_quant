@@ -142,13 +142,13 @@ jobs:
 
   # ==================== MSRV 检查 ====================
   msrv:
-    name: MSRV Check (1.96.0)
+    name: MSRV Check (1.100.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.96.0"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV compatibility
         # 注：不使用 --all-features，避免 python feature 连带拉入

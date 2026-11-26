@@ -698,32 +698,32 @@ TimeInForce.Fok         # Fill Or Kill
 
 ## 6. Version Compatibility
 
-AXON current version is `0.22.1`, unified across all 25 workspace crates (workspace `rust-version` is 1.97.0):
+AXON current version is `0.25.0`, unified across all 26 workspace crates (workspace `rust-version` is 1.100.0):
 
 | Crate | Version | Description |
 |-------|---------|-------------|
-| axon-core | 0.22.1 | Base types and common data structures (Bar / Order / Portfolio / EventQueue, etc.) |
-| axon-backtest | 0.22.1 | Event-driven backtesting engine, matching, impact model |
-| axon-strategy | 0.22.1 | Unified Strategy trait with built-in implementations (strategy unaware of backtest / live) |
-| axon-kernel | 0.22.1 | Unified trading kernel: the single main loop shared by backtest / paper / live |
-| axon-worker | 0.22.1 | Orchestration layer: BacktestRunner / PyKernel / data pump / gateway / live driver |
-| axon-rl | 0.22.1 | Gymnasium-compatible trading environment, action/observation space, reward functions |
-| axon-hpo | 0.22.1 | Hyperparameter optimization (Optuna integration), Study/Trial management |
-| axon-walk-forward | 0.22.1 | Rolling/expanding window cross-validation, stability analysis |
-| axon-distributed | 0.22.1 | Ray distributed training, parameter server, checkpoint |
-| axon-tracker | 0.22.1 | Experiment tracking (MLflow/memory backend), metric logging |
-| axon-registry | 0.22.1 | Model registry, version management, stage transitions, rollback |
-| axon-llm | 0.22.1 | LLM backend abstraction, ReAct Agent, tool calling |
-| axon-explain | 0.22.1 | Explainability: SHAP, counterfactual, report generation |
-| axon-ensemble | 0.22.1 | Model ensemble: voting, weighted, dynamic weighting, stacking |
-| axon-data | 0.22.1 | Unified market data ingestion, feature computation and caching |
-| axon-inference | 0.22.1 | Model inference engine, hot update, multi-backend support |
-| axon-exchange | 0.22.1 | Exchange adapters, WebSocket, rate limiting |
-| axon-oms | 0.22.1 | Order lifecycle management: state machine, idempotency, snapshot and recovery |
-| axon-risk | 0.22.1 | Risk engine: pre-trade checks, portfolio-level monitoring, circuit breaker |
-| axon-monitor | 0.22.1 | Monitoring & alerting: metrics, latency histograms, alert rules, health checks |
-| axon-compliance | 0.22.1 | Trading compliance audit: immutable audit log, report generation, regulatory reporting |
-| axon-defi | 0.22.1 | On-chain EVM trading: Uniswap V3, MEV-Share, LayerZero cross-chain |
-| axon-harness | 0.22.1 | Harness orchestration traits: circuit breaker, budget guard, audit chain |
-| axon-cli | 0.22.1 | Command-line entry point |
-| axon-integration-tests | 0.22.1 | Cross-crate end-to-end integration tests (internal) |
+| axon-core | 0.25.0 | Base types and common data structures (Bar / Order / Portfolio / EventQueue, etc.) |
+| axon-backtest | 0.25.0 | Event-driven backtesting engine, matching, impact model |
+| axon-strategy | 0.25.0 | Unified Strategy trait with built-in implementations (strategy unaware of backtest / live) |
+| axon-kernel | 0.25.0 | Unified trading kernel: the single main loop shared by backtest / paper / live |
+| axon-worker | 0.25.0 | Orchestration layer: BacktestRunner / PyKernel / data pump / gateway / live driver |
+| axon-rl | 0.25.0 | Gymnasium-compatible trading environment, action/observation space, reward functions |
+| axon-hpo | 0.25.0 | Hyperparameter optimization (Optuna integration), Study/Trial management |
+| axon-walk-forward | 0.25.0 | Rolling/expanding window cross-validation, stability analysis |
+| axon-distributed | 0.25.0 | Ray distributed training, parameter server, checkpoint |
+| axon-tracker | 0.25.0 | Experiment tracking (MLflow/memory backend), metric logging |
+| axon-registry | 0.25.0 | Model registry, version management, stage transitions, rollback |
+| axon-llm | 0.25.0 | LLM backend abstraction, ReAct Agent, tool calling |
+| axon-explain | 0.25.0 | Explainability: SHAP, counterfactual, report generation |
+| axon-ensemble | 0.25.0 | Model ensemble: voting, weighted, dynamic weighting, stacking |
+| axon-data | 0.25.0 | Unified market data ingestion, feature computation and caching |
+| axon-inference | 0.25.0 | Model inference engine, hot update, multi-backend support |
+| axon-exchange | 0.25.0 | Exchange adapters, WebSocket, rate limiting |
+| axon-oms | 0.25.0 | Order lifecycle management: state machine, idempotency, snapshot and recovery |
+| axon-risk | 0.25.0 | Risk engine: pre-trade checks, portfolio-level monitoring, circuit breaker |
+| axon-monitor | 0.25.0 | Monitoring & alerting: metrics, latency histograms, alert rules, health checks |
+| axon-compliance | 0.25.0 | Trading compliance audit: immutable audit log, report generation, regulatory reporting |
+| axon-defi | 0.25.0 | On-chain EVM trading: Uniswap V3, MEV-Share, LayerZero cross-chain |
+| axon-harness | 0.25.0 | Harness orchestration traits: circuit breaker, budget guard, audit chain |
+| axon-cli | 0.25.0 | Command-line entry point |
+| axon-integration-tests | 0.25.0 | Cross-crate end-to-end integration tests (internal) |
