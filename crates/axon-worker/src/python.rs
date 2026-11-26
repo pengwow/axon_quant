@@ -135,6 +135,15 @@ pub struct PyBacktestResult {
     /// 因可用保证金不足而被缩量的开仓次数
     #[pyo3(get)]
     pub shortfall_count: u32,
+    /// 数据质量：OHLC 非法被拒收的 bar 数（0 = 输入干净）
+    #[pyo3(get)]
+    pub quality_ohlc_rejected: u64,
+    /// 数据质量：负成交量 tick 被夹紧丢弃的数量
+    #[pyo3(get)]
+    pub quality_invalid_qty_dropped: u64,
+    /// 数据质量：越过去重水位线、无法判重而放行的迟到 bar 数
+    #[pyo3(get)]
+    pub quality_duplicates_missed: u64,
 }
 
 impl From<&BacktestResult> for PyBacktestResult {
@@ -185,6 +194,11 @@ impl From<&BacktestResult> for PyBacktestResult {
             margin_specs_effective: r.margin_specs_effective.clone(),
             liquidation_count: r.liquidation_count,
             shortfall_count: r.shortfall_count,
+            // `BacktestResult`（旧路径）不携带数据质量计数：与「输入干净」的
+            // 默认报告一致，保持字段可读（全 0）。
+            quality_ohlc_rejected: 0,
+            quality_invalid_qty_dropped: 0,
+            quality_duplicates_missed: 0,
         }
     }
 }
@@ -246,6 +260,9 @@ impl PyBacktestResult {
             margin_specs_effective: run.margin_specs_effective.clone(),
             liquidation_count: run.liquidation_count,
             shortfall_count: run.shortfall_count,
+            quality_ohlc_rejected: r.quality.ohlc_rejected,
+            quality_invalid_qty_dropped: r.quality.invalid_qty_dropped,
+            quality_duplicates_missed: r.quality.duplicates_missed,
         }
     }
 }
@@ -2405,4 +2422,30 @@ pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // tracing→Python logging 桥：live 链路的 warn! 对 Python 侧可见
     m.add_function(wrap_pyfunction!(install_rust_logging, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `KernelResult.quality` 的三个计数必须原样暴露给 Python DTO（additive）
+    #[test]
+    fn test_py_backtest_result_exposes_quality_counts() {
+        let result = KernelResult {
+            run: axon_backtest::engine::RunResult::default(),
+            duration: std::time::Duration::from_millis(5),
+            bars_processed: 3,
+            orders_submitted: 1,
+            quality: axon_kernel::QualityReport {
+                ohlc_rejected: 7,
+                invalid_qty_dropped: 2,
+                duplicates_missed: 1,
+            },
+        };
+        let py = PyBacktestResult::from_kernel(&result, 2);
+        assert_eq!(py.quality_ohlc_rejected, 7);
+        assert_eq!(py.quality_invalid_qty_dropped, 2);
+        assert_eq!(py.quality_duplicates_missed, 1);
+        assert_eq!(py.n_bars, 3);
+    }
 }

@@ -507,17 +507,27 @@ impl LiveDriver {
     }
 
     /// 收尾：撤单并禁用后续下单（内核保留可继续 snapshot 审计）
+    ///
+    /// 停机收口顺带把泵的末拍质量计数收进内核并落观测：有 journal 路径写
+    /// `<stem>.quality.json` 侧车（resume 路径未 attach journal 则退化为日志）。
+    /// 观测落盘与 sink 停机互不阻断：即使 `sink.shutdown()` 失败也先把计数收口。
     pub fn shutdown(&mut self) -> Result<(), String> {
         let kernel = self
             .kernel
             .as_mut()
             .ok_or_else(|| "内核未启动，请先 start/resume".to_string())?;
-        let sink = kernel
-            .sink_mut()
-            .as_any_mut()
-            .downcast_mut::<LiveSink>()
-            .expect("LiveDriver 的 sink 必为 LiveSink");
-        sink.shutdown()
+        let shutdown_result = {
+            let sink = kernel
+                .sink_mut()
+                .as_any_mut()
+                .downcast_mut::<LiveSink>()
+                .expect("LiveDriver 的 sink 必为 LiveSink");
+            sink.shutdown()
+        };
+        // 末拍计数绝对值覆盖（幂等），随后按 journal 可用性落侧车 / 日志
+        kernel.set_quality_report(self.pump.quality());
+        kernel.flush_quality_sidecar();
+        shutdown_result
     }
 }
 

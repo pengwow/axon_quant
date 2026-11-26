@@ -190,10 +190,11 @@ impl KernelPump {
 
     /// 断线补齐：把 `fetch_ohlcv` 拉回的历史 bar 灌回同一条事件管道
     ///
-    /// 走与实时 kline 相同的聚合 / 去重路径（重复 bar 只计数不重放）；事件按
-    /// 补灌到达顺序重编号，随缺口一并清除后由调用方 `enqueue_external` 进内核
-    /// （与 `drain` 的下游约定一致）。事件时间戳是收市时刻，EventQueue 会把它们
-    /// 排到正确的历史位置，调用方无需关心补灌顺序与实时 bar 的交错。
+    /// 走与实时 kline 相同的聚合 / 去重 / OHLC 门路径（重复 bar 只计数不重放，
+    /// 脏 bar 丢弃 + 计数且不打断补灌循环）；事件按补灌到达顺序重编号，随缺口
+    /// 一并清除后由调用方 `enqueue_external` 进内核（与 `drain` 的下游约定一致）。
+    /// 事件时间戳是收市时刻，EventQueue 会把它们排到正确的历史位置，调用方无需
+    /// 关心补灌顺序与实时 bar 的交错。
     pub fn replay_bars(
         &mut self,
         symbol: &ExchangeSymbol,
@@ -218,6 +219,11 @@ impl KernelPump {
         }
         let mut events = Vec::with_capacity(bars.len());
         for bar in bars {
+            // REST 补灌与实时 WS 走同一个 OHLC 门：脏 bar 丢弃 + 计数，补灌循环
+            // 继续下一根（不中断缺口处理）。来源字段区分实时 / 补灌。
+            if !self.gate_bar(bar, symbol.0.as_str(), "rest_backfill") {
+                continue;
+            }
             // 与实时路径同一判重来源（BarAggregator），重复补灌只计数
             if self.aggregator.is_duplicate(&(
                 instrument.clone(),
@@ -283,6 +289,30 @@ impl KernelPump {
         }
     }
 
+    /// 统一 OHLC 门（实时 WS 与 REST 补灌共用）
+    ///
+    /// 违例只旁路丢弃：`tracing::warn!` + `ohlc_rejected += 1` + 返回 false，
+    /// 调用方据此跳过该 bar 并继续处理后续数据。`source` 区分 `"ws"` /
+    /// `"rest_backfill"`，便于排障时分辨脏数据来自实时流还是断线补灌。
+    fn gate_bar(&mut self, bar: &Bar, symbol: &str, source: &'static str) -> bool {
+        if let Err(e) = bar.validate_ohlc() {
+            self.ohlc_rejected += 1;
+            tracing::warn!(
+                symbol,
+                source,
+                timestamp = bar.timestamp.nanos,
+                open = bar.open.as_f64(),
+                high = bar.high.as_f64(),
+                low = bar.low.as_f64(),
+                close = bar.close.as_f64(),
+                error = %e,
+                "kernel pump: OHLC 非法，丢弃 bar"
+            );
+            return false;
+        }
+        true
+    }
+
     /// 单条 kline：未收市只更新聚合器，收市产出 `BarClosed` 并做缺口检测
     fn on_kline(&mut self, kline: &Kline, skipped_duplicates: &mut usize) -> Vec<Event> {
         // 先按交易所原始写法归一化成带分隔符的 key（复用 `instrument_key_for`，
@@ -307,20 +337,9 @@ impl KernelPump {
             volume: Quantity::from_f64(kline.volume.as_f64()),
         };
         // 实时路径的 OHLC 门：与历史路径（fail-fast）分层——脏 bar 只丢弃并
-        // 旁路告警 + 计数，主回路照常处理后续 bar。复用上面「解析失败→丢弃+warn」
-        // 的模式，不让单根脏数据打挂实时链路。
-        if let Err(e) = bar.validate_ohlc() {
-            self.ohlc_rejected += 1;
-            tracing::warn!(
-                symbol = %kline.symbol,
-                timestamp = bar.timestamp.nanos,
-                open = bar.open.as_f64(),
-                high = bar.high.as_f64(),
-                low = bar.low.as_f64(),
-                close = bar.close.as_f64(),
-                error = %e,
-                "kernel pump: OHLC 非法，丢弃 kline"
-            );
+        // 旁路告警 + 计数，主回路照常处理后续 bar。与 REST 补灌共用 `gate_bar`，
+        // 不让单根脏数据打挂实时链路。
+        if !self.gate_bar(&bar, kline.symbol.0.as_str(), "ws") {
             return Vec::new();
         }
         if kline.is_closed
@@ -666,6 +685,25 @@ mod tests {
         assert_eq!(batch.events.len(), 1);
         assert_eq!(batch.skipped_duplicates, 0);
         assert!(pump.gaps().is_empty());
+    }
+
+    /// REST 补灌同样过 OHLC 门：脏 bar 丢弃+计数，循环继续灌后续干净 bar
+    #[test]
+    fn test_replay_bars_rejects_invalid_ohlc_and_continues() {
+        let (_tx, mut pump) = pump_channel();
+        let dirty = Bar {
+            timestamp: Timestamp::from_nanos(MIN_NS),
+            open: Price::from_f64(100.0),
+            high: Price::from_f64(90.0), // 非法：high < low
+            low: Price::from_f64(99.0),
+            close: Price::from_f64(100.0),
+            volume: Quantity::from_f64(10.0),
+        };
+        let batch = replay_btc(&mut pump, &[dirty, bar(2 * MIN_NS, 100.5)]);
+        assert_eq!(batch.events.len(), 1, "脏 bar 丢弃，干净 bar 必须继续放行");
+        let quality = pump.quality();
+        assert_eq!(quality.ohlc_rejected, 1, "补灌脏 bar 也必须计数");
+        assert_eq!(batch.skipped_duplicates, 0);
     }
 
     #[test]

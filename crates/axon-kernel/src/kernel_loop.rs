@@ -224,6 +224,32 @@ impl Kernel {
         &self.quality
     }
 
+    /// 停机收口：把当前质量计数落盘（或至少落日志）
+    ///
+    /// 与 `finalize` 的侧车命名一致：有 journal 路径时写
+    /// `<stem>.quality.json`（`QualityReport::write_sidecar`）；resume 路径刻意
+    /// 不 attach journal（避免截断既有文件），此时没有落盘路径可依，退化为
+    /// `info` 日志输出最终三计数——不发明新路径约定，但保证计数不随进程消失。
+    ///
+    /// 侧车是旁路观测，写失败只告警，不影响调用方的停机流程。
+    pub fn flush_quality_sidecar(&mut self) {
+        if let Some(path) = &self.journal_path {
+            match self.quality.write_sidecar(path) {
+                Ok(sidecar) => {
+                    tracing::debug!(path = %sidecar.display(), "kernel: quality 侧车已写出")
+                }
+                Err(e) => tracing::warn!(error = %e, "kernel: quality 侧车写出失败"),
+            }
+        } else {
+            tracing::info!(
+                ohlc_rejected = self.quality.ohlc_rejected,
+                invalid_qty_dropped = self.quality.invalid_qty_dropped,
+                duplicates_missed = self.quality.duplicates_missed,
+                "kernel: 无 journal 路径，数据质量计数仅落日志"
+            );
+        }
+    }
+
     /// 记录一条**外部输入**（含当帧逐 bar state）并压入主队列
     ///
     /// 这是 journal 的唯一写入入口。只有内核**收到**的输入才走这里：
@@ -1955,5 +1981,48 @@ mod tests {
         assert!(full.run.fills >= 1, "用例必须真的成交,否则比较没有力度");
         assert_eq!(resumed.bars_processed, 3, "恢复续跑必须处理完整 3 根 bar");
         assert_same_run("resume", &full, &resumed);
+    }
+
+    /// 停机收口：有 journal 路径时 flush 写 `<stem>.quality.json` 侧车
+    #[test]
+    fn test_flush_quality_sidecar_writes_beside_journal() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let journal_path = dir.path().join("live.journal");
+        let mut kernel = Kernel::new(
+            KernelConfig {
+                initial_cash: 10_000.0,
+                ..KernelConfig::default()
+            },
+            Box::new(BacktestSink::new()),
+        );
+        kernel
+            .attach_journal(&journal_path)
+            .expect("打开落盘 journal");
+        kernel.set_quality_report(QualityReport {
+            ohlc_rejected: 7,
+            invalid_qty_dropped: 3,
+            duplicates_missed: 1,
+        });
+
+        kernel.flush_quality_sidecar();
+
+        let sidecar = journal_path.with_extension("quality.json");
+        let text = std::fs::read_to_string(&sidecar).expect("侧车应写出");
+        let parsed: QualityReport = serde_json::from_str(&text).expect("侧车应是合法 JSON");
+        assert_eq!(parsed.ohlc_rejected, 7);
+        assert_eq!(parsed.invalid_qty_dropped, 3);
+        assert_eq!(parsed.duplicates_missed, 1);
+    }
+
+    /// 无 journal 路径（resume 刻意不 attach）时 flush 只落日志、不 panic
+    #[test]
+    fn test_flush_quality_sidecar_without_journal_is_noop() {
+        let mut kernel = Kernel::new(KernelConfig::default(), Box::new(BacktestSink::new()));
+        kernel.set_quality_report(QualityReport {
+            ohlc_rejected: 5,
+            ..QualityReport::default()
+        });
+        // 只验证不 panic（日志兜底由 tracing 承载，无法在此断言）
+        kernel.flush_quality_sidecar();
     }
 }
