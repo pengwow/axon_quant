@@ -320,6 +320,31 @@ impl PythonStrategyImpl {
     }
 }
 
+/// 按异常类名判断 Python 异常（含 MRO，覆盖子类化场景）
+///
+/// ReplayProvider 定义在宿主应用（QuantCell backend 的 strategy/llm_replay.py），
+/// 本 crate 无法 import 其类对象做 isinstance，只能按类名匹配；
+/// `__mro__` / `__name__` 是 CPython 类型恒有属性，不依赖 pyo3 的 mro() API。
+#[cfg(feature = "python")]
+fn is_py_error_named(err: &pyo3::PyErr, py: Python<'_>, name: &str) -> bool {
+    let ty = err.value(py).get_type();
+    ty.getattr("__name__")
+        .ok()
+        .and_then(|n| n.extract::<String>().ok())
+        .is_some_and(|direct| direct == name)
+        || ty
+            .getattr("__mro__")
+            .ok()
+            .and_then(|mro| mro.try_iter().ok())
+            .map(|iter| {
+                iter.flatten()
+                    .filter_map(|t| t.getattr("__name__").ok())
+                    .filter_map(|n| n.extract::<String>().ok())
+                    .any(|n| n == name)
+            })
+            .unwrap_or(false)
+}
+
 #[cfg(feature = "python")]
 #[async_trait]
 impl Strategy for PythonStrategyImpl {
@@ -359,9 +384,16 @@ impl Strategy for PythonStrategyImpl {
                 .or_else(|_| bound.getattr("on_bar"))
                 .map_err(|e| StrategyError::Logic(format!("策略无 decide/on_bar 方法: {e}")))?;
 
-            let ret = method
-                .call1((bar_dict,))
-                .map_err(|e| StrategyError::Logic(format!("Python 策略调用失败: {e}")))?;
+            let ret = method.call1((bar_dict,)).map_err(|e| {
+                // Python 异常分类：ReplayMissError 是 LLM 回放窗错配的契约性失败，
+                // 必须以 Fatal 冒泡终止整场回测（宿主据此把任务置 failed），
+                // 不能并入 Logic 逐 bar 降级 Hold——那会静默产出 0 交易的 completed 任务
+                if is_py_error_named(&e, py, "ReplayMissError") {
+                    StrategyError::Fatal(format!("LLM 回放未命中（ReplayMissError）: {e}"))
+                } else {
+                    StrategyError::Logic(format!("Python 策略调用失败: {e}"))
+                }
+            })?;
 
             // 解析返回：支持 dict 或带属性的对象
             let get_str = |key: &str| -> Option<String> {

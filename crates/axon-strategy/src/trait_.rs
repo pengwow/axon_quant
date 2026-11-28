@@ -36,6 +36,12 @@ pub enum StrategyError {
     /// Action 解析或状态构造失败
     #[error("strategy logic error: {0}")]
     Logic(String),
+
+    /// 致命错误：策略契约性失败（如 LLM 回放回测的 ReplayMissError），
+    /// 必须终止整场运行并把真实失败上抛，而不是逐 bar 降级 Hold 继续跑
+    /// ——降级会静默产出 0 交易的"成功"回测（区别于 Logic 的容错语义）
+    #[error("fatal strategy error: {0}")]
+    Fatal(String),
 }
 
 /// 统一策略 trait
