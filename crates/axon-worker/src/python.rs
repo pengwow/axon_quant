@@ -991,11 +991,17 @@ impl PyKernel {
         }
 
         let handle = self.runtime.handle().clone();
+        // 共享致命错误槽：策略的契约性失败（如 LLM 回放 ReplayMissError）由
+        // BarContextSim 记入本槽，run 结束后统一收口抛错——kernel 的
+        // StrategyHost::on_event 契约只有 Vec<OrderIntent>（无错误通道），
+        // 不为此改遍内核 trait 的全部实现。
+        let fatal: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         for (symbol, strategy) in &strategies {
-            kernel.add_host(Box::new(BarContextSim::new(
+            kernel.add_host(Box::new(BarContextSim::new_with_fatal(
                 strategy.clone(),
                 self.instrument_mode.instrument(symbol),
                 handle.clone(),
+                fatal.clone(),
             )));
         }
 
@@ -1044,6 +1050,21 @@ impl PyKernel {
         let result = kernel.run_history(frames).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Kernel 回测失败: {e}"))
         })?;
+
+        // 策略致命错误收口：BarContextSim 在逐 bar 阶段把契约性失败（如
+        // LLM 回放 ReplayMissError）记入共享槽，这里统一抛错让整场回测
+        // failed，而不是带着 0 交易 completed。锁被 poison 也照样取值
+        // （登记时 panic 与否不改变"必须失败"的事实）。
+        let fatal_msg = fatal
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|p| p.into_inner().clone());
+        if let Some(msg) = fatal_msg {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "策略致命错误，回测终止: {msg}"
+            )));
+        }
+
         let py_result =
             PyBacktestResult::from_kernel(&result, (strategies.len() + rl_count) as u32);
         *kernel_lock(&self.last_result, "result")? = Some(py_result.clone());
@@ -1569,10 +1590,17 @@ impl PyLiveDriver {
         Ok(())
     }
 
-    fn connect(&mut self) -> PyResult<()> {
-        kernel_lock(&self.inner, "live driver")?
-            .connect()
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    fn connect(&mut self, py: Python<'_>) -> PyResult<()> {
+        // connect 内部同步等待交易所连接就绪（listenKey user data stream 有 30s
+        // 超时），全程持 GIL 会把整个 Python 进程冻结（FastAPI 事件循环、WS 心跳、
+        // 其余 API 线程全部挂起 30s）。connect 是纯 Rust 实现（不触碰 Python 对象），
+        // 用 detach 释放 GIL，只把纯数据结果带出临界区。
+        py.detach(|| {
+            let mut driver = kernel_lock(&self.inner, "live driver")?;
+            driver
+                .connect()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+        })
     }
 
     /// 全新起跑：建内核、挂 journal、注册 hosts（需先 connect 成功）
