@@ -64,6 +64,10 @@ const FANOUT_CHANNEL_CAPACITY: usize = 4096;
 const TRADES_PAGE_LIMIT: u32 = 1000;
 /// 单次缺口补灌的最大拉取根数（`fetch_ohlcv` 无 since 参数、只能取最近 N 根）
 const MAX_GAP_FETCH: usize = 1000;
+/// resume 守卫拒绝错误的固定前缀。QuantCell Python 侧
+///（worker/resume_auto_recovery.py）按该前缀识别「可自动归档重启」，
+/// 属跨语言弱契约：改前缀会静默破坏自动恢复。测试锁定。
+const RESUME_GUARD_REJECT_PREFIX: &str = "恢复守卫拒绝继续交易";
 
 /// start 阶段对交易所已有持仓的策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -442,7 +446,7 @@ impl LiveDriver {
                 Err(io) => format!("（对账报告落盘失败: {io}）"),
             };
             return Err(format!(
-                "恢复守卫拒绝继续交易，请人工核对持仓与资金后重试 resume: {reason}{retry}"
+                "{RESUME_GUARD_REJECT_PREFIX}，请人工核对持仓与资金后重试 resume: {reason}{retry}"
             ));
         }
         // 成功对账同样落盘（P1-02）：ok 报告按 journal 文件名区分（多 worker
@@ -1273,5 +1277,14 @@ mod tests {
         assert!((position - 60.0).abs() < 1e-9, "position = {position}");
         assert!((local.cash - 9_999.0).abs() < 1e-6, "cash = {}", local.cash);
         driver.shutdown().expect("shutdown");
+    }
+
+    use super::RESUME_GUARD_REJECT_PREFIX;
+
+    /// 锁定跨语言弱契约：Python worker/resume_auto_recovery.py 的
+    /// RESUME_GUARD_PREFIX 必须与该值一致（自动恢复的触发开关）。
+    #[test]
+    fn resume_guard_reject_prefix_is_stable() {
+        assert_eq!(RESUME_GUARD_REJECT_PREFIX, "恢复守卫拒绝继续交易");
     }
 }
