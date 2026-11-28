@@ -1569,10 +1569,17 @@ impl PyLiveDriver {
         Ok(())
     }
 
-    fn connect(&mut self) -> PyResult<()> {
-        kernel_lock(&self.inner, "live driver")?
-            .connect()
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+    fn connect(&mut self, py: Python<'_>) -> PyResult<()> {
+        // connect 内部同步等待交易所连接就绪（listenKey user data stream 有 30s
+        // 超时），全程持 GIL 会把整个 Python 进程冻结（FastAPI 事件循环、WS 心跳、
+        // 其余 API 线程全部挂起 30s）。connect 是纯 Rust 实现（不触碰 Python 对象），
+        // 用 detach 释放 GIL，只把纯数据结果带出临界区。
+        py.detach(|| {
+            let mut driver = kernel_lock(&self.inner, "live driver")?;
+            driver
+                .connect()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+        })
     }
 
     /// 全新起跑：建内核、挂 journal、注册 hosts（需先 connect 成功）
